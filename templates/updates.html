@@ -1,4 +1,4 @@
-<!-- Version: 3.0.0 -->
+<!-- Version: 3.0.1 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -300,7 +300,37 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
 
 <div class="wrap">
     <div class="page-title">Updates</div>
-    <div class="page-sub">Apply new releases of Aerodrome from a local folder or (soon) GitHub.</div>
+    <div class="page-sub">Apply new releases of Aerodrome from GitHub or a local folder.</div>
+
+    <!-- v3.0.0: GitHub update card. Active card replacing the v2.41.3
+         placeholder. Renders 5 states: disabled / never-checked / up-to-date
+         / update-available / error. Page load reads cached state from
+         /api/updates/github/check; "Check now" triggers a fresh check.
+         v3.0.1: promoted to first position (was third) — GitHub channel is
+         now the primary update path with in-app apply; local update card
+         below remains as fallback for air-gapped installs or manual zips. -->
+    <div class="card" id="githubUpdateCard">
+        <div class="card-head">
+            <div>
+                <span class="card-title">GitHub update</span>
+                <span class="badge" id="githubUpdateBadge">checking…</span>
+            </div>
+            <div class="card-sub">pull latest release</div>
+        </div>
+
+        <div class="status" id="githubUpdateStatus"></div>
+
+        <div class="info-grid">
+            <div class="info-label">Current version</div>
+            <div class="info-value" id="githubCurrentVer">—</div>
+            <div class="info-label">Latest on GitHub</div>
+            <div class="info-value" id="githubLatestVer">—</div>
+            <div class="info-label">Last checked</div>
+            <div class="info-value" id="githubLastChecked">—</div>
+        </div>
+
+        <div class="actions" id="githubUpdateActions"></div>
+    </div>
 
     <!-- Local update card -->
     <div class="card" id="localCard">
@@ -378,33 +408,6 @@ rsync -av aerodrome/ user@server:~/aerodrome/update/</pre>
         </div>
 
         <div class="actions" id="ntfyUpdateActions"></div>
-    </div>
-
-    <!-- v3.0.0: GitHub update card. Active card replacing the v2.41.3
-         placeholder. Renders 5 states: disabled / never-checked / up-to-date
-         / update-available / error. Page load reads cached state from
-         /api/updates/github/check; "Check now" triggers a fresh check. -->
-    <div class="card" id="githubUpdateCard">
-        <div class="card-head">
-            <div>
-                <span class="card-title">GitHub update</span>
-                <span class="badge" id="githubUpdateBadge">checking…</span>
-            </div>
-            <div class="card-sub">pull latest release</div>
-        </div>
-
-        <div class="status" id="githubUpdateStatus"></div>
-
-        <div class="info-grid">
-            <div class="info-label">Current version</div>
-            <div class="info-value" id="githubCurrentVer">—</div>
-            <div class="info-label">Latest on GitHub</div>
-            <div class="info-value" id="githubLatestVer">—</div>
-            <div class="info-label">Last checked</div>
-            <div class="info-value" id="githubLastChecked">—</div>
-        </div>
-
-        <div class="actions" id="githubUpdateActions"></div>
     </div>
 
     <!-- Changelog card -->
@@ -1524,19 +1527,28 @@ async function checkGithubUpdate(force){
         status.innerHTML = `<div class="status-msg ok">
             <strong>${escapeHtml(j.latest_known)}</strong> is available
             — you're on <strong>${escapeHtml(j.running_version)}</strong>.
-            <br><br>
-            <em>v3.0.0 launches the check-and-discover surface. To apply the update, use the
-            <strong>Local update</strong> card above: download
-            <code>aerodrome-${escapeHtml(j.latest_known.replace(/^v/,''))}.zip</code>
-            from GitHub, upload it via the zone above, and click Apply.
-            The in-app "Apply update" button arrives in v3.0.1.</em>
+            Click <strong>Apply update</strong> to download, verify the
+            checksum, and install. Your <code>config.yaml</code>, database,
+            logs, and venv are preserved; the previous install is backed up
+            to <code>.backups/&lt;timestamp&gt;/</code>.
         </div>`;
+
+        // v3.0.1: Apply button (primary). Downloads + verifies + stages +
+        // applies via the existing infrastructure. View-on-GitHub is the
+        // secondary action — still useful for reading the Release notes
+        // before committing to apply.
+        const applyBtn = document.createElement('button');
+        applyBtn.className = 'btn primary';
+        applyBtn.textContent = `Apply update (${j.latest_known})`;
+        applyBtn.onclick = () => applyGithubUpdate(j.latest_known);
+        actions.appendChild(applyBtn);
+
         const viewBtn = document.createElement('a');
-        viewBtn.className = 'btn primary';
+        viewBtn.className = 'btn';
         viewBtn.href = j.release_url;
         viewBtn.target = '_blank';
         viewBtn.rel = 'noopener';
-        viewBtn.textContent = `View ${j.latest_known} on GitHub`;
+        viewBtn.textContent = 'View on GitHub';
         actions.appendChild(viewBtn);
 
         const recheckBtn = document.createElement('button');
@@ -1558,6 +1570,111 @@ async function checkGithubUpdate(force){
     recheckBtn.textContent = 'Check now';
     recheckBtn.onclick = () => checkGithubUpdate(true);
     actions.appendChild(recheckBtn);
+}
+
+// v3.0.1: Apply from GitHub. Confirms, then POSTs to /api/updates/github/apply
+// which downloads + verifies SHA256 + stages into update/ + hands off to the
+// existing local-apply infrastructure. Returns the same response shape as
+// /api/updates/local/apply, so the result-rendering reuses the standard
+// "update applied, restarting" flow that the local-update card uses.
+async function applyGithubUpdate(tag){
+    // Confirmation step — Apply is a destructive op (backs up everything,
+    // overwrites the install, restarts the service). Worth a single click
+    // to gate against accidental Enter-key presses on a focused button.
+    const ok = confirm(
+        `Apply ${tag} from GitHub?\n\n` +
+        `Aerodrome will:\n` +
+        `  • Download the release zip + SHA256 from GitHub\n` +
+        `  • Verify the checksum\n` +
+        `  • Back up the current install to .backups/<timestamp>/\n` +
+        `  • Copy new files over (preserving config.yaml, database, logs, venv)\n` +
+        `  • Restart the service\n\n` +
+        `Continue?`
+    );
+    if(!ok) return;
+
+    const status = document.getElementById('githubUpdateStatus');
+    const actions = document.getElementById('githubUpdateActions');
+    actions.innerHTML = '';
+    _ghBadge('applying…', '');
+    status.innerHTML = `<div class="status-msg info">
+        <span class="spinner"></span>Downloading and verifying ${escapeHtml(tag)} from GitHub…
+    </div>`;
+
+    let j;
+    try {
+        const r = await fetch('/api/updates/github/apply', { method: 'POST' });
+        j = await r.json();
+    } catch(e){
+        _ghBadge('error', 'err');
+        status.innerHTML = `<div class="status-msg err">
+            Network error during apply: ${escapeHtml(e.message)}
+        </div>`;
+        // Offer to re-check so the user can recover
+        const recheckBtn = document.createElement('button');
+        recheckBtn.className = 'btn';
+        recheckBtn.textContent = 'Re-check';
+        recheckBtn.onclick = () => checkGithubUpdate(true);
+        actions.appendChild(recheckBtn);
+        return;
+    }
+
+    if(!j.ok){
+        _ghBadge('error', 'err');
+        // Sudoers-drift gets the same modal treatment as the local-apply path.
+        // Inherited automatically because we hand off to apply_local_update().
+        if(j.error === 'sudoers_refresh_required' && j.sudoers){
+            // Reuse the existing sudoers-drift modal — _lastSudoersCheck +
+            // _lastUpdateInfo are the inputs.
+            _lastSudoersCheck = j.sudoers;
+            _lastUpdateInfo = { version: tag, install_dir: null };
+            status.innerHTML = `<div class="status-msg err">
+                The staged release needs a sudoers refresh before it can be applied.
+                See the dialog for the command to run on the server.
+            </div>`;
+            // Trigger the modal the local-update flow uses
+            if(typeof showSudoersDriftModal === 'function'){
+                showSudoersDriftModal();
+            }
+        } else {
+            status.innerHTML = `<div class="status-msg err">
+                <strong>Apply failed:</strong> ${escapeHtml(j.error || 'unknown error')}
+            </div>`;
+        }
+        const retryBtn = document.createElement('button');
+        retryBtn.className = 'btn';
+        retryBtn.textContent = 'Try again';
+        retryBtn.onclick = () => applyGithubUpdate(tag);
+        actions.appendChild(retryBtn);
+        const recheckBtn = document.createElement('button');
+        recheckBtn.className = 'btn';
+        recheckBtn.textContent = 'Re-check status';
+        recheckBtn.onclick = () => checkGithubUpdate(true);
+        actions.appendChild(recheckBtn);
+        return;
+    }
+
+    // Success — service is restarting. Mirror the local-apply success render.
+    _ghBadge('applied', 'ready');
+    const pipNote = j.pip_ok
+        ? ''
+        : `<div class="status-msg warn" style="margin-top:8px">
+             <strong>Note:</strong> pip install on the new requirements.txt
+             reported a warning: <code>${escapeHtml(j.pip_msg || '(no message)')}</code>.
+             The service restart should still succeed — if it doesn't, check the logs.
+           </div>`;
+    status.innerHTML = `<div class="status-msg ok">
+        <strong>Applied:</strong> ${escapeHtml(j.from_version)} → ${escapeHtml(j.to_version)}.
+        ${escapeHtml(j.files_updated)} files updated. Backup at <code>${escapeHtml(j.backup_dir)}/</code>.
+        ${escapeHtml(j.message)}
+    </div>${pipNote}
+    <div class="status-msg info" style="margin-top:8px">
+        The page will reload in a few seconds to pick up the new version.
+    </div>`;
+
+    // Reload after a short delay so the user sees the success message and
+    // the server has time to come back up. Same pattern as applyLocal().
+    setTimeout(() => window.location.reload(), 4000);
 }
 
 

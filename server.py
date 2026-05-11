@@ -1,4 +1,4 @@
-# Version: 3.0.0
+# Version: 3.0.1
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -8179,6 +8179,241 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             "restart_note": restart_note,
             "message": "Update applied. Service is restarting.",
         }
+
+    # ──────────────────────────────────────────────────────────────────
+    # v3.0.1: GitHub-Releases-based apply path
+    # ──────────────────────────────────────────────────────────────────
+    # Closes the v3.0.x arc's second half. v3.0.0 added the discover
+    # surface (poll, cache, render 5 states). v3.0.1 adds the act
+    # surface: fetch the release zip + sha256 from the public asset
+    # URLs, verify the checksum, stage into update/, then hand off to
+    # the existing apply_local_update() flow which already does
+    # backup + copy + deps + restart correctly. The apply step itself
+    # doesn't change — v3.0.1 is purely a fetch+verify+stage layer in
+    # front of existing infrastructure.
+
+    import hashlib as _hashlib
+    import zipfile as _zipfile
+    import io as _io
+
+    def _fetch_github_release_assets(tag: str) -> tuple:
+        """Download zip + sha256 for a GitHub release tag, both into memory.
+
+        Returns (zip_bytes, sha256_text) on success. Raises a ValueError
+        with a user-presentable message on any failure. 60-second timeout
+        per asset — long enough for a slow connection on a 5MB zip, short
+        enough that a failed CDN doesn't hang the UI indefinitely.
+
+        We use urllib (stdlib) rather than requests so this path has no
+        runtime dependency the rest of server.py doesn't already have."""
+        base = f"https://github.com/preston-peterson/aerodrome/releases/download/{tag}"
+        zip_url = f"{base}/aerodrome-{tag}.zip"
+        sha_url = f"{base}/aerodrome-{tag}.zip.sha256"
+
+        def _get(url: str, what: str) -> bytes:
+            try:
+                req_obj = _urllib_request.Request(
+                    url,
+                    headers={"User-Agent": "Aerodrome/github-apply"},
+                )
+                with _urllib_request.urlopen(req_obj, timeout=60) as response:
+                    return response.read()
+            except _urllib_error.HTTPError as e:
+                if e.code == 404:
+                    raise ValueError(
+                        f"Release {tag} doesn't have {what} attached as an asset. "
+                        f"This is a packaging bug — please report it at the issue tracker."
+                    )
+                if e.code == 403:
+                    raise ValueError(
+                        "GitHub rate-limited the download (60 req/hour anonymous). "
+                        "Try again in an hour."
+                    )
+                raise ValueError(f"GitHub returned HTTP {e.code} for {what}.")
+            except _urllib_error.URLError as e:
+                raise ValueError(f"Couldn't reach GitHub for {what}: {e.reason}")
+            except Exception as e:
+                raise ValueError(
+                    f"Unexpected error downloading {what}: {type(e).__name__}: {e}"
+                )
+
+        zip_bytes = _get(zip_url, "the release zip")
+        sha_bytes = _get(sha_url, "the SHA256 checksum")
+        # The .sha256 file format produced by scripts/package-release.sh is the
+        # `sha256sum -c` standard: "<64-hex-chars>  <filename>\n". Parse the
+        # hash field; everything else is checksum-file noise we ignore.
+        try:
+            sha_text = sha_bytes.decode("utf-8").strip()
+            expected_hash = sha_text.split()[0].lower()
+            if len(expected_hash) != 64 or not all(
+                c in "0123456789abcdef" for c in expected_hash
+            ):
+                raise ValueError(
+                    "Checksum file format unexpected — not a valid SHA256 hex digest."
+                )
+            return zip_bytes, expected_hash
+        except ValueError:
+            raise
+        except Exception as e:
+            raise ValueError(f"Couldn't parse the checksum file: {e}")
+
+    def _verify_and_stage_github_zip(zip_bytes: bytes,
+                                     expected_hash: str,
+                                     install_dir: Path) -> None:
+        """Verify SHA256 matches, then unzip into <install_dir>/update/.
+
+        Always wipes update/ first (except the docs files the local-apply
+        flow expects to find there) — applying from GitHub is a clean-slate
+        operation. Anything previously staged from a local upload is
+        replaced. Raises ValueError on checksum mismatch or unzip failure.
+
+        The release zip has a top-level `aerodrome-vX.Y.Z/` wrapper folder
+        per the v2.98.2 packaging convention. We unzip as-is; the
+        apply_local_update() flow already handles both flat and wrapped
+        layouts (it looks for VERSION at update/VERSION OR
+        update/aerodrome/VERSION OR update/aerodrome-vX.Y.Z/VERSION...
+        actually let me re-check that. The candidates list at apply
+        time is [update/VERSION, update/aerodrome/VERSION]. So we need
+        to either unwrap the zip's top-level folder, or rely on the
+        unzip producing exactly one of those two layouts. The v2.98.2+
+        wrapper is `aerodrome-vX.Y.Z/`, not `aerodrome/`, so we have
+        to unwrap. Done below: extract to a temp area, find the
+        single top-level dir, then promote its contents to update/.)"""
+        # Checksum verification — the trust anchor for the whole channel
+        actual_hash = _hashlib.sha256(zip_bytes).hexdigest().lower()
+        if actual_hash != expected_hash:
+            raise ValueError(
+                f"Downloaded zip didn't match expected checksum. "
+                f"Expected {expected_hash[:16]}…, got {actual_hash[:16]}…. "
+                f"Something is wrong with the Release packaging — "
+                f"please report it at the issue tracker."
+            )
+
+        # Clean-slate the update/ directory, preserving only the docs that
+        # apply_local_update()'s cleanup step also preserves on success.
+        update_dir = install_dir / "update"
+        update_dir.mkdir(parents=True, exist_ok=True)
+        preserve_in_update = {"UPDATE_README.md", ".gitkeep"}
+        try:
+            for item in update_dir.iterdir():
+                if item.name in preserve_in_update:
+                    continue
+                if item.is_dir():
+                    shutil.rmtree(item)
+                else:
+                    item.unlink()
+        except Exception as e:
+            raise ValueError(f"Couldn't clear staged update/: {e}")
+
+        # Unzip — handle both wrapped (aerodrome-vX.Y.Z/…) and flat layouts.
+        # Detect by inspecting the first member's path: if every member
+        # shares a common top-level directory, strip it. Otherwise extract
+        # as-is and let apply_local_update() find VERSION wherever it ended up.
+        try:
+            with _zipfile.ZipFile(_io.BytesIO(zip_bytes)) as zf:
+                names = [n for n in zf.namelist() if n and not n.endswith("/")]
+                if not names:
+                    raise ValueError("Release zip appears to be empty.")
+                # Find common top-level prefix (e.g. "aerodrome-v3.0.1/")
+                first_parts = names[0].split("/", 1)
+                if len(first_parts) > 1:
+                    candidate_prefix = first_parts[0] + "/"
+                    has_common_prefix = all(
+                        n.startswith(candidate_prefix) for n in names
+                    )
+                else:
+                    has_common_prefix = False
+
+                for member in zf.namelist():
+                    if has_common_prefix:
+                        # Strip the wrapper folder
+                        stripped = member[len(candidate_prefix):]
+                        if not stripped:  # the prefix entry itself
+                            continue
+                        dest_path = update_dir / stripped
+                    else:
+                        dest_path = update_dir / member
+
+                    if member.endswith("/"):
+                        dest_path.mkdir(parents=True, exist_ok=True)
+                    else:
+                        dest_path.parent.mkdir(parents=True, exist_ok=True)
+                        with zf.open(member) as src:
+                            with open(dest_path, "wb") as dst:
+                                shutil.copyfileobj(src, dst)
+        except _zipfile.BadZipFile:
+            raise ValueError(
+                "Downloaded file isn't a valid zip archive. "
+                "The download was corrupted — try again."
+            )
+        except OSError as e:
+            # Most likely disk full or permissions; surface raw error
+            if "No space left" in str(e):
+                raise ValueError(
+                    "Not enough disk space to stage the update. "
+                    "Free up some space and try again."
+                )
+            raise ValueError(f"Couldn't write staged files: {e}")
+        except Exception as e:
+            raise ValueError(f"Unexpected error staging zip: {e}")
+
+    @app.post("/api/updates/github/apply")
+    async def apply_github_update():
+        """v3.0.1: download + verify + stage from GitHub, then apply.
+
+        No request body — the tag to apply is read from update_state's
+        last_known_latest (the same tag the user just saw on the card).
+        Refuses if no update is currently available (running >= latest,
+        or last_known_latest is null), so a stale UI cache can't trigger
+        an unwanted apply.
+
+        Returns the same response shape as POST /api/updates/local/apply
+        — the UI can reuse the local-apply result-rendering code without
+        special-casing the GitHub path."""
+        cfg = _updates_config()
+        if not cfg["enabled"]:
+            return JSONResponse(status_code=400, content={
+                "ok": False,
+                "error": "GitHub updates are disabled in config.yaml.",
+            })
+
+        state = _get_update_state()
+        latest = state["last_known_latest"]
+        running = _get_running_version()
+        if not latest or not _is_newer_version(latest, running):
+            return JSONResponse(status_code=400, content={
+                "ok": False,
+                "error": (
+                    "No update is currently available. "
+                    "Click 'Check now' on the card to refresh, "
+                    "or apply from a local zip if you have one staged."
+                ),
+            })
+
+        install_dir = Path(__file__).parent
+
+        # Fetch + verify + stage. Each step has its own clear error message.
+        try:
+            zip_bytes, expected_hash = _fetch_github_release_assets(latest)
+            logger.info(
+                f"GitHub apply: downloaded {len(zip_bytes)} bytes for {latest} "
+                f"(expected sha256 {expected_hash[:16]}…)"
+            )
+            _verify_and_stage_github_zip(zip_bytes, expected_hash, install_dir)
+            logger.info(f"GitHub apply: staged {latest} into update/, handing off to apply_local_update()")
+        except ValueError as e:
+            logger.warning(f"GitHub apply failed during fetch/stage: {e}")
+            return JSONResponse(status_code=500, content={
+                "ok": False,
+                "error": str(e),
+            })
+
+        # Hand off to the existing apply flow. It already handles sudoers
+        # drift pre-flight, backup, copy, deps, restart, and the cleanup
+        # of update/ on success. By reusing it we get all of that for free
+        # — including the same response shape, so the UI doesn't need
+        # special handling for the GitHub-apply path.
+        return await apply_local_update()
 
     @app.get("/api/updates/github/check")
     async def check_github_update(force: bool = False):
