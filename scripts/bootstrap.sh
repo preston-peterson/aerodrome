@@ -1,28 +1,14 @@
 #!/usr/bin/env bash
-# Version: 3.0.3-draft
+# Version: 3.0.12
 # =============================================================================
-# Aerodrome — Curl Install Bootstrap (DRAFT)
+# Aerodrome — Curl Install Bootstrap
 # =============================================================================
 #
-# DRAFT NOTICE
-# ------------
-# This script is NON-OPERATIONAL until the Aerodrome GitHub repo is public
-# and the Releases-based publishing flow is live. Specifically it expects:
-#
-#   - https://api.github.com/repos/preston-peterson/aerodrome/releases/latest
-#     to return real release data (private/unpublished today)
-#   - Each release to ship aerodrome-vX.Y.Z.zip AND aerodrome-vX.Y.Z.zip.sha256
-#     as release assets
-#   - https://install.aerodromeadsb.com to 302-redirect to
-#     https://raw.githubusercontent.com/preston-peterson/aerodrome/main/scripts/bootstrap.sh
-#
-# Until those are live, test with --from-zip <local-zip-path>.
-#
-# Headline command (post-launch):
+# Headline command:
 #   bash <(curl -fsSL https://install.aerodromeadsb.com)
 #
-# Local testing today:
-#   bash scripts/bootstrap.sh --from-zip ~/Downloads/aerodrome-v2.97.4.zip --prefix /tmp/ad
+# Local testing (offline install from a release zip already on disk):
+#   bash scripts/bootstrap.sh --from-zip ~/Downloads/aerodrome-v3.0.12.zip --prefix /tmp/ad
 #
 # Flags:
 #   --prefix <path>        Install directory (default: ~/aerodrome)
