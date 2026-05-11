@@ -19,6 +19,17 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.0.6] — 2026-05-11
+
+### Fixed
+- **Softened the Apply update 404 error message to lead with the common case (transient CDN cache) rather than the rare case (missing asset).** Direct outcome of dogfooding v3.0.5 across multiple installs: one machine downloaded the release zip and applied it on the first click, the other returned the existing `"Release vX.Y.Z doesn't have the release zip attached as an asset. This is a packaging bug — please report it at the issue tracker."` error for ~10 minutes before clearing on its own and applying cleanly. Same Release, same assets attached, no packaging bug — just GitHub's edge CDN holding a cached 404 from before the assets were uploaded. The old error copy was technically possible but assumed the wrong root cause, which is the worse error-message failure mode (sends the user diagnosing the wrong thing). The new copy leads with the likely cause: "Couldn't download {what} for {tag} (HTTP 404). This is usually a transient CDN cache from a just-published release — try again in a few minutes. If it persists past ~10 minutes, the asset may genuinely not be attached to the Release on GitHub." Same error code, same retry button, same downstream UI — just better text on the modal.
+
+  Why this happens, for anyone reading this in the future: GitHub Releases serves asset downloads through a CDN with per-edge caching. When a Release is published with no assets attached and a client requests an asset URL, the edge returns 404 and caches that response. When you later attach the assets to the Release, the source-of-truth on GitHub updates immediately, but each CDN edge continues serving its cached 404 until that cache entry expires (single-digit minutes is typical, but the exact TTL is GitHub's to know). Different edges have different cache states, which is why v3.0.5 worked from one machine but 404'd from another at the same moment in time. The clearest tell that you're hitting the CDN-cache case rather than a real missing-asset case: a fresh `curl -I https://github.com/.../releases/download/vX.Y.Z/aerodrome-vX.Y.Z.zip` from the same machine will eventually return 302 once the edge's TTL expires.
+
+  Operational note for the maintainer: when publishing future Releases, attach assets at the **same time** as publishing (not after) to avoid creating the negative-cache state at all. The "Draft a new release" form on github.com supports drag-and-drop of asset files before clicking Publish; using that path means the Release goes public with assets already in place and no edge ever sees a 404 to cache. The v3.0.5 publish involved a publish-first-attach-after sequence which is what produced the dogfood case for this fix.
+
+  Net change: ~8-line edit in `server.py` (rewrote the 404 branch of `_fetch_github_release_assets()`'s nested `_get()` HTTPError handler; added a comment explaining the dogfood context that drove the rewrite so future-maintainer doesn't lose the reasoning). No behavioral change to the apply flow, just better error copy on the one failure mode users are most likely to hit during a new-release deploy window.
+
 ## [3.0.5] — 2026-05-11
 
 ### Fixed

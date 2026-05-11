@@ -1,4 +1,4 @@
-# Version: 3.0.5
+# Version: 3.0.6
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -8296,9 +8296,26 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                     return response.read()
             except _urllib_error.HTTPError as e:
                 if e.code == 404:
+                    # v3.0.6: distinguish transient CDN cache from real
+                    # missing-asset state. After Preston dogfooded v3.0.5
+                    # on two machines: one succeeded immediately, the
+                    # other 404'd for ~10 minutes before clearing on its
+                    # own. Root cause: GitHub Releases assets serve via
+                    # an edge CDN that caches 404 responses per-edge.
+                    # When you publish a Release without assets and
+                    # attach them after, the edge serving Apply requests
+                    # holds the cached 404 until it expires (usually
+                    # single-digit minutes). The original copy said
+                    # "this is a packaging bug — report it" which is
+                    # the rare case; the common case is "wait a few
+                    # minutes." Lead with the common case.
                     raise ValueError(
-                        f"Release {tag} doesn't have {what} attached as an asset. "
-                        f"This is a packaging bug — please report it at the issue tracker."
+                        f"Couldn't download {what} for {tag} (HTTP 404). "
+                        f"This is usually a transient CDN cache from a "
+                        f"just-published release — try again in a few "
+                        f"minutes. If it persists past ~10 minutes, the "
+                        f"asset may genuinely not be attached to the "
+                        f"Release on GitHub."
                     )
                 if e.code == 403:
                     raise ValueError(
