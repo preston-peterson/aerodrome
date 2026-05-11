@@ -14,17 +14,27 @@ The longer version is below.
 
 ## Why pull requests are disabled
 
-Aerodrome is built the way one person wants it built. The codebase has
-opinions — about formatting, about what features earn their place, about
-when to add complexity and when to refuse it — and merging outside code
-would either dilute those opinions or force me to relitigate them in
-review. Neither is a good use of anyone's time.
+Aerodrome is built and maintained by one person, and I keep direct
+merges to myself so the codebase stays internally consistent — in
+formatting, in style, in which features earn their place and which add
+complexity that isn't worth it. Reviewing and merging outside code
+well takes real time, and for a project this size I'd rather spend
+that time building.
 
-The MIT license keeps the door open: fork freely, change whatever, ship
-your own version. That's a real option, not a polite deflection. If you
-want Aerodrome to do something it doesn't do today, and the answer to
-"will the maintainer build this?" is no, your fork is the right path —
-not a PR I'll close without merging.
+That doesn't mean ideas aren't welcome. **They are — please file an
+issue.** I want to know what people are running into, what's missing,
+what could be better. I'll read every feature suggestion and bug
+report, and the things that fit Aerodrome's direction will land in
+future releases. The "I want it for myself" filter applies (see
+[Suggesting features](#suggesting-features) below for what that means),
+but a good idea well-explained genuinely moves the project.
+
+The MIT license also keeps the door open the other way: fork freely,
+change whatever, ship your own version. If you want Aerodrome to do
+something it doesn't do today and the answer to "will the maintainer
+build this?" turns out to be no, your fork is a real option — not a
+polite deflection. Some of the most useful things people do with
+open-source projects are fork them.
 
 ## Reporting bugs
 

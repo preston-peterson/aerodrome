@@ -19,6 +19,17 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [2.98.3] — 2026-05-11
+
+### Changed
+- **Softened the "Why pull requests are disabled" section in `CONTRIBUTING.md`.** The substance is unchanged — Aerodrome doesn't accept PRs, forking is encouraged, MIT license covers it — but the wording now reads as collaborative rather than defensive. First post-public-launch release; the change was identified on a re-read of the freshly-public `CONTRIBUTING.md` as the page reads on github.com.
+
+  Behind the scenes — what was wrong: the previous wording (carried in unchanged since the v2.95.x repository-prep work) led with the codebase-opinions framing and described outside PRs as "diluting those opinions or forcing me to relitigate them in review." Each phrase individually accurate, but stacked at the top of the section they set a defensive tone that didn't match the project's actual relationship with potential contributors. The "relitigate" verb in particular reads as put-upon — like the maintainer expects to be argued with and is pre-emptively annoyed about it.
+
+  What the new wording does differently: leads with the practical constraint (one maintainer, review time is the bottleneck) rather than the philosophical one (codebase opinions), which moves the section's first impression from "guarded" to "explained." Adds an explicit middle paragraph stating that ideas are welcome via the issue tracker, that the maintainer reads every suggestion, and that good ideas land in future releases — this is the paragraph that was missing entirely from the previous version, and its absence is what made the section read as a closed door rather than a redirected one. Reframes the fork paragraph from a warning ("your fork is the right path — not a PR I'll close without merging") to encouragement ("Some of the most useful things people do with open-source projects are fork them"), which puts forking on the same emotional footing as filing an issue rather than as a consolation prize.
+
+  No code changes; no API surface changes; no behavior changes. The release exists because tone matters for a public-facing project, and the v2.98.0 final review pass didn't surface this because the section had been in place for several minor releases and read fine in isolation — what changed is the context, not the words. The "now it's actually public and someone might actually read this" lens caught what the "this is fine for a one-person-shop" lens hadn't.
+
 ## [2.98.2] — 2026-05-10
 
 ### Changed
