@@ -10,7 +10,7 @@ Usage:
         # each error: {"path": "receiver.port", "message": "Must be 1-65535"}
         return error_response(errors)
 """
-# Version: 3.0.9
+# Version: 3.0.10
 
 import re
 from typing import Any, List, Tuple
@@ -769,10 +769,47 @@ def validate_config(cfg: Any) -> Errors:
                                     errs.append((f"updates.github.notify.{key}",
                                                  "Must be a boolean (true or false)"))
 
+    # --- cross-cutting: update push notifications require ntfy to be usable ---
+    # v3.0.10: refuse `updates.github.notify.ntfy: true` when the underlying
+    # ntfy infrastructure isn't configured to fire. The Updates-tab UI lets
+    # users toggle this flag without leaving for the Notifications tab, which
+    # made it easy to end up in a "I enabled push but nothing happens" dead
+    # state: the flag is true, but `notifications.enabled` is false or
+    # `notifications.url` is empty, so the notifier never sends. Two cases
+    # produce that dead state and both surface here:
+    #   1. notifications.enabled is missing/false → ntfy master switch is off
+    #   2. notifications.url is missing/empty → no ntfy server to post to
+    # Validation runs only when the user is actively trying to enable the
+    # update-push flag; existing installs with the flag at default (false)
+    # are unaffected. Error path lives on the Updates tab so the UI's
+    # auto-switch-to-error-tab logic delivers the user to the field they
+    # toggled; the message tells them exactly which Notifications-tab keys
+    # to fix before retrying. Same pattern used by the receiver lat/lon
+    # cross-check above (single error, points at one path).
+    upd = cfg.get("updates")
+    nt_cfg = cfg.get("notifications")
+    if isinstance(upd, dict):
+        gh = upd.get("github")
+        if isinstance(gh, dict):
+            notify = gh.get("notify")
+            if isinstance(notify, dict) and notify.get("ntfy") is True:
+                nt_enabled = isinstance(nt_cfg, dict) and bool(nt_cfg.get("enabled"))
+                nt_url = (nt_cfg or {}).get("url") if isinstance(nt_cfg, dict) else None
+                nt_url_set = isinstance(nt_url, str) and nt_url.strip() != ""
+                if not nt_enabled or not nt_url_set:
+                    missing = []
+                    if not nt_enabled:
+                        missing.append("notifications.enabled: true")
+                    if not nt_url_set:
+                        missing.append("notifications.url")
+                    errs.append((
+                        "updates.github.notify.ntfy",
+                        "Cannot enable update push without ntfy configured. "
+                        f"Set {' and '.join(missing)} on the Notifications tab "
+                        "first, then re-enable this toggle."
+                    ))
+
     return errs
-
-
-# --- Which settings need a service restart vs take effect live ---
 
 # These keys can be saved and picked up without restarting the service.
 # The collector re-reads these from CONFIG on each poll interval.

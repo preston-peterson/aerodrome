@@ -19,6 +19,25 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.0.10] — 2026-05-11
+
+### Fixed
+- **Cross-field validation: refuse `updates.github.notify.ntfy: true` when the underlying ntfy infrastructure isn't configured to fire.** Surfaced as a follow-up to the v3.0.8 cluster: the v3.0.7 Updates tab made it trivially easy to toggle "Send ntfy push notification" without first enabling ntfy on the Notifications tab. Two failure modes produced a "I enabled push but nothing happens" dead state: (1) `notifications.enabled` was false (master ntfy switch off), or (2) `notifications.url` was empty (no ntfy server to post to). Either way the flag could be saved as `true`, the user could leave thinking push was on, and no push would ever fire — the notifier's gating logic would silently suppress because the master switch was off or the URL was empty. The schema-level validation already in place (the validator's per-field type checks) didn't catch this because each field was individually well-typed — the dead state was a cross-field consistency issue, not a per-field type issue.
+
+  The fix is a cross-cutting check at the end of `validate_config()` (same architectural slot the receiver lat/lon cross-check uses). When the user attempts to save with `updates.github.notify.ntfy: true`, the validator inspects `notifications.enabled` AND `notifications.url`. If `notifications.enabled` is missing/false, OR if `notifications.url` is missing/empty/whitespace, the save returns a validation error attached to `updates.github.notify.ntfy` with a message listing exactly which Notifications-tab keys to set first: "Cannot enable update push without ntfy configured. Set notifications.enabled: true and notifications.url on the Notifications tab first, then re-enable this toggle." The error path lives on the Updates tab where the user actually toggled the flag, so the UI's existing auto-switch-to-error-tab logic delivers the user to the field they just changed; the error message tells them where to go next to satisfy the dependency.
+
+  Why hard-validation (refuse the save) rather than soft-validation (warn but allow) or UI-only (disable the toggle): three approaches were considered. Soft-validation would let the user save the dead state with a warning, which doesn't actually solve the original problem (the dead state still exists). UI-disabling the toggle when ntfy isn't configured would require the Updates tab to reactively re-render when Notifications-tab values change, which doubles the implementation cost for one warning. Hard-validation is the cleanest: it prevents the dead state entirely, it tells the user exactly what to fix, and it costs ~30 lines in one place in the validator. The minor downside is that staging both changes (enable ntfy on Notifications tab + enable update push on Updates tab) and saving them in one round-trip is now required — but that's actually the right semantic, because saving them out-of-order produces the same end state either way.
+
+  **Five test cases verify the behavior:**
+  - ntfy=true, no notifications section → error (case 1)
+  - ntfy=true, notifications.enabled=false → error (case 2)
+  - ntfy=true, notifications.enabled=true but url empty → error (case 3)
+  - ntfy=true, everything set → passes (case 4)
+  - ntfy=false (the default) → never flags regardless of notifications state (case 5)
+  - no updates section at all → doesn't crash and doesn't flag (case 6, defensive)
+
+  **Pattern consideration:** this fix is scoped specifically to the update-push case. The same class of dead-state could exist for any other per-event ntfy flag (every `notifications.events.<name>: true` is meaningless without `notifications.enabled: true` and a URL). Whether to extend the cross-cutting check to the full notifications.events.* family is a separate broader question — for now, only the update-push flag is validated because that's the case the v3.0.7 UI made easy to hit. If the broader pattern becomes a pain point, the validator pattern established here will generalize cleanly. ~40-line addition to `config_validator.py` at the cross-cutting-checks slot; no UI changes; no behavior change to the notifier or the channel; pure validator improvement on top of unchanged underlying infrastructure.
+
 ## [3.0.9] — 2026-05-11
 
 ### Fixed
