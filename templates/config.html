@@ -1,4 +1,4 @@
-<!-- Version: 3.0.6 -->
+<!-- Version: 3.0.7 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -431,6 +431,7 @@ const TABS = [
     { id:'alerts',        label:'Watchlist alerts', render:() => sectionWatchlistAlerts(),  prefix:'watchlist_alerts' },
     { id:'stats',         label:'Stats',            render:() => sectionStats(),            prefix:'stats' },
     { id:'notifications', label:'Notifications',    render:() => sectionNotifications(),    prefix:'notifications' },
+    { id:'updates',       label:'Updates',          render:() => sectionUpdates(),          prefix:'updates' },
     { id:'backup',        label:'Backup & Restore', render:() => sectionBackupRestore(),    prefix:'__backup__' },
 ];
 // v2.42.1: respect a URL hash like /config#notifications so other pages
@@ -3568,6 +3569,109 @@ async function nfSaveNtfyConfig() {
     } finally {
         if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = 'Save'; }
     }
+}
+
+
+// =============================================================================
+// Section: Updates (v3.0.7)
+// =============================================================================
+//
+// UI for the `updates.github.*` config keys that were previously YAML-only:
+//   - master enable toggle
+//   - poll_interval (daily / weekly / monthly / never)
+//   - three notification surfaces (banner, gear_badge, ntfy)
+//
+// All five keys are in LIVE_KEYS already (server.py reads CONFIG every
+// scheduler wake), so edits here take effect within the scheduler's
+// sleep granularity (~1 hour max) without a service restart.
+//
+// The ntfy toggle is documented as a two-key gate: this flag is necessary
+// but not sufficient — `notifications.events.update_available` (on the
+// Notifications tab) must also be true for the push to actually fire.
+// Same pattern every ntfy event uses; the per-event flag lives with the
+// other event flags rather than here so all ntfy enablement is in one
+// place when troubleshooting.
+function sectionUpdates() {
+    return `
+    <div class="section">
+        <div class="section-head">
+            <div class="section-title">GitHub-based update channel</div>
+            <div class="section-sub">discovery, polling cadence, notification surfaces</div>
+        </div>
+
+        <div style="font-size:12px;color:var(--t2);line-height:1.6;margin-bottom:16px">
+            Aerodrome periodically checks GitHub for new releases. Discovery happens
+            in a background thread on the configured interval — page loads of
+            <a href="/updates" style="color:var(--cyan)">/updates</a> read cached state
+            from SQLite and never hit GitHub. The "Check now" button on /updates
+            forces an immediate check regardless of these settings.
+        </div>
+
+        <!-- Master enable + cadence -->
+        <div class="form-grid">
+            ${field({
+                label:'Update channel enabled',
+                hint:'Master switch. When off, scheduled checks no-op and the GitHub card on /updates renders in disabled state. "Check now" is also disabled. Manual local-zip updates still work.',
+                path:'updates.github.enabled',
+                type:'checkbox'
+            })}
+            ${field({
+                label:'Check frequency',
+                hint:'How often the background scheduler queries GitHub for new releases. "never" disables scheduled polling but leaves "Check now" working.',
+                path:'updates.github.poll_interval',
+                type:'select',
+                options:[
+                    {value:'daily',   label:'Daily — every 24 hours'},
+                    {value:'weekly',  label:'Weekly — every 7 days'},
+                    {value:'monthly', label:'Monthly — every 30 days (recommended)'},
+                    {value:'never',   label:'Never — manual "Check now" only'},
+                ]
+            })}
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-head">
+            <div class="section-title">Notification surfaces</div>
+            <div class="section-sub">where you find out about new releases</div>
+        </div>
+
+        <div style="font-size:12px;color:var(--t2);line-height:1.6;margin-bottom:16px">
+            Three independent surfaces, each separately toggleable. The banner and
+            gear badge are passive (visible only when you visit the dashboard); the
+            ntfy push is active (pings your phone).
+        </div>
+
+        <div class="form-grid">
+            ${field({
+                label:'Show banner on /updates',
+                hint:'In-card banner showing "vX.Y.Z is available" with the Apply button. Suppresses cleanly when nothing is available.',
+                path:'updates.github.notify.banner',
+                type:'checkbox'
+            })}
+            ${field({
+                label:'Light the gear-menu badge',
+                hint:'Amber dot on the gear menu across every admin page when an update is available. Same dot used for capacity warnings — one extra contributor.',
+                path:'updates.github.notify.gear_badge',
+                type:'checkbox'
+            })}
+            ${field({
+                label:'Send ntfy push notification',
+                hint:'Push to your phone when a new release is discovered. Fires once per transition (not every poll). Requires this flag AND notifications.events.update_available (on the Notifications tab) AND notifications.enabled — same two-key gate every ntfy event uses. Default cooldown is 24 hours; tune via notifications.cooldown_minutes.update_available.',
+                path:'updates.github.notify.ntfy',
+                type:'checkbox'
+            })}
+        </div>
+
+        <div style="font-size:11px;color:var(--t3);line-height:1.6;margin-top:12px;
+                    padding:10px 12px;background:var(--bg1);border:1px solid var(--bdr);
+                    border-radius:4px">
+            <strong>Live config:</strong> changes here take effect within the scheduler's
+            wake interval (~1 hour max) without a service restart. The
+            <code>updates</code> section is in <code>LIVE_KEYS</code> — the background
+            thread re-reads <code>CONFIG</code> on each wake.
+        </div>
+    </div>`;
 }
 
 

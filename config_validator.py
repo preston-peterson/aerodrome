@@ -10,7 +10,7 @@ Usage:
         # each error: {"path": "receiver.port", "message": "Must be 1-65535"}
         return error_response(errors)
 """
-# Version: 3.0.6
+# Version: 3.0.7
 
 import re
 from typing import Any, List, Tuple
