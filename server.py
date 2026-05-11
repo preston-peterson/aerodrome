@@ -1,4 +1,4 @@
-# Version: 3.0.8
+# Version: 3.0.9
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -8297,11 +8297,11 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             except _urllib_error.HTTPError as e:
                 if e.code == 404:
                     # v3.0.6: distinguish transient CDN cache from real
-                    # missing-asset state. After Preston dogfooded v3.0.5
-                    # on two machines: one succeeded immediately, the
-                    # other 404'd for ~10 minutes before clearing on its
-                    # own. Root cause: GitHub Releases assets serve via
-                    # an edge CDN that caches 404 responses per-edge.
+                    # missing-asset state. Dogfooding v3.0.5 across two
+                    # machines: one succeeded immediately, the other
+                    # 404'd for ~10 minutes before clearing on its own.
+                    # Root cause: GitHub Releases assets serve via an
+                    # edge CDN that caches 404 responses per-edge.
                     # When you publish a Release without assets and
                     # attach them after, the edge serving Apply requests
                     # holds the cached 404 until it expires (usually
