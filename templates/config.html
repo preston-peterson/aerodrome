@@ -1,4 +1,4 @@
-<!-- Version: 3.0.10 -->
+<!-- Version: 3.0.11 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -484,6 +484,20 @@ function switchTab(tabId){
     } catch(e){ /* no-op if replaceState unsupported */ }
     renderAll();
 }
+
+// v3.0.11: complete the v2.42.1 hash-routing feature by listening for
+// hashchange events. Page-load routing existed but no listener fired
+// when the hash changed later, so clicking an <a href="/config#x"> link
+// (such as the one in v3.0.11's improved validation error message that
+// links from the Updates tab to the Notifications tab) would update the
+// URL without switching the displayed tab. Browser back/forward across
+// tabs now also works naturally.
+window.addEventListener('hashchange', () => {
+    const hashTab = _tabIdFromHash();
+    if(hashTab && hashTab !== activeTab){
+        switchTab(hashTab);
+    }
+});
 
 // =============================================================================
 // Utilities

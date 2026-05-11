@@ -10,7 +10,7 @@ Usage:
         # each error: {"path": "receiver.port", "message": "Must be 1-65535"}
         return error_response(errors)
 """
-# Version: 3.0.10
+# Version: 3.0.11
 
 import re
 from typing import Any, List, Tuple
@@ -797,16 +797,26 @@ def validate_config(cfg: Any) -> Errors:
                 nt_url = (nt_cfg or {}).get("url") if isinstance(nt_cfg, dict) else None
                 nt_url_set = isinstance(nt_url, str) and nt_url.strip() != ""
                 if not nt_enabled or not nt_url_set:
-                    missing = []
-                    if not nt_enabled:
-                        missing.append("notifications.enabled: true")
-                    if not nt_url_set:
-                        missing.append("notifications.url")
+                    # v3.0.11: shorter message + clickable link to the
+                    # Notifications tab. Adaptive copy names specifically
+                    # what's missing so the user knows exactly what to fix
+                    # after one click. The error message renders as HTML
+                    # in the /config error-display path (errMsg gets
+                    # injected via template literal, not escaped) which
+                    # makes the <a> tag clickable; /config#notifications
+                    # uses the v2.42.1 URL-hash tab-routing to land the
+                    # user directly on the Notifications tab.
+                    if not nt_enabled and not nt_url_set:
+                        what = "turn ntfy on and set a URL"
+                    elif not nt_enabled:
+                        what = "turn ntfy on"
+                    else:
+                        what = "set a URL"
                     errs.append((
                         "updates.github.notify.ntfy",
-                        "Cannot enable update push without ntfy configured. "
-                        f"Set {' and '.join(missing)} on the Notifications tab "
-                        "first, then re-enable this toggle."
+                        f"Configure ntfy on the "
+                        f'<a href="/config#notifications">Notifications tab</a>'
+                        f": {what}."
                     ))
 
     return errs
