@@ -1,5 +1,5 @@
 # =============================================================================
-# Version: 3.0.1
+# Version: 3.0.2
 # Aerodrome — Example/Reference Configuration
 # =============================================================================
 # This is the canonical default config shipped with each Aerodrome release.
@@ -293,6 +293,15 @@ notifications:
                                # operational hazard. See notifications.capacity
                                # below to tune thresholds.
     capacity_recovered: true   # The "back to normal" companion to capacity_low.
+    update_available: false    # v3.0.2: a newer Aerodrome release was discovered
+                               # on GitHub. Fires once on transition (the moment
+                               # the scheduler sees a strictly-newer tag than
+                               # last_known_latest), not on every successful check.
+                               # Default OFF: an opt-in push notification on top
+                               # of the gear-menu badge + /updates banner that
+                               # v3.0.0 already provides. Requires both this flag
+                               # and updates.github.notify.ntfy to fire — same
+                               # two-key pattern as all ntfy events.
 
   # Per-event cooldown in minutes. Suppresses repeated notifications for the
   # same aircraft within this window. Applies only to per-aircraft events
@@ -303,6 +312,9 @@ notifications:
     watchlist_hit: 10          # 10-minute cooldown per ICAO
     special_aircraft: 30       # 30-minute cooldown per ICAO
     emergency_squawk: 60       # 60-minute cooldown per ICAO (v2.48.0)
+    update_available: 1440     # v3.0.2: 24-hour cooldown — discovered updates
+                               # don't re-notify every poll. If you haven't
+                               # applied by tomorrow, you'll get one more nudge.
 
   # Overall safety ceiling on notifications per hour (across all event types).
   # If something goes pathologically wrong we'd rather drop alerts than spam
@@ -494,3 +506,10 @@ updates:
     notify:
       banner: true             # Show a banner on /updates when update available
       gear_badge: true         # Light the gear-menu amber dot
+      ntfy: false              # v3.0.2: send a push notification when a new
+                               # release is discovered. Requires both this AND
+                               # notifications.events.update_available: true
+                               # to actually fire (the standard two-key gate
+                               # all ntfy events use). Default OFF — opt in
+                               # explicitly. Cooldown is 24h by default; tune
+                               # via notifications.cooldown_minutes.update_available.

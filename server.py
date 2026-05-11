@@ -1,4 +1,4 @@
-# Version: 3.0.1
+# Version: 3.0.2
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -2150,6 +2150,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             "poll_interval": upd.get("poll_interval", "monthly"),
             "notify_banner": bool(notify.get("banner", True)),
             "notify_gear_badge": bool(notify.get("gear_badge", True)),
+            "notify_ntfy": bool(notify.get("ntfy", False)),
         }
 
     def _get_running_version() -> str:
@@ -2274,8 +2275,22 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         """Hit the GitHub Releases API, parse, persist, return new state.
         Acquires _update_check_lock so a manual 'Check now' button click
         racing with a scheduled tick produces exactly one HTTP call and
-        one state update, not two interleaved ones."""
+        one state update, not two interleaved ones.
+
+        v3.0.2: on a successful check that discovers a strictly-newer tag
+        than the previous last_known_latest (transition event, not every
+        tick), fires the update_available ntfy notification. Read old
+        state BEFORE save, fire AFTER save — order matters so the cached
+        state the notification's tap-to-open will display is already the
+        new state by the time the user opens it."""
         with _update_check_lock:
+            # v3.0.2: snapshot the previous last_known_latest so we can
+            # detect the transition after the save. Snapshot happens
+            # inside the lock so a concurrent manual check can't race.
+            prior_state = _get_update_state()
+            prior_latest = prior_state["last_known_latest"]
+
+            new_tag = None
             try:
                 req_obj = _urllib_request.Request(
                     GITHUB_RELEASES_LATEST_URL,
@@ -2295,6 +2310,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                         )
                     else:
                         _save_update_state("success", None, tag)
+                        new_tag = tag
                         logger.info(
                             f"Update check: latest GitHub release is {tag}"
                         )
@@ -2316,7 +2332,67 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 msg = f"Unexpected error: {type(e).__name__}: {e}"
                 logger.warning(f"Update check failed: {msg}")
                 _save_update_state("error", msg, None)
+
+            # v3.0.2: notification fires AFTER state save, on transition only.
+            # Transition is defined as: a successful check AND new_tag is
+            # strictly newer than both the prior last_known_latest AND the
+            # running version. The running-version comparison is what
+            # prevents notifying for "you discovered v3.1.0 but you're
+            # already on v3.1.0" scenarios (e.g., manual install ahead of
+            # scheduler's discovery). The prior_latest comparison is what
+            # prevents re-firing every poll tick until the user applies —
+            # treat NULL prior as "first discovery is a transition too" so
+            # the notification fires on the first successful check after
+            # install (when there was no prior knowledge).
+            if new_tag:
+                try:
+                    cfg = _updates_config()
+                    running = _get_running_version()
+                    is_newer_than_prior = (
+                        prior_latest is None
+                        or _is_newer_version(new_tag, prior_latest)
+                    )
+                    is_newer_than_running = _is_newer_version(new_tag, running)
+                    if (cfg["notify_ntfy"]
+                            and is_newer_than_prior
+                            and is_newer_than_running):
+                        _notify_update_available(new_tag, running)
+                except Exception as e:
+                    # Notifier failure must never crash the scheduler. The
+                    # state has already been saved successfully; the user
+                    # will see the update on the /updates page regardless,
+                    # they just won't get the push.
+                    logger.warning(
+                        f"update_available notification failed (state already saved): {e}"
+                    )
+
             return _get_update_state()
+
+    def _notify_update_available(new_tag: str, running: str) -> None:
+        """Compose and fire the update_available ntfy notification. The
+        notifier handles all gating internally (master switch, per-event
+        opt-in, quiet hours, cooldown, rate limit) — we just call it and
+        let it decide whether to actually send."""
+        global _NOTIFIER
+        if _NOTIFIER is None:
+            # Notifier not initialized yet — early startup race. Skip
+            # silently; the next discovery (if there is one) will retry.
+            return
+        title = f"Aerodrome update available: {new_tag}"
+        body = (
+            f"{new_tag} is available. You're on v{running}. "
+            f"Open the Updates page to apply."
+        )
+        # click_route='updates' lands the tap-to-open on /updates so the
+        # user can click Apply directly. Requires notifications.public_url
+        # to be configured; without it, the tap defaults to the ntfy app.
+        _NOTIFIER.notify(
+            event="update_available",
+            title=title,
+            body=body,
+            tags=["arrow_up"],
+            click_route="updates",
+        )
 
     def _interval_elapsed() -> bool:
         """True if the configured poll interval has elapsed since the

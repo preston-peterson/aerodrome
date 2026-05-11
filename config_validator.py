@@ -10,7 +10,7 @@ Usage:
         # each error: {"path": "receiver.port", "message": "Must be 1-65535"}
         return error_response(errors)
 """
-# Version: 3.0.1
+# Version: 3.0.2
 
 import re
 from typing import Any, List, Tuple
@@ -755,7 +755,7 @@ def validate_config(cfg: Any) -> Errors:
                         if not isinstance(nt, dict):
                             errs.append(("updates.github.notify", "Must be a mapping"))
                         else:
-                            for key in ("banner", "gear_badge"):
+                            for key in ("banner", "gear_badge", "ntfy"):
                                 v = nt.get(key)
                                 if v is not None and not isinstance(v, bool):
                                     errs.append((f"updates.github.notify.{key}",

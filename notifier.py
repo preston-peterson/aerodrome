@@ -63,6 +63,14 @@ KNOWN_EVENTS = {
     # hysteresis to prevent flap-fire). State machine in capacity.py;
     # collector calls it once per poll.
     "capacity_low", "capacity_recovered",
+    # v3.0.2: GitHub-Releases update channel notification. Fires once when
+    # the background scheduler discovers a strictly-newer release than
+    # what's currently known (transition event, not a per-tick spam).
+    # Opt-in via both updates.github.notify.ntfy AND
+    # notifications.events.update_available — same two-key gate other
+    # ntfy events use. Default cooldown is 24h so a discovered update
+    # doesn't re-fire every poll until the user applies it.
+    "update_available",
     # "test" is a pseudo-event used by send_test() — bypasses gating.
     "test",
 }
@@ -71,7 +79,8 @@ KNOWN_EVENTS = {
 # of config — they're either rare enough not to need cooldowns, or carry
 # no ICAO context.
 NEVER_COOLDOWN = {"receiver_offline", "receiver_recovered", "new_record",
-                  "daily_summary", "capacity_low", "capacity_recovered", "test"}
+                  "daily_summary", "capacity_low", "capacity_recovered",
+                  "update_available", "test"}
 
 
 def _to_latin1_safe(s: str) -> str:
@@ -613,6 +622,7 @@ class Notifier:
             'military'  → /?tab=military   (+ icao/highlight)
             'stats'     → /?tab=stats
             'status'    → /status
+            'updates'   → /updates    (v3.0.2)
         Unknown routes fall back to the bare public_url.
         """
         if not public_url:
@@ -633,6 +643,8 @@ class Notifier:
             return f"{base}/?tab=stats"
         if route == "status":
             return f"{base}/status"
+        if route == "updates":
+            return f"{base}/updates"
         return base
 
     def _build_actions(self, track_url: Optional[str]) -> Optional[str]:
