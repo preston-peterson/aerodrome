@@ -1,5 +1,5 @@
 # Aerodrome
-<!-- Version: 3.0.4 -->
+<!-- Version: 3.0.5 -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -125,7 +125,7 @@ aerodrome/
 ├── templates/                    HTML pages served by server.py
 ├── static/                       CSS, JS, fonts, theme assets
 ├── scripts/
-│   ├── bootstrap.sh              curl-installable bootstrap (draft, not yet active)
+│   ├── bootstrap.sh              curl-installable bootstrap (draft)
 │   ├── package-release.sh        produces release zip + .sha256
 │   ├── build_overview_pdf.py     rebuilds docs/Aerodrome_Overview.pdf
 │   ├── screenshots.py            Playwright harness for docs/*.png
@@ -182,6 +182,10 @@ Then open `http://your-host:8000/` in a browser. The first minute of
 data populates as the collector polls the receiver. Watchlist and push
 notifications can be configured through the web UI — no YAML editing
 required after initial setup.
+
+After the initial install, future releases install with one click from
+the `/updates` page in the dashboard — no terminal or zip-handling
+required.
 
 For more — updating, configuring, troubleshooting, hardware sizing,
 remote access — see **[docs/INSTALL.md](docs/INSTALL.md)**.

@@ -19,6 +19,19 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.0.5] — 2026-05-11
+
+### Fixed
+- **README.md staleness fixes exposed by the v3.0.x release wave.** Today's burst of v3.0.0 → v3.0.4 work (the full GitHub-Releases update channel, the in-app Apply button, the ntfy push surface, the bootstrap `--help` fix, the cyan-fill button styling) plus the Cloudflare DNS work for `install.aerodromeadsb.com` shifted what's true about the project enough that the README's user-facing narrative had drifted in two places. A pass through the file caught and corrected them.
+
+  **Project-structure file list (line 128)** — the entry for `scripts/bootstrap.sh` read `curl-installable bootstrap (draft, not yet active)`. The "not yet active" qualifier was accurate until 2026-05-11 when DNS went live on `install.aerodromeadsb.com` and the Cloudflare Single Redirect started serving the bootstrap from `raw.githubusercontent.com`. As of v3.0.3 + the heredoc `--help` fix, the bootstrap is verifiably active on the public surface — only the clean-VM end-to-end dogfood remains before the install URL can be announced in the README. Trimming "not yet active" leaves `(draft)` alone, which is still accurate: the script's own header is still `Version: 3.0.3-draft` and stays that way until the dogfood earn-out passes. Honesty restored without overpromising.
+
+  **Install section (after line 184)** — the existing install instructions described the manual download-zip-and-run-install.sh flow correctly but never mentioned that future updates have an in-app one-click path. With the v3.0.x channel live across all installs that have hopped to v3.0.0+, that's a meaningful piece of the install story for anyone evaluating "should I install this." The README's existing "For more — updating, configuring, troubleshooting..." line at the end of the Install section technically covers updating via the `docs/INSTALL.md` pointer, but buries the lede. The new one-sentence callout sits right after the post-install URL paragraph: "After the initial install, future releases install with one click from the `/updates` page in the dashboard — no terminal or zip-handling required." Short, factual, no over-promising, doesn't duplicate the deeper coverage in `docs/INSTALL.md`. New users get the update story upfront; experienced users skip past it.
+
+  **What this release deliberately does not change.** Several items were considered and held: (1) the curl-install URL `install.aerodromeadsb.com` is not announced in the README yet — that remains gated on the clean-VM dogfood passing, per the standing decision; (2) the "five tabs" section continues to describe only user-facing tabs (Live, Watchlist, Military, Stats, Search), not the admin pages (Updates, Status, Logs, Documentation, Configuration), because the admin pages are maintenance tools rather than features; (3) the "Project status" section remains as-is — "PRs are disabled at the repository level" is still accurate since the GitHub UI hardening from v2.98.1; (4) test file names referencing older versions (e.g. `test_search_v2_91_tokens.py`) stay as-is since the files exist with those names and renaming would be churn; (5) the CHANGELOG.md description as "bottom-up additions" is slightly oddly phrased but not technically wrong, and editing it would be editorializing without clear benefit.
+
+  Net effect: ~3-line diff in `README.md`. No functional code change. The README is now an accurate snapshot of where the project actually is at end-of-day 2026-05-11.
+
 ## [3.0.4] — 2026-05-11
 
 ### Fixed
