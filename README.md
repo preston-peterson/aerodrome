@@ -1,5 +1,5 @@
 # Aerodrome
-<!-- Version: 3.0.14 -->
+<!-- Version: 3.0.15 -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -125,7 +125,7 @@ aerodrome/
 ├── templates/                    HTML pages served by server.py
 ├── static/                       CSS, JS, fonts, theme assets
 ├── scripts/
-│   ├── bootstrap.sh              curl-installable bootstrap (draft)
+│   ├── bootstrap.sh              curl-installable one-line setup (see Install)
 │   ├── package-release.sh        produces release zip + .sha256
 │   ├── build_overview_pdf.py     rebuilds docs/Aerodrome_Overview.pdf
 │   ├── screenshots.py            Playwright harness for docs/*.png
@@ -157,12 +157,37 @@ You need:
 - An ADS-B receiver on your network serving an `aircraft.json` endpoint
   (readsb, dump1090-fa, tar1090, PiAware — anything compatible)
 - A Linux host (Ubuntu 22.04+ or Debian 12+ recommended)
-- Python 3.10+ (installed automatically by the install script if missing)
+- Python 3.10+ (installed automatically by the bootstrap if missing)
 
-Then:
+One command:
 
 ```bash
-# Download the latest release zip from
+bash <(curl -fsSL https://install.aerodromeadsb.com)
+```
+
+The bootstrap detects your platform, installs prerequisites (`unzip`,
+`python3-venv`), downloads the latest release zip from GitHub Releases,
+verifies its SHA256 checksum, prompts for the bare minimum config
+(receiver IP/port, lat/lon, distance unit), and hands off to the
+bundled `install.sh` to create a Python venv, install the systemd
+service, and start it. The whole thing typically takes under a minute.
+When it finishes, open `http://your-host:8000/` in a browser and visit
+**gear menu → Configuration** to adjust the timezone, set up a
+watchlist, enable push notifications, and configure the rest — no
+terminal or YAML editing required.
+
+After the initial install, future releases install with one click from
+the `/updates` page in the dashboard — also no terminal or zip-handling
+required.
+
+<details>
+<summary>Manual install (alternative)</summary>
+
+If you'd rather inspect the bootstrap before running it, install
+offline, or pin to a specific release version:
+
+```bash
+# Download a release zip from
 #   https://github.com/preston-peterson/aerodrome/releases
 # (or git clone the repo)
 
@@ -178,14 +203,18 @@ chmod +x install.sh
 ./install.sh
 ```
 
-Then open `http://your-host:8000/` in a browser. The first minute of
-data populates as the collector polls the receiver. Watchlist and push
-notifications can be configured through the web UI — no YAML editing
-required after initial setup.
+The bootstrap script itself is at `scripts/bootstrap.sh` in the zip;
+you can also run it directly from a local copy with `--from-zip <path>`
+to install from a zip you've already downloaded:
 
-After the initial install, future releases install with one click from
-the `/updates` page in the dashboard — no terminal or zip-handling
-required.
+```bash
+bash scripts/bootstrap.sh --from-zip ~/Downloads/aerodrome-v3.0.15.zip
+```
+
+Run with `--help` for the full list of flags (receiver settings,
+prefix path, version pin, non-interactive mode, etc.).
+
+</details>
 
 For more — updating, configuring, troubleshooting, hardware sizing,
 remote access — see **[docs/INSTALL.md](docs/INSTALL.md)**.

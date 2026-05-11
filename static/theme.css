@@ -88,6 +88,42 @@ html[data-theme="light"] { color-scheme: light; }
 .theme-seg button.on { background:var(--cyan); color:#fff; }
 .theme-seg button:not(.on):hover { background:var(--bg3); color:var(--t1); }
 
+/* v3.0.15: install/share block in the gear menu — surfaces the curl
+   install command and repo link for the "showing it to a friend" use
+   case. Same visual language as the theme picker above (uppercase
+   label, contained widget) so the menu's bottom section reads as a
+   coherent "tools + info" group. */
+.install-share { padding:6px 14px 10px; }
+.install-share-label {
+    font-size:10px; text-transform:uppercase; letter-spacing:0.06em;
+    color:var(--t3); margin-bottom:6px; font-weight:600;
+}
+.install-share-cmd {
+    display:flex; align-items:stretch; gap:6px;
+    border:1px solid var(--bdr); border-radius:6px;
+    background:var(--bg1); overflow:hidden;
+}
+.install-share-cmd code {
+    flex:1; padding:7px 9px;
+    font-family:var(--mono); font-size:11px;
+    color:var(--t1); background:transparent;
+    overflow-x:auto; white-space:nowrap;
+    user-select:all;
+}
+.install-share-copy {
+    background:transparent; border:none; border-left:1px solid var(--bdr);
+    color:var(--t2); padding:0 10px; font-size:11px;
+    font-family:var(--font); cursor:pointer;
+}
+.install-share-copy:hover { background:var(--bg3); color:var(--t1); }
+.install-share-copy.copied { color:var(--green); }
+.install-share-repo {
+    display:block; margin-top:8px;
+    font-size:11px; font-family:var(--mono);
+    color:var(--t2); text-decoration:none;
+}
+.install-share-repo:hover { color:var(--cyan); }
+
 /* v2.49.5: header health dot. Previously each template defined its own
    .dot rules — status/config/updates had both .warn and .off, logs/docs
    had neither, and the bare class always rendered green-pulsing. Moving

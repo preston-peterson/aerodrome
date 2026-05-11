@@ -1,4 +1,4 @@
-<!-- Version: 3.0.14 -->
+<!-- Version: 3.0.15 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1717,6 +1717,24 @@
                         <button type="button" data-theme-choice="dark"  onclick="aerodromeSetTheme('dark')">Dark</button>
                         <button type="button" data-theme-choice="light" onclick="aerodromeSetTheme('light')">Light</button>
                     </div>
+                </div>
+
+                <!-- v3.0.15: install/share surface inside the gear menu.
+                     Lives at the bottom (below theme picker, above nothing)
+                     so it doesn't compete with the action items above but
+                     is reliably findable for "I want to show this to a
+                     friend, where's the install URL" use cases. The
+                     install command is selectable; a small button copies
+                     it to the clipboard for one-click sharing. Repo link
+                     opens GitHub for source/issues/releases. -->
+                <div class="gear-menu-separator"></div>
+                <div class="install-share">
+                    <div class="install-share-label">Install Aerodrome elsewhere</div>
+                    <div class="install-share-cmd">
+                        <code id="installCmd">bash &lt;(curl -fsSL https://install.aerodromeadsb.com)</code>
+                        <button type="button" class="install-share-copy" onclick="aerodromeCopyInstallCmd(event)" title="Copy install command">Copy</button>
+                    </div>
+                    <a href="https://github.com/preston-peterson/aerodrome" target="_blank" rel="noopener" class="install-share-repo">github.com/preston-peterson/aerodrome ↗</a>
                 </div>
             </div>
         </div>
@@ -8273,6 +8291,52 @@ document.addEventListener('keydown', e => {
         }
     } catch (e) { /* cosmetic — ignore */ }
 })();
+
+// v3.0.15: copy the install command to the clipboard from the gear-menu
+// install-share block. Uses navigator.clipboard.writeText where available,
+// falls back to the synchronous selection+execCommand path for older
+// contexts (notably http://lan-ip browsers where the modern clipboard
+// API requires a secure context — Aerodrome is normally accessed over
+// plain HTTP on a LAN so this fallback gets exercised). Visual feedback:
+// the button text flips to "Copied!" for 1.4s, then back to "Copy".
+function aerodromeCopyInstallCmd(evt){
+    if (evt) evt.preventDefault();
+    const codeEl = document.getElementById('installCmd');
+    const btn = evt && evt.currentTarget;
+    if (!codeEl) return;
+    const text = codeEl.textContent;
+    const flash = () => {
+        if (!btn) return;
+        const orig = btn.textContent;
+        btn.textContent = 'Copied!';
+        btn.classList.add('copied');
+        setTimeout(() => {
+            btn.textContent = orig;
+            btn.classList.remove('copied');
+        }, 1400);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(flash).catch(() => {
+            // Modern API rejected (no secure context, etc.) — fall back.
+            _aerodromeCopyFallback(text, flash);
+        });
+    } else {
+        _aerodromeCopyFallback(text, flash);
+    }
+}
+function _aerodromeCopyFallback(text, onSuccess){
+    try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'absolute'; ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        if (onSuccess) onSuccess();
+    } catch (e) { /* silent — user can still select-and-copy the text */ }
+}
 
 
 
