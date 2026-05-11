@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Version: 3.0.13
+# Version: 3.0.14
 # =============================================================================
 # Aerodrome — Curl Install Bootstrap
 # =============================================================================
@@ -574,8 +574,19 @@ if [ "$DIST_UNIT_SET" = false ]; then
 fi
 
 # Timezone
+# v3.0.14: no prompt. The system timezone is auto-detected (line ~530) and
+# used silently. Reasoning: the detection sources (/etc/timezone, timedatectl)
+# only ever produce valid IANA names by construction, the system tz is
+# almost always what the user wants on their own machine, and asking opens
+# the door to typos like "CDT" (an abbreviation, not a valid IANA name)
+# that produced broken installs pre-v3.0.14. Users who want a different
+# timezone can change it in the web UI's Configuration page after install
+# without touching the YAML — or pass --timezone at install time for
+# scripted overrides. The post-install banner points users to /config so
+# they know where to adjust this and other settings.
 if [ "$TIMEZONE_SET" = false ]; then
-    ask_default "Time zone (IANA)" "$detected_tz" TIMEZONE
+    TIMEZONE="$detected_tz"
+    log_info "Time zone: $TIMEZONE (auto-detected; change later in web UI → Configuration)"
 fi
 
 # Patch config.yaml from .example with the prompted values, BEFORE install.sh
@@ -658,10 +669,13 @@ echo -e "${GREEN}═════════════════════
 echo -e "${GREEN}  Bootstrap complete!${RESET}"
 echo -e "${GREEN}══════════════════════════════════════════════${RESET}"
 echo ""
-echo "  Aerodrome is running at: ${CYAN}http://${SERVER_IP}:8000${RESET}"
+echo -e "  Aerodrome is running at: ${CYAN}http://${SERVER_IP}:8000${RESET}"
 echo ""
-echo "  Open the URL in a browser to finish setup. Watchlist, notifications,"
-echo "  retention, and display preferences are all configurable from the web UI."
+echo -e "  ${YELLOW}Next step:${RESET} open the URL above, then visit"
+echo -e "  ${CYAN}gear menu → Configuration${RESET} to review and adjust settings"
+echo "  (timezone, watchlist, notifications, retention, display preferences,"
+echo "  and more). The install picked sensible defaults but most users will"
+echo "  want to customize at least a few of them."
 echo ""
 echo "  Service:  sudo systemctl status aerodrome"
 echo "  Logs:     sudo journalctl -u aerodrome -f"
