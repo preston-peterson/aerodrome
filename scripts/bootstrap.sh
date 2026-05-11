@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Version: 3.0.12
+# Version: 3.0.13
 # =============================================================================
 # Aerodrome — Curl Install Bootstrap
 # =============================================================================
@@ -227,11 +227,26 @@ OS_ID=""
 OS_LIKE=""
 OS_PRETTY=""
 if [ -r /etc/os-release ]; then
-    # shellcheck disable=SC1091
-    . /etc/os-release
-    OS_ID="${ID:-}"
-    OS_LIKE="${ID_LIKE:-}"
-    OS_PRETTY="${PRETTY_NAME:-${OS_ID}}"
+    # v3.0.13: source /etc/os-release in a SUBSHELL, not the current
+    # shell, so its variable definitions don't leak. /etc/os-release
+    # uses shell syntax (NAME=, VERSION=, ID=, ID_LIKE=, VERSION_ID=,
+    # PRETTY_NAME=, etc.), and on Ubuntu 24.04 the VERSION key holds
+    # "24.04.4 LTS (Noble Numbat)". Dot-sourcing it directly here
+    # silently clobbered the bootstrap's own VERSION="latest" arg
+    # default (set at the top of the file), which made the step-4
+    # version resolver fall into the else branch and try to download
+    # aerodrome-v24.04.4 LTS (Noble Numbat).zip from a release tag
+    # that, naturally, does not exist. Surfaced by a clean-VM dogfood
+    # on Ubuntu 24.04 — exactly what dogfooding is for. Using a
+    # subshell + printf '%q' + eval is the canonical pattern: %q
+    # shell-quotes each value so values containing spaces, quotes,
+    # parens (like "Noble Numbat") survive the round trip; eval
+    # re-injects them as plain assignments into the parent shell.
+    eval "$(
+        . /etc/os-release
+        printf 'OS_ID=%q\nOS_LIKE=%q\nOS_PRETTY=%q\n' \
+            "${ID:-}" "${ID_LIKE:-}" "${PRETTY_NAME:-${ID:-unknown}}"
+    )"
 else
     OS_PRETTY="unknown"
 fi

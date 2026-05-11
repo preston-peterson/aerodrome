@@ -19,6 +19,28 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.0.13] — 2026-05-11
+
+### Fixed
+- **Fixed `scripts/bootstrap.sh` clobbering its own `VERSION` shell variable when sourcing `/etc/os-release`.** Surfaced by the clean-VM bootstrap dogfood on a fresh Ubuntu 24.04 install — the exact reason the dogfood exists. The script's OS-detection step at line 231 dot-sourced `/etc/os-release` directly into the current shell to read `ID`, `ID_LIKE`, and `PRETTY_NAME`. On Ubuntu 24.04, `/etc/os-release` includes the line `VERSION="24.04.4 LTS (Noble Numbat)"`, and sourcing the file in the current shell promotes that to a shell variable, overwriting the bootstrap's own `VERSION="latest"` default declared at the top of the file. Step 4 (the version resolver) then checked `if [ "$VERSION" = "latest" ]`, found that the variable was now `"24.04.4 LTS (Noble Numbat)"` rather than `"latest"`, took the else branch that treats `$VERSION` as a user-pinned release tag, prepended `v` per the v-prefix normalization at line 419, and tried to download `aerodrome-v24.04.4 LTS (Noble Numbat).zip` from a release tag that of course does not exist. The user saw:
+
+  ```
+  [4/7] Resolving release...
+    ✓ Version: v24.04.4 LTS (Noble Numbat)
+    · Downloading aerodrome-v24.04.4 LTS (Noble Numbat).zip...
+  curl: (3) URL rejected: Malformed input to a URL function
+  ```
+
+  ...because the URL contained literal spaces. (`curl` rejecting URLs with spaces in them is actually the SAFER failure mode here; if the value had been space-free but still wrong, the script would have hit a 404 from GitHub's CDN with the v3.0.6-improved error message, which would have at least been actionable — but the misparse was bad enough that we didn't even get there.)
+
+  **The fix is a single-line architectural correction.** Source `/etc/os-release` in a subshell rather than the current shell, so its variable definitions stay scoped to the subshell and never leak into the parent. The canonical pattern uses `eval` plus `printf '%q'` to round-trip values through shell-quoting: the subshell sources the file, extracts the three values we actually want (`ID`, `ID_LIKE`, `PRETTY_NAME`), and emits them as shell-safe `OS_ID=...`, `OS_LIKE=...`, `OS_PRETTY=...` assignments via `printf '%q'` so values containing spaces or parentheses (like "Noble Numbat") survive the round trip; the parent `eval`s the result and gets just those three variables, with all the other os-release fields (including the problematic `VERSION`) safely confined to the subshell that already exited. Net change in the script body: ~10 lines edited at the OS-detection block, with a long comment explaining the bug and why the subshell-eval pattern is the canonical fix so the next maintainer reading the code understands what would otherwise look like over-engineered defensive code.
+
+  **Why dogfooding caught this and local `--from-zip` testing didn't.** The bug only fires when the script reaches the version resolution step (4/7) AND `VERSION` is supposed to be `"latest"` AND `/etc/os-release` happens to define a `VERSION` key. Local `--from-zip` testing skips the whole version-resolution path (FROM_ZIP is set, the script takes the if-branch at line 382 and never references `$VERSION` again), so even running the bootstrap a hundred times from a local zip on the maintainer's machine would never have surfaced this. The bug also wouldn't fire on every Linux distribution — `/etc/os-release` on some systems doesn't have a `VERSION` key (Debian uses `VERSION="12 (bookworm)"` which would produce the same class of bug; Alpine uses no `VERSION` key at all). The combination of (live GitHub Releases path + Ubuntu 24.04 + LTS-codenamed release) is what made this surface today. It would have surfaced eventually anyway as soon as a Raspberry Pi user, a Debian user, or any other Linux user tried the curl-install — better to catch it before announcing the URL than after.
+
+  **No other call sites affected.** Grep confirmed `/etc/os-release` is sourced only at this single location in the entire codebase. The OS detection code that consumes `OS_ID`, `OS_LIKE`, and `OS_PRETTY` further down (line 244+ for the Debian-family check, line 240 for the "Detected: ..." log line) reads from the parent-shell variables that now get set by `eval`, so it sees the same values as before the fix — just through a different mechanism.
+
+  **What this means for the announce.** The dogfood needs to be re-run end-to-end on v3.0.13 to confirm not just the version-resolver fix but also that nothing else surfaces during the subsequent steps (zip download, sha verify, prompts, install.sh handoff, service start). One bug found and fixed; the remaining steps haven't been exercised yet on a clean VM. v3.0.14 stays the candidate-of-record for the README + About-panel announce, gated on a successful clean-VM run of v3.0.13.
+
 ## [3.0.12] — 2026-05-11
 
 ### Changed
