@@ -1,4 +1,4 @@
-<!-- Version: 2.98.3 -->
+<!-- Version: 3.0.0 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2868,6 +2868,14 @@ function classifyHealth(statJ){
                 reason: `sustained load ${la15.toFixed(2)} on ${sys.cpu_cores} core${sys.cpu_cores === 1 ? '' : 's'} — server under pressure for 15+ minutes`
             };
         }
+    }
+    // v3.0.0: GitHub update available — light the gear badge. The
+    // health dot stays green; this is informational, not an actual
+    // health degradation. The Live-tab toast for update_available is
+    // intentionally suppressed (handled below in updateHealthIndicator)
+    // so users aren't toasted on every page load with "update available".
+    if(statJ && statJ.update_available === true){
+        return { level:'warn', reason:'A new Aerodrome release is available on GitHub — see Updates' };
     }
     return { level:'ok', reason:null };
 }

@@ -1,4 +1,4 @@
-<!-- Version: 2.98.3 -->
+<!-- Version: 3.0.0 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -380,18 +380,31 @@ rsync -av aerodrome/ user@server:~/aerodrome/update/</pre>
         <div class="actions" id="ntfyUpdateActions"></div>
     </div>
 
-    <!-- GitHub update card (placeholder) -->
-    <div class="card disabled">
+    <!-- v3.0.0: GitHub update card. Active card replacing the v2.41.3
+         placeholder. Renders 5 states: disabled / never-checked / up-to-date
+         / update-available / error. Page load reads cached state from
+         /api/updates/github/check; "Check now" triggers a fresh check. -->
+    <div class="card" id="githubUpdateCard">
         <div class="card-head">
             <div>
                 <span class="card-title">GitHub update</span>
-                <span class="badge soon">coming soon</span>
+                <span class="badge" id="githubUpdateBadge">checking…</span>
             </div>
             <div class="card-sub">pull latest release</div>
         </div>
-        <div class="status-msg info">
-            Pulling updates directly from the Aerodrome GitHub releases is planned for a future version. For now, use the local update above.
+
+        <div class="status" id="githubUpdateStatus"></div>
+
+        <div class="info-grid">
+            <div class="info-label">Current version</div>
+            <div class="info-value" id="githubCurrentVer">—</div>
+            <div class="info-label">Latest on GitHub</div>
+            <div class="info-value" id="githubLatestVer">—</div>
+            <div class="info-label">Last checked</div>
+            <div class="info-value" id="githubLastChecked">—</div>
         </div>
+
+        <div class="actions" id="githubUpdateActions"></div>
     </div>
 
     <!-- Changelog card -->
@@ -1066,6 +1079,7 @@ async function applyLocal(version){
 checkLocal();
 loadChangelog();
 checkNtfyUpdate();
+checkGithubUpdate();
 
 // v2.41.3: ntfy version tile. Reads /api/ntfy/status which returns
 // both the installed and the latest-available ntfy versions. Only
@@ -1384,6 +1398,167 @@ document.addEventListener('click', e => {
         }
     } catch (e) { /* cosmetic — ignore */ }
 })();
+
+// ──────────────────────────────────────────────────────────────────
+// v3.0.0: GitHub update card. Five visible states:
+//   - disabled        master toggle off in config
+//   - never-checked   table empty (first run on /updates after install)
+//   - up-to-date      latest_known == running, or running is newer
+//   - update-available latest is strictly newer
+//   - error           last attempt failed (network/rate-limit/etc)
+//
+// Page-load fetches cached state from /api/updates/github/check; the
+// "Check now" button posts ?force=true to trigger a fresh GitHub call.
+// All UI rendering happens here, server returns raw state only.
+// ──────────────────────────────────────────────────────────────────
+
+function _ghBadge(text, cls){
+    const b = document.getElementById('githubUpdateBadge');
+    if(!b) return;
+    b.textContent = text;
+    b.className = 'badge ' + (cls || '');
+}
+
+function _ghRenderTime(unixTs){
+    if(unixTs == null) return 'never';
+    try {
+        return formatDateTime(new Date(unixTs * 1000));
+    } catch (e) {
+        return new Date(unixTs * 1000).toLocaleString();
+    }
+}
+
+function _ghRenderRelative(unixTs){
+    if(unixTs == null) return 'never';
+    const seconds = Math.floor((Date.now() / 1000) - unixTs);
+    if(seconds < 60) return 'just now';
+    if(seconds < 3600) return `${Math.floor(seconds/60)} minute${seconds<120?'':'s'} ago`;
+    if(seconds < 86400) return `${Math.floor(seconds/3600)} hour${seconds<7200?'':'s'} ago`;
+    return `${Math.floor(seconds/86400)} day${seconds<172800?'':'s'} ago`;
+}
+
+async function checkGithubUpdate(force){
+    const card = document.getElementById('githubUpdateCard');
+    if(!card) return;
+
+    _ghBadge('checking…', '');
+    document.getElementById('githubUpdateStatus').innerHTML =
+        `<div class="status-msg info"><span class="spinner"></span>Checking GitHub…</div>`;
+
+    const url = force
+        ? '/api/updates/github/check?force=true'
+        : '/api/updates/github/check';
+
+    let j;
+    try {
+        const r = await fetch(url);
+        j = await r.json();
+    } catch(e){
+        _ghBadge('error', 'err');
+        document.getElementById('githubUpdateStatus').innerHTML =
+            `<div class="status-msg err">Couldn't reach Aerodrome backend: ${escapeHtml(e.message)}</div>`;
+        return;
+    }
+
+    document.getElementById('githubCurrentVer').textContent = j.running_version || '—';
+    document.getElementById('githubLatestVer').textContent = j.latest_known || '— (not yet checked)';
+    document.getElementById('githubLastChecked').textContent =
+        j.last_check_ts ? `${_ghRenderRelative(j.last_check_ts)} (${_ghRenderTime(j.last_check_ts)})` : 'never';
+
+    const status = document.getElementById('githubUpdateStatus');
+    const actions = document.getElementById('githubUpdateActions');
+    actions.innerHTML = '';
+
+    // State 1: disabled
+    if(!j.enabled){
+        _ghBadge('disabled', '');
+        status.innerHTML = `<div class="status-msg info">
+            GitHub update checks are disabled in <code>config.yaml</code>.
+            Set <code>updates.github.enabled: true</code> to enable.
+        </div>`;
+        return;
+    }
+
+    // State 5: error (latest attempt failed) — render before "never checked"
+    // since an error after never-success leaves last_check_result='error'
+    // with last_known_latest still null
+    if(j.last_check_result === 'error'){
+        _ghBadge('error', 'err');
+        let errBody = `<div class="status-msg err">
+            <strong>Last check failed:</strong> ${escapeHtml(j.last_check_error || 'unknown error')}
+        </div>`;
+        if(j.last_known_latest_ts){
+            errBody += `<div class="status-msg info" style="margin-top:8px">
+                Last successful check: ${escapeHtml(_ghRenderRelative(j.last_known_latest_ts))}
+                — last known latest was <code>${escapeHtml(j.latest_known)}</code>.
+            </div>`;
+        }
+        status.innerHTML = errBody;
+        const tryAgain = document.createElement('button');
+        tryAgain.className = 'btn';
+        tryAgain.textContent = 'Try again';
+        tryAgain.onclick = () => checkGithubUpdate(true);
+        actions.appendChild(tryAgain);
+        return;
+    }
+
+    // State 2: never checked (table empty, no successful or failed result)
+    if(j.last_check_result == null){
+        _ghBadge('never checked', '');
+        status.innerHTML = `<div class="status-msg info">
+            Aerodrome hasn't checked GitHub yet. Click <strong>Check now</strong> to fetch the latest version,
+            or wait for the next scheduled check (poll interval:
+            <strong>${escapeHtml(j.poll_interval)}</strong>).
+        </div>`;
+        const checkBtn = document.createElement('button');
+        checkBtn.className = 'btn primary';
+        checkBtn.textContent = 'Check now';
+        checkBtn.onclick = () => checkGithubUpdate(true);
+        actions.appendChild(checkBtn);
+        return;
+    }
+
+    // State 4: update available
+    if(j.available && j.release_url){
+        _ghBadge('update available', 'ready');
+        status.innerHTML = `<div class="status-msg ok">
+            <strong>${escapeHtml(j.latest_known)}</strong> is available
+            — you're on <strong>${escapeHtml(j.running_version)}</strong>.
+            <br><br>
+            <em>v3.0.0 launches the check-and-discover surface. To apply the update, use the
+            <strong>Local update</strong> card above: download
+            <code>aerodrome-${escapeHtml(j.latest_known.replace(/^v/,''))}.zip</code>
+            from GitHub, upload it via the zone above, and click Apply.
+            The in-app "Apply update" button arrives in v3.0.1.</em>
+        </div>`;
+        const viewBtn = document.createElement('a');
+        viewBtn.className = 'btn primary';
+        viewBtn.href = j.release_url;
+        viewBtn.target = '_blank';
+        viewBtn.rel = 'noopener';
+        viewBtn.textContent = `View ${j.latest_known} on GitHub`;
+        actions.appendChild(viewBtn);
+
+        const recheckBtn = document.createElement('button');
+        recheckBtn.className = 'btn';
+        recheckBtn.textContent = 'Check again';
+        recheckBtn.onclick = () => checkGithubUpdate(true);
+        actions.appendChild(recheckBtn);
+        return;
+    }
+
+    // State 3: up to date (running == latest, or running is newer than latest
+    // due to a dev install or a yanked release)
+    _ghBadge('up to date', 'ready');
+    status.innerHTML = `<div class="status-msg ok">
+        You're on the latest version (<strong>${escapeHtml(j.running_version)}</strong>).
+    </div>`;
+    const recheckBtn = document.createElement('button');
+    recheckBtn.className = 'btn';
+    recheckBtn.textContent = 'Check now';
+    recheckBtn.onclick = () => checkGithubUpdate(true);
+    actions.appendChild(recheckBtn);
+}
 
 
 

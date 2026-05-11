@@ -1,4 +1,4 @@
-# Version: 2.98.3
+# Version: 3.0.0
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -2113,6 +2113,274 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     )
     _daily_summary_thread.start()
 
+    # ──────────────────────────────────────────────────────────────────
+    # v3.0.0: GitHub-Releases-based update channel
+    # ──────────────────────────────────────────────────────────────────
+    # Periodically checks the GitHub Releases API for newer versions and
+    # surfaces results via /api/updates/github/check, the /updates page
+    # banner, and (when warned) the gear-menu badge. Apply path lands in
+    # v3.0.1; ntfy push lands in v3.0.2. For now this milestone delivers
+    # the "Aerodrome knows when it's outdated" surface — the apply step
+    # still goes through the existing local-update flow.
+
+    import urllib.request as _urllib_request
+    import urllib.error as _urllib_error
+    import json as _json_module
+
+    _update_check_lock = _threading.Lock()
+    GITHUB_RELEASES_LATEST_URL = (
+        "https://api.github.com/repos/preston-peterson/aerodrome/releases/latest"
+    )
+    _POLL_INTERVAL_SECONDS = {
+        "daily": 86400,
+        "weekly": 604800,
+        "monthly": 2592000,  # 30 days
+        "never": None,
+    }
+
+    def _updates_config() -> dict:
+        """Read updates.github config with defaults applied. Defaults are
+        the v3.0.0 launch defaults: enabled, monthly polling, banner on,
+        gear badge on. Re-reads CONFIG every call so the scheduler picks
+        up live config edits within its sleep granularity (1 hour cap)."""
+        upd = (CONFIG.get("updates") or {}).get("github") or {}
+        notify = upd.get("notify") or {}
+        return {
+            "enabled": bool(upd.get("enabled", True)),
+            "poll_interval": upd.get("poll_interval", "monthly"),
+            "notify_banner": bool(notify.get("banner", True)),
+            "notify_gear_badge": bool(notify.get("gear_badge", True)),
+        }
+
+    def _get_running_version() -> str:
+        """Read running version from the VERSION file alongside server.py.
+        Returns the raw string (e.g. '2.98.3') or '' if unreadable."""
+        try:
+            version_path = Path(__file__).parent / "VERSION"
+            if version_path.exists():
+                return version_path.read_text().strip()
+        except Exception:
+            pass
+        return ""
+
+    def _parse_semver(tag: str) -> Optional[tuple]:
+        """Parse 'v2.98.3' or '2.98.3' into (2, 98, 3). Returns None for
+        anything that doesn't parse as exactly three integer components —
+        which means non-semver tags (e.g. date-based, '-rc1' suffixes)
+        will not contribute to version comparison and will be treated
+        as 'no actionable update' rather than crashing the check."""
+        if not tag:
+            return None
+        s = tag.lstrip("v").strip()
+        # Reject anything with a pre-release/build suffix; releases/latest
+        # excludes pre-releases by definition, but defensive belt-and-braces.
+        if "-" in s or "+" in s:
+            return None
+        parts = s.split(".")
+        if len(parts) != 3:
+            return None
+        try:
+            return tuple(int(p) for p in parts)
+        except ValueError:
+            return None
+
+    def _is_newer_version(latest_tag: str, running: str) -> bool:
+        """True if latest_tag is strictly newer than running. False for
+        equal, older, or unparseable inputs — Aerodrome never suggests
+        downgrades, and never crashes on non-semver tag formats."""
+        l = _parse_semver(latest_tag)
+        r = _parse_semver(running)
+        if l is None or r is None:
+            return False
+        return l > r
+
+    def _get_update_state() -> dict:
+        """Read the single-row update_state from SQLite. Returns dict with
+        all five state fields; all may be None when the table is empty
+        (first run, never checked)."""
+        empty = {
+            "last_check_ts": None,
+            "last_check_result": None,
+            "last_check_error": None,
+            "last_known_latest": None,
+            "last_known_latest_ts": None,
+        }
+        try:
+            db_path = CONFIG["data"]["db_file"]
+            conn = _open_db_conn(db_path)
+            row = conn.execute(
+                "SELECT last_check_ts, last_check_result, last_check_error, "
+                "last_known_latest, last_known_latest_ts "
+                "FROM update_state WHERE id = 1"
+            ).fetchone()
+            conn.close()
+            if row is None:
+                return empty
+            return {
+                "last_check_ts": row[0],
+                "last_check_result": row[1],
+                "last_check_error": row[2],
+                "last_known_latest": row[3],
+                "last_known_latest_ts": row[4],
+            }
+        except Exception as e:
+            logger.warning(f"_get_update_state: read failed: {e}")
+            return {**empty, "last_check_error": str(e)}
+
+    def _save_update_state(result: str, error: Optional[str],
+                           latest_tag: Optional[str]) -> None:
+        """Persist a check result. result is 'success' or 'error'.
+
+        On success: latest_tag becomes the new last_known_latest and we
+        update last_known_latest_ts to now. last_check_error is cleared.
+
+        On error: last_known_latest and last_known_latest_ts are preserved
+        from the previous row (if any) — a transient network glitch
+        shouldn't wipe out our knowledge of the most recent successful
+        check, and the UI uses last_known_latest_ts to render 'last
+        successful check: N hours ago' alongside the error message."""
+        now = int(time.time())
+        try:
+            db_path = CONFIG["data"]["db_file"]
+            conn = _open_db_conn(db_path)
+            if result == "success":
+                conn.execute(
+                    "INSERT OR REPLACE INTO update_state "
+                    "(id, last_check_ts, last_check_result, last_check_error, "
+                    "last_known_latest, last_known_latest_ts, updated_at) "
+                    "VALUES (1, ?, 'success', NULL, ?, ?, ?)",
+                    (now, latest_tag, now, now),
+                )
+            else:
+                existing = conn.execute(
+                    "SELECT last_known_latest, last_known_latest_ts "
+                    "FROM update_state WHERE id = 1"
+                ).fetchone()
+                keep_latest = existing[0] if existing else None
+                keep_latest_ts = existing[1] if existing else None
+                conn.execute(
+                    "INSERT OR REPLACE INTO update_state "
+                    "(id, last_check_ts, last_check_result, last_check_error, "
+                    "last_known_latest, last_known_latest_ts, updated_at) "
+                    "VALUES (1, ?, 'error', ?, ?, ?, ?)",
+                    (now, error, keep_latest, keep_latest_ts, now),
+                )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.warning(f"_save_update_state: write failed: {e}")
+
+    def _perform_github_check() -> dict:
+        """Hit the GitHub Releases API, parse, persist, return new state.
+        Acquires _update_check_lock so a manual 'Check now' button click
+        racing with a scheduled tick produces exactly one HTTP call and
+        one state update, not two interleaved ones."""
+        with _update_check_lock:
+            try:
+                req_obj = _urllib_request.Request(
+                    GITHUB_RELEASES_LATEST_URL,
+                    headers={
+                        "User-Agent": "Aerodrome/update-check",
+                        "Accept": "application/vnd.github+json",
+                    },
+                )
+                with _urllib_request.urlopen(req_obj, timeout=30) as response:
+                    data = _json_module.loads(response.read().decode("utf-8"))
+                    tag = (data.get("tag_name") or "").strip()
+                    if not tag:
+                        _save_update_state(
+                            "error",
+                            "GitHub response had no tag_name",
+                            None,
+                        )
+                    else:
+                        _save_update_state("success", None, tag)
+                        logger.info(
+                            f"Update check: latest GitHub release is {tag}"
+                        )
+            except _urllib_error.HTTPError as e:
+                if e.code == 403:
+                    msg = ("GitHub API rate limit exceeded "
+                           "(60 req/hour for anonymous requests).")
+                elif e.code == 404:
+                    msg = "No published Releases found on GitHub yet."
+                else:
+                    msg = f"GitHub returned HTTP {e.code}."
+                logger.warning(f"Update check failed: {msg}")
+                _save_update_state("error", msg, None)
+            except _urllib_error.URLError as e:
+                msg = f"Couldn't reach GitHub: {e.reason}"
+                logger.warning(f"Update check failed: {msg}")
+                _save_update_state("error", msg, None)
+            except Exception as e:
+                msg = f"Unexpected error: {type(e).__name__}: {e}"
+                logger.warning(f"Update check failed: {msg}")
+                _save_update_state("error", msg, None)
+            return _get_update_state()
+
+    def _interval_elapsed() -> bool:
+        """True if the configured poll interval has elapsed since the
+        last successful check, or if no successful check has happened
+        yet. Returns False when poll_interval is 'never' — manual
+        'Check now' clicks still work in that mode."""
+        cfg = _updates_config()
+        pi = cfg["poll_interval"]
+        if pi == "never":
+            return False
+        interval_s = _POLL_INTERVAL_SECONDS.get(pi)
+        if interval_s is None:
+            return False
+        state = _get_update_state()
+        last = state["last_known_latest_ts"]
+        if last is None:
+            return True  # Never successfully checked — first check on startup
+        return (int(time.time()) - last) >= interval_s
+
+    def _seconds_until_next_check() -> int:
+        """How long the scheduler should sleep before next deciding whether
+        to check. Bounded to [60s, 3600s]: the 1-hour cap means changing
+        poll_interval (or toggling enabled) takes effect within an hour
+        with no service restart needed — the LIVE_KEYS contract."""
+        cfg = _updates_config()
+        pi = cfg["poll_interval"]
+        if pi == "never" or pi not in _POLL_INTERVAL_SECONDS:
+            return 3600
+        interval_s = _POLL_INTERVAL_SECONDS[pi]
+        state = _get_update_state()
+        last = state["last_known_latest_ts"]
+        if last is None:
+            return 60  # Check soon — startup case with no prior success
+        elapsed = int(time.time()) - last
+        remaining = max(60, interval_s - elapsed)
+        return min(remaining, 3600)
+
+    def _update_check_scheduler():
+        """Background thread body. Wakes on schedule; calls
+        _perform_github_check() when the interval has elapsed and updates
+        are enabled. Modeled on _daily_summary_scheduler. Always starts
+        regardless of enabled flag so enabling at runtime via config edit
+        works without service restart."""
+        import time as _t
+        # Settle delay: avoid firing in the middle of a service restart
+        _t.sleep(15.0)
+        logger.info("Update-check scheduler started")
+
+        while True:
+            try:
+                cfg = _updates_config()
+                if cfg["enabled"] and _interval_elapsed():
+                    _perform_github_check()
+            except Exception as e:
+                logger.warning(f"Update-check scheduler tick failed: {e}")
+            _t.sleep(_seconds_until_next_check())
+
+    _update_check_thread = _threading.Thread(
+        target=_update_check_scheduler,
+        name="update-check-scheduler",
+        daemon=True,
+    )
+    _update_check_thread.start()
+
     @app.post("/api/notifications/daily-summary/test")
     async def post_daily_summary_test():
         """Compose + send a daily summary immediately, bypassing the
@@ -2702,12 +2970,32 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         if not capacity_ok:
             failing.append("capacity")
 
+        # v3.0.0: GitHub update availability. The gear-menu badge driver
+        # (static/health-indicator.js) reads this and adds 'warn' to the
+        # gear button when an update is available — same amber dot used
+        # for sudoers drift and capacity issues. update_available is
+        # purely informational here; the /updates page renders the full
+        # state (5 distinct UI states) via /api/updates/github/check.
+        try:
+            _upd_cfg = _updates_config()
+            _upd_state = _get_update_state()
+            _upd_latest = _upd_state["last_known_latest"]
+            _upd_available = bool(
+                _upd_cfg["enabled"]
+                and _upd_cfg["notify_gear_badge"]
+                and _upd_latest
+                and _is_newer_version(_upd_latest, _get_running_version())
+            )
+        except Exception:
+            _upd_available = False
+
         return {
             "overall_ok": core_ok,
             "severity": severity,
             "failing": failing,
             "timestamp": int(now),
             "version": version,
+            "update_available": _upd_available,
             "components": {
                 "collector": collector_check,
                 "webserver": webserver_check,
@@ -7893,12 +8181,55 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         }
 
     @app.get("/api/updates/github/check")
-    async def check_github_update():
-        """Placeholder for future GitHub release checking."""
+    async def check_github_update(force: bool = False):
+        """v3.0.0: real implementation of the GitHub update check.
+
+        Page-load reads the cached state from SQLite — no HTTP call to
+        GitHub on page load, so the 60 req/hour anonymous rate limit
+        scales with polling cadence (Monthly default → ~1 call/month),
+        not with traffic.
+
+        The 'Check now' button on /updates passes force=true, which
+        triggers _perform_github_check() synchronously before returning
+        state. force is silently ignored when the master toggle is off
+        (no point hitting GitHub when the feature is disabled).
+
+        Response shape:
+          enabled, poll_interval — current config
+          running_version       — VERSION file contents (e.g. '2.98.3')
+          latest_known          — last-fetched tag, or null
+          available             — true iff latest_known > running (semver)
+          last_check_ts         — unix ts of last attempt (success or fail)
+          last_check_result     — 'success' / 'error' / null
+          last_check_error      — error message if last result was error
+          last_known_latest_ts  — unix ts of last successful check
+          release_url           — GitHub release page URL when available
+        """
+        cfg = _updates_config()
+
+        if force and cfg["enabled"]:
+            _perform_github_check()
+
+        state = _get_update_state()
+        running = _get_running_version()
+        latest = state["last_known_latest"]
+        available = bool(latest and _is_newer_version(latest, running))
+        release_url = (
+            f"https://github.com/preston-peterson/aerodrome/releases/tag/{latest}"
+            if (available and latest) else None
+        )
+
         return {
-            "available": False,
-            "enabled": False,
-            "reason": "GitHub update checks are not yet implemented.",
+            "enabled": cfg["enabled"],
+            "poll_interval": cfg["poll_interval"],
+            "running_version": running,
+            "latest_known": latest,
+            "available": available,
+            "last_check_ts": state["last_check_ts"],
+            "last_check_result": state["last_check_result"],
+            "last_check_error": state["last_check_error"],
+            "last_known_latest_ts": state["last_known_latest_ts"],
+            "release_url": release_url,
         }
 
     def _parse_changelog(content: str):

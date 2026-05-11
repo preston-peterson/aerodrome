@@ -10,7 +10,7 @@ Usage:
         # each error: {"path": "receiver.port", "message": "Must be 1-65535"}
         return error_response(errors)
 """
-# Version: 2.98.3
+# Version: 3.0.0
 
 import re
 from typing import Any, List, Tuple
@@ -726,6 +726,41 @@ def validate_config(cfg: Any) -> Errors:
                             errs.append(("notifications.capacity.disk_free_pct_floor",
                                          "Must be between 0 and 1"))
 
+    # --- updates (v3.0.0+: GitHub Releases-based update channel) ---
+    # Optional section. If absent, defaults apply at read-time (enabled=true,
+    # poll_interval=monthly, notify.banner=true, notify.gear_badge=true).
+    # Pre-v3.0.0 configs that lack the section still validate cleanly.
+    upd = cfg.get("updates")
+    if upd is not None:
+        if not isinstance(upd, dict):
+            errs.append(("updates", "Must be a mapping"))
+        else:
+            gh = upd.get("github")
+            if gh is not None:
+                if not isinstance(gh, dict):
+                    errs.append(("updates.github", "Must be a mapping"))
+                else:
+                    en = gh.get("enabled")
+                    if en is not None and not isinstance(en, bool):
+                        errs.append(("updates.github.enabled",
+                                     "Must be a boolean (true or false)"))
+                    pi = gh.get("poll_interval")
+                    if pi is not None:
+                        valid_intervals = {"daily", "weekly", "monthly", "never"}
+                        if pi not in valid_intervals:
+                            errs.append(("updates.github.poll_interval",
+                                         f"Must be one of {sorted(valid_intervals)}; got {pi!r}"))
+                    nt = gh.get("notify")
+                    if nt is not None:
+                        if not isinstance(nt, dict):
+                            errs.append(("updates.github.notify", "Must be a mapping"))
+                        else:
+                            for key in ("banner", "gear_badge"):
+                                v = nt.get(key)
+                                if v is not None and not isinstance(v, bool):
+                                    errs.append((f"updates.github.notify.{key}",
+                                                 "Must be a boolean (true or false)"))
+
     return errs
 
 
@@ -750,6 +785,10 @@ LIVE_KEYS = {
     "stats",
     "notifications",
     "all_tab",
+    # v3.0.0: GitHub-update-channel config. The scheduler wakes at most
+    # hourly and re-reads CONFIG, so poll_interval changes (and enabled
+    # toggle, and notify flags) take effect within an hour without restart.
+    "updates",
     # v2.52.0: date format preference is purely cosmetic (controls
     # which date inputs the search parser accepts and how dates render).
     # No service-state implications — live-reloadable.

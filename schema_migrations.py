@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 # Current schema version. Bump whenever a new migration is added.
 # v2.51.0 introduces schema version 1 (the search-feature schema).
 # Any DB without a schema_version table is implicitly at version 0.
-CURRENT_SCHEMA_VERSION = 7
+CURRENT_SCHEMA_VERSION = 8
 
 
 # A migration is a (target_version, description, callable) tuple.
@@ -1135,6 +1135,46 @@ def _migration_v7_category_column(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_v8_update_state(conn: sqlite3.Connection) -> None:
+    """v8: add update_state table for GitHub-update-channel state.
+
+    Single-row table (enforced via CHECK (id = 1)) that tracks the most
+    recent GitHub Releases API check. Two distinct timestamps:
+
+    - last_check_ts: when the most recent check attempt happened, regardless
+      of success or failure. Drives the "last checked: X ago" display and
+      the interval-elapsed decision in the scheduler.
+    - last_known_latest_ts: when the most recent SUCCESSFUL check happened.
+      Drives the "last successful check: X ago" display when the latest
+      attempt errored, so the user can tell stale-data from fresh-data
+      regardless of recent network issues.
+
+    last_check_result is 'success' or 'error' (or NULL if never checked).
+    last_check_error carries the error message when result is 'error'.
+    last_known_latest carries the latest version tag from GitHub (e.g.
+    'v2.99.0') after a successful check, never overwritten on errors.
+
+    The table is intentionally NOT pre-populated with a row — the
+    scheduler's first check (on startup if interval elapsed) does the
+    initial INSERT OR REPLACE. Empty table means "never checked," which
+    is the correct initial state.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS update_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            last_check_ts INTEGER,
+            last_check_result TEXT,
+            last_check_error TEXT,
+            last_known_latest TEXT,
+            last_known_latest_ts INTEGER,
+            updated_at INTEGER NOT NULL
+        )
+        """
+    )
+    logger.info("Migration v8: created update_state table (single-row, empty)")
+
+
 # Ordered list of all migrations. NEVER edit a shipped migration —
 # always add a new one. The list is the source of truth for what
 # CURRENT_SCHEMA_VERSION should be.
@@ -1153,6 +1193,8 @@ MIGRATIONS: List[Migration] = [
      _migration_v6_aircraft_track_daily),
     (7, "category column: per-aircraft category for category_mix card and search filter",
      _migration_v7_category_column),
+    (8, "update_state table: single-row state for GitHub-update-channel cache (v3.0.0)",
+     _migration_v8_update_state),
 ]
 
 

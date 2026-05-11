@@ -52,6 +52,11 @@
             if (c[critical[i]] && c[critical[i]].ok === false) return 'error';
         }
         if (c.hexdb_resolver && c.hexdb_resolver.ok === false) return 'warn';
+        // v3.0.0: GitHub update availability also lights the gear badge.
+        // update_available is gated on updates.github.notify.gear_badge
+        // server-side, so respecting it here is correct — the server
+        // already knows the user's preference.
+        if (statJ.update_available === true) return 'warn';
         return 'ok';
     }
 

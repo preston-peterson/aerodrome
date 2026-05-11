@@ -1,5 +1,5 @@
 # =============================================================================
-# Version: 2.98.3
+# Version: 3.0.0
 # Aerodrome — Example/Reference Configuration
 # =============================================================================
 # This is the canonical default config shipped with each Aerodrome release.
@@ -463,3 +463,34 @@ stats:
     # Coverage (Wave 5)
     range_rose: true           # Polar chart of reception by compass direction and distance
     distance_histogram: true   # Bar chart of position reports by distance bucket
+
+# --- Updates (GitHub Releases-based update channel, v3.0.0+) ---
+# Aerodrome can periodically check the project's GitHub Releases for new
+# versions and surface them in the web UI. Three notification surfaces are
+# available:
+#
+#   - banner on the /updates page when an update is available
+#   - gear-menu amber dot (same dot used for sudoers drift / capacity issues)
+#   - optional ntfy push notification (v3.0.2+)
+#
+# Checks happen in the background according to poll_interval. A check also
+# runs on server startup if the configured interval has elapsed since the
+# last successful check (so a fresh install on the Monthly default does
+# its first check immediately rather than waiting 30 days). The "Check now"
+# button on the /updates page works regardless of poll_interval.
+#
+# Aerodrome uses GitHub's anonymous Releases API (no token required, 60
+# requests/hour per IP — far more than the Monthly default uses). Only
+# `releases/latest` is consulted; pre-releases are deliberately ignored.
+# Aerodrome will never suggest a downgrade — if the running version is
+# already >= latest, status is "up to date" regardless.
+updates:
+  github:
+    enabled: true              # Master switch; when false no checks happen
+                               # and the /updates GitHub card shows disabled.
+    poll_interval: monthly     # daily / weekly / monthly / never
+                               # 'never' disables background polling but
+                               # leaves the manual "Check now" button working.
+    notify:
+      banner: true             # Show a banner on /updates when update available
+      gear_badge: true         # Light the gear-menu amber dot
