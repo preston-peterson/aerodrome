@@ -92,7 +92,51 @@ DIST_UNIT_SET=false
 TIMEZONE_SET=false
 
 show_help() {
-    sed -n '/^# Usage:/,/^# =\{20,\}/p' "$0" | sed 's/^# \?//' | sed '$d'
+    # v3.0.3: literal heredoc instead of `sed "$0"`. The previous
+    # implementation worked when invoked as a saved file (./bootstrap.sh
+    # --help) but silently produced no output when invoked via process
+    # substitution (bash <(curl -fsSL https://install.aerodromeadsb.com)
+    # --help) — in that path, "$0" is /dev/fd/63, a file descriptor bash
+    # has already consumed reading the script body, so the sed read from
+    # an empty FD and exit 0 returned silently. Heredoc is invocation-
+    # path-agnostic. If the canonical install URL or flags change, edit
+    # both this block AND the top-of-file comment block above; they are
+    # intentional duplicates so the user-facing help and the source-
+    # reading reader see the same thing.
+    cat <<'EOF'
+Aerodrome — Curl Install Bootstrap
+
+Headline command:
+  bash <(curl -fsSL https://install.aerodromeadsb.com)
+
+Local testing:
+  bash scripts/bootstrap.sh --from-zip ~/Downloads/aerodrome-vX.Y.Z.zip --prefix /tmp/ad
+
+Flags:
+  --prefix <path>        Install directory (default: ~/aerodrome)
+  --version <vX.Y.Z>     Pin to a specific release (default: latest)
+  --from-zip <path>      Skip GitHub fetch; install from a local zip
+  --receiver-ip <ip>     ADS-B receiver IP (skips prompt)
+  --receiver-port <n>    ADS-B receiver port (skips prompt; default 8080)
+  --lat <n>              Receiver latitude (skips prompt)
+  --lon <n>              Receiver longitude (skips prompt)
+  --distance-unit <u>    mi / nmi / km (skips prompt; default mi)
+  --timezone <tz>        IANA tz name (skips prompt; default: system)
+  --force                Bypass OS-compat warning on unrecognized distros
+  -y, --yes              Accept all defaults non-interactively
+  -h, --help             Show this help and exit
+
+What this script does:
+  1. Detects OS (Debian-family check, three-tier behavior)
+  2. Verifies/installs prereqs (curl, unzip, sha256sum, python3, python3-venv)
+  3. Refuses if Aerodrome is already installed (points at in-app updater)
+  4. Resolves install version via GitHub Releases API (or --version, or --from-zip)
+  5. Downloads release zip + .sha256, verifies checksum
+  6. Prompts for the bare-minimum config (or reads flags)
+  7. Extracts to <prefix>, patches config.yaml with the prompted values
+  8. Hands off to the bundled install.sh for venv + systemd + sudoers work
+  9. Prints the web UI URL
+EOF
 }
 
 while [ $# -gt 0 ]; do

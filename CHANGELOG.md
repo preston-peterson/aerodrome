@@ -19,6 +19,17 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.0.3] — 2026-05-11
+
+### Fixed
+- **Fixed the `--help` silent-fail bug in `scripts/bootstrap.sh` when invoked via process substitution.** The curl-install bootstrap's `show_help()` function previously used `sed -n '...' "$0"` to extract its usage block from its own source comments — a clever trick that worked when invoked as a saved file (`./bootstrap.sh --help`) but broke completely when invoked via the headline form `bash <(curl -fsSL https://install.aerodromeadsb.com) --help`. In the process-substitution case, `$0` is `/dev/fd/63`, a file descriptor that bash has already consumed reading the script body to begin executing it. By the time `show_help()` runs, the FD is empty/closed, so `sed` reads nothing, produces no output, and `exit 0` returns silently. The user sees a blank line and a returned shell prompt — no usage text, no error, no indication that anything went wrong. The bug had been latent in `bootstrap.sh` since v2.97.4 (where the script was first drafted) but surfaced for the first time on 2026-05-11 when `install.aerodromeadsb.com` DNS went live and the curl-install path could be exercised end-to-end.
+
+  The fix is mechanical: replace the sed-the-source approach with a literal heredoc inside `show_help()` containing the same usage text. Heredocs read from the function's own bytecode, not from any external file descriptor, so they're invocation-path-agnostic — works identically under saved-file invocation, process substitution, `bash -c "$(curl ...)"`, or any other invocation pattern. The trade-off is that the usage text now lives in two places: the top-of-file comment block (for readers browsing the source) and the `show_help()` heredoc (for runtime). A comment in `show_help()` flags this as intentional duplication so future edits update both. Net cost: ~30 lines for the heredoc body, gained back near-zero (the original sed approach was three pipe stages of text munging).
+
+  Only affects `--help` via the curl-substitution form; the actual install flow has always worked correctly, because the install logic doesn't depend on `$0` being re-readable. Saved-file `--help` also continued to work (and continues to work after this fix). This is purely the headline-command `--help` path getting un-broken.
+
+  The wider context: the curl-install bootstrap surface itself went live on 2026-05-11 with Cloudflare DNS + Single Redirect on `install.aerodromeadsb.com` → `raw.githubusercontent.com/preston-peterson/aerodrome/main/scripts/bootstrap.sh`. The redirect was verified end-to-end (302 + correct Location + Cloudflare server header + curl-followed content matches the published bootstrap), so the DNS surface itself was solid; the `--help` smoke test in that verification flow was what exposed the long-latent bug. The fix lands in v3.0.3 so the bootstrap is in a fully-working state before the next step in the curl-install rollout: clean-VM end-to-end dogfood of the actual install flow on a fresh Ubuntu droplet. Until that dogfood happens, the install URL is live but unannounced — not yet linked from the README or the GitHub About panel.
+
 ## [3.0.2] — 2026-05-11
 
 ### Added
