@@ -106,7 +106,84 @@ one.
 
 ## Installation
 
-### 1. Download
+Aerodrome has two install paths. The curl one-liner is the canonical
+modern path — it auto-detects your platform, installs prereqs, downloads
+the latest release with checksum verification, prompts for the bare
+minimum config, and starts the service. The manual path stays
+fully-supported for users who want to inspect the bootstrap before
+running it, install offline, pin to a specific release, or work from a
+git checkout.
+
+### Option 1 — Curl install (recommended)
+
+On a fresh Ubuntu 22.04+ or Debian 12+ host with no Aerodrome installed:
+
+```bash
+bash <(curl -fsSL https://install.aerodromeadsb.com)
+```
+
+That's it. The bootstrap walks through eight steps:
+
+1. **Platform check** — confirms a recognized Debian-family system. On
+   unrecognized distros, prints a warning and requires `--force` to
+   proceed.
+2. **Existing-install check** — refuses to overwrite an existing install
+   and points you at the in-app updater instead.
+3. **Prerequisites** — `apt`-installs `unzip` and `python3-venv` if
+   they're missing.
+4. **Release resolution** — queries the GitHub Releases API for the
+   latest release tag (or accepts `--version vX.Y.Z` to pin).
+5. **Download + verify** — pulls `aerodrome-vX.Y.Z.zip` and the matching
+   `.sha256` file from the GitHub Releases page, verifies the checksum,
+   and refuses to proceed if it doesn't match.
+6. **Initial configuration** — interactive prompts for the bare minimum:
+   receiver IP/port, optional receiver latitude/longitude (enables the
+   Distance column), and distance unit. Time zone is auto-detected from
+   `/etc/timezone` or `timedatectl` and used silently — change it later
+   in the web UI's Configuration page.
+7. **Extract + handoff** — extracts to `~/aerodrome` (configurable with
+   `--prefix`), patches `config.yaml` with the prompted values, and
+   hands off to the bundled `install.sh`.
+8. **install.sh runs** — creates a Python venv, installs dependencies,
+   writes the systemd unit, installs a scoped `sudoers.d` rule for the
+   in-UI restart button, and starts the service.
+
+When complete, open `http://your-host:8000/` and visit the gear menu →
+Configuration to adjust the auto-detected timezone, set up a watchlist,
+enable push notifications, and configure the rest.
+
+**Useful bootstrap flags:**
+
+```
+--prefix <path>        Install directory (default: ~/aerodrome)
+--version <vX.Y.Z>     Pin to a specific release (default: latest)
+--from-zip <path>      Skip the GitHub fetch and install from a local zip
+--receiver-ip <ip>     ADS-B receiver IP (skips prompt)
+--receiver-port <n>    Receiver port (skips prompt; default 8080)
+--lat <n>              Receiver latitude (skips prompt)
+--lon <n>              Receiver longitude (skips prompt)
+--distance-unit <u>    mi / nmi / km (skips prompt; default mi)
+--timezone <tz>        IANA tz name (skips prompt; default: system)
+--force                Bypass OS-compat warning on unrecognized distros
+-y, --yes              Accept all defaults non-interactively
+-h, --help             Show full help and exit
+```
+
+Run `bash <(curl -fsSL https://install.aerodromeadsb.com) --help` to see
+the same list at any time.
+
+**What the bootstrap does NOT do**: configure remote access (Tailscale,
+Cloudflare Tunnel, reverse proxy), set up backups beyond what Aerodrome
+manages internally, or expose the service to the internet. See the
+[Remote access](#remote-access-optional) section for those.
+
+### Option 2 — Manual install (offline, git, version-pinned)
+
+Use this path if you want to inspect the bootstrap before running it,
+install offline from a release zip you've already downloaded, work from
+a git checkout for development, or otherwise step outside the curl flow.
+
+#### 1. Download
 
 ```bash
 # From the GitHub Releases page:
@@ -116,7 +193,7 @@ git clone https://github.com/preston-peterson/aerodrome.git
 cd aerodrome
 ```
 
-### 2. Configure
+#### 2. Configure
 
 Edit `config.yaml` to set your receiver's address:
 
@@ -127,7 +204,7 @@ receiver:
   path: "/data/aircraft.json" # Path to aircraft JSON
 ```
 
-### 3. Deploy to your server
+#### 3. Deploy to your server
 
 If running on the same machine, skip to step 4. Otherwise, copy to your
 server:
@@ -138,7 +215,7 @@ ssh user@your-server
 cd ~/aerodrome
 ```
 
-### 4. Install
+#### 4. Install
 
 > **Note:** Both `install.sh` and `uninstall.sh` need to be made
 > executable before running. File-transfer tools like rsync, scp, zip
@@ -167,6 +244,18 @@ When complete, open `http://your-server-ip:8000` in your browser.
 > **Note:** The install script auto-detects your current username and
 > configures the systemd service to run as that user. Just don't run it
 > as root.
+
+**Bootstrap-from-local-zip variant**: if you'd prefer the bootstrap's
+prompts and prereq detection without the GitHub fetch, the bootstrap
+itself ships in the zip at `scripts/bootstrap.sh` and accepts a
+`--from-zip` flag:
+
+```bash
+bash scripts/bootstrap.sh --from-zip ~/Downloads/aerodrome-vX.Y.Z.zip
+```
+
+This is the same flow as the curl one-liner but installs from your local
+zip instead of downloading from GitHub. Useful for air-gapped installs.
 
 ## Remote access (optional)
 
@@ -210,17 +299,69 @@ sudo journalctl -u aerodrome -f      # Follow live logs
 
 ## Updating
 
-Aerodrome has two update paths. The web UI is the simpler one for most
-upgrades; the rsync command is still there as a fallback.
+Aerodrome has three update paths, listed by ease of use. The GitHub
+channel is the canonical path for most users — discovery and apply are
+both one-click from the dashboard. The local-zip upload is for users
+who want to apply a specific release zip (e.g. a pre-release, a
+locally-modified build, or a release zip pulled out-of-band). The
+direct-rsync path is the scripted-deployment fallback.
 
-### Option 1 — Upload via the web UI (recommended)
+### Option 1 — In-app GitHub channel (recommended)
 
-No SSH required.
+No SSH, no downloads, no terminal.
 
-1. **Download the release zip** from the GitHub Releases page.
+1. **Open the Updates page** via the gear menu → "Check for updates" or
+   directly at `/updates`.
 
-2. **Open the Updates page** in your browser: click the gear icon in
-   the header → **Check for updates** (or go directly to `/updates`).
+2. **The GitHub card** at the top of the page shows the latest release
+   on GitHub. The background scheduler checks this on a configurable
+   cadence (Configuration → Updates tab — daily, weekly, monthly, or
+   never). The Updates page reads cached state from the database and
+   doesn't hit GitHub on every page load.
+
+3. **When a new release is available**, the GitHub card shows a banner
+   with the version number and an "Apply update" button. Click it and
+   the server:
+   - Fetches `aerodrome-vX.Y.Z.zip` and `.sha256` from the GitHub
+     Releases page for that tag.
+   - Verifies the SHA256 checksum (refuses to proceed if it doesn't
+     match).
+   - Stages the zip into the update directory and runs the same apply
+     flow as a local-zip upload: backs up the current install,
+     overwrites files (preserving config and data), reinstalls
+     dependencies, and restarts the service.
+   - Your browser reconnects automatically after ~6 seconds.
+
+4. **You can also configure notification surfaces** so you don't have
+   to visit the Updates page to know there's something to apply.
+   Configuration → Updates tab has three independent toggles:
+   - **Show banner on /updates** — in-card banner with the Apply button
+     (default on).
+   - **Light the gear-menu badge** — amber dot on the gear menu across
+     every admin page when an update is available (default on).
+   - **Send ntfy push notification** — push to your phone when a new
+     release is discovered. Requires this flag AND
+     `notifications.events.update_available` (on the Notifications tab)
+     AND `notifications.enabled`. Fires once per transition (not every
+     poll). Default cooldown is 24 hours.
+
+5. **"Check now"** — the button on the GitHub card forces an immediate
+   GitHub check regardless of the configured cadence. Useful if you've
+   just seen a release announcement and don't want to wait for the next
+   scheduled poll.
+
+The whole channel can be disabled at Configuration → Updates → "Update
+channel enabled" if you'd rather manage updates entirely manually.
+
+### Option 2 — Upload via the web UI (local zip)
+
+For applying a specific release zip rather than the latest GitHub
+release. No SSH required.
+
+1. **Download the release zip** from the GitHub Releases page (or
+   wherever you got the zip).
+
+2. **Open the Updates page** in your browser.
 
 3. **Drag the zip onto the "Upload a release zip" drop zone** (or
    click it to open a file picker). The server extracts the zip,
@@ -253,11 +394,11 @@ rsync -av aerodrome/ user@your-server:~/aerodrome/update/
 Either staging path (UI upload or rsync) ends up in the same place;
 click **Apply** in the UI to finish.
 
-### Option 2 — Direct rsync + restart (fallback)
+### Option 3 — Direct rsync + restart (scripted / fallback)
 
 If the web UI isn't available (service not running, permission issue
-with the sudoers rule, etc.), you can still update the old-fashioned
-way:
+with the sudoers rule, etc.), or if you're scripting deployments, you
+can update directly:
 
 ```bash
 rsync -av \
@@ -279,7 +420,7 @@ Single-line version for terminals that mangle line continuations:
 rsync -av --exclude='aircraft_history.db' --exclude='logs' --exclude='venv' --exclude='.tracker.pid' --exclude='config.yaml' --exclude='.backups' --exclude='update' aerodrome/ user@your-server:~/aerodrome/
 ```
 
-### Config auto-migration (both paths)
+### Config auto-migration (all paths)
 
 Regardless of which update path you use, Aerodrome handles config
 schema changes automatically. **If the new release adds config keys

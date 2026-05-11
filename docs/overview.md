@@ -175,7 +175,7 @@ Running a service at home long-term means updates, backups, and things occasiona
 
 ## Updates via the web UI
 
-Drop a release zip onto the Updates page and the server extracts it, validates the version, and stages it. Click Apply and the service backs up the current install, swaps in the new files, re-installs dependencies, and restarts. The old install stays in `.backups/<timestamp>/` in case you need to roll back. SSH and rsync still work as an alternative for scripted workflows.
+The Updates page polls GitHub on a configurable cadence (daily, weekly, monthly, or never) and shows when a new release is available. Click "Apply update" and the server downloads the release zip, verifies its SHA256 checksum, backs up the current install, swaps in the new files, re-installs dependencies, and restarts. The old install stays in `.backups/<timestamp>/` in case you need to roll back. Three optional notification surfaces — in-card banner, gear-menu badge, and ntfy push to your phone — let you know about new releases without checking the page. Dropping a local zip onto the Updates page and SSH/rsync both still work as alternatives for specific-version installs or scripted workflows.
 
 ## Full backup and restore
 
@@ -222,7 +222,7 @@ A host to run Aerodrome: Ubuntu 22.04+ or Debian 12+ recommended. Hardware depen
 
 ## Installation
 
-Download the latest release zip, copy it to your server, and run `./install.sh`. It creates a Python virtualenv, installs dependencies, writes the systemd unit, sets up the scoped sudoers rule, and starts the service. Edit `config.yaml` to point at your receiver and set your latitude/longitude if you want the Distance column populated. Open `http://your-host:8000/` in a browser.
+One command on a fresh Ubuntu 22.04+ or Debian 12+ host: `bash <(curl -fsSL https://install.aerodromeadsb.com)`. The bootstrap detects your platform, installs prerequisites, downloads the latest release with SHA256 verification, prompts for the bare minimum config (receiver IP, optional latitude/longitude), and hands off to the bundled install script which creates a Python virtualenv, writes the systemd unit, sets up the scoped sudoers rule, and starts the service. Open `http://your-host:8000/` and visit the gear menu's Configuration page to adjust settings — auto-detected timezone, watchlist, notifications, retention, display preferences. The manual install path (download zip, edit `config.yaml`, run `./install.sh`) remains supported for offline installs, version-pinning, and git-checkout workflows.
 
 The first minute of data will populate as the collector polls the receiver. Watchlist and notifications can be configured through the web UI — no YAML editing required after initial setup.
 
