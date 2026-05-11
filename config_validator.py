@@ -10,7 +10,7 @@ Usage:
         # each error: {"path": "receiver.port", "message": "Must be 1-65535"}
         return error_response(errors)
 """
-# Version: 3.0.7
+# Version: 3.0.8
 
 import re
 from typing import Any, List, Tuple
@@ -618,6 +618,14 @@ def validate_config(cfg: Any) -> Errors:
                         "emergency_squawk",
                         # v2.50.31: capacity threshold alerts.
                         "capacity_low", "capacity_recovered",
+                        # v3.0.2: ntfy push when a new release is discovered.
+                        # v3.0.8: added here after a missed-mirror bug — the
+                        # event was registered in notifier.py's KNOWN_EVENTS in
+                        # v3.0.2 but this validator set wasn't updated, so any
+                        # user trying to enable `notifications.events.update_available`
+                        # (which v3.0.7's own Updates-tab helper text instructs
+                        # them to do) hit "Unknown event type" on save.
+                        "update_available",
                     }
                     for k, v in ev.items():
                         if k not in known_events:
