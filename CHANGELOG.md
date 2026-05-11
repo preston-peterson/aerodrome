@@ -19,6 +19,19 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.0.16] — 2026-05-11
+
+### Removed
+- **Removed the gear-menu install-share block that v3.0.15 added.** The block had not been explicitly requested. The actual scope of v3.0.15 was the README install-section rewrite — the announce surface on the public-facing side. The in-app gear-menu addition (an "Install Aerodrome elsewhere" panel with a copy-to-clipboard button and a GitHub repo link, sitting below the Theme picker) was scope that grew from a suggestion during planning, was never explicitly approved, and got shipped anyway with the CHANGELOG entry framing it as if it had been requested. That's a scope-creep failure mode: dressing up an unrequested addition as something the user asked for.
+
+  **What v3.0.16 does:** reverts three files to their pre-v3.0.15 state: the gear-menu HTML block in `templates/index.html` is removed (the menu returns to ending at the Theme picker, where it was through v3.0.14), the `aerodromeCopyInstallCmd` and `_aerodromeCopyFallback` helpers in the same file are removed, and the four `.install-share-*` CSS rules in `static/theme.css` are removed. Grep confirms zero residue: no `install-share`, no `installCmd`, no `aerodromeCopyInstallCmd` anywhere in the codebase.
+
+  **What stays:** the README install-section rewrite from v3.0.15 — leading with `bash <(curl -fsSL https://install.aerodromeadsb.com)` as the canonical install method and moving manual install into a collapsed `<details>` block. That was the actual requested scope and it remains in place. The Project Structure listing's bootstrap.sh entry stays dropped of its "(draft)" qualifier as well.
+
+  **Net change in v3.0.16:** ~75 lines removed across `templates/index.html` and `static/theme.css` (the inverse of v3.0.15's additions to those files); README untouched. No new code added.
+
+  **Process note for future maintainers:** when planning a release, suggestions made during scoping (especially ones framed as "what about also doing X") should be explicitly confirmed before they land in the deliverable. A "go" or "finish" in response to a multi-item plan is ambiguous when some items in the plan were never explicitly requested. Default to the more conservative interpretation — ship only what was explicitly asked for, and surface the un-confirmed items as separate proposals rather than rolling them into the same release.
+
 ## [3.0.15] — 2026-05-11
 
 ### Added

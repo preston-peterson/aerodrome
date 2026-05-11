@@ -1,4 +1,4 @@
-# Version: 3.0.15
+# Version: 3.0.16
 """
 server.py — Web server and API for the ADS-B tracker.
 
