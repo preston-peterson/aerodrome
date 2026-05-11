@@ -1,4 +1,4 @@
-<!-- Version: 3.0.3 -->
+<!-- Version: 3.0.4 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1514,7 +1514,10 @@ async function checkGithubUpdate(force){
             <strong>${escapeHtml(j.poll_interval)}</strong>).
         </div>`;
         const checkBtn = document.createElement('button');
-        checkBtn.className = 'btn primary';
+        // v3.0.4: was 'btn primary' (broken — no CSS rule for `.primary` alone,
+        // fell back to plain outlined). Correct class is 'btn-primary'
+        // (hyphenated), defined in static/theme.css:321 with the cyan fill.
+        checkBtn.className = 'btn btn-primary';
         checkBtn.textContent = 'Check now';
         checkBtn.onclick = () => checkGithubUpdate(true);
         actions.appendChild(checkBtn);
@@ -1537,8 +1540,14 @@ async function checkGithubUpdate(force){
         // applies via the existing infrastructure. View-on-GitHub is the
         // secondary action — still useful for reading the Release notes
         // before committing to apply.
+        // v3.0.4: class fixed from 'btn primary' to 'btn btn-primary' so
+        // it actually picks up the cyan-fill styling from theme.css and
+        // matches the Local update card's Apply button visually. The
+        // typo'd class had no CSS rule and silently fell back to plain
+        // outlined, making the primary action visually indistinguishable
+        // from the secondary one.
         const applyBtn = document.createElement('button');
-        applyBtn.className = 'btn primary';
+        applyBtn.className = 'btn btn-primary';
         applyBtn.textContent = `Apply update (${j.latest_known})`;
         applyBtn.onclick = () => applyGithubUpdate(j.latest_known);
         actions.appendChild(applyBtn);

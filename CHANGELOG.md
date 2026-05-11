@@ -19,6 +19,15 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.0.4] — 2026-05-11
+
+### Fixed
+- **Fixed GitHub Apply button styling — now visually matches the Local update card's primary action.** Discovered during dogfooding the v3.0.x apply path on the live `/updates` page: the **Apply update (vX.Y.Z)** button on the GitHub update card was rendering as a plain outlined button, visually indistinguishable from "View on GitHub" and "Check again" secondary actions. The Local update card's **Apply X.Y.Z & restart** button rendered correctly with the cyan-fill primary styling. Root cause was a class-name typo introduced in v3.0.1: `applyBtn.className = 'btn primary'` (space-separated, two classes: `btn` + `primary`) where the actual CSS rule defined in `static/theme.css:321` is `.btn-primary` (hyphenated, single class). Browser parsed the typo'd version as classes `btn` and `primary` — `btn` is a real rule (the outlined base style), but no CSS rule exists for `.primary` alone, so the button silently fell back to plain outlined. The fix changes both occurrences (`applyBtn` in state 4 / update-available, plus `checkBtn` in state 2 / never-checked-yet which had the same typo and the same silent fallback) to use the correct `'btn btn-primary'` two-class string. End result: the GitHub card's primary actions now have the same unmistakable cyan-fill visual weight as every other primary action across the app. Two-line code change in `templates/updates.html`. The typo had been latent since v3.0.1 (no functional impact, only visual), exposed when a user actually had v3.0.x apply available to look at on their /updates page.
+
+- **Bumped the bootstrap script's design-vintage header from `2.97.4-draft` to `3.0.3-draft`.** Per the established convention (memory: "the header tracks the script's design vintage, not the release it ships in; `bump-version.sh`'s version-string updater intentionally doesn't touch the `-draft` suffix"), the bootstrap version header is updated manually only when the script's actual *design* evolves — not on every release the script ships in. v3.0.3 added a real design change: the `show_help()` function's sed-the-source approach got replaced with a literal heredoc, making `--help` invocation-path-agnostic. That's a behavioral change worth marking in the vintage header. The `-draft` suffix stays because the earn-out condition (end-to-end clean-VM dogfood of the actual install flow on a fresh Ubuntu droplet) hasn't happened yet. Until that dogfood passes, the script remains marked draft regardless of how many design improvements it accumulates.
+
+- **No functional behavior change in this release** beyond the visual button styling. All v3.0.x channel infrastructure (check, apply, notify) and the curl-install surface (DNS, redirect, `--help`) continue to work exactly as they did at v3.0.3. This is purely a polish release closing out the visual rough edge that was exposed during dogfooding.
+
 ## [3.0.3] — 2026-05-11
 
 ### Fixed
