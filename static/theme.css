@@ -1,0 +1,530 @@
+/* =============================================================================
+   Aerodrome theme system — shared across all admin templates.
+   =============================================================================
+   This file is the single source of truth for the dual-theme palette introduced
+   in v2.45.0 and the gear-menu widget styling. Each template loads it via
+   <link rel="stylesheet" href="/static/theme.css"> near the top of <head>.
+
+   Previously (v2.45.0 through v2.46.1) these blocks were duplicated across
+   nine templates — changing a color meant editing nine files. v2.47.0 moves
+   them here.
+
+   Option C semantics:
+     - Background/text-level variables swap between themes
+     - Critical attention indicators (--red, --amber) stay identical across
+       themes so MIL/WATCH signals have the same visual weight day or night
+     - Text accents (--cyan, --green, --blue) shift darker on light for
+       WCAG AA contrast
+
+   The FOUC-prevention script stays inline in each template's <head> — it
+   must run synchronously before any CSS is applied, and the round-trip
+   cost of an external <script> would defeat that. See the inline block
+   marked "<!-- theme:inline-fouc -->" in each template.
+   ============================================================================= */
+
+:root, :root[data-theme="dark"] {
+    /* Structural colors — backgrounds, borders, text levels */
+    --bg0:#0a0e17; --bg1:#111827; --bg2:#1a2236; --bg3:#243049;
+    --bdr:#2a3a54;
+    --t1:#e2e8f0; --t2:#94a3b8; --t3:#64748b;
+    /* Semantic accents — stay identical across themes so that MIL/WATCH
+       signals have the same visual weight regardless of day/night use. */
+    --red:#ef4444; --amber:#f59e0b;
+    /* Text-style accents — shift darker on light (see light block) for
+       WCAG AA contrast. Dark values below. */
+    --cyan:#06b6d4; --green:#22c55e; --blue:#3b82f6;
+    /* Link color — derived from cyan but tracked separately so changing
+       link behavior later doesn't require palette archaeology. */
+    --link:#06b6d4; --link-hover:#22d3ee;
+    --code-accent:#fbbf24;  /* inline-code text on dark card bg */
+    --purple:#a78bfa;  /* violet-400, used for 'security' changelog tag */
+    /* Row striping / shadow / subtle bg tints */
+    --row-stripe:rgba(255,255,255,0.02);
+    --shadow:0 4px 14px rgba(0,0,0,0.4);
+    --font:'Outfit',sans-serif; --mono:'JetBrains Mono',monospace;
+}
+
+:root[data-theme="light"] {
+    /* Structural — inverted: dark text on light backgrounds */
+    --bg0:#f8fafc; --bg1:#ffffff; --bg2:#f1f5f9; --bg3:#e2e8f0;
+    --bdr:#cbd5e1;
+    --t1:#0f172a; --t2:#475569; --t3:#64748b;
+    /* Semantic accents — IDENTICAL to dark (Option C intent) */
+    --red:#ef4444; --amber:#f59e0b;
+    /* Text accents — shifted darker for contrast on white */
+    --cyan:#0891b2; --green:#16a34a; --blue:#2563eb;
+    --link:#0891b2; --link-hover:#06b6d4;
+    --code-accent:#b45309;  /* amber-700, contrasts on light card bg */
+    --purple:#7c3aed;  /* violet-600, contrast on light */
+    --row-stripe:rgba(0,0,0,0.025);
+    --shadow:0 2px 8px rgba(0,0,0,0.08);
+    --font:'Outfit',sans-serif; --mono:'JetBrains Mono',monospace;
+}
+
+html { color-scheme: dark; }
+html[data-theme="light"] { color-scheme: light; }
+
+/* =============================================================================
+   Theme-toggle widget — the Auto/Dark/Light segmented control that lives in
+   the gear-menu dropdown on every admin page.
+   ============================================================================= */
+
+.gear-menu-separator { height:1px; background:var(--bdr); margin:6px 0; }
+.theme-row { padding:6px 14px 10px; }
+.theme-label {
+    font-size:10px; text-transform:uppercase; letter-spacing:0.06em;
+    color:var(--t3); margin-bottom:6px; font-weight:600;
+}
+.theme-seg {
+    display:flex; border:1px solid var(--bdr); border-radius:6px;
+    overflow:hidden;
+}
+.theme-seg button {
+    flex:1; background:transparent; border:none; color:var(--t2);
+    padding:6px 4px; font-size:12px; cursor:pointer;
+    border-right:1px solid var(--bdr); font-family:var(--font);
+}
+.theme-seg button:last-child { border-right:none; }
+.theme-seg button.on { background:var(--cyan); color:#fff; }
+.theme-seg button:not(.on):hover { background:var(--bg3); color:var(--t1); }
+
+/* v2.49.5: header health dot. Previously each template defined its own
+   .dot rules — status/config/updates had both .warn and .off, logs/docs
+   had neither, and the bare class always rendered green-pulsing. Moving
+   to theme.css ensures every page gets all three states (ok/warn/error)
+   and the health-indicator.js polling can drive them uniformly.
+   index.html also has these rules in its inline CSS; the inline copy
+   takes precedence there but the values agree, so behavior is identical. */
+.dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--green); animation: dot-pulse 2s infinite;
+}
+.dot.warn { background: var(--amber); animation: dot-pulse 2s infinite; }
+.dot.off  { background: var(--red);   animation: none; }
+@keyframes dot-pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.4; }
+}
+
+/* v2.49.5: canonical .hdr-left layout. Per-template stylesheets used to
+   each declare their own (or omit it). Now consolidated here so the
+   header dot inserted into every template has consistent spacing.
+   Per-template CSS that declares the same rule still works — last-loaded
+   wins, but all values agree. */
+.hdr-left { display: flex; align-items: center; gap: 8px; }
+
+/* v2.50.16: sticky header across every page. The selector is `body .hdr`
+   (specificity 0,0,1,1) rather than plain `.hdr` (0,0,1,0) so it wins
+   over each template's per-page `.hdr {...}` block, which loads in a
+   later <style> tag. That keeps this a single-file change instead of
+   nine template edits. The per-template rules still own visual
+   properties (background, padding, flex layout); we only add the
+   positioning here. z-index sits above plain page content but below
+   the gear dropdown menu (z-index:100) and toasts (z-index:1000), so
+   the dropdown still anchors visually beneath the gear button without
+   getting clipped. The opaque var(--bg1) background already in the
+   per-template rules keeps content from showing through as it scrolls
+   under. */
+body .hdr {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+}
+
+/* v2.50.21: toast notifications must not block clicks on content beneath
+   them. The toast is a fixed-position element at bottom-right of the
+   viewport with z-index:1000, and while visible it sits on top of any
+   table rows in that rectangle. Symptom: bottom-right rows of the
+   Watchlist and Military tabs were unhoverable and unclickable while
+   a toast was showing — the Track link, in particular, fell under the
+   toast's footprint. (Live tab was unaffected because its bottom rows
+   were not under the toast at the time of testing — coincidence, not
+   immunity.) Adding pointer-events:none lets mouse events pass through
+   to whatever's beneath while the toast itself still renders normally.
+   Standard pattern for ephemeral notifications: they inform, not
+   interact. Toast dismissal continues to work via the existing fade
+   timer in each template's JS, since pointer-events doesn't affect
+   timed style transitions. Same body-prefixed selector pattern as the
+   sticky-header rule above so this single declaration overrides the
+   three per-template .toast blocks (index.html, config.html,
+   updates.html) without touching any of them. */
+body .toast {
+    pointer-events: none;
+}
+
+/* v2.50.4: brand mark + wordmark layout. The icon (radar rings, 32px) sits
+   left of the "Aerodrome" wordmark, both inside a single <a class="home-link">
+   so clicking either takes you home. .home-link becomes a flex container so
+   the SVG and <h1> align horizontally and vertically center. The 10px gap
+   matches the dot→link gap that .hdr-left provides between its own children.
+   Previously every template had `.home-link { display: inline-block }` —
+   that still works for the wordmark-only layout, but flex is what we need
+   for the icon-plus-text lockup. */
+.home-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    color: inherit;
+    text-decoration: none;
+    transition: opacity .15s;
+}
+.home-link:hover { opacity: 0.8; }
+.brand-mark {
+    flex-shrink: 0;
+    display: block;
+}
+
+/* v2.49.5: gear button alert state. The .warn / .error classes are toggled
+   by health-indicator.js on every admin page (and by index.html's richer
+   updateHealthIndicator on the dashboard). Previously these rules only
+   existed in index.html's inline CSS, so on every other page the gear
+   had the class set but no styling — meaning the "ADSB indicator wasn't
+   working on any of the gear list items" because the button didn't go
+   amber/red even when the JS had toggled the class. Centralized here so
+   every template gets the same treatment. */
+.settings-btn.warn  { border-color: var(--amber) !important; color: var(--amber) !important; }
+.settings-btn.error { border-color: var(--red)   !important; color: var(--red)   !important; }
+.settings-btn { position: relative; }
+.settings-btn.warn::after,
+.settings-btn.error::after {
+    content: ""; position: absolute; top: 2px; right: 2px;
+    width: 6px; height: 6px; border-radius: 50%;
+}
+.settings-btn.warn::after  { background: var(--amber); animation: dot-pulse 2s infinite; }
+.settings-btn.error::after { background: var(--red);   animation: dot-pulse 2s infinite; }
+
+/* v2.49.3: when the gear icon is in alert state, the Status menu item
+   inside its dropdown mirrors the gear's color. The visual handoff
+   tells the user "the indicator is on the gear, the answer is on the
+   Status page" without them having to guess.
+   Selector relies on .settings-btn being the immediate older sibling
+   of #settingsMenu (or .settings-menu) — that structure is identical
+   across all admin templates. The :first-child clause targets the
+   "Status" item specifically; nothing else in the menu deserves the
+   alert color. The dot icon prepended via ::before mirrors the small
+   pulsing dot on the gear itself for a complete visual link. */
+.settings-btn.warn ~ .settings-menu .menu-item:first-child,
+.settings-btn.warn + .settings-menu .menu-item:first-child {
+    color: var(--amber) !important;
+}
+.settings-btn.error ~ .settings-menu .menu-item:first-child,
+.settings-btn.error + .settings-menu .menu-item:first-child {
+    color: var(--red) !important;
+}
+.settings-btn.warn ~ .settings-menu .menu-item:first-child::before,
+.settings-btn.warn + .settings-menu .menu-item:first-child::before {
+    content: ""; display: inline-block; width: 6px; height: 6px;
+    border-radius: 50%; background: var(--amber); margin-right: 8px;
+    vertical-align: middle;
+}
+.settings-btn.error ~ .settings-menu .menu-item:first-child::before,
+.settings-btn.error + .settings-menu .menu-item:first-child::before {
+    content: ""; display: inline-block; width: 6px; height: 6px;
+    border-radius: 50%; background: var(--red); margin-right: 8px;
+    vertical-align: middle;
+    animation: settings-menu-alert-pulse 2s infinite;
+}
+@keyframes settings-menu-alert-pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.4; }
+}
+
+/* Smooth cross-theme transitions on color-bearing properties only —
+   keep layout properties out so resize/scroll stays snappy. */
+body, .hdr, .tab, .panel, table, th, td, .card, .gear-menu, .theme-seg button,
+.gear-btn, .icon-btn, input, select, textarea, button {
+    transition: background-color 160ms ease, color 160ms ease, border-color 160ms ease;
+}
+
+/* =============================================================================
+   v2.54.0: canonical form-control standards.
+
+   Before this release, every template defined its own .btn / .btn-primary /
+   .ctrl-input / .ctrl-select / .settings-btn / .menu-item rules with
+   slightly different padding (6/7/8px), font sizes (11/12/13px), border
+   colors, and hover states. Buttons in the same row could be 28, 30, 32,
+   and 36px tall depending on which class soup they used. The Search /
+   Export / Rows screenshot that prompted this work had four different
+   heights and three different border-radii in one toolbar.
+
+   Everything below is the single source of truth. Each template still
+   loads its own <style> block for page-specific layout (grids, column
+   widths, etc.) but no longer redefines these primitives. Per-template
+   one-offs that legitimately differ (e.g. the .search-box width override
+   on the Search tab) extend these rules rather than replacing them.
+
+   Standard:
+     - Height: 32px (achieved via padding 6px on top/bottom + 12-14px sides)
+     - Border-radius: 6px universally
+     - Font: 12px / weight 500 / var(--font) for buttons, var(--mono) for
+       text inputs and selects (so hex/numeric content aligns visually)
+     - Border: 1px solid var(--bdr) at rest; var(--cyan) on focus;
+       no shift on hover (background tint indicates hover instead)
+     - Disabled: opacity 0.5, cursor not-allowed
+     - Transition: all 0.15s on hover/focus state changes
+
+   Button hierarchy:
+     .btn               base — bg2 background, bdr border, t1 text
+     .btn-primary       cyan filled, bg0 text — for confirming actions
+     .btn-ghost         transparent background — for secondary actions
+     .btn-danger        red border + red text, transparent bg — destructive
+     .btn-icon          square 32x32, just an icon, ghost styling
+
+   Form input hierarchy:
+     .ctrl-input        text input, mono font for hex/numeric data
+     .ctrl-select       <select> with native chevron
+     .ctrl-date         date input
+
+   Anything that pre-dates this and hasn't been migrated will fall through
+   to browser defaults or per-template rules. Migration is in this same
+   release; new code should reach for these classes by default.
+   ============================================================================= */
+
+/* --- Buttons --- */
+
+.btn {
+    font-family: var(--font);
+    font-size: 12px;
+    font-weight: 500;
+    padding: 6px 14px;
+    border-radius: 6px;
+    border: 1px solid var(--bdr);
+    background: var(--bg2);
+    color: var(--t1);
+    cursor: pointer;
+    transition: all 0.15s;
+    /* Inline-flex so an icon + label inside a button align properly,
+       and the button reports a consistent 32px height regardless of
+       what it contains. */
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    line-height: 1.2;
+    white-space: nowrap;
+}
+.btn:hover {
+    background: var(--bg3);
+    color: var(--t1);
+}
+.btn:focus-visible {
+    outline: none;
+    border-color: var(--cyan);
+    box-shadow: 0 0 0 2px rgba(6, 182, 212, 0.2);
+}
+.btn:disabled,
+.btn.disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.btn-primary {
+    background: var(--cyan);
+    border-color: var(--cyan);
+    color: var(--bg0);
+}
+.btn-primary:hover {
+    /* Slight lighten via filter — works in both themes, no second
+       cyan variable required. */
+    filter: brightness(1.1);
+    background: var(--cyan);
+    color: var(--bg0);
+}
+
+.btn-ghost {
+    background: transparent;
+    color: var(--t2);
+    border-color: var(--bdr);
+}
+.btn-ghost:hover {
+    background: var(--bg2);
+    color: var(--t1);
+    border-color: var(--bdr);
+}
+
+.btn-danger {
+    background: transparent;
+    border-color: var(--red);
+    color: var(--red);
+}
+.btn-danger:hover {
+    background: rgba(239, 68, 68, 0.1);
+    color: var(--red);
+    border-color: var(--red);
+}
+
+.btn-icon {
+    /* Square 32x32 icon-only button. Used for the gear, the help "?",
+       and any future icon-only triggers. The padding is 0 because the
+       icon inside is sized to fit; setting width/height keeps the
+       button's outer box exactly square regardless of icon shape. */
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    background: transparent;
+    border: 1px solid var(--bdr);
+    color: var(--t2);
+    border-radius: 6px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font);
+    font-size: 14px;
+    font-weight: 500;
+    transition: all 0.15s;
+    flex-shrink: 0;
+}
+.btn-icon:hover {
+    color: var(--cyan);
+    border-color: var(--cyan);
+}
+.btn-icon:focus-visible {
+    outline: none;
+    border-color: var(--cyan);
+    box-shadow: 0 0 0 2px rgba(6, 182, 212, 0.2);
+}
+
+/* Load-more button — used at the bottom of paginated tables (Search,
+   All, aircraft detail). Same dimensions as .btn but with cyan
+   accent borders and ghost-style background, signaling "more
+   content available below." */
+.btn-load-more {
+    font-family: var(--font);
+    font-size: 12px;
+    font-weight: 500;
+    padding: 6px 16px;
+    border-radius: 6px;
+    border: 1px solid var(--cyan);
+    background: var(--bg2);
+    color: var(--cyan);
+    cursor: pointer;
+    transition: all 0.15s;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1.2;
+}
+.btn-load-more:hover {
+    background: rgba(6, 182, 212, 0.12);
+}
+.btn-load-more:disabled {
+    opacity: 0.5;
+    cursor: wait;
+}
+
+/* --- Form inputs --- */
+
+.ctrl-input,
+.ctrl-select,
+.ctrl-date {
+    background: var(--bg2);
+    border: 1px solid var(--bdr);
+    color: var(--t1);
+    font-family: var(--mono);
+    font-size: 12px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    outline: none;
+    transition: border-color 0.15s, box-shadow 0.15s;
+    /* line-height + box-sizing keep all three controls at exactly 32px
+       tall when stacked or rowed alongside .btn. Without this they'd
+       differ by a pixel or two depending on browser default form
+       sizing, which is the visual glitch that prompted this whole
+       cleanup. */
+    line-height: 1.2;
+    box-sizing: border-box;
+    height: 32px;
+}
+.ctrl-input::placeholder {
+    color: var(--t3);
+}
+.ctrl-input:focus,
+.ctrl-select:focus,
+.ctrl-date:focus {
+    border-color: var(--cyan);
+    box-shadow: 0 0 0 2px rgba(6, 182, 212, 0.2);
+}
+.ctrl-input:disabled,
+.ctrl-select:disabled,
+.ctrl-date:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* Date input native chevron / icon harmonization — the browser
+   chevron color follows color-scheme, set on the html element above. */
+.ctrl-date {
+    color-scheme: inherit;
+}
+
+/* Select-specific: native browsers render the chevron with the text
+   color, so reaffirming color: var(--t1) keeps it visible. Width is
+   intentionally not set here — let consuming pages size selects to
+   their content needs. */
+.ctrl-select {
+    color: var(--t1);
+}
+
+/* --- Labels --- */
+
+.ctrl-label {
+    color: var(--t3);
+    font-size: 12px;
+    font-family: var(--mono);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+    line-height: 32px;
+    /* Aligning to 32px line-height matches .btn / .ctrl-input height
+       so a row of [label] [select] [button] sits on a single visual
+       baseline. */
+}
+
+/* --- Settings (gear) button — already widely used; canonicalize here. --- */
+
+.settings-btn {
+    width: 32px;
+    height: 32px;
+    background: transparent;
+    border: 1px solid var(--bdr);
+    color: var(--t2);
+    padding: 0;
+    border-radius: 6px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+    flex-shrink: 0;
+}
+.settings-btn:hover {
+    color: var(--cyan);
+    border-color: var(--cyan);
+}
+.settings-btn:focus-visible {
+    outline: none;
+    border-color: var(--cyan);
+    box-shadow: 0 0 0 2px rgba(6, 182, 212, 0.2);
+}
+
+/* --- Menu items inside the settings dropdown --- */
+
+.menu-item {
+    display: block;
+    padding: 10px 14px;
+    color: var(--t1);
+    text-decoration: none;
+    font-size: 13px;
+    font-family: var(--font);
+    transition: background 0.1s;
+    cursor: pointer;
+}
+.menu-item:hover {
+    background: var(--bg3);
+    color: var(--cyan);
+}
+.menu-item + .menu-item {
+    border-top: 1px solid var(--bdr);
+}

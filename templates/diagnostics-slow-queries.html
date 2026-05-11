@@ -1,0 +1,760 @@
+<!-- Version: 2.98.2 -->
+<!DOCTYPE html>
+<!-- theme:inline-fouc-start -->
+<script>(function(){var t=localStorage.getItem('theme');if(t==='light')document.documentElement.classList.add('light');})();</script>
+<!-- theme:inline-fouc-end -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Slow-query diagnostic — Aerodrome</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="/static/theme.css">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-height:100vh; }
+a { color:var(--cyan); }
+
+.hdr { display:flex; align-items:center; justify-content:space-between;
+       padding:14px 20px; background:var(--bg1); border-bottom:1px solid var(--bdr); }
+.hdr-left h1 { font-size:20px; font-weight:600; color:var(--t1); }
+.hdr-left h1 span { color:var(--cyan); }
+.hdr-right { display:flex; align-items:center; gap:16px; }
+.hdr-meta { font-size:11px; color:var(--t2); font-family:var(--mono); }
+
+.settings-wrap { position:relative; }
+.settings-menu { position:absolute; top:100%; right:0; margin-top:4px;
+                 background:var(--bg2); border:1px solid var(--bdr); border-radius:6px;
+                 min-width:200px; display:none; z-index:100;
+                 box-shadow:0 8px 24px rgba(0,0,0,.4); }
+.settings-menu.open { display:block; }
+.menu-item { display:block; padding:8px 14px; color:var(--t1);
+             text-decoration:none; font-size:13px; }
+.menu-item:hover { background:var(--bg3); color:var(--cyan); }
+
+.wrap { max-width:1100px; margin:0 auto; padding:24px 20px 60px; }
+.breadcrumb { color:var(--t3); font-size:12px; margin-bottom:10px;
+              font-family:var(--mono); }
+.breadcrumb a { color:var(--t2); text-decoration:none; }
+.breadcrumb a:hover { color:var(--cyan); }
+.breadcrumb .sep { color:var(--t3); padding:0 6px; }
+
+.page-title { font-size:26px; font-weight:600; margin-bottom:8px; }
+.page-sub { color:var(--t2); font-size:14px; line-height:1.6; margin-bottom:24px;
+            max-width:780px; }
+
+.card { background:var(--bg2); border:1px solid var(--bdr); border-radius:6px;
+        padding:20px; margin-bottom:16px; }
+.card-title { font-size:13px; font-weight:600; letter-spacing:.08em;
+              text-transform:uppercase; color:var(--t3); margin-bottom:14px; }
+.card-sub { color:var(--t3); font-size:12px; margin-top:-8px; margin-bottom:14px;
+            line-height:1.5; }
+
+.btn { background:var(--bg3); color:var(--t1); border:1px solid var(--bdr);
+       border-radius:4px; padding:6px 12px; font-size:12px; cursor:pointer;
+       font-family:var(--font); }
+.btn:hover { border-color:var(--cyan); color:var(--cyan); }
+.btn[disabled] { opacity:0.5; cursor:not-allowed; }
+.btn-primary { background:var(--cyan); color:var(--bg0); border-color:var(--cyan); }
+.btn-primary:hover { opacity:0.85; color:var(--bg0); }
+
+/* v2.84.4: copied-tag was referenced in markup since v2.84.1 but the CSS
+   rule was never added — the green "copied to clipboard" notification
+   never showed because the span had no styling and `.show` toggled a
+   non-existent class. Same 11px / --green / 1500ms-fade pattern as
+   performance.html and diagnostics-watchlist.html. */
+.copied-tag { color:var(--green); font-size:11px; margin-left:8px; opacity:0;
+              transition:opacity .2s; }
+.copied-tag.show { opacity:1; }
+
+.toolbar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
+
+/* Slow-query table */
+table.sq { width:100%; border-collapse:collapse; font-size:12px;
+           font-family:var(--mono); }
+table.sq th { text-align:left; color:var(--t3); font-weight:500;
+              padding:8px 10px; border-bottom:1px solid var(--bdr);
+              text-transform:uppercase; letter-spacing:.05em;
+              font-size:11px; }
+table.sq td { padding:10px; border-bottom:1px solid var(--bdr);
+              vertical-align:top; }
+table.sq tr.expandable { cursor:pointer; }
+table.sq tr.expandable:hover td { background:var(--bg3); }
+table.sq tr.detail-row td { padding:0; background:var(--bg1);
+                            border-bottom:2px solid var(--bdr); }
+table.sq tr.detail-row .detail-inner { padding:14px 16px; }
+table.sq tr.detail-row .detail-label { color:var(--t3); font-size:11px;
+                                       text-transform:uppercase;
+                                       letter-spacing:.05em; margin-top:10px; }
+table.sq tr.detail-row .detail-label:first-child { margin-top:0; }
+table.sq tr.detail-row pre { background:var(--bg0); padding:8px 12px;
+                             border-radius:4px; overflow-x:auto;
+                             font-size:11px; color:var(--t2);
+                             margin-top:4px; border:1px solid var(--bdr);
+                             white-space:pre-wrap; word-break:break-word; }
+
+.duration { font-weight:600; }
+.duration.fast { color:var(--green); }
+.duration.med { color:var(--orange); }
+.duration.slow { color:var(--red); }
+
+.endpoint-pill { display:inline-block; padding:2px 8px; background:var(--bg3);
+                 border-radius:3px; font-size:11px; color:var(--t2); }
+
+.relative-ts { color:var(--t3); font-size:11px; }
+
+/* Empty state */
+.empty { color:var(--t3); font-size:13px; padding:30px 20px;
+         text-align:center; line-height:1.6; }
+.empty code { background:var(--bg3); padding:2px 6px; border-radius:3px;
+              font-size:12px; }
+
+/* On-demand EXPLAIN */
+.explain-row { display:flex; gap:10px; flex-wrap:wrap; align-items:center;
+               margin-bottom:10px; }
+.explain-row label { font-size:12px; color:var(--t2); min-width:200px; }
+.explain-result { background:var(--bg1); border:1px solid var(--bdr);
+                  border-radius:4px; padding:14px; margin-top:14px;
+                  font-family:var(--mono); font-size:11px; }
+/* v2.84.5: spacing between stacked per-shape result slots so they
+   visually separate. Each slot wraps an .explain-result that already
+   has margin-top, so no extra spacing needed inside the slot itself —
+   just ensure the slots stack as block-level containers. */
+.explain-result-slot { display:block; }
+.explain-result .label { color:var(--t3); text-transform:uppercase;
+                         letter-spacing:.05em; font-size:10px; margin-top:8px; }
+.explain-result .label:first-child { margin-top:0; }
+.explain-result pre { background:var(--bg0); padding:6px 10px;
+                      border-radius:3px; margin-top:3px; overflow-x:auto;
+                      white-space:pre-wrap; word-break:break-word; }
+
+/* Tuning audit table */
+table.tuning { width:100%; border-collapse:collapse; font-size:12px; }
+table.tuning th { text-align:left; color:var(--t3); font-weight:500;
+                  padding:8px 10px; border-bottom:1px solid var(--bdr);
+                  text-transform:uppercase; letter-spacing:.05em;
+                  font-size:11px; }
+table.tuning td { padding:10px; border-bottom:1px solid var(--bdr);
+                  vertical-align:top; }
+table.tuning td.tuned-cell { font-family:var(--mono); white-space:nowrap;
+                             font-weight:600; }
+table.tuning td.tuned-cell.yes { color:var(--green); }
+table.tuning td.tuned-cell.no { color:var(--red); }
+table.tuning td.endpoint-cell { font-family:var(--mono); white-space:nowrap; }
+table.tuning td.notes-cell { color:var(--t2); }
+
+.config-line { color:var(--t3); font-size:12px; line-height:1.7;
+               font-family:var(--mono); }
+</style>
+</head>
+<body>
+
+<div class="hdr">
+    <div class="hdr-left">
+        <div class="dot" id="healthDot" title="System status"></div>
+        <a class="home-link" href="/"><svg class="brand-mark" width="32" height="32" viewBox="0 0 64 64" aria-hidden="true">
+                <circle cx="32" cy="32" r="28" fill="none" stroke="#06b6d4" stroke-width="3" opacity="0.3"/>
+                <circle cx="32" cy="32" r="20" fill="none" stroke="#06b6d4" stroke-width="3" opacity="0.55"/>
+                <circle cx="32" cy="32" r="12" fill="none" stroke="#06b6d4" stroke-width="3" opacity="0.8"/>
+                <circle cx="32" cy="32" r="4" fill="#06b6d4"/>
+                <line x1="32" y1="32" x2="52" y2="12" stroke="#06b6d4" stroke-width="3" stroke-linecap="round"/>
+            </svg><h1><span>Aerodrome</span></h1></a>
+    </div>
+    <div class="hdr-right">
+        <span class="hdr-meta">v<span id="appVersion">—</span> &middot; Updated <span id="ts">—</span></span>
+        <div class="settings-wrap">
+            <button class="settings-btn" onclick="toggleMenu(event)" aria-label="Settings" title="Settings">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            </button>
+            <div class="settings-menu" id="settingsMenu">
+                <a href="/status" class="menu-item">Status</a>
+                <a href="/diagnostics" class="menu-item">Diagnostics</a>
+                <a href="/logs" class="menu-item">Logs</a>
+                <a href="/documentation" class="menu-item">Documentation</a>
+                <a href="/config" class="menu-item">Configuration</a>
+                <a href="/updates" class="menu-item">Check for updates</a>
+
+                <div class="gear-menu-separator"></div>
+                <div class="theme-row">
+                    <div class="theme-label">Theme</div>
+                    <div class="theme-seg" role="group" aria-label="Theme preference">
+                        <button type="button" data-theme-choice="auto"  onclick="aerodromeSetTheme('auto')">Auto</button>
+                        <button type="button" data-theme-choice="dark"  onclick="aerodromeSetTheme('dark')">Dark</button>
+                        <button type="button" data-theme-choice="light" onclick="aerodromeSetTheme('light')">Light</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="wrap">
+    <div class="breadcrumb">
+        <a href="/">Home</a><span class="sep">›</span>
+        <a href="/diagnostics">Diagnostics</a><span class="sep">›</span>
+        Slow-query diagnostic
+    </div>
+    <h1 class="page-title">Slow-query diagnostic</h1>
+    <p class="page-sub">
+        Captures slow queries from instrumented endpoints into an in-memory
+        ring buffer so you can see what hung the page without having to
+        SSH into the box and grep journalctl. Currently instrumented:
+        <code style="font-family:var(--mono);font-size:12px;">/api/aircraft/&lbrace;icao&rbrace;</code>,
+        <code style="font-family:var(--mono);font-size:12px;">/api/all/drill</code>,
+        <code style="font-family:var(--mono);font-size:12px;">/api/stats</code>.
+        Threshold is <strong>500 ms</strong>; faster queries aren't recorded.
+    </p>
+
+    <div class="toolbar" style="margin-bottom:20px; padding-bottom:20px;
+                                 border-bottom:1px solid var(--bdr);">
+        <button class="btn" onclick="copyReport()" id="copyBtn">
+            Copy diagnostic report
+        </button>
+        <span class="copied-tag" id="copiedTag">copied to clipboard</span>
+        <a class="btn" href="/diagnostics">&larr; Back to Diagnostics</a>
+    </div>
+
+    <div class="card">
+        <div class="card-title">Recent slow queries</div>
+        <div class="card-sub">
+            Newest first. Click any row to expand SQL and EXPLAIN QUERY PLAN.
+            Resets on service restart.
+        </div>
+        <div class="toolbar">
+            <button class="btn btn-primary" onclick="loadRecent()">Refresh</button>
+            <button class="btn" onclick="clearRing()">Clear ring</button>
+            <span id="ringMeta" class="config-line" style="margin-left:10px;"></span>
+        </div>
+        <div id="recentBody"><div class="empty">Loading…</div></div>
+    </div>
+
+    <div class="card">
+        <div class="card-title">Query-plan checks</div>
+        <div class="card-sub">
+            Runs EXPLAIN QUERY PLAN against your actual database with the
+            ICAO that has the most sightings as the parameter (worst-case
+            for planner mis-pick). All three run automatically when this
+            page loads, sequentially, in the same order they fire when
+            you click an aircraft in production: detail_recent_sightings
+            (from <code style="font-family:var(--mono);font-size:11px;">/api/aircraft/&lbrace;icao&rbrace;</code>)
+            first, then drill_select and drill_count (from
+            <code style="font-family:var(--mono);font-size:11px;">/api/all/drill</code>).
+            First query pays cold-cache cost; the next two see warm cache
+            — same as a real page load. Use "Re-run" to refresh any single
+            check; "Re-run all" goes through the same sequence.
+        </div>
+        <div class="explain-row">
+            <button class="btn" onclick="runExplain('detail_recent_sightings')">
+                Re-run: Detail page recent-20
+            </button>
+            <button class="btn" onclick="runExplain('drill_select')">
+                Re-run: Sightings list (lifetime)
+            </button>
+            <button class="btn" onclick="runExplain('drill_count')">
+                Re-run: Sightings count (lifetime)
+            </button>
+            <button class="btn" onclick="runAllExplains()" style="margin-left:auto;">
+                Re-run all
+            </button>
+        </div>
+        <!-- v2.84.5/6: per-query result containers in production order
+             so all three checks render simultaneously and the visible
+             order matches the sequence the diagnostic actually runs in
+             (detail_recent_sightings first, since that's what a real
+             aircraft-detail page load fires first). -->
+        <div id="explainResult-detail_recent_sightings" class="explain-result-slot"></div>
+        <div id="explainResult-drill_select" class="explain-result-slot"></div>
+        <div id="explainResult-drill_count" class="explain-result-slot"></div>
+    </div>
+
+    <div class="card">
+        <div class="card-title">Connection tuning audit</div>
+        <div class="card-sub">
+            Each endpoint either uses the tuned connection helper (cache,
+            mmap, temp_store applied per your profile) or opens a default
+            connection. Untuned endpoints get the SQLite defaults regardless
+            of your Configuration → Database profile choice.
+        </div>
+        <div id="tuningBody"><div class="empty">Loading…</div></div>
+    </div>
+</div>
+
+<script>
+function esc(s){
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function fmtDuration(ms){
+    if (ms == null) return '—';
+    let cls = 'fast';
+    if (ms >= 5000) cls = 'slow';
+    else if (ms >= 1000) cls = 'med';
+    if (ms >= 1000) return `<span class="duration ${cls}">${(ms/1000).toFixed(1)} s</span>`;
+    return `<span class="duration ${cls}">${Math.round(ms)} ms</span>`;
+}
+
+function fmtRelativeTs(tsMs){
+    const now = Date.now();
+    const diff = now - tsMs;
+    if (diff < 60_000) return Math.round(diff/1000) + 's ago';
+    if (diff < 3_600_000) return Math.round(diff/60_000) + 'm ago';
+    if (diff < 86_400_000) return Math.round(diff/3_600_000) + 'h ago';
+    // v2.85.12: shared formatter respects display.time_format.
+    return formatDateTime(new Date(tsMs));
+}
+
+// State accumulator for the Copy diagnostic report builder. Each section
+// caches its last-fetched payload here so copyReport can stitch the
+// three sections into a single text blob without re-fetching. The
+// loadRecent / runExplain / loadTuning calls update these as a side
+// effect. Declared at script-top so it's hoisted before any of those
+// functions reference it (v2.84.0 shipped with the assignments but
+// without this declaration, which caused a ReferenceError on first
+// access; v2.84.3 adds the declaration).
+let _reportState = {
+    recent: null,        // last /api/diagnostics/slow-queries/recent response
+    explainResults: [],  // every Run plan-check click appended here
+    tuning: null,        // last /api/diagnostics/connection-tuning-audit response
+};
+
+let _expandedRow = null;
+
+function toggleDetail(idx, entry){
+    const body = document.getElementById('recentBody');
+    const existing = document.getElementById('detail-' + idx);
+    if (existing){
+        existing.remove();
+        _expandedRow = null;
+        return;
+    }
+    // Close any other open row
+    if (_expandedRow !== null){
+        const prev = document.getElementById('detail-' + _expandedRow);
+        if (prev) prev.remove();
+    }
+    _expandedRow = idx;
+
+    const planHtml = entry.plan && entry.plan.length
+        ? `<pre>${esc(entry.plan.join('\n'))}</pre>`
+        : `<pre>(no plan captured)</pre>`;
+
+    const detailRow = document.createElement('tr');
+    detailRow.id = 'detail-' + idx;
+    detailRow.className = 'detail-row';
+    detailRow.innerHTML = `
+        <td colspan="5">
+            <div class="detail-inner">
+                <div class="detail-label">SQL</div>
+                <pre>${esc(entry.sql || '(not captured)')}</pre>
+                <div class="detail-label">Parameters</div>
+                <pre>${esc(entry.params || '(none)')}</pre>
+                <div class="detail-label">Plan</div>
+                ${planHtml}
+                <div class="detail-label">Rows returned</div>
+                <pre>${entry.rows_returned == null ? '(unknown)' : entry.rows_returned.toLocaleString()}</pre>
+            </div>
+        </td>
+    `;
+    const dataRow = document.querySelector('tr[data-idx="' + idx + '"]');
+    if (dataRow) dataRow.after(detailRow);
+}
+
+async function loadRecent(){
+    const body = document.getElementById('recentBody');
+    const meta = document.getElementById('ringMeta');
+    body.innerHTML = '<div class="empty">Loading…</div>';
+    try {
+        const r = await fetch('/api/diagnostics/slow-queries/recent?limit=200');
+        const j = await r.json();
+        // v2.84.3: cache for the report builder (was missing in v2.84.0/1
+        // alongside the missing _reportState declaration).
+        _reportState.recent = j;
+        if (!j.ok){
+            body.innerHTML = `<div class="empty">Could not load.</div>`;
+            return;
+        }
+        meta.textContent = `${j.entries.length} of ${j.capacity} ring slots used`;
+        if (j.entries.length === 0){
+            body.innerHTML = `
+                <div class="empty">
+                    No slow queries recorded yet. Either nothing's been slow
+                    (good), or the service was restarted recently (the ring
+                    is in-memory and clears on restart).
+                </div>`;
+            return;
+        }
+        const rows = j.entries.map((e, idx) => `
+            <tr class="expandable" data-idx="${idx}"
+                onclick='toggleDetail(${idx}, ${esc(JSON.stringify(e))})'>
+                <td>${fmtDuration(e.duration_ms)}</td>
+                <td><span class="endpoint-pill">${esc(e.endpoint)}</span></td>
+                <td>${esc(e.label)}</td>
+                <td>${e.rows_returned == null ? '—' : e.rows_returned.toLocaleString()}</td>
+                <td><span class="relative-ts">${fmtRelativeTs(e.ts_ms)}</span></td>
+            </tr>
+        `).join('');
+        body.innerHTML = `
+            <table class="sq">
+                <thead>
+                    <tr>
+                        <th>Duration</th>
+                        <th>Endpoint</th>
+                        <th>Query label</th>
+                        <th>Rows</th>
+                        <th>When</th>
+                    </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table>
+        `;
+    } catch (e) {
+        body.innerHTML = `<div class="empty">Error: ${esc(e.message || e)}</div>`;
+    }
+}
+
+async function clearRing(){
+    if (!confirm('Clear all recorded slow queries? Cannot be undone.')) return;
+    try {
+        await fetch('/api/diagnostics/slow-queries/clear', { method: 'POST' });
+        await loadRecent();
+    } catch (e) {
+        alert('Clear failed: ' + (e.message || e));
+    }
+}
+
+async function runExplain(label){
+    // v2.84.5: each query shape now has its own result slot so all three
+    // checks can render simultaneously. The button click only refreshes
+    // the matching slot — siblings keep showing their last result rather
+    // than blinking out.
+    const slot = document.getElementById('explainResult-' + label);
+    if (!slot) return;
+    slot.innerHTML = `<div class="explain-result"><div class="label">${esc(label)} — running…</div></div>`;
+    try {
+        const r = await fetch('/api/diagnostics/slow-queries/explain?query='
+                              + encodeURIComponent(label));
+        const j = await r.json();
+        if (!j.ok){
+            slot.innerHTML = `<div class="explain-result">
+                <div class="label">${esc(label)} — error</div>
+                <pre>${esc(j.error || 'unknown')}</pre>
+            </div>`;
+            return;
+        }
+        // Cache for the copy-report builder. Replace any prior entry
+        // for the same label so the report shows current state — earlier
+        // versions of this code accumulated every click forever, which
+        // bloated the report with stale results from re-runs.
+        _reportState.explainResults = _reportState.explainResults
+            .filter(e => e.query_label !== j.query_label);
+        _reportState.explainResults.push(j);
+        const planText = j.plan && j.plan.length
+            ? j.plan.join('\n')
+            : '(no plan returned)';
+        slot.innerHTML = `
+            <div class="explain-result">
+                <div class="label">Query</div>
+                <pre>${esc(j.query_label)}</pre>
+                <div class="label">Sample ICAO (highest sighting count)</div>
+                <pre>${esc(j.sample_icao)} (${j.sample_sighting_count.toLocaleString()} sightings)</pre>
+                <div class="label">SQL</div>
+                <pre>${esc(j.sql)}</pre>
+                <div class="label">Parameters</div>
+                <pre>${esc(JSON.stringify(j.params))}</pre>
+                <div class="label">EXPLAIN QUERY PLAN</div>
+                <pre>${esc(planText)}</pre>
+                <div class="label">Actual execution time on your hardware</div>
+                <pre>${fmtDuration(j.duration_ms)}</pre>
+            </div>
+        `;
+    } catch (e) {
+        slot.innerHTML = `<div class="explain-result">
+            <div class="label">${esc(label)} — error</div>
+            <pre>${esc(e.message || e)}</pre>
+        </div>`;
+    }
+}
+
+// v2.84.5: run all three plan checks. v2.84.6: changed from Promise.all
+// to sequential await in production order. Three reasons parallel was
+// wrong for a measurement diagnostic:
+//
+//   1. OS page-cache contention — all three queries hit all_sightings
+//      filtered by the same ICAO. Parallel execution fights for the
+//      same I/O bandwidth, inflating every reported duration above
+//      what a single query would take in isolation.
+//
+//   2. SQLite per-connection cache mixing — each connection has its
+//      own 32MB cache (balanced profile). Three concurrent connections
+//      means 96MB in flight plus WAL coordination overhead. Correct
+//      (WAL handles concurrent readers), but adds noise.
+//
+//   3. Cold-vs-warm cache framing — in parallel, "which query ran
+//      first" is undefined and timings become unhelpful composites.
+//
+// Production order matches real page-load flow: when the user opens
+// /aircraft/{ICAO}, the frontend first fires /api/aircraft/{ICAO}
+// (which runs detail_recent_sightings as part of the detail data
+// fetch), then fires /api/all/drill (which runs drill_select followed
+// by drill_count). Running in that order here gives the user timings
+// that match their real experience — first query pays cold-cache
+// cost, the next two see partially warm cache, same as production.
+//
+// "Re-run all" goes through the same sequence so a deliberate refresh
+// matches first-load behaviour.
+async function runAllExplains(){
+    const labels = ['detail_recent_sightings', 'drill_select', 'drill_count'];
+    for (const label of labels) {
+        await runExplain(label);
+    }
+}
+
+async function loadTuning(){
+    const body = document.getElementById('tuningBody');
+    try {
+        const r = await fetch('/api/diagnostics/connection-tuning-audit');
+        const j = await r.json();
+        _reportState.tuning = j;
+        if (!j.ok){
+            body.innerHTML = `<div class="empty">Could not load.</div>`;
+            return;
+        }
+        const rows = j.endpoints.map(e => `
+            <tr>
+                <td class="endpoint-cell">${esc(e.endpoint)}</td>
+                <td class="tuned-cell ${e.tuned ? 'yes' : 'no'}">
+                    ${e.tuned ? '✓ tuned' : '✗ untuned'}
+                </td>
+                <td class="notes-cell">${esc(e.notes)}</td>
+            </tr>
+        `).join('');
+        body.innerHTML = `
+            <table class="tuning">
+                <thead>
+                    <tr><th>Endpoint</th><th>Tuned</th><th>Notes</th></tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table>
+            <div class="config-line" style="margin-top:14px;">
+                Verified in v${esc(j.verified_in_version)} · helper:
+                <code style="background:var(--bg3);padding:2px 6px;border-radius:3px;">
+                ${esc(j.tuned_helper)}</code>
+            </div>
+        `;
+    } catch (e) {
+        body.innerHTML = `<div class="empty">Error: ${esc(e.message || e)}</div>`;
+    }
+}
+
+function toggleMenu(e){
+    e.stopPropagation();
+    document.getElementById('settingsMenu').classList.toggle('open');
+}
+document.addEventListener('click', e => {
+    const menu = document.getElementById('settingsMenu');
+    const btn = document.querySelector('.settings-btn');
+    if (menu && !menu.contains(e.target) && btn && !btn.contains(e.target)){
+        menu.classList.remove('open');
+    }
+});
+
+// Header version + updated-at, matching the canonical pattern from
+// performance.html / status.html. The new header uses #appVersion and
+// #ts (not #ver — that was the v2.84.0 custom header which is gone).
+fetch('/api/status').then(r => r.json()).then(j => {
+    if (!j) return;
+    if (j.version) {
+        const v = document.getElementById('appVersion');
+        if (v) v.textContent = j.version;
+    }
+    const ts = document.getElementById('ts');
+    if (ts) {
+        // v2.85.12: shared formatter respects display.time_format.
+        // Was hard-coded 24h here; matches what the other admin
+        // headers do via the same helper.
+        ts.textContent = formatDateTime(new Date());
+    }
+}).catch(() => {});
+
+// Build a plain-text report from the cached state. Sections render in
+// the same order they appear on the page so a reader following along
+// in chat sees what's where. Empty sections get a one-line "no data"
+// note rather than being omitted — silence is ambiguous; a stated
+// absence is informative.
+function buildReport(){
+    const lines = [];
+    const now = new Date();
+    lines.push('=== Aerodrome slow-query diagnostic ===');
+    const v = document.getElementById('appVersion');
+    lines.push('Generated:   ' + now.toISOString());
+    lines.push('Aerodrome:   v' + (v ? v.textContent : '?'));
+    lines.push('');
+
+    // --- Recent slow queries ---
+    lines.push('--- Recent slow queries ---');
+    const rec = _reportState.recent;
+    if (!rec || !rec.ok) {
+        lines.push('  (not loaded yet — click Refresh on the page first)');
+    } else if (rec.entries.length === 0) {
+        lines.push('  (none — either nothing slow or service restarted recently)');
+        lines.push('  Ring capacity: ' + rec.capacity);
+    } else {
+        lines.push('  ' + rec.entries.length + ' of ' + rec.capacity + ' ring slots used');
+        lines.push('');
+        rec.entries.forEach((e, i) => {
+            const when = new Date(e.ts_ms).toISOString();
+            const dur = e.duration_ms >= 1000
+                ? (e.duration_ms / 1000).toFixed(1) + ' s'
+                : Math.round(e.duration_ms) + ' ms';
+            lines.push('  [' + (i + 1) + '] ' + when);
+            lines.push('      endpoint: ' + e.endpoint);
+            lines.push('      label:    ' + e.label);
+            lines.push('      duration: ' + dur);
+            lines.push('      rows:     ' +
+                       (e.rows_returned == null ? '(unknown)' : e.rows_returned));
+            if (e.sql) {
+                lines.push('      sql:      ' +
+                           e.sql.replace(/\s+/g, ' ').trim().substring(0, 200));
+            }
+            if (e.params) {
+                lines.push('      params:   ' + e.params);
+            }
+            if (e.plan && e.plan.length) {
+                lines.push('      plan:');
+                e.plan.forEach(p => lines.push('        - ' + p));
+            }
+            lines.push('');
+        });
+    }
+    lines.push('');
+
+    // --- On-demand EXPLAIN runs ---
+    lines.push('--- Query-plan checks run this session ---');
+    const explains = _reportState.explainResults;
+    if (!explains || explains.length === 0) {
+        lines.push('  (none — click a Run plan check button on the page)');
+    } else {
+        explains.forEach((j, i) => {
+            const dur = j.duration_ms >= 1000
+                ? (j.duration_ms / 1000).toFixed(1) + ' s'
+                : Math.round(j.duration_ms) + ' ms';
+            lines.push('  [' + (i + 1) + '] ' + j.query_label);
+            lines.push('      sample ICAO:  ' + j.sample_icao +
+                       ' (' + j.sample_sighting_count + ' sightings)');
+            lines.push('      duration:     ' + dur);
+            lines.push('      sql:          ' +
+                       j.sql.replace(/\s+/g, ' ').trim().substring(0, 200));
+            lines.push('      params:       ' + JSON.stringify(j.params));
+            if (j.plan && j.plan.length) {
+                lines.push('      plan:');
+                j.plan.forEach(p => lines.push('        - ' + p));
+            }
+            lines.push('');
+        });
+    }
+    lines.push('');
+
+    // --- Tuning audit ---
+    lines.push('--- Connection tuning audit ---');
+    const tn = _reportState.tuning;
+    if (!tn || !tn.ok) {
+        lines.push('  (not loaded — refresh the page)');
+    } else {
+        lines.push('  Verified in: v' + tn.verified_in_version);
+        lines.push('  Helper:      ' + tn.tuned_helper);
+        lines.push('');
+        tn.endpoints.forEach(e => {
+            const tag = e.tuned ? '[TUNED]  ' : '[UNTUNED]';
+            lines.push('  ' + tag + ' ' + e.endpoint);
+            if (e.notes) lines.push('           ' + e.notes);
+        });
+    }
+
+    return lines.join('\n');
+}
+
+async function copyReport(){
+    const text = buildReport();
+    if (!text) return;
+
+    // Three-tier fallback, matching the pattern used on the Performance
+    // and Watchlist diagnostic pages. Clipboard API requires a secure
+    // context (HTTPS or localhost), but plenty of Aerodrome installs
+    // are accessed over plain HTTP on a LAN. When the modern API is
+    // unavailable we fall through to execCommand('copy') via a temp
+    // textarea, which works on HTTP. If even that fails (rare), tier 3
+    // shows a dismissible modal with the text in a selectable <pre>.
+    const flash = () => {
+        const tag = document.getElementById('copiedTag');
+        tag.textContent = 'copied to clipboard';
+        tag.classList.add('show');
+        setTimeout(() => tag.classList.remove('show'), 1500);
+    };
+
+    // Tier 1 — modern async Clipboard API (HTTPS / localhost only)
+    if (navigator.clipboard && window.isSecureContext) {
+        try {
+            await navigator.clipboard.writeText(text);
+            flash();
+            return;
+        } catch (e) { /* fall through */ }
+    }
+
+    // Tier 2 — execCommand via hidden textarea (works on HTTP LAN installs)
+    try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.top = '0';
+        ta.style.left = '0';
+        ta.style.width = '2em';
+        ta.style.height = '2em';
+        ta.style.opacity = '0';
+        ta.setAttribute('readonly', '');
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        ta.setSelectionRange(0, text.length);
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        if (ok) { flash(); return; }
+    } catch (e) { /* fall through to tier 3 */ }
+
+    // Tier 3 — last resort modal so the user can manually select-and-copy
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);' +
+        'display:flex;align-items:center;justify-content:center;z-index:9999;';
+    const dialog = document.createElement('div');
+    dialog.style.cssText = 'background:var(--bg2);border:1px solid var(--bdr);' +
+        'border-radius:6px;padding:18px;max-width:80%;max-height:80%;' +
+        'display:flex;flex-direction:column;gap:10px;';
+    dialog.innerHTML =
+        '<div style="color:var(--t2);font-size:12px;">' +
+            'Clipboard API blocked. Select all in the box below and copy manually.' +
+        '</div>' +
+        '<textarea readonly style="flex:1;width:60vw;height:50vh;' +
+            'background:var(--bg0);color:var(--t1);border:1px solid var(--bdr);' +
+            'border-radius:4px;padding:10px;font-family:var(--mono);' +
+            'font-size:11px;"></textarea>' +
+        '<button class="btn" style="align-self:flex-end;">Close</button>';
+    dialog.querySelector('textarea').value = text;
+    dialog.querySelector('button').onclick = () => overlay.remove();
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+    dialog.querySelector('textarea').focus();
+    dialog.querySelector('textarea').select();
+}
+
+loadRecent();
+loadTuning();
+runAllExplains();
+</script>
+
+</body>
+</html>

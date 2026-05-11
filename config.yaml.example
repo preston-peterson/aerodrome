@@ -1,0 +1,465 @@
+# =============================================================================
+# Version: 2.98.2
+# Aerodrome — Example/Reference Configuration
+# =============================================================================
+# This is the canonical default config shipped with each Aerodrome release.
+#
+# On first install, install.sh copies this file to config.yaml.
+#
+# On upgrade, Aerodrome compares your live config.yaml against this file at
+# startup. If this example contains keys your config is missing, Aerodrome
+# backs up your config as config.yaml.bak.<timestamp> and adds the missing
+# keys with their defaults. Your existing values are never touched.
+#
+# To customize: edit config.yaml (not this file), then:
+#   sudo systemctl restart aerodrome
+# =============================================================================
+
+# --- ADS-B Receiver ---
+# IMPORTANT: Change this to your actual receiver's IP address before starting.
+receiver:
+  ip: "192.0.2.10"           # Replace with your receiver IP
+  port: 8080
+  path: "/data/aircraft.json"
+  poll_interval: 60          # Seconds between polls
+
+  # Receiver's physical location — used to compute distance to each aircraft.
+  # Leave both as null to disable the Distance column.
+  # Find your coords at: https://www.latlong.net/
+  latitude: null             # e.g.  37.7749
+  longitude: null            # e.g. -122.4194
+
+  # Unit shown in the Distance column. Options:
+  #   "mi"  — statute miles
+  #   "nmi" — nautical miles (aviation standard)
+  #   "km"  — kilometers
+  distance_unit: "mi"
+
+  # Which external tracker the "Track ↗" links in the aircraft tables point
+  # to. Options:
+  #   "airplanes_live" — globe.airplanes.live (default, clean tar1090 UI)
+  #   "flightaware"    — flightaware.com (US-centric, most complete data)
+  #   "flightradar24"  — flightradar24.com (polished UI, widely known)
+  #   "airnavradar"    — airnavradar.com (formerly RadarBox)
+  #   "planefinder"    — planefinder.net
+  track_link_provider: "airplanes_live"
+
+# --- Web Server ---
+# With host "0.0.0.0" the UI is reachable from any device on your LAN
+# at http://YOUR_SERVER_IP:8000
+web:
+  host: "0.0.0.0"
+  port: 8000
+
+# --- Display preferences ---
+# v2.52.0: how dates are formatted in the UI and which date formats the
+# search box accepts. ISO format (YYYY-MM-DD) is ALWAYS accepted regardless
+# of this setting because it's unambiguous; this option just controls the
+# additional locale-specific format(s) that the parser also recognizes.
+#
+# Options:
+#   "MDY" — US convention. Accepts "4/29/26" and "4/29/2026". Search
+#           help and chip rendering use M/D/Y order.
+#   "DMY" — European convention. Accepts "29/4/26" and "29/4/2026".
+#           Search help and chip rendering use D/M/Y order.
+#   "ISO" — ISO 8601 only. Accepts "2026-04-29". Strictest option;
+#           rejects all slash-separated dates as ambiguous.
+#
+# Restart Aerodrome after changing this.
+display:
+  date_format: "MDY"
+  # v2.85.11: time_format controls how times render in the UI.
+  #   "auto" — respects the user's browser locale (US locales render as
+  #            12-hour with AM/PM, most others render as 24-hour). This
+  #            is the default and works well for mixed audiences.
+  #   "12h"  — always 12-hour with AM/PM, regardless of locale.
+  #   "24h"  — always 24-hour, regardless of locale.
+  # Live-reloadable (no restart needed).
+  time_format: "auto"
+
+# --- Data Retention (days) ---
+# Each tab keeps its own history. Data older than these limits is
+# automatically cleaned up. Change and restart to adjust.
+#
+# Disk usage at steady state, by retention window. The two reference
+# installs we have data for bracket the typical range:
+#
+#   Quiet airspace (suburban, modest antenna):
+#     ~50k all_sightings rows/day, ~9 MB/day DB growth
+#       7 days  →   60 MB     30 days →  270 MB
+#      60 days  →  540 MB     90 days →  810 MB
+#
+#   Busy airspace (urban, high-gain antenna):
+#     ~715k all_sightings rows/day, ~118 MB/day DB growth
+#       7 days  →  830 MB     30 days →  3.5 GB
+#      60 days  →  7.0 GB     90 days → 10.6 GB
+#
+# Bytes-per-row is consistent at ~165-175 across installs (covers raw
+# rows, indexes, rollups, WAL). Daily row count varies with location
+# and antenna setup. After ~3 days of data, Aerodrome measures your
+# install's actual rate and surfaces real numbers in Status → Capacity
+# and in the Configuration → Retention tab. Use those rather than
+# these estimates if your install has been running long enough.
+#
+# If your Stats tab feels slow on a Pi-class device, reducing all_days
+# to 7-10 is the easiest fix. The Configuration → Retention tab edits
+# these live without a restart.
+retention:
+  military_days: 30
+  watchlist_days: 30
+  all_days: 30
+
+# --- Database ---
+data:
+  db_file: "aircraft_history.db"
+
+  # --- SQLite tuning profile (v2.50.13) ---
+  # Controls how much memory SQLite is allowed to use for caching and
+  # memory-mapping the database file, plus where temporary B-trees live
+  # (disk vs RAM). Bigger values trade memory for faster queries on
+  # cold-cache or wide-window scans.
+  #
+  # Profiles:
+  #   auto         — pick based on total system memory (default; recommended)
+  #                  <1.5 GB → conservative
+  #                  <6 GB   → balanced
+  #                  <24 GB  → aggressive
+  #                  ≥24 GB  → high_memory
+  #   default      — SQLite stock defaults (2 MB cache, no mmap, disk temp)
+  #   conservative — 8 MB cache, 32 MB mmap, RAM temp (Pi-class hardware)
+  #   balanced     — 32 MB cache, 128 MB mmap, RAM temp (small VPS / SBC)
+  #   aggressive   — 64 MB cache, 256 MB mmap, RAM temp (workstation)
+  #   high_memory  — 128 MB cache, 512 MB mmap, RAM temp (lots of RAM to spare)
+  #
+  # Pragmas are per-connection; changing this requires a service restart
+  # to take effect across all read paths.
+  tuning:
+    profile: "auto"
+
+# --- Logging ---
+logging:
+  level: "INFO"              # DEBUG, INFO, WARNING, ERROR
+  dir: "logs"
+
+# --- Military Detection Rules ---
+military:
+  use_db_flags: true
+
+  # Default color applied to any detected military aircraft that isn't listed
+  # under 'special_aircraft' below. Shown as a left-border accent and a small
+  # label chip in Live / Watchlist / All / Military tabs.
+  default_color: "#ef4444"   # red
+
+  callsign_prefixes:
+    - "RCH"       # Air Mobility Command (C-17, C-5)
+    - "VV"        # Special Air Mission (VIP transport)
+    - "NATO"      # NATO flights
+    - "ARMY"      # US Army
+    - "NAVY"      # US Navy
+    - "PAT"       # Patrol aircraft
+
+  icao_prefixes:
+    - "AE"        # US military block
+
+  special_aircraft:
+    "ADFDF9":
+      label: "Air Force 1"
+      color: "#3b82f6"
+    "AE4AE6":
+      label: "Air Force 2"
+      color: "#22c55e"
+
+# --- Watchlist ---
+# Each entry needs one identifier + an optional label.
+# You can also add/remove from the Watchlist tab in the web UI.
+#
+# watchlist:
+#   - tail: "N12345"
+#     label: "Friend's Cessna"
+#   - icao: "A1B2C3"
+#     label: "Cool plane"
+#   - callsign: "UAL"
+#     label: "United flights"
+
+watchlist: []
+
+# --- Watchlist alerts ---
+# Flash the Watchlist tab in the header when a watchlist aircraft is seen.
+# Helpful for catching activity without needing to eyeball the tab.
+watchlist_alerts:
+  enabled: true
+
+  # When to trigger the alert. Options:
+  #   "continuous"             — any time a watchlist aircraft is visible,
+  #                              keeps alerting until nothing is in range.
+  #   "continuous_dismissable" — (default) same as "continuous" but clicking
+  #                              the tab dismisses it until the next new
+  #                              sighting. Dismissal persists across page
+  #                              reloads.
+  #   "live"                   — only while a watchlist aircraft is actively
+  #                              transmitting right now (present in the live
+  #                              feed from the receiver). The alert turns
+  #                              off automatically when the aircraft stops
+  #                              transmitting or leaves range. No dismissal
+  #                              needed.
+  #
+  # Note: a legacy "new" value is still accepted for backward compatibility
+  # but is treated as "continuous_dismissable" — it was a duplicate option
+  # that has been removed (v2.50.23). Existing configs continue to work
+  # without intervention; saving from the UI rewrites it to the canonical
+  # value automatically.
+  trigger: "continuous_dismissable"
+
+  # Visual effect. Options:
+  #   "pulse_dot"  — soft pulse animation + a colored dot next to the tab
+  #   "pulse"      — just the pulse animation
+  #   "dot"        — just the colored dot (no animation)
+  #   "flash"      — rapid alternating background for a few seconds
+  effect: "pulse_dot"
+
+  # Color used for the alert (any hex color).
+  color: "#f59e0b"
+
+# --- Notifications (ntfy push notifications to your phone) ---
+# Send push notifications to your phone for important events. Aerodrome uses
+# ntfy (https://ntfy.sh) — a lightweight open-source notification service.
+#
+# Two setup paths:
+#
+#   1. Public ntfy.sh (easiest)
+#      Set `url` to `https://ntfy.sh/your-unique-topic-name-here`. Pick a
+#      hard-to-guess topic (the topic is your only auth). Install the ntfy
+#      mobile app and subscribe to the same URL. Done.
+#
+#   2. Self-hosted ntfy (private, recommended for home networks)
+#      Run ntfy on the same server as Aerodrome. Set `url` to
+#      `http://localhost:PORT/your-topic`. The Notifications tab in the
+#      Configuration web UI has a one-click installer.
+#
+# For notifications to reach your phone when off your home network, don't
+# port-forward. Use a VPN or overlay network like Tailscale — see the
+# "Remote access" section of the README.
+notifications:
+  enabled: false               # Master switch; when false no notifications are sent
+
+  # The ntfy server + topic to post to. Empty string = disabled.
+  # Examples:
+  #   "https://ntfy.sh/aerodrome-bob-9k3m7x"
+  #   "http://localhost:2586/aerodrome-local"
+  url: ""
+
+  # v2.43.0: optional. Public URL where your phone can reach Aerodrome.
+  # Used to build the tap-to-open action on notifications — a watchlist
+  # hit tap lands you on the Watchlist tab with the aircraft highlighted,
+  # a receiver-offline tap lands you on /status, etc. Also applies a
+  # "Track" button on watchlist/special-aircraft alerts that opens
+  # airplanes.live directly.
+  #
+  # If your phone is on the same LAN as Aerodrome, this is typically
+  # http://aerodrome.local:8000 or http://<server-ip>:8000. If you
+  # reach Aerodrome via Tailscale, WireGuard, or a reverse proxy, use
+  # that URL instead. Leave blank if your phone can't reach Aerodrome
+  # directly — notifications still fire, they just won't have the tap
+  # action. No trailing slash; Aerodrome strips it either way.
+  public_url: ""
+
+  # Notification priority. ntfy values: "min", "low", "default", "high", "max".
+  # "default" rings the phone normally. "high" bypasses some Do Not Disturb
+  # settings (platform-dependent). "max" is reserved for critical alerts.
+  priority: "default"
+
+  # Which events should trigger a notification. All defaults are OFF except
+  # receiver_offline and receiver_recovered — those are the "is my receiver
+  # still working?" events most users want. Opt into the others as desired.
+  events:
+    receiver_offline: true     # Collector hasn't reached the receiver for N polls
+    receiver_recovered: true   # Receiver came back after being offline
+    watchlist_hit: false       # A watchlist aircraft was sighted
+    new_record: false          # A new all-time record was set (fastest, etc.)
+    special_aircraft: false    # An aircraft listed in military.special_aircraft was seen
+    daily_summary: false       # End-of-day summary (counts, records, watchlist hits)
+    emergency_squawk: false    # v2.48.0: an aircraft appeared squawking 7500/7600/7700.
+                               # Default OFF: a misconfigured transponder on the ground
+                               # can stick on 7700 indefinitely — opt in when you've
+                               # confirmed your local area doesn't have one of those.
+                               # Cooldown defaults to 60 min per ICAO (longer than
+                               # watchlist's 10 because emergency codes typically
+                               # persist for the duration of the incident).
+    capacity_low: true         # v2.50.31: disk capacity dropped below your headroom
+                               # threshold or absolute free-disk floor. Fires once
+                               # when crossed, again ("recovered") once cleared
+                               # (with hysteresis to prevent flap). Default ON
+                               # because filling the disk silently is a serious
+                               # operational hazard. See notifications.capacity
+                               # below to tune thresholds.
+    capacity_recovered: true   # The "back to normal" companion to capacity_low.
+
+  # Per-event cooldown in minutes. Suppresses repeated notifications for the
+  # same aircraft within this window. Applies only to per-aircraft events
+  # (watchlist_hit, special_aircraft, emergency_squawk). Offline/recovered/
+  # new_record are always sent. daily_summary fires at its configured time
+  # regardless.
+  cooldown_minutes:
+    watchlist_hit: 10          # 10-minute cooldown per ICAO
+    special_aircraft: 30       # 30-minute cooldown per ICAO
+    emergency_squawk: 60       # 60-minute cooldown per ICAO (v2.48.0)
+
+  # Overall safety ceiling on notifications per hour (across all event types).
+  # If something goes pathologically wrong we'd rather drop alerts than spam
+  # the phone. 0 = unlimited (not recommended).
+  rate_limit_per_hour: 20
+
+  # Quiet hours — suppress notifications during a window each day. Useful for
+  # avoiding receiver-offline alerts in the middle of the night when you
+  # probably don't care. receiver_recovered also respects this.
+  quiet_hours:
+    enabled: false
+    start: "22:00"             # HH:MM in the stats timezone
+    end: "07:00"
+
+  # Detection thresholds for receiver_offline.
+  receiver_offline:
+    # Number of consecutive failed polls before declaring the receiver offline.
+    # With the default poll_interval of 60 seconds, 5 polls = ~5 minutes.
+    consecutive_failed_polls: 5
+
+  # Daily summary delivery time (only used when events.daily_summary = true).
+  # HH:MM in the stats timezone. Default 20:00 (8pm local).
+  daily_summary:
+    time: "20:00"
+
+  # v2.50.31: disk capacity alert thresholds. Fires events.capacity_low when
+  # EITHER condition is tripped:
+  #   1. Headroom (effective_free_disk / projected_settled_db_size) below
+  #      headroom_threshold. Catches the "your retention setting is on track
+  #      to fill the disk" planning failure.
+  #   2. Absolute free disk below max(disk_free_floor_mb, disk_free_pct_floor
+  #      × total_disk). Catches the "something is eating disk regardless"
+  #      case. The percent-of-total component adapts to install scale —
+  #      1 GB is fine on a 32 GB SD card, absurd on an 80 GB VPS.
+  # Once an alert fires, the condition has to recover by 10% above the
+  # threshold before the alert clears (hysteresis prevents flap-fire when
+  # values wobble around the boundary).
+  capacity:
+    enabled: true                  # master toggle for the alert evaluation
+    recovery_notification: true    # send "back to normal" when condition clears
+    headroom_threshold: 1.2        # alert when headroom_ratio < this
+    disk_free_floor_mb: 1024       # alert when free disk < this many MB
+    disk_free_pct_floor: 0.05      # …or this fraction of total disk, whichever larger
+
+
+# Configure which stats appear on the Stats tab and how the page behaves.
+# Each stat card can be toggled individually. "Today" is defined by the
+# configured timezone (see `timezone` below).
+stats:
+  enabled: true                # Set false to hide the Stats tab entirely
+
+  # Timezone used for "today" calculations. Must be an IANA name (e.g.
+  # "America/Los_Angeles", "Europe/London", "UTC"). If invalid or empty,
+  # the server's system timezone is used.
+  timezone: ""
+
+  # Auto-refresh interval for the Stats page, in seconds.
+  # Minimum 30, maximum 3600. Set to 0 to disable auto-refresh.
+  refresh_interval: 300        # 5 minutes
+
+  # "Longest continuous track" defines continuity by a maximum gap between
+  # sightings. If the receiver doesn't hear from an aircraft for longer
+  # than this many minutes, the current track ends and the next sighting
+  # starts a new track. This prevents a common artifact where an ICAO
+  # that appeared briefly at 01:00 and reappeared at 23:00 would show as
+  # a 22h "continuous track" when in reality it was two separate flights.
+  # Options typically: 2, 5, 10, 15, or 30 minutes. Valid range 1-60.
+  track_gap_minutes: 5
+
+  # Alerts when a new all-time record is set (fastest, highest, lowest,
+  # furthest, peak simultaneous, longest track). When enabled, the Stats tab
+  # gets a colored dot and each card that holds a new record gets a matching
+  # highlight (border + "NEW RECORD" chip + brief value pulse). Once the user
+  # has had the Stats tab open for `dismiss_after_seconds`, the alerts clear
+  # automatically. Dismissals persist across page reloads until a newer
+  # record is set. First-ever page load does NOT fire alerts for existing
+  # records — the baseline is initialized silently.
+  new_record_alerts:
+    enabled: true              # opt in/out of new-record alerts
+    color: "#22c55e"           # hex color for tab dot, card border, and chip
+    dismiss_after_seconds: 30  # seconds on the Stats tab before alerts clear
+  # Category master toggles. Each category is a collapsible section on the
+  # Stats page. Disabling a category hides the entire section (including its
+  # header) regardless of individual card toggles below. Individual card
+  # preferences are preserved, so re-enabling the category restores them.
+  groups:
+    today: true                # "Today" volume counters (unique, peak, avg, mil, watchlist, first/last)
+    extremes: true             # Today's superlatives (furthest, fastest, highest, lowest, etc.)
+    composition: true          # What kinds of aircraft flew today (types, operators, branches, categories)
+    patterns: true             # Hour-by-hour activity chart
+    history: true              # Cross-day trends (first-time-seen, 7-day counts, watchlist frequency)
+    records: true              # All-time records (since Aerodrome started tracking)
+    coverage: true             # Reception coverage visualizations (polar rose + distance histogram)
+
+  # Order in which the sections appear on the Stats page. Drag-and-drop in
+  # the Configuration page to rearrange. If empty or missing, the default
+  # canonical order is used: today, extremes, composition, patterns, history,
+  # records, coverage. Unknown group IDs are ignored; groups not
+  # listed here are appended in canonical order at the end.
+  groups_order: []
+
+  # Range rose / coverage chart settings. Used by the 'range_rose' and
+  # 'distance_histogram' cards in the Coverage section.
+  range_rose:
+    # Time window for computing the coverage density. One of:
+    #   "today"    — today only (midnight to now in configured timezone)
+    #   "7d"       — last 7 days
+    #   "30d"      — last 30 days
+    #   "all_time" — every position ever recorded
+    #   "custom"   — use window_custom_days below
+    window: "30d"
+    window_custom_days: 14     # only used when window == "custom" (1-365)
+
+    # Distance bucket upper bounds, in the configured distance_unit (receiver.distance_unit).
+    # Example with [50, 100, 150, 200, 250] creates 6 rings:
+    #   <50, 50-100, 100-150, 150-200, 200-250, 250+
+    # Must be 2-10 strictly-increasing positive numbers.
+    distance_buckets: [50, 100, 150, 200, 250]
+
+  # Which stat cards are visible. All default to true. Turn off anything
+  # you don't want to see. Note: a card is only shown if its parent category
+  # (see 'groups' above) is also enabled.
+  cards:
+    # Volume — counts of activity today
+    unique_today: true         # Total unique aircraft seen today
+    peak_simultaneous: true    # Highest live count at any moment today
+    average_concurrent: true   # Avg live count over active hours
+    military_today: true       # Military aircraft count today
+    watchlist_hits: true       # Watchlist aircraft seen today
+    first_last_contact: true   # First and last ADS-B contact of the day
+
+    # Extremes — today's "superlatives"
+    furthest: true             # Furthest aircraft reported
+    highest_altitude: true     # Highest-altitude aircraft
+    lowest_altitude: true      # Lowest non-ground aircraft
+    fastest: true              # Fastest aircraft
+    slowest: true              # Slowest non-ground aircraft
+    longest_track: true        # Longest continuously-visible aircraft
+
+    # Composition — what kinds of aircraft flew today
+    top_types: true            # Top 5 aircraft types
+    top_operators: true        # Top 5 operators / callsign prefixes
+    military_branches: true    # Military branch breakdown (if detectable)
+    category_mix: true         # Commercial / GA / Military / Helicopter %
+    top_countries: true        # Top 5 registration countries (v2.50.27)
+
+    # Patterns
+    hourly_histogram: true     # Aircraft count by hour of day
+
+    # History — trends across days (Wave 2)
+    first_time_seen: true      # ICAOs first ever seen today (never before)
+    daily_counts_7d: true      # Bar chart of unique aircraft count last 7 days
+    watchlist_frequency: true  # Most frequent watchlist hits (last 30 days)
+
+    # All-time records (Wave 3)
+    all_time_records: true     # Furthest/fastest/highest/lowest/peak ever recorded
+
+    # Coverage (Wave 5)
+    range_rose: true           # Polar chart of reception by compass direction and distance
+    distance_histogram: true   # Bar chart of position reports by distance bucket

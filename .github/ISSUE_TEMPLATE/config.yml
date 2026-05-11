@@ -1,0 +1,24 @@
+# Controls the issue template chooser UI.
+# https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/configuring-issue-templates-for-your-repository
+
+# Force users to pick a template (Bug report or Feature request) rather
+# than letting them open a blank issue. Improves report quality and
+# directs security reports to the right channel via the contact links
+# below.
+blank_issues_enabled: false
+
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/preston-peterson/aerodrome/security/advisories/new
+    about: |
+      For security-shaped bugs (auth bypass, sudoers escape, anything
+      that breaks the trusted-LAN threat model), please use GitHub's
+      private vulnerability reporting instead of a public issue. See
+      SECURITY.md for what's in scope.
+
+  - name: Read the project's stance first
+    url: https://github.com/preston-peterson/aerodrome/blob/main/CONTRIBUTING.md
+    about: |
+      Aerodrome is a one-person hobby project. CONTRIBUTING.md sets
+      expectations for bug reports, feature requests, and the
+      why-PRs-are-disabled position. Worth a skim before filing.

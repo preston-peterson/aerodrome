@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <!-- theme:inline-fouc-start -->
+    <script>
+// v2.45.0: theme FOUC prevention — applies saved theme pre-paint.
+// Keep this inline and synchronous at the TOP of <head>. Moving it to a
+// deferred module or the body would reintroduce the dark-flash on first
+// load for users with light-mode saved.
+(function(){
+    try {
+        var saved = localStorage.getItem('aerodrome-theme') || 'auto';
+        var applied = saved;
+        if (saved === 'auto') {
+            applied = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+        }
+        document.documentElement.setAttribute('data-theme', applied);
+    } catch (e) { /* localStorage blocked? default-dark is fine */ }
+})();
+</script>
+    <!-- theme:inline-fouc-end -->
+<!-- Version: 2.98.2 -->
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Aerodrome Documentation</title>
+<!-- v2.50.2: favicon. SVG for modern browsers (scales perfectly,
+     respects light/dark via the cyan accent), ICO fallback for older
+     browsers, apple-touch-icon for iOS home-screen / bookmarks. -->
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <!-- v2.47.0: theme system extracted to /static/theme.css + theme.js.
+         Palette variables and the gear-menu widget styles both live there. -->
+    <link rel="stylesheet" href="/static/theme.css">
+<style>
+
+* { margin:0; padding:0; box-sizing: border-box; }
+body { background:var(--bg0); color:var(--t1); font-family:var(--font);
+       font-size:14px; line-height:1.5; min-height:100vh; }
+
+/* --- Header (shared with status/config/updates/logs) --- */
+.hdr { background:var(--bg1); border-bottom:1px solid var(--bdr); padding:12px 24px;
+       display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; }
+.hdr-left { display:flex; align-items:center; gap:8px; }
+.hdr h1 { font-size:18px; font-weight:600; letter-spacing:-0.02em; }
+.hdr h1 span { color:var(--cyan); }
+.dot { width:8px; height:8px; border-radius:50%; background:var(--green); animation:pulse 2s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+.hdr-right { display:flex; align-items:center; gap:14px; }
+.hdr-meta { font-size:11px; color:var(--t2); font-family:var(--mono); }
+.settings-wrap { position:relative; }
+.settings-menu { position:absolute; top:calc(100% + 6px); right:0; background:var(--bg2);
+                 border:1px solid var(--bdr); border-radius:8px; min-width:180px;
+                 display:none; z-index:100; overflow:hidden; }
+.settings-menu.open { display:block; }
+
+.page { max-width:1000px; margin:0 auto; padding:24px; }
+.page-title { font-size:22px; font-weight:600; margin-bottom:4px; }
+.page-sub { color:var(--t2); font-size:13px; font-family:var(--mono); margin-bottom:20px; }
+
+/* v2.41.32: tab-bar scroll affordances. Matches the Configuration page. */
+.tabs-wrap {
+    position:relative; margin-bottom:24px;
+    border-bottom:1px solid var(--bdr);
+}
+.tabs-wrap .tabs { margin-bottom:0; border-bottom:0; }
+.tabs-wrap .tab-scroll-btn {
+    position:absolute; top:0; bottom:1px; width:32px;
+    display:none; align-items:center; justify-content:center;
+    background:var(--bg2); border:0; color:var(--t2); cursor:pointer;
+    font-family:var(--mono); font-size:16px; font-weight:600;
+    transition:color .15s, background .15s; z-index:2;
+}
+.tabs-wrap .tab-scroll-btn:hover { color:var(--cyan); background:var(--bg3); }
+.tabs-wrap .tab-scroll-btn.show { display:flex; }
+.tabs-wrap .tab-scroll-btn.left  { left:0;  box-shadow: 8px 0 8px -4px var(--bg2); }
+.tabs-wrap .tab-scroll-btn.right { right:0; box-shadow: -8px 0 8px -4px var(--bg2); }
+
+.tabs { display:flex; gap:4px; border-bottom:1px solid var(--bdr);
+        margin-bottom:24px; overflow-x:auto; flex-wrap:nowrap;
+        /* v2.41.31: hide the native horizontal scrollbar (matches the
+           Configuration page's tab bar). Scroll still works via wheel /
+           trackpad / touch drag; only the visible bar is suppressed.
+           v2.41.32 adds arrow buttons inside .tabs-wrap for mouse-only
+           users who can't scroll horizontally without them. */
+        scrollbar-width: none;
+        scroll-behavior: smooth; }
+.tabs::-webkit-scrollbar { display: none; }
+.tab { padding:10px 18px; cursor:pointer; color:var(--t2); font-size:13px;
+       border-bottom:2px solid transparent; white-space:nowrap; user-select:none; }
+.tab:hover { color:var(--t1); }
+.tab.on { color:var(--cyan); border-bottom-color:var(--cyan); }
+
+.doc-loading { color:var(--t3); font-style:italic; padding:40px 0; text-align:center; }
+.doc-error { color:var(--red); font-family:var(--mono); font-size:12px;
+             background:rgba(239,68,68,.08); border:1px solid rgba(239,68,68,.3);
+             padding:14px; border-radius:6px; }
+
+/* Rendered markdown styling */
+.md-body { padding:8px 0 60px 0; color:var(--t1); max-width:820px; }
+.md-body h1 { font-size:28px; font-weight:600; margin:32px 0 16px 0;
+              padding-bottom:10px; border-bottom:1px solid var(--bdr); }
+.md-body h1:first-child { margin-top:0; }
+.md-body h2 { font-size:22px; font-weight:600; margin:28px 0 14px 0;
+              padding-bottom:6px; border-bottom:1px solid var(--bdr); }
+.md-body h3 { font-size:18px; font-weight:600; margin:24px 0 12px 0; color:var(--t1); }
+.md-body h4 { font-size:15px; font-weight:600; margin:20px 0 10px 0; color:var(--t1); }
+.md-body h5, .md-body h6 { font-size:14px; font-weight:600; margin:16px 0 8px 0; color:var(--t2); }
+.md-body p { margin:0 0 14px 0; }
+.md-body a { color:var(--cyan); text-decoration:none; }
+.md-body a:hover { text-decoration:underline; }
+.md-body strong { color:var(--t1); font-weight:600; }
+.md-body em { font-style:italic; }
+.md-body code { font-family:var(--mono); font-size:13px; background:var(--bg2);
+                border:1px solid var(--bdr); padding:1px 6px; border-radius:3px;
+                color:var(--code-accent); }
+.md-body pre { font-family:var(--mono); font-size:12px; background:#050810;
+               border:1px solid var(--bdr); padding:14px; border-radius:6px;
+               overflow-x:auto; margin:0 0 16px 0; line-height:1.5; }
+.md-body pre code { background:none; border:none; padding:0; color:var(--t1); }
+.md-body blockquote { border-left:3px solid var(--cyan); padding:0 16px;
+                      margin:0 0 16px 0; color:var(--t2); background:rgba(6,182,212,.04); }
+.md-body blockquote p { margin:10px 0; }
+.md-body ul, .md-body ol { margin:0 0 14px 0; padding-left:28px; }
+.md-body li { margin-bottom:6px; }
+.md-body li > ul, .md-body li > ol { margin:6px 0 0 0; }
+.md-body hr { border:none; border-top:1px solid var(--bdr); margin:24px 0; }
+.md-body table { border-collapse:collapse; margin:0 0 16px 0; }
+.md-body th, .md-body td { border:1px solid var(--bdr); padding:6px 12px; }
+.md-body th { background:var(--bg2); font-weight:600; text-align:left; }
+.md-body img { max-width:100%; border:1px solid var(--bdr); border-radius:6px;
+               margin:10px 0; background:var(--bg2); }
+.md-body input[type=checkbox] { margin-right:6px; vertical-align:middle; }
+
+
+</style>
+</head>
+<body>
+
+<div class="hdr">
+    <div class="hdr-left">
+        <div class="dot" id="healthDot" title="System status"></div>
+        <a href="/" class="home-link"><svg class="brand-mark" width="32" height="32" viewBox="0 0 64 64" aria-hidden="true">
+                <circle cx="32" cy="32" r="28" fill="none" stroke="#06b6d4" stroke-width="3" opacity="0.3"/>
+                <circle cx="32" cy="32" r="20" fill="none" stroke="#06b6d4" stroke-width="3" opacity="0.55"/>
+                <circle cx="32" cy="32" r="12" fill="none" stroke="#06b6d4" stroke-width="3" opacity="0.8"/>
+                <circle cx="32" cy="32" r="4" fill="#06b6d4"/>
+                <line x1="32" y1="32" x2="52" y2="12" stroke="#06b6d4" stroke-width="3" stroke-linecap="round"/>
+            </svg><h1><span>Aerodrome</span></h1></a>
+    </div>
+    <div class="hdr-right">
+        <span class="hdr-meta">v<span id="appVersion">—</span> &middot; Updated <span id="ts">—</span></span>
+        <div class="settings-wrap">
+            <button class="settings-btn" onclick="toggleMenu(event)" aria-label="Settings" title="Settings">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            </button>
+            <div class="settings-menu" id="settingsMenu">
+                <a href="/status" class="menu-item">Status</a>
+                <a href="/diagnostics" class="menu-item">Diagnostics</a>
+                <a href="/logs" class="menu-item">Logs</a>
+                <a href="/documentation" class="menu-item">Documentation</a>
+                <a href="/config" class="menu-item">Configuration</a>
+                <a href="/updates" class="menu-item">Check for updates</a>
+            
+                <div class="gear-menu-separator"></div>
+                <div class="theme-row">
+                    <div class="theme-label">Theme</div>
+                    <div class="theme-seg" role="group" aria-label="Theme preference">
+                        <button type="button" data-theme-choice="auto"  onclick="aerodromeSetTheme('auto')">Auto</button>
+                        <button type="button" data-theme-choice="dark"  onclick="aerodromeSetTheme('dark')">Dark</button>
+                        <button type="button" data-theme-choice="light" onclick="aerodromeSetTheme('light')">Light</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="page">
+    <h1 class="page-title">Documentation</h1>
+    <div class="page-sub">project docs shipped with your Aerodrome install</div>
+
+    <!-- v2.41.32: tabs wrapped in .tabs-wrap with scroll-arrow buttons
+         for narrow-viewport navigation. wireTabBarArrows() below attaches
+         the overflow-detection + click-to-scroll behaviour after
+         buildTabs() populates the inner .tabs. -->
+    <div class="tabs-wrap">
+        <button type="button" class="tab-scroll-btn left" aria-label="Scroll tabs left">&lsaquo;</button>
+        <div class="tabs" id="docTabs"></div>
+        <button type="button" class="tab-scroll-btn right" aria-label="Scroll tabs right">&rsaquo;</button>
+    </div>
+
+    <div id="docContent">
+        <div class="doc-loading">Loading…</div>
+    </div>
+</div>
+
+<script>
+// =============================================================================
+// Minimal markdown → HTML renderer
+// =============================================================================
+// Purpose: render the subset of markdown used in Aerodrome's project docs
+// (README, CHANGELOG, CONTRIBUTING, LICENSE, etc.) without a CDN dependency
+// or a Python library. Handles:
+//   - ATX headers (# through ######)
+//   - Fenced code blocks (``` language)
+//   - Inline code (`)
+//   - Bold (**) and italic (*)
+//   - Links [text](url) and images ![alt](url)
+//   - Unordered lists (- or *)
+//   - Ordered lists (1.)
+//   - Blockquotes (>)
+//   - Horizontal rules (---)
+//   - Tables (GFM-style with |)
+//   - Task list items (- [ ] and - [x])
+//   - Paragraphs (blank-line-separated)
+//
+// Intentionally does NOT handle: reference-style links, HTML passthrough
+// (except for escaping), autolinks without <>, footnotes, or other exotica.
+// These docs don't use those features.
+//
+// Known limitations (by design — fix if they ever bite us):
+//   - Nested lists (a bulleted list inside a numbered list, or vice versa)
+//     are not supported. collectListItems flattens continuation lines with
+//     ' ' joins and strips leading whitespace, so a nested marker would be
+//     absorbed into the parent item's body.
+//   - Multi-paragraph list items are flattened: consecutive continuation
+//     lines become one run-on paragraph with spaces between what were
+//     originally paragraph breaks. The blank-line separator between
+//     paragraphs inside a list item isn't preserved.
+//   - Indented fenced code blocks inside a list item render correctly ONLY
+//     when preceded by a blank line (the common case — see UPDATE_README.md
+//     and CONTRIBUTING.md). A fence tucked directly under a list marker
+//     with no blank line will render as a plain fence in the main loop
+//     (i.e. outside the list item) because the continuation loop now
+//     terminates on an indented fence opener. Visually fine for the cases
+//     we have, but technically not what CommonMark would do.
+//   - Setext headers (underlined with === or ---) are not recognized; only
+//     ATX (leading #) headers work.
+//   - Lazy continuation inside blockquotes isn't supported; every line of
+//     a blockquote must start with >.
+//
+// If we ever need full CommonMark, swap this out for a real library rather
+// than incrementally hardening this file.
+
+function escapeHtml(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// Inline formatting: applied to a single line of text after block parsing.
+// Order matters — process code spans first so their contents aren't mangled
+// by later rules.
+function renderInline(text) {
+    // Escape HTML first so raw < and > are safe
+    text = escapeHtml(text);
+
+    // Inline code: `...` — placeholder it out so later rules don't touch it
+    const codeSpans = [];
+    text = text.replace(/`([^`]+)`/g, (m, code) => {
+        codeSpans.push(code);
+        return `\x00CODE${codeSpans.length - 1}\x00`;
+    });
+
+    // Images: ![alt](url)
+    text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (m, alt, url) => {
+        return `<img src="${url}" alt="${alt}">`;
+    });
+
+    // Links: [text](url)
+    text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m, txt, url) => {
+        const isExternal = /^https?:/.test(url);
+        const target = isExternal ? ' target="_blank" rel="noopener"' : '';
+        return `<a href="${url}"${target}>${txt}</a>`;
+    });
+
+    // Bold: **text** (before italic so ** doesn't get eaten by * first)
+    text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+
+    // Italic: *text* (but not **)
+    text = text.replace(/(?<!\*)\*(?!\*)([^*\n]+?)\*(?!\*)/g, '<em>$1</em>');
+
+    // Task list markers: - [ ] or - [x] — only at the very start of an <li>
+    // body, which after list extraction is just the start of the string.
+    text = text.replace(/^\[ \] /, '<input type="checkbox" disabled> ');
+    text = text.replace(/^\[x\] /i, '<input type="checkbox" checked disabled> ');
+
+    // Restore code spans
+    text = text.replace(/\x00CODE(\d+)\x00/g, (m, i) => {
+        return `<code>${escapeHtml(codeSpans[parseInt(i, 10)])}</code>`;
+    });
+
+    return text;
+}
+
+// v2.41.21: per-document counter for duplicate heading slugs. Cleared at the
+// start of every top-level renderMarkdown call so two separate documents
+// (e.g. switching tabs) don't bleed into each other. Recursive renderMarkdown
+// calls (blockquotes) intentionally share the counter so a heading inside a
+// blockquote still gets a unique id relative to the outer document.
+let _seenSlugs = Object.create(null);
+
+// Slugify a heading string to a URL-safe id. Matches GitHub's rules closely
+// enough for all existing Aerodrome docs. The main steps are:
+//   1. Strip inline markdown formatting (backticks, emphasis, link syntax)
+//      so `## \`live_aircraft\` query` slugifies the same as `live_aircraft
+//      query`.
+//   2. Lowercase.
+//   3. Replace any non-alphanumeric run with a single hyphen.
+//   4. Trim hyphens from both ends.
+//   5. De-duplicate via -1, -2, ... suffixes tracked in _seenSlugs.
+function headingSlug(raw) {
+    // Strip markdown formatting tokens. Order matters: code first so its
+    // contents survive, then link syntax, then emphasis markers.
+    //
+    // Underscore is deliberately NOT in the strip list, even though it can
+    // mark emphasis in markdown. GitHub's slugger preserves underscores
+    // because identifier-style headings (e.g. "## `snake_case_name`") are
+    // common in technical docs, and stripping them breaks the resulting
+    // slugs. A leading or trailing _ that's genuinely emphasis ("## _todo_")
+    // will get caught by the non-word-char strip later anyway.
+    let t = raw;
+    t = t.replace(/`([^`]+)`/g, '$1');      // inline code
+    t = t.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1'); // [text](url) -> text
+    t = t.replace(/[*~]+/g, '');            // emphasis / strikethrough markers
+    // Normalise: lowercase, strip everything that isn't alphanumeric / hyphen
+    // / underscore / whitespace, collapse whitespace to hyphen, trim hyphens.
+    let slug = t.toLowerCase()
+        .replace(/[^\w\s-]/g, '')
+        .trim()
+        .replace(/\s+/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '');
+    if (!slug) slug = 'section';  // edge case: heading that slugs to nothing
+    // De-duplicate
+    const count = _seenSlugs[slug] || 0;
+    _seenSlugs[slug] = count + 1;
+    return count === 0 ? slug : `${slug}-${count}`;
+}
+
+// Parse a full markdown document into HTML by walking it line-by-line.
+// Block-level constructs accumulate until a terminator line closes them.
+function renderMarkdown(md, opts) {
+    // v2.41.21: top-level call resets the heading-slug counter. Recursive
+    // calls (e.g. rendering a blockquote's contents) opt out by passing
+    // {nested: true} so they inherit the outer document's counter.
+    opts = opts || {};
+    if (!opts.nested) {
+        _seenSlugs = Object.create(null);
+    }
+    // Normalize line endings and strip a leading BOM if present
+    md = md.replace(/\r\n/g, '\n').replace(/^\uFEFF/, '');
+    const lines = md.split('\n');
+    const out = [];
+
+    let i = 0;
+    while (i < lines.length) {
+        const line = lines[i];
+
+        // --- Fenced code block ---
+        // The leading-whitespace tolerance on both the opener and closer
+        // handles fences that live inside a list item (after the blank
+        // line that ends the item's continuation loop, the fence lands
+        // back in the main loop still carrying its 3-space indent). We
+        // strip the opener's indent from each interior line so tree
+        // diagrams and code samples don't render with stray leading
+        // spaces in the <pre>.
+        const fence = line.match(/^(\s*)```(\w*)\s*$/);
+        if (fence) {
+            const indent = fence[1];
+            const lang = fence[2] || '';
+            const stripRe = indent ? new RegExp('^' + indent) : null;
+            const buf = [];
+            i++;
+            while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) {
+                buf.push(stripRe ? lines[i].replace(stripRe, '') : lines[i]);
+                i++;
+            }
+            i++;  // skip closing ```
+            out.push(`<pre><code class="lang-${lang}">${escapeHtml(buf.join('\n'))}</code></pre>`);
+            continue;
+        }
+
+        // --- Horizontal rule ---
+        if (/^---+\s*$/.test(line) || /^\*\*\*+\s*$/.test(line)) {
+            out.push('<hr>');
+            i++;
+            continue;
+        }
+
+        // --- ATX heading ---
+        //
+        // v2.41.21: emit an `id` attribute on each heading so in-document
+        // table-of-contents links like [Install](#install) actually scroll
+        // to the target. Previously we emitted bare <h2>Install</h2> which
+        // made every anchor link a no-op.
+        //
+        // Slugification rules match GitHub's:
+        //   - strip inline markdown (backticks, emphasis, link syntax)
+        //   - lowercase
+        //   - replace non-alphanumeric runs with single hyphens
+        //   - trim leading/trailing hyphens
+        //   - de-duplicate with -1, -2 suffixes within the same document
+        //     (seenSlugs is scoped at the outer function level so that
+        //     recursive calls for blockquotes share the counter)
+        const head = line.match(/^(#{1,6})\s+(.*?)\s*#*\s*$/);
+        if (head) {
+            const level = head[1].length;
+            const rawText = head[2];
+            const slug = headingSlug(rawText);
+            out.push(`<h${level} id="${slug}">${renderInline(rawText)}</h${level}>`);
+            i++;
+            continue;
+        }
+
+        // --- Blockquote (consecutive "> " lines, may contain nested blocks) ---
+        if (/^>\s?/.test(line)) {
+            const qbuf = [];
+            while (i < lines.length && /^>\s?/.test(lines[i])) {
+                qbuf.push(lines[i].replace(/^>\s?/, ''));
+                i++;
+            }
+            // Recursively render inner content so it can contain paragraphs etc.
+            out.push(`<blockquote>${renderMarkdown(qbuf.join('\n'))}</blockquote>`);
+            continue;
+        }
+
+        // --- Table (GFM: header | separator | body rows) ---
+        if (/^\s*\|/.test(line) && i + 1 < lines.length
+                && /^\s*\|?[\s:|-]+\|[\s:|-]+/.test(lines[i + 1])) {
+            const headerCells = line.split('|').slice(1, -1).map(c => c.trim());
+            i += 2;  // skip header + separator
+            const rows = [];
+            while (i < lines.length && /^\s*\|/.test(lines[i])) {
+                rows.push(lines[i].split('|').slice(1, -1).map(c => c.trim()));
+                i++;
+            }
+            let tbl = '<table><thead><tr>';
+            for (const h of headerCells) tbl += `<th>${renderInline(h)}</th>`;
+            tbl += '</tr></thead><tbody>';
+            for (const r of rows) {
+                tbl += '<tr>';
+                for (const c of r) tbl += `<td>${renderInline(c)}</td>`;
+                tbl += '</tr>';
+            }
+            tbl += '</tbody></table>';
+            out.push(tbl);
+            continue;
+        }
+
+        // --- Unordered list ---
+        if (/^[-*+]\s+/.test(line)) {
+            const items = collectListItems(lines, i, /^[-*+]\s+/);
+            i = items.nextIdx;
+            out.push(`<ul>${items.html}</ul>`);
+            continue;
+        }
+
+        // --- Ordered list ---
+        if (/^\d+\.\s+/.test(line)) {
+            const items = collectListItems(lines, i, /^\d+\.\s+/);
+            i = items.nextIdx;
+            out.push(`<ol>${items.html}</ol>`);
+            continue;
+        }
+
+        // --- Blank line: paragraph separator ---
+        if (line.trim() === '') {
+            i++;
+            continue;
+        }
+
+        // --- Paragraph ---
+        // Consume consecutive non-empty non-special lines
+        const pbuf = [line];
+        i++;
+        while (i < lines.length && lines[i].trim() !== '' &&
+               !/^#{1,6}\s/.test(lines[i]) &&
+               !/^\s*```/.test(lines[i]) &&
+               !/^>\s?/.test(lines[i]) &&
+               !/^[-*+]\s+/.test(lines[i]) &&
+               !/^\d+\.\s+/.test(lines[i]) &&
+               !/^---+\s*$/.test(lines[i]) &&
+               !/^\s*\|/.test(lines[i])) {
+            pbuf.push(lines[i]);
+            i++;
+        }
+        out.push(`<p>${renderInline(pbuf.join(' '))}</p>`);
+    }
+
+    return out.join('\n');
+}
+
+// Collect consecutive list items matching a marker regex. Each item's body
+// spans from its marker until the next marker or a blank-line-terminated
+// paragraph. Returns rendered <li>...</li> HTML and the next index to process.
+function collectListItems(lines, startIdx, markerRe) {
+    let i = startIdx;
+    const items = [];
+    while (i < lines.length && markerRe.test(lines[i])) {
+        const body = [lines[i].replace(markerRe, '')];
+        i++;
+        // Continuation lines of this list item: indented, or plain continuation
+        // until a blank line or the next list marker. An indented fence opener
+        // (e.g. a code block tucked directly under the list item with no
+        // preceding blank line) terminates the continuation so the main loop
+        // can render the fence block properly.
+        while (i < lines.length && lines[i].trim() !== '' && !markerRe.test(lines[i])
+               && !/^#{1,6}\s/.test(lines[i]) && !/^\s*```/.test(lines[i])) {
+            body.push(lines[i].replace(/^\s+/, ''));
+            i++;
+        }
+        // Skip the blank line between items, but don't consume it if it
+        // precedes a non-list block (so the caller can handle that correctly).
+        if (i < lines.length && lines[i].trim() === ''
+                && i + 1 < lines.length && markerRe.test(lines[i + 1])) {
+            i++;
+        }
+        items.push(body.join(' '));
+    }
+    const html = items.map(t => `<li>${renderInline(t)}</li>`).join('');
+    return { html, nextIdx: i };
+}
+
+// =============================================================================
+// Tab management + doc loading
+// =============================================================================
+// Which docs to list, what to label them, and where to fetch from. The server
+// exposes /api/docs/<slug> which returns raw markdown text.
+const DOCS = [
+    { slug: 'readme',          label: 'README'       },
+    { slug: 'install',         label: 'Install'      },
+    { slug: 'changelog',       label: 'Changelog'    },
+    { slug: 'performance',     label: 'Performance'  },
+    { slug: 'search_syntax',   label: 'Search'       },
+    { slug: 'contributing',    label: 'Contributing' },
+    { slug: 'scripts_readme',  label: 'Scripts'      },
+    { slug: 'update_readme',   label: 'Updates'      },
+    { slug: 'license',         label: 'License'      },
+];
+
+let activeSlug = null;
+
+function buildTabs() {
+    const tabs = document.getElementById('docTabs');
+    tabs.innerHTML = DOCS.map(d =>
+        `<div class="tab" data-slug="${d.slug}">${d.label}</div>`
+    ).join('');
+    tabs.querySelectorAll('.tab').forEach(el => {
+        el.addEventListener('click', () => showTab(el.dataset.slug));
+    });
+    // v2.41.32: attach scroll-arrow behaviour to the .tabs-wrap container
+    // that holds these tabs. wireTabBarArrows is idempotent — safe to
+    // call once here after tabs are populated.
+    wireTabBarArrows(tabs.closest('.tabs-wrap'));
+}
+
+async function showTab(slug) {
+    activeSlug = slug;
+    document.querySelectorAll('.tab').forEach(el => {
+        el.classList.toggle('on', el.dataset.slug === slug);
+    });
+    const container = document.getElementById('docContent');
+    container.innerHTML = '<div class="doc-loading">Loading…</div>';
+    try {
+        const r = await fetch(`/api/docs/${slug}`);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const md = await r.text();
+        let html = renderMarkdown(md);
+        // README image paths reference docs/screenshot-*.png (relative paths
+        // that GitHub resolves automatically). For our in-app viewer we need
+        // them to point at the live-served files under /docs/.
+        html = html.replace(/src="docs\//g, 'src="/docs/');
+        container.innerHTML = `<div class="md-body">${html}</div>`;
+        // Update URL hash so the user can bookmark a specific tab
+        if (window.history && window.history.replaceState) {
+            window.history.replaceState(null, '', `#${slug}`);
+        }
+        container.scrollTop = 0;
+    } catch (e) {
+        container.innerHTML = `<div class="doc-error">Could not load doc: ${e.message}</div>`;
+    }
+}
+
+async function loadVersion() {
+    try {
+        const r = await fetch('/api/status');
+        const j = await r.json();
+        if (j.version) document.getElementById('appVersion').textContent = j.version;
+    } catch (e) { /* ignore — version is cosmetic */ }
+    // v2.85.12: shared formatter respects display.time_format.
+    const tsEl = document.getElementById('ts');
+    if(tsEl) tsEl.textContent = formatDateTime(new Date());
+}
+
+// v2.41.32: shared tab-bar scroll-arrow helpers. Same implementation as
+// config.html. See config.html for the long-form comment explaining the
+// behaviour. Duplicated here because docs.html is served as its own
+// self-contained template with its own script context.
+function wireTabBarArrows(wrap){
+    if(!wrap) return;
+    const tabs  = wrap.querySelector('.tabs');
+    const left  = wrap.querySelector('.tab-scroll-btn.left');
+    const right = wrap.querySelector('.tab-scroll-btn.right');
+    if(!tabs || !left || !right) return;
+    if(wrap.dataset.arrowsWired === '1') {
+        updateTabScrollArrows(wrap);
+        return;
+    }
+    wrap.dataset.arrowsWired = '1';
+    const SCROLL_STEP_RATIO = 0.6;
+    left.addEventListener('click', () => {
+        tabs.scrollBy({ left: -tabs.clientWidth * SCROLL_STEP_RATIO, behavior: 'smooth' });
+    });
+    right.addEventListener('click', () => {
+        tabs.scrollBy({ left: tabs.clientWidth * SCROLL_STEP_RATIO, behavior: 'smooth' });
+    });
+    tabs.addEventListener('scroll', () => updateTabScrollArrows(wrap));
+    window.addEventListener('resize', () => updateTabScrollArrows(wrap));
+    requestAnimationFrame(() => updateTabScrollArrows(wrap));
+}
+
+function updateTabScrollArrows(wrap){
+    const tabs  = wrap.querySelector('.tabs');
+    const left  = wrap.querySelector('.tab-scroll-btn.left');
+    const right = wrap.querySelector('.tab-scroll-btn.right');
+    if(!tabs || !left || !right) return;
+    const maxScroll = tabs.scrollWidth - tabs.clientWidth;
+    const atStart = tabs.scrollLeft <= 2;
+    const atEnd   = tabs.scrollLeft >= maxScroll - 2;
+    const hasOverflow = maxScroll > 0;
+    left.classList.toggle('show',  hasOverflow && !atStart);
+    right.classList.toggle('show', hasOverflow && !atEnd);
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    buildTabs();
+    loadVersion();
+    // Respect #slug hash if the user navigated here with one, otherwise default
+    const initial = (window.location.hash || '').replace(/^#/, '') || DOCS[0].slug;
+    const match = DOCS.find(d => d.slug === initial) ? initial : DOCS[0].slug;
+    showTab(match);
+});
+
+// Gear menu — same behavior as status/config/updates
+function toggleMenu(e) {
+    e.stopPropagation();
+    document.getElementById('settingsMenu').classList.toggle('open');
+}
+document.addEventListener('click', e => {
+    if (!e.target.closest('.settings-wrap')) {
+        document.getElementById('settingsMenu').classList.remove('open');
+    }
+});
+
+
+</script>
+<script src="/static/theme.js"></script>
+<script src="/static/health-indicator.js"></script>
+</body>
+</html>

@@ -1,0 +1,1394 @@
+<!-- Version: 2.98.2 -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <!-- theme:inline-fouc-start -->
+    <script>
+// v2.45.0: theme FOUC prevention — applies saved theme pre-paint.
+// Keep this inline and synchronous at the TOP of <head>. Moving it to a
+// deferred module or the body would reintroduce the dark-flash on first
+// load for users with light-mode saved.
+(function(){
+    try {
+        var saved = localStorage.getItem('aerodrome-theme') || 'auto';
+        var applied = saved;
+        if (saved === 'auto') {
+            applied = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+        }
+        document.documentElement.setAttribute('data-theme', applied);
+    } catch (e) { /* localStorage blocked? default-dark is fine */ }
+})();
+</script>
+    <!-- theme:inline-fouc-end -->
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Updates — Aerodrome</title>
+<!-- v2.50.2: favicon. SVG for modern browsers (scales perfectly,
+     respects light/dark via the cyan accent), ICO fallback for older
+     browsers, apple-touch-icon for iOS home-screen / bookmarks. -->
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+    <!-- v2.47.0: theme system extracted to /static/theme.css + theme.js.
+         Palette variables and the gear-menu widget styles both live there. -->
+    <link rel="stylesheet" href="/static/theme.css">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-height:100vh; }
+
+.hdr { background:var(--bg1); border-bottom:1px solid var(--bdr); padding:12px 24px;
+       display:flex; align-items:center; justify-content:space-between; }
+.hdr-left { display:flex; align-items:center; gap:8px; }
+.hdr h1 { font-size:18px; font-weight:600; letter-spacing:-0.02em; }
+.hdr h1 span { color:var(--cyan); }
+.dot { width:8px; height:8px; border-radius:50%; background:var(--green); animation:pulse 2s infinite; }
+.dot.warn { background:var(--amber); animation:pulse 2s infinite; }
+.dot.off { background:var(--red); animation:none; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+.settings-btn.warn { border-color:var(--amber) !important; color:var(--amber) !important; }
+.settings-btn.error { border-color:var(--red) !important; color:var(--red) !important; }
+.settings-btn.warn::after, .settings-btn.error::after {
+    content:''; position:absolute; top:-2px; right:-2px;
+    width:7px; height:7px; border-radius:50%;
+    background:var(--amber); box-shadow:0 0 0 2px var(--bg1);
+}
+.settings-btn.error::after { background:var(--red); animation:pulse 2s infinite; }
+.hdr-right { display:flex; align-items:center; gap:14px; }
+.hdr-meta { font-size:11px; color:var(--t2); font-family:var(--mono); }
+.settings-wrap { position:relative; }
+.settings-menu { position:absolute; top:calc(100% + 6px); right:0; background:var(--bg2); border:1px solid var(--bdr); border-radius:8px; min-width:180px; display:none; z-index:100; overflow:hidden; }
+.settings-menu.open { display:block; }
+
+.wrap { max-width:900px; margin:0 auto; padding:24px; }
+.page-title { font-size:22px; font-weight:600; margin-bottom:4px; }
+.page-sub { color:var(--t2); font-size:13px; font-family:var(--mono); margin-bottom:20px; }
+
+.card {
+    background:var(--bg2); border:1px solid var(--bdr); border-radius:8px;
+    padding:20px 22px; margin-bottom:16px;
+}
+.card.disabled { opacity:.5; }
+.card-head {
+    display:flex; align-items:center; justify-content:space-between;
+    margin-bottom:12px; padding-bottom:10px; border-bottom:1px solid var(--bdr);
+}
+.card-title { font-size:15px; font-weight:600; }
+.card-sub { font-size:11px; color:var(--t2); font-family:var(--mono); }
+.badge { display:inline-block; font-size:9px; font-family:var(--mono); padding:2px 8px;
+         border-radius:3px; background:var(--bg3); color:var(--t2);
+         text-transform:uppercase; letter-spacing:.05em; margin-left:8px; }
+.badge.soon { background:rgba(245,158,11,.15); color:var(--amber); }
+.badge.ready { background:rgba(34,197,94,.15); color:var(--green); }
+
+.info-grid {
+    display:grid; grid-template-columns:140px 1fr; gap:10px 16px;
+    font-size:13px; margin-bottom:14px;
+}
+.info-label { color:var(--t2); font-family:var(--mono); font-size:12px; }
+.info-value { color:var(--t1); font-family:var(--mono); font-size:13px; }
+.info-value.highlight { color:var(--green); font-weight:600; }
+.info-value.muted { color:var(--t3); }
+
+.status-msg { padding:10px 14px; border-radius:6px; font-size:13px; margin-bottom:14px; }
+.status-msg.info { background:var(--bg1); border:1px solid var(--bdr); color:var(--t2); }
+.status-msg.ready { background:rgba(34,197,94,.08); border:1px solid rgba(34,197,94,.3); color:var(--green); }
+.status-msg.warn { background:rgba(245,158,11,.08); border:1px solid rgba(245,158,11,.3); color:var(--amber); }
+.status-msg.err { background:rgba(239,68,68,.08); border:1px solid rgba(239,68,68,.3); color:var(--red); }
+
+/* v2.41.7: zip upload drop zone. Visual state transitions:
+   idle → hover (dragging over) → uploading → done (green status msg below). */
+.upload-zone {
+    border: 2px dashed var(--bdr);
+    border-radius: 8px;
+    padding: 18px 20px;
+    text-align: center;
+    cursor: pointer;
+    background: var(--bg0);
+    transition: border-color .15s, background .15s;
+    margin-bottom: 14px;
+}
+.upload-zone:hover, .upload-zone.dragover {
+    border-color: var(--cyan);
+    background: rgba(6,182,212,.05);
+}
+.upload-zone.uploading { border-color: var(--cyan); cursor: wait; opacity: .75; }
+.upload-zone input[type=file] { display: none; }
+.upload-zone-title { font-size: 13px; color: var(--t1); font-weight: 500; margin-bottom: 4px; }
+.upload-zone-hint  { font-size: 11px; color: var(--t3); font-family: var(--mono); }
+.upload-zone-progress {
+    font-size: 11px; color: var(--cyan); margin-top: 8px; font-family: var(--mono);
+}
+
+.actions { display:flex; gap:8px; }
+
+.instructions {
+    font-size:12px; color:var(--t3); font-family:var(--mono);
+    background:var(--bg1); border:1px solid var(--bdr); border-radius:6px;
+    padding:10px 14px; margin-top:12px;
+}
+.instructions code { color:var(--cyan); }
+.instructions pre { white-space:pre-wrap; margin:6px 0 0; }
+
+.toast { position:fixed; bottom:20px; right:20px; background:var(--bg2); border:1px solid var(--bdr);
+         border-radius:8px; padding:10px 18px; font-size:12px; color:var(--t1);
+         opacity:0; transform:translateY(10px); transition:all .3s; z-index:1000; }
+.toast.show { opacity:1; transform:translateY(0); }
+.toast.ok { border-color:var(--green); }
+.toast.err { border-color:var(--red); }
+
+.spinner {
+    display:inline-block; width:12px; height:12px; border:2px solid var(--bdr);
+    border-top-color:var(--cyan); border-radius:50%; animation:spin .8s linear infinite;
+    vertical-align:middle; margin-right:8px;
+}
+@keyframes spin { to { transform:rotate(360deg) } }
+
+/* Changelog */
+.cl-entry {
+    padding:14px 0;
+    border-top:1px solid var(--bdr);
+}
+.cl-entry:first-child { border-top:none; padding-top:4px; }
+.cl-head {
+    display:flex; align-items:baseline; gap:10px; margin-bottom:8px;
+}
+.cl-version {
+    font-family:var(--mono); font-size:14px; font-weight:600; color:var(--t1);
+}
+.cl-date {
+    font-family:var(--mono); font-size:11px; color:var(--t3);
+}
+.cl-type {
+    display:inline-block; font-family:var(--mono); font-size:9px;
+    text-transform:uppercase; letter-spacing:.05em;
+    padding:2px 8px; border-radius:3px; margin-right:6px; vertical-align:middle;
+}
+.cl-type-added    { background:rgba(34,197,94,.15);  color:var(--green); }
+.cl-type-changed  { background:rgba(6,182,212,.15);  color:var(--cyan); }
+.cl-type-fixed    { background:rgba(245,158,11,.15); color:var(--amber); }
+.cl-type-removed  { background:rgba(239,68,68,.15);  color:var(--red); }
+.cl-type-security { background:rgba(139,92,246,.15); color:var(--purple); }
+.cl-type-other    { background:var(--bg3);           color:var(--t2); }
+.cl-section { margin-bottom:6px; }
+.cl-bullets {
+    margin:0; padding-left:0; list-style:none; color:var(--t2);
+    font-size:13px; line-height:1.55;
+}
+.cl-bullets li {
+    padding-left:14px; position:relative; margin-bottom:6px;
+}
+.cl-bullets li::before {
+    content:'•'; position:absolute; left:0; color:var(--t3);
+}
+.cl-expander {
+    display:block; width:100%; text-align:center;
+    padding:12px; margin-top:12px;
+    font-family:var(--font); font-size:12px; font-weight:500;
+    background:var(--bg1); color:var(--t2);
+    border:1px solid var(--bdr); border-radius:6px;
+    cursor:pointer; transition:all .15s;
+}
+.cl-expander:hover { color:var(--cyan); border-color:var(--cyan); }
+
+/* Clickable version in the info-grid */
+.info-value.clickable-version {
+    cursor:pointer;
+    text-decoration:underline dotted;
+    text-underline-offset:3px;
+    text-decoration-color:var(--t3);
+    transition:color .15s, text-decoration-color .15s;
+}
+.info-value.clickable-version:hover {
+    color:var(--cyan);
+    text-decoration-color:var(--cyan);
+}
+
+/* Inline release link in the status message */
+.release-link {
+    color:var(--cyan); text-decoration:underline dotted;
+    text-underline-offset:3px; cursor:pointer;
+    transition:opacity .15s;
+}
+.release-link:hover { opacity:.8; }
+
+/* Release-notes modal overlay */
+.rn-modal {
+    display:none; position:fixed; inset:0;
+    background:rgba(0,0,0,.7);
+    align-items:center; justify-content:center;
+    z-index:2000; padding:20px;
+}
+.rn-modal.show { display:flex; }
+.rn-modal-inner {
+    background:var(--bg2); border:1px solid var(--bdr); border-radius:10px;
+    max-width:850px; width:100%; max-height:85vh;
+    display:flex; flex-direction:column;
+    box-shadow:0 20px 60px rgba(0,0,0,.4);
+}
+.rn-modal-head {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:16px 22px; border-bottom:1px solid var(--bdr);
+}
+.rn-modal-title { font-size:16px; font-weight:600; color:var(--t1); }
+.rn-modal-sub { font-size:11px; color:var(--t2); font-family:var(--mono); margin-top:2px; }
+.rn-modal-close {
+    background:none; border:none; color:var(--t2); font-size:24px;
+    cursor:pointer; padding:0 6px; line-height:1; transition:color .15s;
+}
+.rn-modal-close:hover { color:var(--t1); }
+.rn-modal-body {
+    flex:1; overflow:auto; padding:8px 22px 16px;
+}
+.rn-modal-actions {
+    display:flex; justify-content:flex-end; gap:8px;
+    padding:14px 22px; border-top:1px solid var(--bdr);
+}
+.rn-section-title {
+    font-size:12px; color:var(--t3); font-family:var(--mono);
+    text-transform:uppercase; letter-spacing:.05em;
+    margin:14px 0 8px; padding-top:12px;
+    border-top:1px solid var(--bdr);
+}
+.rn-section-title:first-child { border-top:none; padding-top:0; margin-top:8px; }
+
+
+</style>
+</head>
+<body>
+
+<div class="hdr">
+    <div class="hdr-left">
+        <div class="dot" id="healthDot" title="System status"></div>
+        <a href="/" class="home-link"><svg class="brand-mark" width="32" height="32" viewBox="0 0 64 64" aria-hidden="true">
+                <circle cx="32" cy="32" r="28" fill="none" stroke="#06b6d4" stroke-width="3" opacity="0.3"/>
+                <circle cx="32" cy="32" r="20" fill="none" stroke="#06b6d4" stroke-width="3" opacity="0.55"/>
+                <circle cx="32" cy="32" r="12" fill="none" stroke="#06b6d4" stroke-width="3" opacity="0.8"/>
+                <circle cx="32" cy="32" r="4" fill="#06b6d4"/>
+                <line x1="32" y1="32" x2="52" y2="12" stroke="#06b6d4" stroke-width="3" stroke-linecap="round"/>
+            </svg><h1><span>Aerodrome</span></h1></a>
+    </div>
+    <div class="hdr-right">
+        <span class="hdr-meta">v<span id="appVersion">—</span> &middot; Updated <span id="ts">—</span></span>
+        <div class="settings-wrap">
+            <button class="settings-btn" onclick="toggleMenu(event)" aria-label="Settings" title="Settings">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            </button>
+            <div class="settings-menu" id="settingsMenu">
+                <a href="/status" class="menu-item">Status</a>
+                <a href="/diagnostics" class="menu-item">Diagnostics</a>
+                <a href="/logs" class="menu-item">Logs</a>
+                <a href="/documentation" class="menu-item">Documentation</a>
+                <a href="/config" class="menu-item">Configuration</a>
+                <a href="/updates" class="menu-item">Check for updates</a>
+            
+                <div class="gear-menu-separator"></div>
+                <div class="theme-row">
+                    <div class="theme-label">Theme</div>
+                    <div class="theme-seg" role="group" aria-label="Theme preference">
+                        <button type="button" data-theme-choice="auto"  onclick="aerodromeSetTheme('auto')">Auto</button>
+                        <button type="button" data-theme-choice="dark"  onclick="aerodromeSetTheme('dark')">Dark</button>
+                        <button type="button" data-theme-choice="light" onclick="aerodromeSetTheme('light')">Light</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="wrap">
+    <div class="page-title">Updates</div>
+    <div class="page-sub">Apply new releases of Aerodrome from a local folder or (soon) GitHub.</div>
+
+    <!-- Local update card -->
+    <div class="card" id="localCard">
+        <div class="card-head">
+            <div>
+                <span class="card-title">Local update</span>
+                <span class="badge" id="localBadge">checking…</span>
+            </div>
+            <div class="card-sub">from ./update/</div>
+        </div>
+
+        <div id="localStatus">
+            <div class="status-msg info">
+                <span class="spinner"></span>Checking for staged update...
+            </div>
+        </div>
+
+        <!-- v2.41.7: drag-and-drop upload zone. Replaces the need for SSH
+             + rsync for users who just want to upload the release zip and
+             hit apply. Accepts .zip only. Server extracts into update/
+             and auto-flattens the standard aerodrome-vX.Y.Z/ wrapper. -->
+        <div class="upload-zone" id="uploadZone"
+             onclick="document.getElementById('uploadInput').click()"
+             ondragover="event.preventDefault(); this.classList.add('dragover')"
+             ondragleave="this.classList.remove('dragover')"
+             ondrop="event.preventDefault(); this.classList.remove('dragover'); handleUploadDrop(event)">
+            <div class="upload-zone-title">Upload a release zip</div>
+            <div class="upload-zone-hint">
+                Drop <code>aerodrome-vX.Y.Z.zip</code> here, or click to browse
+            </div>
+            <div class="upload-zone-progress" id="uploadProgress" style="display:none"></div>
+            <input type="file" id="uploadInput" accept=".zip,application/zip"
+                   onchange="handleUploadFile(this.files[0])">
+        </div>
+
+        <div id="localDetails" style="display:none">
+            <div class="info-grid">
+                <div class="info-label">Current version</div>
+                <div class="info-value" id="currentVer">—</div>
+                <div class="info-label">Staged version</div>
+                <div class="info-value" id="stagedVer">—</div>
+            </div>
+
+            <div class="actions" id="localActions"></div>
+        </div>
+
+        <div class="instructions" id="localInstructions" style="display:none">
+            Alternative: stage the update via SSH instead of the upload box above.
+            <pre>scp -r aerodrome/ user@server:~/aerodrome/update/
+# or
+rsync -av aerodrome/ user@server:~/aerodrome/update/</pre>
+            Either path lands in <code>~/aerodrome/update/</code>. The new release will be applied with the current <code>config.yaml</code>, database, logs, and venv preserved. The previous install is backed up to <code>.backups/&lt;timestamp&gt;/</code>.
+        </div>
+    </div>
+
+    <!-- v2.41.3: ntfy version card. Mirrors the "Local update" pattern but
+         tracks the local ntfy install (if any) instead of Aerodrome itself.
+         Hidden when no ntfy is installed. -->
+    <div class="card" id="ntfyUpdateCard" style="display:none">
+        <div class="card-head">
+            <div>
+                <span class="card-title">Local ntfy server</span>
+                <span class="badge" id="ntfyUpdateBadge">checking…</span>
+            </div>
+            <div class="card-sub">push notifications server</div>
+        </div>
+
+        <div class="status" id="ntfyUpdateStatus"></div>
+
+        <div class="info-grid">
+            <div class="info-label">Installed version</div>
+            <div class="info-value" id="ntfyCurrentVer">—</div>
+            <div class="info-label">Latest available</div>
+            <div class="info-value" id="ntfyLatestVer">—</div>
+        </div>
+
+        <div class="actions" id="ntfyUpdateActions"></div>
+    </div>
+
+    <!-- GitHub update card (placeholder) -->
+    <div class="card disabled">
+        <div class="card-head">
+            <div>
+                <span class="card-title">GitHub update</span>
+                <span class="badge soon">coming soon</span>
+            </div>
+            <div class="card-sub">pull latest release</div>
+        </div>
+        <div class="status-msg info">
+            Pulling updates directly from the Aerodrome GitHub releases is planned for a future version. For now, use the local update above.
+        </div>
+    </div>
+
+    <!-- Changelog card -->
+    <div class="card">
+        <div class="card-head">
+            <div>
+                <span class="card-title">Changelog</span>
+            </div>
+            <div class="card-sub">recent release notes</div>
+        </div>
+        <div id="changelogBody">
+            <div class="status-msg info"><span class="spinner"></span>Loading changelog...</div>
+        </div>
+    </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- Release-notes modal (shown when user clicks the new version) -->
+<div class="rn-modal" id="rnModal">
+    <div class="rn-modal-inner">
+        <div class="rn-modal-head">
+            <div>
+                <div class="rn-modal-title" id="rnTitle">What's new</div>
+                <div class="rn-modal-sub" id="rnSub">—</div>
+            </div>
+            <button class="rn-modal-close" onclick="closeUpdateChangelog()" aria-label="Close">✕</button>
+        </div>
+        <div class="rn-modal-body" id="rnBody">
+            <div class="status-msg info"><span class="spinner"></span>Loading release notes...</div>
+        </div>
+        <div class="rn-modal-actions">
+            <button class="btn" onclick="closeUpdateChangelog()">Close</button>
+            <button class="btn btn-primary" id="rnApplyBtn" onclick="closeUpdateChangelog(); document.getElementById('btnApply')?.click();">Apply update</button>
+        </div>
+    </div>
+</div>
+
+<script>
+function toast(msg, type=''){
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.className = 'toast show ' + type;
+    // v2.40.1: longer durations so users can actually read the toast.
+    const duration = (type === 'err' || type === 'warn') ? 10000 : 6000;
+    setTimeout(()=> t.className='toast', duration);
+}
+
+function _esc(s){
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// =========================================================================
+// Sudoers update-required modal (v2.40.1)
+// =========================================================================
+// Shown when the staged release's install.sh declares a SUDOERS_VERSION
+// higher than what's currently installed at /etc/sudoers.d/aerodrome.
+// The user MUST run a specific command on the server before the update
+// can be applied — Aerodrome deliberately does not self-write sudoers
+// (permission-escalation risk). The modal shows the exact command,
+// pre-filled with the install path, with a copy button. After they
+// run it, clicking "Re-check" re-reads /etc/sudoers.d/aerodrome and
+// closes the modal if the version now matches — at which point they
+// can proceed with Apply.
+//
+// Returns a Promise that resolves with:
+//   true  — user re-checked and sudoers now matches; caller may proceed
+//   false — user clicked Cancel
+function showSudoersRequiredModal(opts){
+    opts = opts || {};
+    const stagedVer = opts.staged_version != null ? opts.staged_version : '?';
+    const liveVer = opts.live_version != null ? opts.live_version : '(none)';
+    const installDir = opts.install_dir || '/home/<user>/aerodrome';
+    const command = `sudo bash ${installDir}/install.sh`;
+
+    return new Promise(resolve => {
+        const bg = document.createElement('div');
+        bg.style.cssText =
+            'position:fixed;inset:0;background:rgba(0,0,0,0.65);z-index:2000;'
+          + 'display:flex;align-items:center;justify-content:center;padding:20px;';
+        const modal = document.createElement('div');
+        modal.style.cssText =
+            'background:var(--bg1);border:1px solid var(--bdr);border-top:3px solid var(--amber);'
+          + 'border-radius:10px;max-width:580px;width:100%;padding:22px 26px;color:var(--t1);'
+          + 'font-family:var(--font);';
+        modal.innerHTML = `
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+                <span style="width:22px;height:22px;border-radius:50%;background:rgba(245,158,11,.15);
+                       color:var(--amber);display:inline-flex;align-items:center;
+                       justify-content:center;font-size:13px;font-weight:600;">!</span>
+                <div style="font-size:16px;font-weight:500;color:var(--amber);">Sudoers update required</div>
+            </div>
+            <div style="font-size:12px;color:var(--t2);margin:0 0 14px 32px;">
+                Release ${_esc(opts.update_version || '?')} · requires a one-time permission refresh
+            </div>
+            <p style="font-size:13px;line-height:1.6;color:var(--t1);margin:0 0 12px 0;">
+                This release adds system-level operations that need updated sudo permissions
+                before the update can be applied safely. Without the refresh, some features
+                (like installing or upgrading the local ntfy server) would silently fail.
+            </p>
+            <div style="background:rgba(245,158,11,.05);border-left:2px solid var(--amber);
+                        padding:10px 14px;border-radius:0 4px 4px 0;margin:14px 0;">
+                <div style="font-size:11px;color:var(--amber);text-transform:uppercase;
+                            letter-spacing:.06em;margin-bottom:6px;font-weight:600;">
+                    What's changing
+                </div>
+                <div style="font-size:12px;color:var(--t1);line-height:1.6;">
+                    Sudoers version: ${_esc(liveVer)} → ${_esc(stagedVer)}
+                </div>
+            </div>
+            <p style="font-size:12px;color:var(--t2);line-height:1.6;margin:0 0 8px 0;">
+                Aerodrome can't update the sudoers file on its own — that would be a permission
+                escalation risk. Please SSH to your server and run the command below.
+                Re-running install.sh is idempotent and safe.
+            </p>
+            <div style="position:relative;background:var(--bg0);border:1px solid var(--bdr);
+                        border-radius:6px;padding:10px 12px;font-family:var(--mono);font-size:12px;
+                        color:var(--cyan);margin:8px 0 14px 0;overflow-x:auto;">
+                <span id="_sr_cmd" style="white-space:nowrap;">${_esc(command)}</span>
+                <button id="_sr_copy" style="position:absolute;top:6px;right:6px;
+                        background:var(--bg2);color:var(--t2);border:1px solid var(--bdr);
+                        border-radius:4px;font-size:10px;font-family:var(--font);
+                        padding:3px 10px;cursor:pointer;">Copy</button>
+            </div>
+            <div style="display:flex;justify-content:flex-end;gap:8px;">
+                <button class="btn" id="_sr_cancel">Cancel update</button>
+                <button class="btn" id="_sr_recheck" style="border-color:var(--cyan);color:var(--cyan);">Re-check</button>
+                <button class="btn btn-primary" id="_sr_apply" disabled
+                        title="Waiting for sudoers refresh">Apply update</button>
+            </div>
+            <div id="_sr_status" style="font-size:11px;color:var(--t3);margin-top:10px;min-height:14px;"></div>
+        `;
+        bg.appendChild(modal);
+        document.body.appendChild(bg);
+
+        const copyBtn = modal.querySelector('#_sr_copy');
+        const cancelBtn = modal.querySelector('#_sr_cancel');
+        const recheckBtn = modal.querySelector('#_sr_recheck');
+        const applyBtn = modal.querySelector('#_sr_apply');
+        const statusEl = modal.querySelector('#_sr_status');
+
+        function dismiss(result){
+            document.removeEventListener('keydown', onKey);
+            if(bg.parentNode) bg.parentNode.removeChild(bg);
+            resolve(result);
+        }
+        function onKey(e){ if(e.key === 'Escape') dismiss(false); }
+        document.addEventListener('keydown', onKey);
+
+        copyBtn.onclick = async () => {
+            const showCopied = () => {
+                copyBtn.textContent = 'Copied!';
+                copyBtn.style.color = 'var(--green)';
+                setTimeout(() => {
+                    copyBtn.textContent = 'Copy';
+                    copyBtn.style.color = 'var(--t2)';
+                }, 1500);
+            };
+            // v2.41.10: three-tier copy. Async Clipboard API → execCommand
+            // fallback → highlight-the-text fallback. Matches the perf page
+            // and onboarding modal for consistency.
+            if (navigator.clipboard && window.isSecureContext) {
+                try {
+                    await navigator.clipboard.writeText(command);
+                    showCopied();
+                    return;
+                } catch (e) { /* fall through */ }
+            }
+            try {
+                const ta = document.createElement('textarea');
+                ta.value = command;
+                ta.style.cssText = 'position:fixed;top:0;left:0;width:2em;height:2em;opacity:0';
+                ta.setAttribute('readonly', '');
+                document.body.appendChild(ta);
+                ta.focus();
+                ta.select();
+                ta.setSelectionRange(0, command.length);
+                const ok = document.execCommand('copy');
+                document.body.removeChild(ta);
+                if (ok) {
+                    showCopied();
+                    return;
+                }
+            } catch (e) { /* fall through */ }
+            // Last resort: select the text so the user can hit Ctrl+C
+            const range = document.createRange();
+            range.selectNodeContents(modal.querySelector('#_sr_cmd'));
+            window.getSelection().removeAllRanges();
+            window.getSelection().addRange(range);
+            copyBtn.textContent = 'Selected — Ctrl+C';
+            setTimeout(() => copyBtn.textContent = 'Copy', 2000);
+        };
+
+        cancelBtn.onclick = () => dismiss(false);
+
+        recheckBtn.onclick = async () => {
+            recheckBtn.disabled = true;
+            recheckBtn.textContent = 'Checking…';
+            statusEl.textContent = '';
+            try {
+                const r = await fetch('/api/updates/local/check');
+                const j = await r.json();
+                const s = j.sudoers || {};
+                if (s.can_verify && !s.needs_refresh) {
+                    statusEl.innerHTML = '<span style="color:var(--green)">✓ Sudoers refreshed — ready to apply</span>';
+                    applyBtn.disabled = false;
+                    applyBtn.title = '';
+                    recheckBtn.style.display = 'none';
+                    applyBtn.focus();
+                } else if (s.can_verify && s.needs_refresh) {
+                    const lv = s.live_version != null ? s.live_version : '(none)';
+                    statusEl.innerHTML = `<span style="color:var(--red)">✗ Still seeing sudoers version ${_esc(lv)}. Did the command run successfully?</span>`;
+                } else {
+                    statusEl.innerHTML = '<span style="color:var(--amber)">Cannot verify. The live sudoers file may still be unreadable.</span>';
+                }
+            } catch(e) {
+                statusEl.innerHTML = `<span style="color:var(--red)">Check failed: ${_esc(e.message)}</span>`;
+            } finally {
+                recheckBtn.disabled = false;
+                recheckBtn.textContent = 'Re-check';
+            }
+        };
+
+        applyBtn.onclick = () => dismiss(true);
+
+        // Try focusing Re-check first so Enter does the useful thing
+        setTimeout(() => recheckBtn.focus(), 0);
+    });
+}
+
+function setBadge(text, cls){
+    const b = document.getElementById('localBadge');
+    b.textContent = text;
+    b.className = 'badge ' + cls;
+}
+
+function renderStatus(html, cls){
+    document.getElementById('localStatus').innerHTML =
+        `<div class="status-msg ${cls}">${html}</div>`;
+}
+
+// Cache for staged-update release notes (used by the release-notes modal
+// further down). Declared here so checkLocal() can reset it safely.
+let _rnStagedEntries = null;
+
+async function checkLocal(){
+    setBadge('checking…', '');
+    renderStatus('<span class="spinner"></span>Checking for staged update...', 'info');
+    document.getElementById('localDetails').style.display = 'none';
+    document.getElementById('localInstructions').style.display = 'none';
+    // Reset any cached release-notes data — the staged update may have changed
+    _rnStagedEntries = null;
+
+    // Update the header timestamp each time we check
+    // v2.85.12: shared formatter respects display.time_format.
+    const tsEl = document.getElementById('ts');
+    if(tsEl) tsEl.textContent = formatDateTime(new Date());
+
+    try {
+        const r = await fetch('/api/updates/local/check');
+        const j = await r.json();
+
+        document.getElementById('currentVer').textContent = j.current_version || '—';
+        document.getElementById('stagedVer').textContent = j.update_version || '— (none)';
+        // Always clear any previous click handler / classes
+        const stagedEl = document.getElementById('stagedVer');
+        stagedEl.classList.remove('highlight', 'clickable-version');
+        stagedEl.onclick = null;
+        stagedEl.removeAttribute('title');
+
+        document.getElementById('localDetails').style.display = 'block';
+
+        // v2.40.1: cache sudoers-check info on the global for applyLocal() to
+        // consult. We show a visible banner up front when drift is detected
+        // but don't pop a modal — the user may have come to this page just
+        // to see what version is staged, not to apply. The modal only fires
+        // when they actually click Apply.
+        _lastSudoersCheck = j.sudoers || null;
+        _lastUpdateInfo = { version: j.update_version, install_dir: j.install_dir };
+
+        if (j.available) {
+            // New version is available and ready to apply
+            setBadge('ready', 'ready');
+            const v = j.update_version;
+
+            // Sudoers drift banner — rendered ABOVE the normal "is staged"
+            // status so it's the first thing the user sees. Uses amber (not
+            // red) because it's a prerequisite, not an error state.
+            let sudoersBanner = '';
+            if (j.sudoers && j.sudoers.can_verify && j.sudoers.needs_refresh) {
+                const sv = j.sudoers.staged_version;
+                const lv = j.sudoers.live_version;
+                sudoersBanner =
+                    `<div class="status-msg warn" style="margin-bottom:8px">` +
+                    `⚠ <strong>Sudoers update required</strong> before this release can be applied. ` +
+                    `(Live version ${_esc(lv)}, staged requires ${_esc(sv)}.) ` +
+                    `Click Apply for the one-line command to run on your server.` +
+                    `</div>`;
+                setBadge('refresh needed', 'warn');
+            }
+
+            renderStatus(
+                sudoersBanner +
+                `<a href="#" onclick="showUpdateChangelog('${v}'); return false;" class="release-link"><strong>${v}</strong></a> ` +
+                `is staged and ready to apply. ` +
+                `<a href="#" onclick="showUpdateChangelog('${v}'); return false;" class="release-link">See what's new</a>. ` +
+                `Your config, database, and logs will be preserved.`,
+                'ready'
+            );
+            stagedEl.classList.add('highlight', 'clickable-version');
+            stagedEl.title = `Click to view release notes for ${v}`;
+            stagedEl.onclick = () => showUpdateChangelog(v);
+            document.getElementById('localActions').innerHTML = `
+                <button class="btn btn-primary" id="btnApply" onclick="applyLocal('${v}')">Apply ${v} &amp; restart</button>
+                <button class="btn" onclick="showUpdateChangelog('${v}')">What's new?</button>
+                <button class="btn" onclick="checkLocal()">Check again</button>
+            `;
+            document.getElementById('localInstructions').style.display = 'none';
+        } else {
+            // v2.41.2: even when there's no update to apply, surface sudoers
+            // drift. Before v2.41.2 this branch just said "Up to date" and
+            // users who'd been silently soft-allowed past a needed refresh
+            // had no way to know their ntfy features were silently broken.
+            // Fetch the independent drift check (separate from the staged-
+            // release one). If drift exists, render an amber banner with
+            // SSH command — no Apply button here because there's nothing
+            // to apply.
+            const driftCheck = await fetch('/api/sudoers/status')
+                .then(r => r.json())
+                .catch(() => null);
+            let driftBanner = '';
+            if (driftCheck && driftCheck.can_verify && driftCheck.needs_refresh) {
+                const ev = driftCheck.expected_version;
+                const lv = driftCheck.live_version;
+                const installDir = driftCheck.install_dir || '/home/<user>/aerodrome';
+                driftBanner =
+                    `<div class="status-msg warn" style="margin-bottom:8px">` +
+                    `⚠ <strong>Sudoers refresh required.</strong> ` +
+                    `Installed Aerodrome expects version ${_esc(ev)} but ` +
+                    `/etc/sudoers.d/aerodrome is at version ${_esc(lv)}. ` +
+                    `Some features (ntfy install/uninstall, data purge) will fail until you SSH to the server and run: ` +
+                    `<br><code style="display:inline-block;margin-top:4px;font-size:11px;padding:2px 6px;background:var(--bg0);border-radius:3px;">sudo bash ${_esc(installDir)}/install.sh</code>` +
+                    // v2.41.20: explicit note so users don't try `./install.sh`
+                    // and hit "permission denied" when the release zip stripped
+                    // the execute bit. `sudo bash <script>` works regardless.
+                    `<div style="margin-top:6px;font-size:11px;opacity:0.75">` +
+                    `Use the full <code>sudo bash</code> form above — it works whether or not install.sh is marked executable.` +
+                    `</div>` +
+                    `</div>`;
+                setBadge('refresh needed', 'warn');
+            } else {
+                setBadge('up to date', '');
+            }
+            // Show whatever reason the server gave for no-update
+            const cls = (j.status === 'older') ? 'warn' : 'info';
+            renderStatus(driftBanner + (j.reason || 'No update available.'), cls);
+            document.getElementById('localActions').innerHTML = `
+                <button class="btn" onclick="checkLocal()">Check again</button>
+            `;
+            document.getElementById('localInstructions').style.display = 'block';
+        }
+    } catch (e) {
+        setBadge('error', '');
+        renderStatus('Failed to check for updates: ' + e.message, 'err');
+        document.getElementById('localDetails').style.display = 'none';
+    }
+}
+
+// v2.40.1: cached state from the last /api/updates/local/check so applyLocal
+// can consult it without a duplicate fetch. Refreshed on every checkLocal()
+// call (including the Re-check from inside the sudoers modal).
+let _lastSudoersCheck = null;
+let _lastUpdateInfo = {};
+
+// v2.41.7: drop/upload handlers for the in-UI release upload. These call
+// POST /api/updates/local/upload which extracts the zip into ~/aerodrome/update/
+// and returns the same shape as /api/updates/local/check. We then feed
+// that response straight into the existing check-render logic so the
+// Apply button lights up automatically — no manual re-check needed.
+
+function handleUploadDrop(event) {
+    const files = event.dataTransfer && event.dataTransfer.files;
+    if (files && files.length > 0) {
+        handleUploadFile(files[0]);
+    }
+}
+
+async function handleUploadFile(file) {
+    if (!file) return;
+    const zone = document.getElementById('uploadZone');
+    const progress = document.getElementById('uploadProgress');
+
+    // Basic client-side sanity check — server enforces anyway, but the
+    // UX is better if we catch obvious mistakes before the round-trip.
+    if (!file.name.toLowerCase().endsWith('.zip')) {
+        renderStatus('Please upload a .zip file. Got: ' + _esc(file.name), 'err');
+        return;
+    }
+    const MAX_MB = 50;
+    if (file.size > MAX_MB * 1024 * 1024) {
+        renderStatus(
+            `File is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). `
+          + `Aerodrome release zips are a few MB. `
+          + `Did you mean to upload a full backup? That goes under Config → Full backup.`,
+            'err');
+        return;
+    }
+
+    zone.classList.add('uploading');
+    progress.style.display = 'block';
+    progress.textContent = `Uploading ${file.name} (${(file.size/1024).toFixed(1)} KB)…`;
+    setBadge('uploading…', '');
+
+    try {
+        const fd = new FormData();
+        fd.append('file', file);
+        const r = await fetch('/api/updates/local/upload', {
+            method: 'POST',
+            body: fd,
+        });
+        const j = await r.json();
+
+        if (!r.ok || !j.ok) {
+            progress.textContent = '';
+            progress.style.display = 'none';
+            zone.classList.remove('uploading');
+            renderStatus('Upload failed: ' + _esc(j.error || ('HTTP ' + r.status)), 'err');
+            setBadge('error', '');
+            return;
+        }
+
+        // Successful upload — response shape matches /api/updates/local/check,
+        // so we can just reuse the render logic by calling checkLocal() which
+        // will re-GET the check endpoint and show the freshly staged release.
+        progress.textContent =
+            `✓ ${_esc(j.update_version)} uploaded (${(j.uploaded_bytes/1024).toFixed(1)} KB).`;
+        zone.classList.remove('uploading');
+        // Re-check to pick up the new staged version — the upload already did
+        // the check work, but calling checkLocal keeps the flow uniform and
+        // lets the sudoers-drift cache update.
+        await checkLocal();
+        // Clear the progress line after a short delay so users see the
+        // "uploaded" confirmation, then the normal staged-update UI takes over.
+        setTimeout(() => {
+            progress.style.display = 'none';
+            progress.textContent = '';
+            // Reset the file input so the user can upload the same file
+            // again if they need to (browsers only fire change once per
+            // selected file unless the input is reset).
+            const input = document.getElementById('uploadInput');
+            if (input) input.value = '';
+        }, 2500);
+    } catch (e) {
+        progress.textContent = '';
+        progress.style.display = 'none';
+        zone.classList.remove('uploading');
+        renderStatus('Upload failed: ' + _esc(e.message), 'err');
+        setBadge('error', '');
+    }
+}
+
+async function applyLocal(version){
+    // v2.40.1: sudoers-drift gate. Before showing the standard confirm(),
+    // check whether a sudoers refresh is needed. If so, show the blocking
+    // modal with the copy-ready command. If the user re-checks inside the
+    // modal and it now matches, they can proceed to the normal apply.
+    if (_lastSudoersCheck && _lastSudoersCheck.can_verify && _lastSudoersCheck.needs_refresh) {
+        const ok = await showSudoersRequiredModal({
+            update_version: version,
+            staged_version: _lastSudoersCheck.staged_version,
+            live_version: _lastSudoersCheck.live_version,
+            install_dir: _lastUpdateInfo.install_dir || null,
+        });
+        if (!ok) return;
+        // User re-checked and it's now clean. Refresh state from server
+        // before continuing so our cached flag is accurate.
+        await checkLocal();
+        // If somehow it drifted again (race: another user re-edited the
+        // file), we'll hit the server-side 409 guard below.
+    }
+
+    if (!confirm(`Apply local update to ${version}?\n\nThis will:\n• Back up the current install to .backups/<timestamp>/\n• Copy new files over the install (preserving config, database, logs)\n• Reinstall Python dependencies\n• Clear the update/ folder\n• Restart the service\n\nThe dashboard will briefly disconnect during restart.`)) {
+        return;
+    }
+
+    const btn = document.getElementById('btnApply');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>Applying update...';
+    renderStatus('<span class="spinner"></span>Applying update — do not refresh.', 'info');
+
+    // v2.87.2: capture the current version before the apply request goes
+    // out. The polling loop below uses this to detect when the service
+    // has come back up running the NEW code (version changed) vs still
+    // up running OLD code (apply hasn't really started or rolled back).
+    // Read from a synchronous source so we don't race against a
+    // concurrent /api/version response — the page's data-version
+    // attribute or a cached lookup beats fetching one more time here.
+    let _oldVersion = null;
+    try {
+        const verResp = await fetch('/api/version');
+        if (verResp.ok) {
+            const verJson = await verResp.json();
+            _oldVersion = verJson.version || null;
+        }
+    } catch (e) { /* fine; null _oldVersion just means we'll accept any version as "back" */ }
+
+    // POST the apply. The server will start the apply script then
+    // restart the service — so this fetch will likely either return
+    // briefly with the apply-acknowledged response, OR throw partway
+    // through because the service went away. Either way we proceed
+    // to the polling loop.
+    let applyError = null;
+    try {
+        const r = await fetch('/api/updates/local/apply', { method: 'POST' });
+        const j = await r.json();
+        if (!r.ok || !j.ok) {
+            // Server returned a definitive error before restarting (e.g.
+            // sudoers drift). No service restart will happen — surface
+            // the error and stop. Bypasses the polling loop entirely.
+            setBadge('error', '');
+            if (j.error === 'sudoers_refresh_required' && j.sudoers) {
+                btn.disabled = false;
+                btn.textContent = `Apply ${version} & restart`;
+                renderStatus('Sudoers refresh required before apply.', 'warn');
+                await showSudoersRequiredModal({
+                    update_version: version,
+                    staged_version: j.sudoers.staged_version,
+                    live_version: j.sudoers.live_version,
+                    install_dir: _lastUpdateInfo.install_dir || null,
+                });
+                checkLocal();
+                return;
+            }
+            renderStatus(`Update failed: ${j.error || 'unknown error'}`, 'err');
+            btn.disabled = false;
+            btn.textContent = `Apply ${version} & restart`;
+            return;
+        }
+        // Apply accepted — fall through to the polling loop. We don't
+        // bother to render j.message because the user is about to see
+        // a much more meaningful "restarting…" UI from the loop.
+    } catch (e) {
+        // Fetch threw — almost certainly because the service restarted
+        // mid-request (the common, expected case). Save the error in
+        // case the polling loop later concludes we never got a real
+        // restart, but otherwise just proceed with polling.
+        applyError = e;
+    }
+
+    // v2.87.2: state machine that polls /api/version until the service
+    // comes back up running new code. Replaces the v2.41.x
+    // setTimeout(reload, 3500) hack which produced a dead browser tab
+    // when the migration took longer than 3.5 seconds (which became
+    // routine once schema migrations started doing real work).
+    //
+    // States, in roughly the order they're observed:
+    //   sent      — apply request just sent; service likely still up
+    //                briefly. We don't expect to render this state for
+    //                long (~1s typical) but it's the start state.
+    //   restarting — at least one poll has failed. Service is between
+    //                shutdown and back-up. Most of the visible window.
+    //   verifying — poll returned the OLD version. Means either the
+    //                apply silently rolled back, OR we're in a tiny
+    //                window where the old process is still answering.
+    //                Keep waiting up to the timeout.
+    //   complete  — poll returned the NEW version. Apply succeeded.
+    //                Reload the page so the user gets the new HTML/JS.
+    //   timeout   — 240s elapsed without seeing the new version.
+    //                Surface as an error; the user can SSH in to
+    //                investigate or just reload manually.
+    //
+    //                v2.89.1: bumped from 120s after the initial
+    //                v2.89.0 deploy hit the timeout while migration v7
+    //                was still backfilling — the apply succeeded but
+    //                the UI gave up first. Real-world Pi 4B installs
+    //                with a year of data could see future migrations
+    //                push 2-3 minutes; 240s leaves comfortable
+    //                headroom without changing the underlying flow.
+    const POLL_INTERVAL_MS = 1000;
+    const TIMEOUT_MS = 240_000;
+    const startTime = Date.now();
+    let pollCount = 0;
+    let lastFailureTime = null;
+
+    while (true) {
+        const elapsed = Date.now() - startTime;
+        if (elapsed >= TIMEOUT_MS) {
+            renderStatus(
+                `<span style="color:var(--red)">⚠</span> ` +
+                `Update timed out after ${Math.round(TIMEOUT_MS/1000)}s. ` +
+                `The service didn't come back up running ${_esc(version)}. ` +
+                `Check <code>sudo journalctl -u aerodrome -n 100</code> ` +
+                `for what happened, then reload this page.`,
+                'err'
+            );
+            setBadge('timeout', '');
+            btn.disabled = false;
+            btn.textContent = `Apply ${version} & restart`;
+            return;
+        }
+
+        let liveVersion = null;
+        try {
+            // Short timeout per poll so we don't get stuck if a
+            // half-restarted service hangs the request.
+            const ctrl = new AbortController();
+            const tid = setTimeout(() => ctrl.abort(), 2500);
+            const r = await fetch('/api/version', { signal: ctrl.signal });
+            clearTimeout(tid);
+            if (r.ok) {
+                const j = await r.json();
+                liveVersion = j.version || null;
+            }
+        } catch (e) {
+            // Expected — service is down or coming up. Fall through to
+            // the "restarting" state below.
+            lastFailureTime = Date.now();
+        }
+        pollCount++;
+
+        if (liveVersion === null) {
+            // Poll failed → service is between shutdown and ready.
+            // Show "restarting" with elapsed time so the user has a
+            // sense of progress (long migrations on Pi can take 30+s).
+            renderStatus(
+                `<span class="spinner"></span>` +
+                `Service is restarting and applying migrations. ` +
+                `Elapsed: ${Math.round(elapsed/1000)}s.`,
+                'info'
+            );
+        } else if (_oldVersion && liveVersion === _oldVersion) {
+            // Service answered, but with the OLD version. Two
+            // possibilities: (a) we polled before the restart actually
+            // happened (rare; the apply does file-copy-then-restart,
+            // so any answer should be from the new process), or (b)
+            // the apply silently failed and the service stayed on the
+            // old version. Keep polling — if (b), we'll hit the
+            // timeout and surface that.
+            renderStatus(
+                `<span class="spinner"></span>` +
+                `Service is up but still on ${_esc(_oldVersion)}. ` +
+                `Waiting for ${_esc(version)}… ` +
+                `Elapsed: ${Math.round(elapsed/1000)}s.`,
+                'info'
+            );
+        } else {
+            // Live version differs from the version we started at,
+            // or we never knew the start version. Either way, the
+            // service is back and responding. Reload the page so the
+            // user gets the freshly-served HTML/JS that matches the
+            // running backend.
+            renderStatus(
+                `<span style="color:var(--green)">✓</span> ` +
+                `Update complete — now running ${_esc(liveVersion)}. ` +
+                `Reloading page…`,
+                'ready'
+            );
+            setBadge('ok', '');
+            toast('Update applied', 'ok');
+            // Brief delay so the success message is visible.
+            setTimeout(() => window.location.reload(), 800);
+            return;
+        }
+
+        await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+    }
+}
+
+// Initial check on page load
+checkLocal();
+loadChangelog();
+checkNtfyUpdate();
+
+// v2.41.3: ntfy version tile. Reads /api/ntfy/status which returns
+// both the installed and the latest-available ntfy versions. Only
+// surfaces the card when ntfy is aerodrome-managed; externally-
+// installed ntfy is the user's responsibility and we say so.
+async function checkNtfyUpdate() {
+    const card = document.getElementById('ntfyUpdateCard');
+    if (!card) return;
+    try {
+        const r = await fetch('/api/ntfy/status');
+        const j = await r.json();
+        const s = j.status || {};
+        const state = s.state || 'unknown';
+
+        if (state === 'not_installed') {
+            // No local ntfy — keep the card hidden to reduce visual noise.
+            card.style.display = 'none';
+            return;
+        }
+
+        card.style.display = '';
+        const current = s.version || '—';
+        const latest = j.latest_available || '—';
+        const running = !!(s.service && s.service.active);
+
+        document.getElementById('ntfyCurrentVer').textContent = current;
+        document.getElementById('ntfyLatestVer').textContent = latest;
+
+        const badge = document.getElementById('ntfyUpdateBadge');
+        const status = document.getElementById('ntfyUpdateStatus');
+        const actions = document.getElementById('ntfyUpdateActions');
+
+        if (state === 'external') {
+            badge.textContent = 'external';
+            badge.className = 'badge';
+            status.innerHTML = `<div class="status-msg info">
+                ntfy was installed outside of Aerodrome (likely via apt or another package manager).
+                Aerodrome won't manage it. Update through your package manager.
+            </div>`;
+            actions.innerHTML = '';
+            return;
+        }
+
+        if (state === 'partial') {
+            badge.textContent = 'partial install';
+            badge.className = 'badge warn';
+            status.innerHTML = `<div class="status-msg warn">
+                ntfy is in a partial-install state. Fix via the Notifications tab (uninstall and reinstall).
+            </div>`;
+            actions.innerHTML = '';
+            return;
+        }
+
+        // state === 'aerodrome_managed'
+        const canUpgrade = latest && current && current !== '—' && latest !== current;
+        const runningText = running
+            ? '<span style="color:var(--green, #22c55e)">● running</span>'
+            : '<span style="color:var(--red)">● stopped</span>';
+
+        if (canUpgrade) {
+            badge.textContent = `upgrade available`;
+            badge.className = 'badge ready';
+            // v2.42.3: added an inline "Release notes" link pointing at the
+            // GitHub tag page for the available version. Users who see
+            // "upgrade available" reasonably want to know WHAT the upgrade
+            // contains before accepting it — bugfixes, breaking changes,
+            // features. One hop to upstream; no scraped/summarized text.
+            const releaseNotesUrl =
+                `https://github.com/binwiederhier/ntfy/releases/tag/v${encodeURIComponent(latest)}`;
+            status.innerHTML = `<div class="status-msg ready">
+                ntfy ${_esc(current)} is installed. ${_esc(latest)} is available.
+                Service is ${runningText}.
+                <a href="${releaseNotesUrl}" target="_blank" rel="noopener"
+                   style="color:var(--cyan);margin-left:6px">Release notes ↗</a>
+            </div>`;
+            actions.innerHTML = `
+                <a href="/config#notifications" class="btn btn-primary" style="text-decoration:none">
+                    Upgrade from Notifications tab
+                </a>
+                <button class="btn" onclick="checkNtfyUpdate()">Check again</button>`;
+        } else {
+            badge.textContent = 'up to date';
+            badge.className = 'badge';
+            status.innerHTML = `<div class="status-msg info">
+                ntfy ${_esc(current)} is installed and up to date. Service is ${runningText}.
+            </div>`;
+            actions.innerHTML = `<button class="btn" onclick="checkNtfyUpdate()">Check again</button>`;
+        }
+    } catch (e) {
+        // Fail closed — hide the card rather than show a confusing error
+        card.style.display = 'none';
+    }
+}
+
+// =========================================================================
+// Changelog — shows the 5 newest releases expanded, older ones collapsed
+// =========================================================================
+let changelogEntries = [];
+let changelogExpanded = false;   // whether "Show older releases" is clicked
+
+async function loadChangelog(){
+    const body = document.getElementById('changelogBody');
+    if(!body) return;
+    try {
+        const r = await fetch('/api/changelog');
+        const j = await r.json();
+        changelogEntries = j.entries || [];
+        renderChangelog();
+    } catch (e) {
+        body.innerHTML = `<div class="status-msg err">Failed to load changelog: ${e.message}</div>`;
+    }
+}
+
+function renderChangelog(){
+    const body = document.getElementById('changelogBody');
+    if(!body) return;
+    if(!changelogEntries.length){
+        body.innerHTML = `<div class="status-msg info">No changelog entries found.</div>`;
+        return;
+    }
+
+    const visible = changelogExpanded ? changelogEntries : changelogEntries.slice(0, 5);
+    const olderCount = changelogEntries.length - 5;
+
+    const html = visible.map(entry => {
+        // For each section (Added/Changed/Fixed/etc.), pick a type class for color
+        const sections = Object.entries(entry.sections || {}).map(([type, bullets]) => {
+            const typeCls = {
+                'Added':'cl-type-added', 'Changed':'cl-type-changed',
+                'Fixed':'cl-type-fixed', 'Removed':'cl-type-removed',
+                'Security':'cl-type-security',
+            }[type] || 'cl-type-other';
+            const items = bullets.map(b => `<li>${escapeHtml(b)}</li>`).join('');
+            return `<div class="cl-section">
+                <span class="cl-type ${typeCls}">${escapeHtml(type)}</span>
+                <ul class="cl-bullets">${items}</ul>
+            </div>`;
+        }).join('');
+        return `<div class="cl-entry">
+            <div class="cl-head">
+                <span class="cl-version">v${escapeHtml(entry.version)}</span>
+                <span class="cl-date">${escapeHtml(entry.date)}</span>
+            </div>
+            ${sections}
+        </div>`;
+    }).join('');
+
+    let expander = '';
+    if (!changelogExpanded && olderCount > 0) {
+        expander = `<button class="cl-expander" onclick="changelogExpanded=true; renderChangelog()">Show older releases (${olderCount} more)</button>`;
+    } else if (changelogExpanded && changelogEntries.length > 5) {
+        expander = `<button class="cl-expander" onclick="changelogExpanded=false; renderChangelog()">Show fewer</button>`;
+    }
+
+    body.innerHTML = html + expander;
+}
+
+function escapeHtml(s){
+    const div = document.createElement('div');
+    div.textContent = s == null ? '' : String(s);
+    return div.innerHTML;
+}
+
+// =========================================================================
+// Release-notes modal — shown when user clicks the new version to read
+// what's changing before applying. Fetches from the STAGED changelog in
+// update/ (not the current install's changelog, which hasn't been bumped yet).
+// =========================================================================
+// _rnStagedEntries is declared near checkLocal() so it can be reset there.
+
+async function showUpdateChangelog(targetVersion){
+    const modal = document.getElementById('rnModal');
+    const body = document.getElementById('rnBody');
+    const title = document.getElementById('rnTitle');
+    const sub = document.getElementById('rnSub');
+
+    title.textContent = `What's new in ${targetVersion}`;
+    sub.textContent = 'release notes from the staged update';
+    body.innerHTML = `<div class="status-msg info"><span class="spinner"></span>Loading release notes...</div>`;
+    modal.classList.add('show');
+
+    try {
+        if (!_rnStagedEntries) {
+            const r = await fetch('/api/changelog?source=update');
+            const j = await r.json();
+            if (j.error) {
+                body.innerHTML = `<div class="status-msg warn">Could not load release notes: ${escapeHtml(j.error)}</div>`;
+                return;
+            }
+            _rnStagedEntries = j.entries || [];
+        }
+
+        // Figure out the current version so we can show "skipped" versions too
+        const curEl = document.getElementById('currentVer');
+        const currentVersion = curEl ? curEl.textContent.trim() : '';
+
+        renderReleaseNotes(targetVersion, currentVersion);
+    } catch (e) {
+        body.innerHTML = `<div class="status-msg err">Failed to load release notes: ${escapeHtml(e.message)}</div>`;
+    }
+}
+
+function renderReleaseNotes(targetVersion, currentVersion){
+    const body = document.getElementById('rnBody');
+    if (!_rnStagedEntries || !_rnStagedEntries.length) {
+        body.innerHTML = `<div class="status-msg info">The staged update did not include any release notes.</div>`;
+        return;
+    }
+
+    // Find entry for the target version, plus any entries between current and target
+    const parseV = v => {
+        if (!v) return null;
+        const parts = v.split('.').map(n => parseInt(n, 10));
+        return parts.length === 3 && parts.every(n => !isNaN(n)) ? parts : null;
+    };
+    const cmpV = (a, b) => {
+        for (let i = 0; i < 3; i++) { if (a[i] !== b[i]) return a[i] - b[i]; }
+        return 0;
+    };
+    const target = parseV(targetVersion);
+    const current = parseV(currentVersion);
+
+    const targetEntry = _rnStagedEntries.find(e => e.version === targetVersion);
+    let skipped = [];
+    if (target && current) {
+        skipped = _rnStagedEntries.filter(e => {
+            const v = parseV(e.version);
+            return v && cmpV(v, current) > 0 && cmpV(v, target) < 0;
+        });
+    }
+
+    let html = '';
+    if (targetEntry) {
+        html += renderEntryHtml(targetEntry);
+    } else {
+        html += `<div class="status-msg warn">No release notes found for v${escapeHtml(targetVersion)} in the staged changelog.</div>`;
+    }
+
+    if (skipped.length) {
+        const count = skipped.length;
+        html += `<button class="cl-expander" id="rnSkippedToggle" onclick="toggleSkippedReleases()">Show ${count} older release${count===1?'':'s'} you're skipping</button>`;
+        html += `<div id="rnSkippedSection" style="display:none">`;
+        for (const e of skipped) html += renderEntryHtml(e);
+        html += `</div>`;
+    }
+
+    body.innerHTML = html;
+}
+
+function renderEntryHtml(entry){
+    const sections = Object.entries(entry.sections || {}).map(([type, bullets]) => {
+        const typeCls = {
+            'Added':'cl-type-added', 'Changed':'cl-type-changed',
+            'Fixed':'cl-type-fixed', 'Removed':'cl-type-removed',
+            'Security':'cl-type-security',
+        }[type] || 'cl-type-other';
+        const items = bullets.map(b => `<li>${escapeHtml(b)}</li>`).join('');
+        return `<div class="cl-section">
+            <span class="cl-type ${typeCls}">${escapeHtml(type)}</span>
+            <ul class="cl-bullets">${items}</ul>
+        </div>`;
+    }).join('');
+    return `<div class="cl-entry">
+        <div class="cl-head">
+            <span class="cl-version">v${escapeHtml(entry.version)}</span>
+            <span class="cl-date">${escapeHtml(entry.date)}</span>
+        </div>
+        ${sections}
+    </div>`;
+}
+
+function toggleSkippedReleases(){
+    const section = document.getElementById('rnSkippedSection');
+    const btn = document.getElementById('rnSkippedToggle');
+    if (!section || !btn) return;
+    const isShown = section.style.display !== 'none';
+    section.style.display = isShown ? 'none' : 'block';
+    btn.textContent = isShown
+        ? btn.textContent.replace(/^Hide/, 'Show')
+        : btn.textContent.replace(/^Show/, 'Hide');
+}
+
+function closeUpdateChangelog(){
+    document.getElementById('rnModal').classList.remove('show');
+}
+
+// Close modal on Escape or outside click
+document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeUpdateChangelog();
+});
+document.addEventListener('click', e => {
+    const modal = document.getElementById('rnModal');
+    if (modal && e.target === modal) closeUpdateChangelog();
+});
+
+// Gear menu
+function toggleMenu(e) {
+    e.stopPropagation();
+    document.getElementById('settingsMenu').classList.toggle('open');
+}
+document.addEventListener('click', e => {
+    if (!e.target.closest('.settings-wrap')) {
+        const menu = document.getElementById('settingsMenu');
+        if (menu) menu.classList.remove('open');
+    }
+});
+
+// v2.41.8+: populate header version from /api/status (was hardcoded before)
+(async function _loadAppVersion(){
+    try {
+        const r = await fetch('/api/status');
+        const j = await r.json();
+        if (j && j.version) {
+            const el = document.getElementById('appVersion');
+            if (el) el.textContent = j.version;
+        }
+    } catch (e) { /* cosmetic — ignore */ }
+})();
+
+
+
+</script>
+<script src="/static/theme.js"></script>
+<script src="/static/health-indicator.js"></script>
+</body>
+</html>

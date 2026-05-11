@@ -1,0 +1,16 @@
+# Dev-only dependencies — NOT installed by install.sh or the runtime venv.
+# These are for rebuilding documentation assets (screenshots, overview PDF)
+# during development or as part of release packaging.
+#
+# Install with:
+#   pip install -r requirements-dev.txt
+#
+# Separate from requirements.txt so the runtime venv stays lean. Users who
+# just want to run Aerodrome don't need any of these.
+
+# For scripts/build_overview_pdf.py
+reportlab>=4.0
+pillow>=10.0
+
+# For scripts/screenshots.py
+playwright>=1.40

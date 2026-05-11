@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <!-- theme:inline-fouc-start -->
+    <script>
+// v2.45.0: theme FOUC prevention — applies saved theme pre-paint.
+// Keep this inline and synchronous at the TOP of <head>. Moving it to a
+// deferred module or the body would reintroduce the dark-flash on first
+// load for users with light-mode saved.
+(function(){
+    try {
+        var saved = localStorage.getItem('aerodrome-theme') || 'auto';
+        var applied = saved;
+        if (saved === 'auto') {
+            applied = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+        }
+        document.documentElement.setAttribute('data-theme', applied);
+    } catch (e) { /* localStorage blocked? default-dark is fine */ }
+})();
+</script>
+    <!-- theme:inline-fouc-end -->
+<!-- Version: 2.98.2 -->
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Aerodrome Logs</title>
+<!-- v2.50.2: favicon. SVG for modern browsers (scales perfectly,
+     respects light/dark via the cyan accent), ICO fallback for older
+     browsers, apple-touch-icon for iOS home-screen / bookmarks. -->
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <!-- v2.47.0: theme system extracted to /static/theme.css + theme.js.
+         Palette variables and the gear-menu widget styles both live there. -->
+    <link rel="stylesheet" href="/static/theme.css">
+<style>
+
+* { margin:0; padding:0; box-sizing: border-box; }
+body { background:var(--bg0); color:var(--t1); font-family:var(--font);
+       font-size:14px; line-height:1.5; min-height:100vh; }
+
+/* --- Header (shared with status/config/updates/docs) --- */
+.hdr { background:var(--bg1); border-bottom:1px solid var(--bdr); padding:12px 24px;
+       display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; }
+.hdr-left { display:flex; align-items:center; gap:8px; }
+.hdr h1 { font-size:18px; font-weight:600; letter-spacing:-0.02em; }
+.hdr h1 span { color:var(--cyan); }
+.dot { width:8px; height:8px; border-radius:50%; background:var(--green); animation:pulse 2s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+.hdr-right { display:flex; align-items:center; gap:14px; }
+.hdr-meta { font-size:11px; color:var(--t2); font-family:var(--mono); }
+.settings-wrap { position:relative; }
+.settings-menu { position:absolute; top:calc(100% + 6px); right:0; background:var(--bg2);
+                 border:1px solid var(--bdr); border-radius:8px; min-width:180px;
+                 display:none; z-index:100; overflow:hidden; }
+.settings-menu.open { display:block; }
+
+.page { max-width:1400px; margin:0 auto; padding:24px; }
+.page-title { font-size:22px; font-weight:600; margin-bottom:4px; }
+.page-sub { color:var(--t2); font-size:13px; font-family:var(--mono); margin-bottom:20px; }
+
+/* Info row */
+.info-row { display:flex; gap:24px; background:var(--bg2); border:1px solid var(--bdr);
+            border-radius:8px; padding:14px 18px; margin-bottom:16px; font-family:var(--mono);
+            font-size:12px; flex-wrap:wrap; }
+.info-item { display:flex; flex-direction:column; }
+.info-label { color:var(--t3); font-size:10px; text-transform:uppercase;
+              letter-spacing:.06em; margin-bottom:3px; }
+.info-value { color:var(--t1); font-size:13px; }
+
+/* Controls row */
+.controls { display:flex; gap:10px; margin-bottom:14px; align-items:center; flex-wrap:wrap; }
+/* Segmented button group — genuine extension over .btn for flush borders */
+.btn-group { display:inline-flex; border:1px solid var(--bdr); border-radius:6px;
+             overflow:hidden; background:var(--bg2); height:32px; }
+.btn-group .btn { border:none; border-right:1px solid var(--bdr); border-radius:0;
+                  background:transparent; padding:6px 14px; margin:0; height:auto; }
+.btn-group .btn:last-child { border-right:none; }
+.btn-group .btn.on { background:var(--cyan); color:var(--bg0); }
+.btn-group .btn:hover:not(.on):not(:disabled) { background:var(--bg3); }
+.search { background:var(--bg2); border:1px solid var(--bdr); color:var(--t1);
+          font-family:var(--mono); font-size:12px; padding:6px 12px; border-radius:6px;
+          width:260px; height:32px; box-sizing:border-box; }
+.search:focus { outline:none; border-color:var(--cyan); }
+.controls-spacer { flex:1; }
+
+/* Log pane */
+.log-box { background:#050810; border:1px solid var(--bdr); border-radius:8px;
+           font-family:var(--mono); font-size:12px; line-height:1.55;
+           overflow:auto; max-height:70vh; padding:14px 18px; color:var(--t1);
+           white-space:pre-wrap; word-break:break-word; }
+.log-line { display:block; padding:1px 0; }
+.log-line.hidden { display:none; }
+.log-line.sev-ERROR { color:#fca5a5; }
+.log-line.sev-WARNING { color:#fcd34d; }
+.log-line.sev-CRITICAL { color:#fca5a5; font-weight:bold; }
+.log-line.sev-DEBUG { color:var(--t3); }
+
+.log-status { color:var(--t3); font-family:var(--mono); font-size:11px;
+              padding:10px 0 0 0; }
+.log-empty { color:var(--t3); font-style:italic; padding:40px 0; text-align:center;
+             font-family:var(--mono); font-size:12px; }
+.log-error { color:#fca5a5; font-family:var(--mono); font-size:12px;
+             background:rgba(239,68,68,.08); border:1px solid rgba(239,68,68,.3);
+             padding:14px; border-radius:6px; }
+
+
+</style>
+</head>
+<body>
+
+<div class="hdr">
+    <div class="hdr-left">
+        <div class="dot" id="healthDot" title="System status"></div>
+        <a href="/" class="home-link"><svg class="brand-mark" width="32" height="32" viewBox="0 0 64 64" aria-hidden="true">
+                <circle cx="32" cy="32" r="28" fill="none" stroke="#06b6d4" stroke-width="3" opacity="0.3"/>
+                <circle cx="32" cy="32" r="20" fill="none" stroke="#06b6d4" stroke-width="3" opacity="0.55"/>
+                <circle cx="32" cy="32" r="12" fill="none" stroke="#06b6d4" stroke-width="3" opacity="0.8"/>
+                <circle cx="32" cy="32" r="4" fill="#06b6d4"/>
+                <line x1="32" y1="32" x2="52" y2="12" stroke="#06b6d4" stroke-width="3" stroke-linecap="round"/>
+            </svg><h1><span>Aerodrome</span></h1></a>
+    </div>
+    <div class="hdr-right">
+        <span class="hdr-meta">v<span id="appVersion">—</span> &middot; Updated <span id="ts">—</span></span>
+        <div class="settings-wrap">
+            <button class="settings-btn" onclick="toggleMenu(event)" aria-label="Settings" title="Settings">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            </button>
+            <div class="settings-menu" id="settingsMenu">
+                <a href="/status" class="menu-item">Status</a>
+                <a href="/diagnostics" class="menu-item">Diagnostics</a>
+                <a href="/logs" class="menu-item">Logs</a>
+                <a href="/documentation" class="menu-item">Documentation</a>
+                <a href="/config" class="menu-item">Configuration</a>
+                <a href="/updates" class="menu-item">Check for updates</a>
+            
+                <div class="gear-menu-separator"></div>
+                <div class="theme-row">
+                    <div class="theme-label">Theme</div>
+                    <div class="theme-seg" role="group" aria-label="Theme preference">
+                        <button type="button" data-theme-choice="auto"  onclick="aerodromeSetTheme('auto')">Auto</button>
+                        <button type="button" data-theme-choice="dark"  onclick="aerodromeSetTheme('dark')">Dark</button>
+                        <button type="button" data-theme-choice="light" onclick="aerodromeSetTheme('light')">Light</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="page">
+    <h1 class="page-title">Logs</h1>
+    <div class="page-sub">tracker.log — the service's main log file</div>
+
+    <div class="info-row" id="infoRow">
+        <div class="info-item"><span class="info-label">File</span>
+            <span class="info-value" id="infoPath">—</span></div>
+        <div class="info-item"><span class="info-label">Size</span>
+            <span class="info-value" id="infoSize">—</span></div>
+        <div class="info-item"><span class="info-label">Lines</span>
+            <span class="info-value" id="infoLines">—</span></div>
+        <div class="info-item"><span class="info-label">Last modified</span>
+            <span class="info-value" id="infoMtime">—</span></div>
+    </div>
+
+    <div class="controls">
+        <div class="btn-group" id="tailGroup">
+            <button class="btn" data-n="100">Last 100</button>
+            <button class="btn on" data-n="500">Last 500</button>
+            <button class="btn" data-n="2000">Last 2000</button>
+            <button class="btn" data-n="0">Full</button>
+        </div>
+        <input type="search" class="search" id="searchBox"
+               placeholder="Filter lines (case-insensitive)">
+        <div class="controls-spacer"></div>
+        <button class="btn" id="refreshBtn" title="Re-fetch from server">↻ Refresh</button>
+        <button class="btn btn-primary" id="downloadBtn" title="Download full log">⤓ Download</button>
+    </div>
+
+    <div class="log-box" id="logBox">
+        <div class="log-empty">Loading…</div>
+    </div>
+    <div class="log-status" id="logStatus"></div>
+</div>
+
+<script>
+// Which "tail size" is currently selected. 0 means the full file.
+let currentN = 500;
+let lastLoadedCount = 0;
+let currentFilter = '';
+
+function fmtBytes(n) {
+    if (n == null) return '—';
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+function fmtTime(ts) {
+    if (!ts) return '—';
+    // v2.85.12: shared formatter respects display.time_format.
+    return formatDateTime(ts);
+}
+
+// Extract severity from a line that starts with a timestamp + "[logger] LEVEL:"
+// Matches the format produced by Aerodrome's logging.basicConfig, which is:
+//   2026-04-18 04:30:12,123 [adsb.collector] ERROR: message here
+function severityOf(line) {
+    const m = line.match(/\]\s+(DEBUG|INFO|WARNING|ERROR|CRITICAL):/);
+    return m ? m[1] : null;
+}
+
+async function loadInfo() {
+    try {
+        const r = await fetch('/api/logs/info');
+        const j = await r.json();
+        document.getElementById('infoPath').textContent = j.path || '—';
+        document.getElementById('infoSize').textContent = fmtBytes(j.size_bytes);
+        document.getElementById('infoLines').textContent =
+            j.line_count != null ? j.line_count.toLocaleString() : '—';
+        document.getElementById('infoMtime').textContent = fmtTime(j.mtime);
+    } catch (e) {
+        // Info row is decorative — leave placeholders on error
+        console.error('logs/info failed', e);
+    }
+}
+
+async function loadLog() {
+    const box = document.getElementById('logBox');
+    const status = document.getElementById('logStatus');
+    const btn = document.getElementById('refreshBtn');
+    btn.disabled = true;
+    btn.textContent = '↻ Loading…';
+    box.innerHTML = '<div class="log-empty">Loading…</div>';
+    status.textContent = '';
+    try {
+        const url = currentN === 0 ? '/api/logs/tail?n=0' : `/api/logs/tail?n=${currentN}`;
+        const r = await fetch(url);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const text = await r.text();
+        renderLog(text);
+    } catch (e) {
+        box.innerHTML = `<div class="log-error">Could not load log: ${e.message}</div>`;
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '↻ Refresh';
+    }
+}
+
+function renderLog(text) {
+    const box = document.getElementById('logBox');
+    const status = document.getElementById('logStatus');
+
+    // Strip a single trailing newline so we don't render a blank final line
+    if (text.endsWith('\n')) text = text.slice(0, -1);
+    if (!text) {
+        box.innerHTML = '<div class="log-empty">(log is empty)</div>';
+        status.textContent = '';
+        lastLoadedCount = 0;
+        return;
+    }
+
+    const lines = text.split('\n');
+    lastLoadedCount = lines.length;
+
+    // Build all line elements. Filtering is applied via CSS class so the
+    // search input feels instant (no re-render on each keystroke).
+    const frag = document.createDocumentFragment();
+    for (const line of lines) {
+        const el = document.createElement('span');
+        el.className = 'log-line';
+        const sev = severityOf(line);
+        if (sev) el.classList.add(`sev-${sev}`);
+        // Line text — newline added via <br> so browser wrapping works
+        el.textContent = line;
+        frag.appendChild(el);
+        frag.appendChild(document.createElement('br'));
+    }
+    box.innerHTML = '';
+    box.appendChild(frag);
+
+    applyFilter();
+    updateStatus();
+
+    // Scroll to bottom so the newest lines are visible on load
+    box.scrollTop = box.scrollHeight;
+}
+
+function applyFilter() {
+    const q = currentFilter.toLowerCase();
+    const lines = document.querySelectorAll('.log-line');
+    if (!q) {
+        lines.forEach(el => el.classList.remove('hidden'));
+        // Also un-hide the <br> nodes we inserted between lines
+        document.querySelectorAll('#logBox br').forEach(br => br.style.display = '');
+        return;
+    }
+    let shown = 0;
+    lines.forEach(el => {
+        const match = el.textContent.toLowerCase().includes(q);
+        el.classList.toggle('hidden', !match);
+        // Keep each line's trailing <br> in sync with the line's visibility so
+        // we don't get a tall stack of empty lines when everything's filtered out.
+        const br = el.nextSibling;
+        if (br && br.tagName === 'BR') {
+            br.style.display = match ? '' : 'none';
+        }
+        if (match) shown++;
+    });
+    updateStatus(shown);
+}
+
+function updateStatus(filteredCount) {
+    const status = document.getElementById('logStatus');
+    if (filteredCount !== undefined && currentFilter) {
+        status.textContent = `showing ${filteredCount.toLocaleString()} of ${lastLoadedCount.toLocaleString()} loaded lines · filter "${currentFilter}"`;
+    } else {
+        const label = currentN === 0 ? 'full file' : `last ${currentN}`;
+        status.textContent = `loaded ${lastLoadedCount.toLocaleString()} lines (${label})`;
+    }
+}
+
+// Wire up controls
+document.getElementById('tailGroup').addEventListener('click', e => {
+    const btn = e.target.closest('button[data-n]');
+    if (!btn) return;
+    document.querySelectorAll('#tailGroup .btn').forEach(b => b.classList.remove('on'));
+    btn.classList.add('on');
+    currentN = parseInt(btn.dataset.n, 10);
+    loadLog();
+});
+document.getElementById('refreshBtn').addEventListener('click', () => {
+    loadInfo();
+    loadLog();
+});
+document.getElementById('downloadBtn').addEventListener('click', () => {
+    // Trigger browser file download of the full log
+    window.location.href = '/api/logs/download';
+});
+document.getElementById('searchBox').addEventListener('input', e => {
+    currentFilter = e.target.value.trim();
+    applyFilter();
+});
+
+async function loadVersion() {
+    try {
+        const r = await fetch('/api/status');
+        const j = await r.json();
+        if (j.version) document.getElementById('appVersion').textContent = j.version;
+    } catch (e) { /* ignore */ }
+    // v2.85.12: shared formatter respects display.time_format.
+    const tsEl = document.getElementById('ts');
+    if(tsEl) tsEl.textContent = formatDateTime(new Date());
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    loadVersion();
+    loadInfo();
+    loadLog();
+});
+
+// Gear menu — same behavior as status/config/updates/docs
+function toggleMenu(e) {
+    e.stopPropagation();
+    document.getElementById('settingsMenu').classList.toggle('open');
+}
+document.addEventListener('click', e => {
+    if (!e.target.closest('.settings-wrap')) {
+        document.getElementById('settingsMenu').classList.remove('open');
+    }
+});
+
+
+</script>
+<script src="/static/theme.js"></script>
+<script src="/static/health-indicator.js"></script>
+</body>
+</html>

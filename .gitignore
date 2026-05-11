@@ -1,0 +1,94 @@
+# =============================================================================
+# Aerodrome — .gitignore
+# =============================================================================
+# Lines are grouped by category with a comment header explaining the rationale
+# for each group. The runtime / local-only set matches the auto_created list in
+# scripts/check_docs.py — keep them in sync if either changes.
+# =============================================================================
+
+# --- Python build/cache artifacts ---
+# __pycache__/ and *.pyc are generated automatically by the Python runtime
+# and have no reason to be in source control. *.egg-info/ won't typically
+# appear since Aerodrome doesn't package as a wheel, but the line is cheap.
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# --- Virtual environment ---
+# install.sh creates ./venv/ on every install. It belongs to the host, not
+# the repo. Both common naming conventions covered.
+venv/
+.venv/
+
+# --- Runtime data ---
+# The SQLite database (and its WAL/SHM sidecars) is the user's flight history
+# and should never appear in the source tree. The wildcard catches any *.db
+# file, not just the canonical aircraft_history.db, in case a developer
+# creates a scratch DB during testing.
+*.db
+*.db-wal
+*.db-shm
+.tracker.pid
+
+# --- Logs ---
+# install.sh creates the logs/ directory at runtime; tracker.log etc. live
+# inside. Nothing in there should be committed.
+logs/
+
+# --- Live config ---
+# config.yaml is the user's live, customized configuration. The shipped
+# template is config.yaml.example; the live config is generated from it on
+# first install and edited per-user. Auto-merge backups (config.yaml.bak.*)
+# created by main.py during config-merge-on-startup also stay out.
+config.yaml
+config.yaml.bak.*
+
+# --- Install backup snapshots ---
+# The /api/updates/local/apply flow snapshots the live install to
+# .backups/<timestamp>/ before swapping in a new release. These are
+# host-specific recovery state, not source.
+.backups/
+
+# --- Update staging ---
+# update/ is the staging area for the in-app updater. The folder itself is
+# kept in the tree (via .gitkeep) so the install layout is correct on a
+# fresh clone, and UPDATE_README.md inside is shipped documentation.
+# Everything else in update/ is transient staging from an update in
+# progress and stays out of source control.
+update/*
+!update/.gitkeep
+!update/UPDATE_README.md
+
+# --- Maintainer-only dev tooling ---
+# tools/ contains development utilities (synthetic_feeder, etc.) that ship
+# as paired archive artifacts alongside releases, not in the public-facing
+# zip or repo. The maintainer's working tree keeps tools/ for development;
+# scripts/package-release.sh excludes it from the zip; this gitignore line
+# excludes it from the public repo on git init. Convention established in
+# v2.98.2 — see HANDOFF for the maintainer-only-docs / dev-tooling pattern.
+tools/
+
+# --- Editor / IDE clutter ---
+# Personal preferences, not project state.
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# --- OS metadata ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Release artifacts ---
+# scripts/package-release.sh writes the release zip and .sha256 to the
+# parent of the project tree, so they shouldn't normally land here. The
+# patterns below are defensive — they keep accidental in-tree builds out
+# of commits if the script is ever invoked from somewhere unexpected.
+aerodrome-v*.zip
+aerodrome-v*.zip.sha256

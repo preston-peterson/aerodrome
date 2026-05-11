@@ -1,0 +1,5373 @@
+# Changelog
+
+All notable changes to Aerodrome are documented here. The format is based on
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
+follows [Semantic Versioning](https://semver.org/).
+
+## How to read this changelog
+
+Each entry opens with a **bold lead** that names what changed in plain language —
+what an admin would see, in vocabulary an admin uses. The first paragraph stays
+in user voice: what's new, how to use it, where it appears, what to watch for.
+A "Behind the scenes" / "Implementation" / "Under the hood" transition then hands
+off to dev voice — design pivots, lessons filed, and technical detail useful to
+someone reading the code or contributing to it.
+
+Skim the bolds for an upgrade summary; read the first paragraph of any entry
+that catches your eye for the practical detail; continue into the dev paragraph
+only if you want the implementation story. (Pre-v2.50.x entries predate this
+convention and read more uniformly dev-voiced — see them as historical
+archaeology rather than admin-facing release notes.)
+
+## [2.98.2] — 2026-05-10
+
+### Changed
+- **`tools/` (currently just `tools/synthetic_feeder/`) extracted from the public-facing release zip** and now ships as a permanent paired maintainer artifact alongside HANDOFF.md and the bootstrap-DRAFT.sh. Combined PII scrub on the synthetic feeder while moving it: 20+ references that effectively named the maintainer's home install have been replaced with generic "loaded install" / "loaded-install" / `--match-loaded` framing. The dev tool stays usable in the maintainer's working tree but no longer rides along in the zip a public user downloads.
+
+  Behind the scenes — extraction mechanics: `scripts/package-release.sh` now removes `$RELEASE_DIR/tools` from the staged copy alongside the existing `venv`, `.git`, and `.backups` exclusions; `.gitignore` adds `tools/` so a future `git init && git add .` doesn't sweep it into the public repo; `README.md`'s Project structure tree drops the `tools/` entry since the tree describes what's in the public release. The synthetic feeder is bundled separately as `aerodrome-vX.Y.Z-synthetic-feeder.zip` with a `tools/` top-level directory inside, so unzipping it from the project root cleanly recreates the development layout.
+
+  Why this is a recurring artifact rather than one-shot: unlike `REPOSITORY_SETUP.md` (which v2.98.1 shipped exactly once because it's a static one-time launch reference), the synthetic feeder is something the maintainer wants paired with every release in the archive — it's a dev tool that may evolve with the codebase, and pairing it with each release means any historical release is a complete maintainer-ready archive. v2.98.2 forward, the standard deliverable set is **five artifacts**: `aerodrome-vX.Y.Z.zip`, `aerodrome-vX.Y.Z.zip.sha256`, `aerodrome-vX.Y.Z-HANDOFF.md`, `aerodrome-vX.Y.Z-bootstrap-DRAFT.sh`, and `aerodrome-vX.Y.Z-synthetic-feeder.zip`.
+
+  PII scrub details: the `--match-pi-user` flag (and its argparse attribute `args.match_pi_user`, plus the constant `PI_USER_PRESET`) all rename to `--match-loaded` / `args.match_loaded` / `LOADED_PRESET`. Across the synthetic_feeder README, backfill.py, and menu.py, the seven mentions of "Pi user" / "Pi-user" rewrote to "loaded install" / "loaded-install"; specific scale figures (12.6M rows, 18 days, 26k aircraft, 60 sightings/(icao, hour)) stayed as preset descriptions and calibration anchors but stopped being attributed to a particular maintainer's install. Three follow-up edits cleaned up grammatical artifacts the bulk replace produced — most clearly "loaded install's install" (duplicate noun) became "observed real-install"; a couple of other awkward possessives ("loaded install's production scale", "loaded install's aircraft pool") got reframed as "a real loaded install's production scale" or restructured to drop the possessive entirely. One sentence in the README that read note-flavored ("Acceptable for a one-shot tool") softened to "Acceptable at the tool's intended scale" since even though the doc lives in the archive now, its tone shouldn't fight the rest of the project's voice.
+
+  `scripts/package-release.sh` was added to `bump-version.sh`'s FILES list as part of this work so its own `# Version:` header now tracks releases instead of staying frozen at v2.97.6 — the drift-tolerant regex from v2.97.8 caught it up to 2.98.2 in this same bump, with the diagnostic line `Updated scripts/package-release.sh (drift caught up: v2.97.6 → v2.98.2)` confirming the round-trip. Pre-public sequence remains closed; this is the second corrective patch in the v2.98.x series, both addressing "wait, that shouldn't ship publicly" findings on review of the v2.98.0 zip contents.
+
+## [2.98.1] — 2026-05-08
+
+### Removed
+- **`.github/REPOSITORY_SETUP.md` removed from the project tree.** The file was added in v2.97.14 as part of GitHub Phase 3 scaffolding, but it doesn't belong in the public-facing release zip. Three reasons surfaced on a second look: it documents GitHub UI settings specific to `github.com/preston-peterson/aerodrome` rather than generic advice a forker would adapt; it exposes operational reasoning about the contribution policy (e.g. "PRs are technically allowed because GitHub doesn't have a clean disable toggle, so we configure squash-merge-only as a workaround") that reads as the project being tortured about its own stance, while `README.md` and `CONTRIBUTING.md` present that stance cleanly; and the doc is one-shot — used at the public push and rarely after, with no per-release evolution that would justify shipping it.
+
+  Behind the scenes: `.github/` now contains only the user-facing items — `ISSUE_TEMPLATE/bug_report.md`, `ISSUE_TEMPLATE/feature_request.md`, `ISSUE_TEMPLATE/config.yml`, and `PULL_REQUEST_TEMPLATE.md` — all of which serve someone other than the maintainer. The repository-setup checklist itself moves to the maintainer archive alongside the per-release HANDOFF.md files, paired with this release as a one-time fifth artifact (`aerodrome-v2.98.1-REPOSITORY_SETUP.md`) so the public-push event still has its step-by-step reference. Subsequent releases revert to the standard four-artifact set (zip, sha256, handoff, bootstrap-DRAFT) since the file no longer needs to be re-shipped per release.
+
+  Caught by the maintainer on review of the v2.98.0 zip contents — exactly the kind of "second look" that the v2.98.0 final-review pass was for, surfacing one release later than intended. Pre-public sequence remains closed; this is a corrective patch, not a new chapter.
+
+## [2.98.0] — 2026-05-08
+
+### Changed
+- **Final pre-public review pass — the marker release before the public GitHub push.** Three real items surfaced during the audit, each fixed in this release. Combined with the v2.97.7 → v2.97.14 hygiene sequence preceding it, the working tree is now in a public-launch-ready state pending only the git init and the push event itself.
+
+  Behind the scenes — item 1: `templates/aircraft.html` had a `<!-- Version: -->` header that had drifted all the way back to v2.53.0. The drift-tolerant regex landed in v2.97.8 fixes any file in `bump-version.sh`'s FILES list automatically on the next bump, but only files in that list. `templates/aircraft.html` was never added — it's the per-flight detail page, less commonly edited than the main tab templates, and it slipped through the original FILES list. Added now (along with `templates/diagnostics-slow-queries.html`, see item 2) so future bumps maintain it. The drift-tolerant regex catches `aircraft.html` up to v2.98.0 in this very bump, with the new diagnostic line `Updated templates/aircraft.html (drift caught up: v2.53.0 → v2.98.0)` proving the round-trip works.
+
+  Item 2: `templates/diagnostics-slow-queries.html` had no `<!-- Version: -->` header at all. The other admin templates (status, config, updates, docs, logs, diagnostics, diagnostics-watchlist, performance, aircraft) all carry version headers as a convention. The slow-queries diagnostic page was added later and the convention wasn't applied. Added a header at the top of the file (above `<!DOCTYPE html>`, matching the pattern in other admin pages) and added the file to the FILES list. Future bumps will track it like the rest.
+
+  Item 3: `README.md` was missing the `## Project structure` section that `scripts/check_docs.py` expects to find. The check looks for a fenced code block following that heading and uses it as a manifest — files on disk that aren't in the tree get flagged as missing entries, and entries in the tree that aren't on disk get flagged as deleted. Without the section, the checker fired a "Missing Project structure" warning every run. Added a tree under `## Architecture` (between Architecture and Install) with brief inline annotations explaining each top-level file and directory. The tree covers the core module layout (`main.py`, `collector.py`, `server.py`, etc.), the support modules (`capacity.py`, `categorize.py`, `countries.py`, etc.), the release tooling (`bump-version.sh`, `scripts/package-release.sh`), the test suite, and the documentation directories.
+
+  Final PII sweep before the bump returned empty (excluding the `LICENSE` file's MIT copyright holder and the approved `preston-peterson` GitHub username embedded in repository URLs, both confirmed in the v2.97.7 PII review). One regression caught: the v2.97.13 changelog entry I wrote had introduced a fresh maintainer-name reference in the "why this came up now" paragraph — that's been rewritten to use `the maintainer` framing, matching the post-v2.97.7 policy.
+
+  `scripts/check_docs.py` advisory pass goes from 10 warnings (across 4 categories) to 2 warnings (both auto-fixed by this bump itself — `templates/aircraft.html` drift caught up, `docs/Aerodrome_Overview.pdf` rebuilt by the v2.97.13 auto-rebuild discipline). Post-bump, the checker reports zero warnings.
+
+  Pre-public sequence is now complete. Next event is the public push itself, walking through `.github/REPOSITORY_SETUP.md` for the GitHub UI configuration. v3.0.0 (GitHub-Releases-based update channel migration) follows the public push.
+
+## [2.97.14] — 2026-05-08
+
+### Added
+- **GitHub Phase 3 scaffolding for the public repository.** Five files in a new `.github/` directory: two issue templates (bug report, feature request), an issue chooser config that disables blank issues and surfaces the security and contributing channels, a pull-request template that makes the project's "PRs not reviewed, please fork" stance visible at PR-creation time, and a maintainer-facing `REPOSITORY_SETUP.md` that documents the GitHub UI configuration the public-launch event needs (About panel description and topics, branch protection, PR settings, issue and security feature toggles, per-release tag and release workflow).
+
+  Behind the scenes — wording across all five files is aligned with the existing `CONTRIBUTING.md` stance, deliberately. Aerodrome's contribution policy is already explicit there: bug reports welcome with best-effort response, feature requests welcome with the "I want it for myself" filter applied, pull requests not reviewed because the codebase has opinions and merging outside code would either dilute those opinions or force the maintainer to relitigate them in review, forking encouraged because the MIT license keeps that door open. The `.github/` templates surface those positions at the moments where they're most useful — the bug-report template re-presents the diagnostic checklist (version, receiver type, log output, performance report) so reporters fill in the right details on first try; the feature-request template re-states the maintenance-bar and no-public-roadmap realities so suggestions arrive calibrated; the PR template uses GitHub's `> [!IMPORTANT]` callout syntax to put the "this will most likely be closed without review" warning at the top of every PR-creation form. None of this is new policy — it's mechanical surfacing of policy that already existed.
+
+  The `REPOSITORY_SETUP.md` doc is the one item with no precedent in the repo. It covers GitHub UI settings rather than file contents, which is why it doesn't fit anywhere else: branch-protection rules (require linear history on, lock branch off, signed commits and PR reviews and status checks all off because they don't fit a one-person no-CI project), pull-request settings (squash-merge only, head branch auto-delete on, the rest off), feature toggles (issues on, discussions / wiki / projects / sponsorships off), security settings (private vulnerability reporting **on** — without it, the link in `SECURITY.md` returns 404), and the per-release tag-and-upload workflow with both the zip and `.sha256` as required release assets. The "what is NOT configured here" section at the bottom calls out the deliberate omissions (no CI workflows, no CODEOWNERS, no FUNDING.yml, no GitHub Pages) so a future maintainer doesn't add them by reflex.
+
+  The `.gitignore` from v2.97.9 doesn't exclude `.github/`, so all five files ship inside the release zip and will be present in the working tree on first `git init` of the public repo. Closes queue item #1. Eighth pre-launch hygiene patch in the v2.97.7 → v2.97.14 sequence; next is the v2.99.x pre-public-state release.
+
+## [2.97.13] — 2026-05-08
+
+### Fixed
+- **The bundled `docs/Aerodrome_Overview.pdf` is now refreshed automatically on every release, and the three single-screenshot pages (Stats, Setup guide, Performance) fill the page properly instead of rendering tiny in the upper third.** Two real fixes addressing the same underlying drift.
+
+  Behind the scenes — fix #1: `bump-version.sh` was deliberately skipping the PDF rebuild on patch bumps, only rebuilding for minor and major releases. The intent (from v2.42.15) was to avoid the multi-second PDF build cost when only the cover version stamp changed. The unintended consequence: after 10+ consecutive patch releases (v2.87.0 → v2.97.12), the shipped `docs/Aerodrome_Overview.pdf` was frozen at v2.87.0 — wrong cover version, stale code-line stats, stale release count, and embedded screenshots that themselves had drifted before the v2.97.12 harness pass regenerated them. The patch-skip is reverted: the PDF now rebuilds on every bump regardless of bump type. The build is fast (a few seconds for a 13-page PDF), and the consistency benefit of "the shipped PDF always matches the shipped code" outweighs the build time. The `--skip-pdf` flag remains for the rare opt-out case (reportlab not installed, or rapid local iteration).
+
+  Fix #2: three screenshot pages in `docs/overview.md` had `max_h` values too conservative for the actual screenshot aspect ratios. The Stats screenshot is 1400×3142 pixels (aspect H/W = 2.24, very tall) and was capped at `max_h=4.8` inches, which after the `fitted_image()` aspect-preserving scaler made it render at 2.14 × 4.8 inches — about a third of an 8.5 × 11 page, with the rest of the page blank below. Setup-guide (1200×2330, aspect 1.94) had the same problem at `max_h=4.5` plus a `max_w=5.5` constraint. Performance (1400×1700, aspect 1.21) was at `max_h=5.3`. All three are on dedicated single-screenshot pages where the previous section's text doesn't bleed in, so they have nearly the entire content area available. Bumped `max_h` to 8.5 / 8.5 / 8.0 respectively (and dropped Setup-guide's max_w constraint), which lets each image use the full available vertical space. Visually verified on the rebuilt PDF — Stats and Setup-guide now fill ~95% of their page heights, Performance fills ~80% (limited by its wider aspect). The Live screenshot on page 2 stays at `max_h=3.8` because its page has substantial body text alongside the image and there isn't wasted space to reclaim.
+
+  Why this came up now: the page 5 issue (Stats screenshot tiny on top half of page) was flagged during the v2.97.12 → v2.97.13 transition. Investigation revealed that the PDF being stale-at-v2.87.0 was the bigger root cause — fixing the rebuild discipline catches both the embedded-screenshot drift and the cover-stats drift in one stroke, and the `max_h` fixes ensure the rebuilt PDF actually uses its real estate. Seventh pre-launch hygiene patch in the v2.97.7 → v2.97.13 sequence; the earlier-planned Phase 3 (`.github/` scaffolding) slipped one slot to v2.97.14.
+
+## [2.97.12] — 2026-05-08
+
+### Fixed
+- **Two real bugs in `scripts/screenshots.py` that had been silently degrading documentation screenshots, plus a re-validation pass across the 19 of 28 PNGs in `docs/` that the harness drives.** The screenshots had drifted enough that the pre-public README would have shipped with broken-looking renders — `formatDateTime is not defined` JavaScript errors were leaving timestamps blank, fallback text was bloating page sizes, and the version stamps were stale. Both bugs are fixed and every screenshot the harness produces now renders cleanly with the v2.97.12 version stamp.
+
+  Behind the scenes — bug #1: the harness wasn't reproducing the `timefmt.js` injection that `server.py:1142-1146` does at request time. The server replaces `</head>` with a `window._aerodromeTimeFormat` config block plus a `<script src="/static/timefmt.js?v={version}"></script>` tag, so every page the user actually visits has access to `formatDateTime()`. The harness loads templates directly from disk, bypassing the server, so the injection never happened and any inline page JS that called `formatDateTime()` errored out. The fix mirrors server.py's injection inline — reads `static/timefmt.js`, builds the same `window._aerodromeTimeFormat="auto"` + script block, and replaces `</head>` before the existing fetch-stub injection.
+
+  Bug #2 surfaced after fixing #1: the inlined `timefmt.js` was breaking parse with `Invalid or unexpected token`. The cause was a literal `</script>` string inside a JSDoc comment in `timefmt.js:25` (showing the canonical use: `<script src="/static/timefmt.js"></script>`). When inlined inside the harness's surrounding `<script>...</script>` tag, the embedded `</script>` was prematurely closing the outer script element from the HTML tokenizer's perspective, leaving the rest of the JS to be parsed as broken HTML. Standard inlining gotcha. The fix escapes any `</script>` in inlined JS bodies as `<\/script>` — a valid escape that's still a correct string in JS but invisible to the HTML tokenizer. Applied to all three inlined assets (`theme.js`, `health-indicator.js`, and the new `timefmt.js`) defensively.
+
+  Result: 19 screenshots regenerated cleanly with zero errors. Spot-checked the Live tab and System Status page — timestamps render, mock data is realistic, RFC 5737 documentation IP (192.0.2.10) appears in the receiver URL, version header reads `v2.97.12 · Updated <time>` as expected. The other 9 screenshots in `docs/` (`screenshot-full-backup.png`, `screenshot-load-average.png`, `screenshot-load-overload.png`, `screenshot-notification-stats.png`, `screenshot-ntfy-update-card.png`, `screenshot-sudoers-drift-standalone.png`, `screenshot-sudoers-required.png`, `screenshot-uninstall-ntfy.png`, `screenshot-upload-zone.png`) capture runtime or edge UI states that require real triggers (notifier sends, sudoers drift, in-progress uploads, applied updates) — out of scope for the synthetic-data harness, left as they were.
+
+  Sixth pre-launch hygiene patch in the v2.97.7 → v2.97.12 sequence; closes queue item #26. Next: queue item #1 (GitHub Phase 3, `.github/` scaffolding).
+
+## [2.97.11] — 2026-05-08
+
+### Changed
+- **The Receiver section's Latitude field on the Configuration page now points users at latlong.net for finding their coordinates.** The hint previously read just `-90 to 90, empty to disable distance column`, which told users *what's valid* but not *how to find it* if they didn't already know. The hint now appends `Find your coords at latlong.net` as a clickable link, so a user who lands on the Configuration page without ready-made coordinates has a one-click path to a tool that gives them a click-on-the-map workflow.
+
+  Behind the scenes: the `field()` helper in `templates/config.html` renders the `hint:` parameter as raw HTML inside a `<span class="form-label-hint">` (line 1025), so HTML tags in the hint string work directly. The link uses `target="_blank"` plus `rel="noopener noreferrer"` to prevent tabnabbing — the new page can't access `window.opener`, and the referrer doesn't leak to latlong.net. Wording deliberately matches the curl-install bootstrap, which has surfaced the same hint above the lat/lon prompts at install time since v2.97.4: a user who installs via the bootstrap and then later revisits the Configuration page sees the same phrase in both places.
+
+  The link is on Latitude only, not Longitude. Lat and lon sit adjacent in the form grid — a user looking at the Longitude field also sees the Latitude hint above it in their peripheral vision, and adding the link to both would have been visual clutter without information gain. Closes queue item #27 (latlong.net hint cross-surface consistency).
+
+  Fifth pre-launch hygiene patch in the v2.97.7 → v2.97.11 sequence. Next: queue item #26 (screenshot re-validation in `docs/`).
+
+## [2.97.10] — 2026-05-08
+
+### Added
+- **`SECURITY.md` describing the project's vulnerability reporting flow and threat model.** Public GitHub repositories are expected to have a security policy file; without one, GitHub auto-flags the repo and security researchers don't have a clear channel for private disclosure. The new `SECURITY.md` covers what to report, where to report it (GitHub's private vulnerability reporting on the Security tab — *not* a public issue), what to include in a report, and what to expect in return.
+
+  Behind the scenes: the threat-model section is the part that does the most work. Aerodrome's web UI has no authentication by default because the project assumes LAN-only deployment, and adding required auth for the LAN case would add friction without meaningful protection. That's a deliberate design choice, not an oversight — and saying so explicitly in the security policy heads off the otherwise-inevitable "your web UI has no auth" reports from researchers running tools against the project. The scope section makes this concrete: "the web UI has no authentication" is listed under out-of-scope alongside third-party dependency issues and dump1090/readsb upstream concerns.
+
+  In-scope items focus on what the Aerodrome codebase itself does: code-execution and command-injection vulnerabilities, SQL injection, path traversal, information disclosure beyond documented behavior, logic flaws that allow unintended config changes, and vulnerabilities in the in-app update flow (zip handling, sudoers/systemd integration). The hardening-suggestions section at the bottom gives operators a few practical items: keep the deployment LAN-only or VPN-only, keep the host patched, use the in-app updater rather than manual edits, review `config.yaml` after upgrades.
+
+  Best-effort response timeline is stated explicitly: acknowledgment within a week (best effort, no SLA), coordinated disclosure preferred. Calibrates expectations to a one-person hobby project without overpromising or sounding dismissive. Fourth pre-launch hygiene patch in the v2.97.7 → v2.97.10 sequence; next up is queue item #27 (latlong.net hint in `templates/config.html`).
+
+## [2.97.9] — 2026-05-08
+
+### Added
+- **A `.gitignore` for the public repository.** Without it, the first `git add .` on a fresh clone or after a working session would pull in the Python virtual environment, byte-code caches, the SQLite flight-history database (plus its WAL and SHM sidecars), the live `config.yaml`, log files, install-backup snapshots, the contents of `update/` from any in-progress update, plus editor and OS clutter (`.DS_Store`, `Thumbs.db`, `.vscode/`, etc.). All of those are local state that belongs to the host the repo is checked out on, not source content. The new `.gitignore` keeps them out.
+
+  Behind the scenes: groups the exclusions by category with a comment header explaining the rationale for each group. The runtime/local-only set (`logs/`, `update/`'s contents, `.backups/`, `*.db*`, `.tracker.pid`, `config.yaml.bak.*`, `config.yaml`) deliberately matches the `auto_created` set in `scripts/check_docs.py:439-442` — that script's drift detector lists exactly the files Aerodrome creates at runtime that should never appear in source. With the gitignore now in place, the two are coupled and any future runtime file added to one needs to be added to the other.
+
+  The `update/` directory needs a carve-out: the directory itself is shipped (with `.gitkeep` keeping it staged on a fresh clone, and `UPDATE_README.md` documenting the staging mechanism) but the staged contents during an in-progress update are transient and shouldn't be committed. The pattern is the standard `directory/*` exclude plus `!directory/file` re-include for the two files that ship.
+
+  Also defensively excludes `aerodrome-v*.zip` and `aerodrome-v*.zip.sha256` at any depth, even though `scripts/package-release.sh` writes those to the *parent* of the project tree by default. If a maintainer ever runs the script from somewhere that puts the artifacts next to the source, those lines keep them out of accidental commits.
+
+  This is the third pre-launch hygiene patch in the v2.97.7 → v2.97.9 sequence: PII residue cleanup (v2.97.7), drift-tolerant version updater (v2.97.8), and now `.gitignore`. Next: `SECURITY.md` (v2.97.10), then queue items #27 and #26 (latlong.net hint and screenshot re-validation), then Phase 3 `.github/` scaffolding.
+
+## [2.97.8] — 2026-05-08
+
+### Fixed
+- **`bump-version.sh` no longer leaves files behind to silently drift away from the project version.** Previously, the script's version-rewrite regex matched only the literal current `OLD_VERSION` value, so a file whose `# Version:` header had drifted to some earlier release was skipped on every subsequent bump — the regex couldn't see it, the rewrite never happened, and the drift just kept growing. v2.97.8 replaces the literal-version match with an "any semver" pattern (`[0-9]+\.[0-9]+\.[0-9]+`), so any file with a Version: header gets rewritten to the new version regardless of what it was previously frozen at. Files without a Version: header (CONTRIBUTING.md and similar) remain silent.
+
+  Behind the scenes: a single regex change in the FILES loop. Before: `${OLD_VERSION//./\\.}`. After: `[0-9]+\\.[0-9]+\\.[0-9]+`. The hash-before-and-after success detection is unchanged. The diagnostic logic that previously printed a "drifted — fix manually" warning has been folded into the success message instead — when the script catches up a drifted file, the output now reads `Updated <file> (drift caught up: vA.B.C → vNEW)` so the maintainer sees the catch-up happening.
+
+  This bump catches up the 11 files that had silently drifted in earlier sessions: `requirements.txt` and `config.yaml.example` were frozen at v2.62.1, and all 9 templates (`templates/*.html`) were frozen at v2.87.5. After the bump, every tracked file with a Version: header is at 2.97.8; an audit pass confirms zero drift remains across the tree. The fix is self-validating — the same release that institutes the drift-tolerant regex also uses it to clean up the legacy mess.
+
+  Why the original strict-match regex existed in the first place: v2.40.2 narrowed bump-version.sh's rewriting from "any occurrence of OLD_VERSION" to "only the explicit `# Version:` header at OLD_VERSION." That was a real fix — the previous behavior was corrupting `requests>=2.39.0` in `requirements.txt` into `requests>=2.40.0` every release, because `=` is a non-digit non-dot char. v2.97.8 keeps the v2.40.2 invariant (only rewrites the Version: header line, never other version-like strings on other lines) but loosens the version-value match within that line. So `requirements.txt`'s `requests>=...` dependency pin still won't be touched, only the `# Version: X.Y.Z` comment at the top of the file.
+
+## [2.97.7] — 2026-05-08
+
+### Fixed
+- **The v2.96.0 changelog entry that documented the original PII scrub no longer contains the PII it was describing as removed.** The entry described its own edits by quoting the before-text — short phrases that named the maintainer and referenced a home-directory path — which left exactly the kind of residual references inside `CHANGELOG.md` that the scrub had been performed to eliminate. The quoted before-text has been replaced with generic descriptions, so the v2.96.0 entry now matches the policy it documents.
+
+  Behind the scenes: a single edit to the "behind the scenes" paragraph of the v2.96.0 entry. The technical content of the entry is unchanged — readers still understand which files were touched (`schema_migrations.py`, `templates/updates.html`, two historical CHANGELOG entries), what kind of change was made (generic substitution), and why `/opt/aerodrome` was the chosen replacement (FHS-canonical for installed third-party software). What's gone is the quoted before-text that needed to be eliminated for the scrub to be actually complete.
+
+  Caught during a pre-public PII audit ahead of the GitHub launch — the audit was looking for residual maintainer-name references and found that the scrub entry had become its own residue. With this fix, the only remaining occurrences of the maintainer name in the working tree are `LICENSE` (explicitly approved as the MIT copyright holder) and the `preston-peterson` GitHub username embedded in repository URLs (approved during the pre-launch PII review — the GitHub handle is treated as part of the public publication identity, the same way `LICENSE` is approved).
+
+## [2.97.6] — 2026-05-08
+
+### Added
+- **`scripts/package-release.sh` — a new release-packaging script that produces `aerodrome-vX.Y.Z.zip` and the matching `aerodrome-vX.Y.Z.zip.sha256` in the parent directory.** Replaces what was previously a manual `cp/find/zip/sha256sum` sequence the maintainer ran by hand after every bump. The `.sha256` file is the missing ingredient the curl-install bootstrap (`scripts/bootstrap.sh`, currently a draft) needs — it refuses to proceed without checksum verification, so until now there was no automated path from "I bumped a release" to "the bootstrap can install it."
+
+  Behind the scenes: the new script reads the current `VERSION` file, stages the working tree into `<parent>/aerodrome-vX.Y.Z/`, strips `__pycache__`, `*.pyc`, `venv`, `.git`, `.backups`, plus any runtime files that may exist on a live install (DB + WAL + SHM, `.tracker.pid`, `config.yaml.bak.*`), zips with the canonical wrapper-folder layout, then runs `sha256sum` and writes the output in the format `sha256sum -c` accepts. Refuses to overwrite existing artifacts at the target paths — if the zip is already there, the maintainer has to remove it deliberately. Protects against silently rewriting a release that's already been uploaded to GitHub.
+
+  Why split from `bump-version.sh` rather than fold in: `bump-version.sh` writes an auto-generated single-line CHANGELOG entry that the maintainer expands by hand into the explanatory voice. Packaging the zip BEFORE that expansion would ship a release whose internal `CHANGELOG.md` doesn't match the rich entries every other release has. Splitting packaging into its own script makes the "expand CHANGELOG first" requirement explicit in the workflow: bump → expand → package, three deliberate steps. The split also keeps each script single-purpose — bump-version.sh handles version/CHANGELOG/import-check, package-release.sh handles distribution artifacts.
+
+  This is the second-to-last bootstrap blocker. The remaining blocker is the GitHub repo going public (queue item #1, Phase 3) — once that's live, the bootstrap can fetch real release URLs and `.sha256` files, and the curl-install path is operational end-to-end. The `--from-zip <path>` flag in the bootstrap continues to provide the local-testing path until then.
+
+### Changed
+- **`bump-version.sh` ends with a "next steps" block instead of the previous service-restart message.** The block points the maintainer at the two things that must still happen before the release is ready: expanding the auto-generated CHANGELOG entry into the explanatory voice, then running `scripts/package-release.sh`. The previous `Restart the service: sudo systemctl restart aerodrome` message moves to the bottom of the same block, framed as the alternative path for "if you're bumping a live install for development."
+
+  Behind the scenes: this is a documentation-of-workflow change, not a logic change. bump-version.sh was already producing a working tree at the new version with the auto-generated CHANGELOG entry; the maintainer was already expanding the entry by hand and packaging by hand. The next-step block makes that workflow discoverable from the script's own output rather than relying on tribal knowledge or the contributing docs. Anyone running `bash bump-version.sh patch "..."` now sees the full release flow as part of the script's output.
+
+## [2.97.5] — 2026-05-08
+
+### Fixed
+- **The README's quick-install command no longer prefixes `install.sh` with `sudo`.** Anyone who copy-pasted the install snippet from the README hit `install.sh`'s "don't run this as root" refusal on their first attempt — the script explicitly checks for root at lines 33-37 and exits with a message asking the user to drop the sudo. The README block now reads `./install.sh` to match what the script actually accepts, so the documented path works on the first try.
+
+  Behind the scenes: one-line edit at `README.md:124`. Caught while reading both files end-to-end during the curl-bootstrap design review. The bootstrap (`scripts/bootstrap.sh`, currently a draft pending public-repo activation) does the right thing already — runs as the unprivileged user and lets `install.sh` escalate via sudo only where needed. This patch closes the documented-path-vs-actual-behavior mismatch so the existing manual install flow matches what the bootstrap does automatically.
+
+## [2.97.4] — 2026-05-07
+
+### Fixed
+- **The "first seen Xd ago" chip on Watchlist and Military rows now sits inline next to the callsign instead of wrapping to a second visual line.** v2.97.3's `align-items: start` fix made cells anchor to the row top correctly, but the underlying cause of the visual messiness wasn't just alignment — the 90px Callsign column on Watchlist and Military was always too narrow to fit "callsign + fs-chip" on one line. The chip wrapped to a second line, leaving every Watchlist and Military row visually two lines tall when it didn't need to be. Widening Callsign to 200px on those two tabs lets the chip ride alongside the callsign as originally designed, which is the visual the `.fs-chip` rule (`display: inline-block; margin-left: 6px; ...`) was written to produce.
+
+  Behind the scenes: two grid templates updated in `templates/index.html` — `.row-card.watchlist-grid` and `.row-card.military-grid` Callsign column changed from `90px` to `200px`. Live grid stays at 90px because Live doesn't render the fs-chip. The 110px of additional width comes from each grid's `fr`-grow allocation (Description on Watchlist, Description and Country on Military) — both still well above their `min` floors at any reasonable viewport width. The 1100px responsive breakpoint's narrower override (80px Callsign) is unchanged because at that width the layout is already constrained and chip-wrap is the lesser visual concern. Phone breakpoint hides the Callsign column entirely, also unchanged.
+
+  Mostly-rare edge case worth noting: 200px comfortably fits "callsign + first seen 365d ago" with typical 4-7 character callsigns. The longest practical chip text is the absolute-date format ("first seen Mar 2, 2026", which the chip switches to for older first-seens) — combined with an 8-character callsign, that may still wrap. If you see this in practice, easy follow-up to bump to 220-240px.
+
+
+
+### Fixed
+- **The Military tab's row formatting now reads cleanly when callsigns wrap.** When an aircraft has both a sighting count under its ICAO (multi-line: ICAO link, count, "MIL" pill) and a callsign with a "first seen Xd ago" chip that's too wide to fit inline in the 90px Callsign column (so it wraps to a second line), the row gets visually tall — and single-line cells like Type, Description, Country, and the numeric columns rendered at the row's vertical midpoint instead of aligning with the primary callsign text. The result was Type codes (e.g. "C5M") appearing between the callsign and its meta chip, which read as visually broken.
+
+  The fix is one CSS keyword change: `align-items: center` → `align-items: start` on the three row-grid templates (`live-grid`, `watchlist-grid`, `military-grid`) in `templates/index.html`. All cells now anchor to the top of their row, so the primary content (callsign main text, type code, description, numerics) reads on a single visual line at the top, with secondary content (sighting count, military pill, fs-chip wrap) flowing naturally below. Harmless on rows where all cells are single-line — the keyword changes nothing visually when there's no height mismatch — so applying it to all three grids preempts the same misalignment from showing up on Live or Watchlist if those gain meta chips later.
+
+  Behind the scenes: the `.fs-chip` itself is `display: inline-block` with a leading space, designed to sit inline next to the callsign. The 90px Callsign column is plenty for short callsigns ("PAL126") but always wraps when an fs-chip ("first seen 17d ago", "first seen 2h ago") is present — that wrap is the structural reason the row gets tall on Military. Widening the column to fit the chip inline would eat space from Description on every tab, which is why the alignment fix is the right answer rather than a column-width change. The `.row-anchored`, `.row-emergency`, hover, and zebra interactions are all unchanged — those rules don't touch `align-items` and aren't affected.
+
+
+
+### Changed
+- **Alternating rows on the Live, Watchlist, Military, Search, and Sightings lists are now subtly tinted to make rows easier to follow horizontally on wide screens.** On ultrawide displays, the description column's flex-grow factor stretches it enormously and pushes the numeric columns hard against the right edge — which leaves a large empty mid-row gap that's visually challenging to track across. Zebra striping (every other row tinted one step lighter) gives each row a continuous visual band from edge to edge, which the eye follows without effort. Same data, same column layout, same hover and click behavior — just an alternating background tint.
+
+  The tint uses `var(--bg3)` (one palette step lighter than the existing `var(--bg2)` row base), so this reuses an existing theme color rather than introducing a new hex value. Both the dark and light themes pick up the appropriate stripe shade automatically — no theme-specific tweaking needed.
+
+- **The Sightings table on the aircraft detail page now uses the same row-card visual treatment as the rest of Aerodrome.** Previously, the Sightings rows had a deliberately minimal "dense table" appearance — transparent backgrounds, transparent borders, no rounded corners, ultra-tight padding (4px), faint cyan hover tint. That was the v2.92.0 design call when migrating from the legacy `<table>`. The drift between Sightings's appearance and the row-card pattern used everywhere else (Live, Watchlist, Military, Search) was filed forward as a follow-up at the time; v2.97.2 closes it. Sightings rows now look like every other list in the app: visible border, 6px rounded corners, `var(--bg2)` base, 10px padding, cyan-on-hover, with the same zebra striping applied. The trade-off is slightly lower row density (about 50% more vertical space per row) — which is the same trade the rest of the app makes for visual consistency, and which the now-sticky header makes easier to live with on long Sightings lists.
+
+  Behind the scenes: four edits across two templates. In `templates/index.html`, the zebra rules `.row-card:nth-child(even) { background: var(--bg3); }` and `.search-card:nth-child(even) { background: var(--bg3); }` are added immediately before their corresponding `:hover` rules — both rules have specificity (0,2,0) matching `:hover`, so cascade order ensures hover wins on hover. The `.row-card.row-emergency` rule (also specificity 0,2,0) is defined after zebra and wins by cascade order, so emergency-tinted rows keep their distinct visual treatment regardless of parity. Same for `.search-card.expanded` (0,2,0, defined after both zebra and hover).
+
+  In `templates/aircraft.html`, the `.row-card` base style was rewritten to match the canonical version in `index.html` exactly (background, border, border-radius, padding, font, transition) — closing the v2.92.0-era CSS drift between the two files. The redundant `.row-card.sightings-grid` and `.row-card.sightings-grid:hover` standalone blocks were deleted (their visual overrides are no longer needed; the base `.row-card` rules now provide the right treatment). The Sightings zebra rule uses `:nth-child(odd):not(:hover)` rather than `:nth-child(even)` because the `.row-grid-header.sightings-grid` lives as `:nth-child(1)` inside the same `#sightingsTableWrap` parent — odd parity matches display rows 2, 4, 6 (which are child positions 3, 5, 7). The `:not(:hover)` is needed because the compound selector's specificity (0,3,0) exceeds the standard `.row-card:hover` rule's (0,2,0); without `:not()`, hovering an odd Sightings row would not flip to the hover background. The `.row-anchored` rule (specificity 0,3,0, matched but later in cascade) still wins over zebra, so anchored rows keep their cyan-tint + 3px left-border treatment regardless of parity. `#sightingsTableWrap` gained `display: flex; flex-direction: column; gap: 4px` so the cards have consistent breathing room without per-element margins; the header's now-redundant `margin-bottom: 4px` was removed in the same pass.
+
+  Filed forward: the legacy `.sightings-table` styles in `aircraft.html` (kept "for one release as a reference" after the v2.92.0 migration) are now genuinely unused and can be pruned in a future release.
+
+
+
+### Fixed
+- **The "Positions by distance" chart on the Stats page now matches the rest of the page's bar charts.** Previously the six distance buckets (<50 mi, 50-100 mi, 100-150 mi, 150-200 mi, 200-250 mi, 250+ mi) rendered with a purple → red → coral → orange → yellow rainbow palette, which stood out as the only multi-color chart on a page where everything else uses a single muted teal. The hourly histogram, the 7-day unique-aircraft chart, and the rest of the Stats bar charts all share the `var(--cyan)` theme color at `opacity:.7` baseline; the distance histogram now does too. Hover and drill-active states are unchanged.
+
+  Behind the scenes: the rainbow palette was an early call from when the distance histogram first landed — the original comment in `distanceHistogramCard` (templates/index.html:8160) explicitly justified the hardcoded hex values as "a data gradient" that should "look identical in dark and light modes." That reasoning was wrong on review: the bucket label printed below each bar already conveys the close → far semantic, and `var(--cyan)` adapts to dark/light mode anyway via the theme variable. The palette array and per-bar color lookup were removed; each bar's inline `background:` now references `var(--cyan)` directly with `opacity:.7` to match `.histo-bar`. The existing `.dist-bar.drillable:hover` CSS rule (`opacity:.9`) keeps its semantics — the .7 → .9 hover transition is the same subtle-intensify feel as the hourly histogram's .7 → 1. Single-call inline edit; no schema, no API, no migration.
+
+
+
+### Changed
+- **Aerodrome's repository is now ready to go public on GitHub.** This release reshapes the user-facing documentation for the public front door. The `README.md` rewrite drops the operations-manual sections that don't belong on a "30 seconds to decide if I want this" page and replaces them with a hobbyist-honest opener ("turns your home ADS-B receiver into a dashboard you'd actually leave open — it's not a replacement for FlightAware"), four hero screenshots (Stats, Live, Watchlist, Search), an architecture diagram, a quick-install block, a hardware-tier summary, and the project-status paragraph that sets expectations clearly: bug reports welcome best-effort, pull requests disabled at the repository level, fork freely under MIT. The README went from 943 lines to 220 — same project, much more inviting front door.
+
+  Everything that came out of the README went into a new `docs/INSTALL.md` — the comprehensive operations manual covering install, remote access setup, service management, the full update flow (web UI and rsync paths), rollback, sudoers refresh, uninstall, every configuration section (receiver location, retention, logging, stats, data-quality filters, military detection, watchlist, notifications), the performance diagnostic, backup and restore, project structure, and troubleshooting. Lift-and-shift for now; people who've installed Aerodrome and need the manual will find it where they expect.
+
+  `CONTRIBUTING.md` was rewritten to match the actual stance. Previously it said "pull requests, bug reports, and feature suggestions are all welcome" with full PR submission instructions — exactly the opposite of how the project is actually maintained. The new version is honest about it: PRs are disabled at the repository level, bug reports are welcome with a structured template, feature suggestions are fine but the bar for "I'll build this" is "I want it for myself," and forks are encouraged for anyone who wants Aerodrome to go somewhere it isn't going. The bug-report template (what tried / what happened / version / receiver / logs) survives intact because that part still matters.
+
+  The Documentation viewer in the gear menu picks up the new INSTALL doc automatically. The `DOC_FILES` registry in `server.py` gains an `"install": "docs/INSTALL.md"` entry, and the `DOCS` array in `templates/docs.html` adds `{ slug: 'install', label: 'Install' }` as the second tab — placed right after README since "I just installed this and need the manual" is the second-most-common reason to land on `/documentation`. Tab order is now README · Install · Changelog · Performance · Search · Contributing · Scripts · Updates · License. The existing Updates tab (`update/UPDATE_README.md`, documenting the update *mechanism*) stays distinct from the new Install tab (the user-facing manual).
+
+  Behind the scenes: README acknowledgments expanded to credit the mapping infrastructure properly. Aircraft detail pages use Leaflet 1.9.4 with OpenStreetMap standard tiles for the light theme and CARTO Dark Matter tiles for the dark theme. The in-app attribution control on the map already credits OSM and CARTO with the correct copyright links; the README now mirrors that pattern with three separate acknowledgment bullets covering Leaflet (the library, bundled at `static/leaflet/leaflet.js`), OpenStreetMap (tile data and underlying map, used under the Open Database License), and CARTO (the Dark Matter dark-theme basemap, used under their attribution terms). The README's install URL points at `https://github.com/preston-peterson/aerodrome/releases` — a path that doesn't exist yet but will the moment the repo goes public, which is the intent of this release: the content is now accurate for the public state, even though the repo is still being prepared in private.
+
+  Phase 2 of the GitHub publishing arc complete. Phase 3 (`.github/` scaffolding, issue templates, branch protection settings) is the next public-prep release; the v3.0.0 milestone is reserved for the GitHub Releases-based update channel migration that comes after the repo is actually live.
+
+
+
+### Changed
+- **Pre-public PII scrub.** Removed maintainer-name and maintainer-path references from code comments and changelog entries in preparation for the project moving to a public GitHub repository. The maintainer name remains in the `LICENSE` file (where it's appropriate as the copyright holder for the MIT license) and on commit-author metadata for any commits going forward, but no longer appears as benchmark context inside source comments or as part of historical example paths.
+
+  Six edits across four files: two comments in `schema_migrations.py` (migration v6 backfill cost benchmarks), one comment in `templates/updates.html` (changelog reference for the v2.89.1 timeout bump), and two `CHANGELOG.md` historical entries (v2.88.0 backfill estimate, v2.41.2 example install path). The technical content is unchanged — phrases that previously named the maintainer became generic ("on a 1-CPU reference VM") without losing the benchmark anchor; the historical example install path was changed to `/opt/aerodrome/install.sh`, which is the FHS-canonical location for installed third-party software and reads as universal.
+
+  Operational secrets were already clean before this scrub — no IPs, coordinates, hostnames, or email addresses needed to be removed because the project's working conventions kept them out of the codebase from the beginning. Test placeholders use RFC 5737 documentation IPs (192.0.2.x, 192.168.1.x) and synthetic coordinates (37.5 / -122.1, far from the real receiver). Screenshots in `docs/` are generated from the Playwright synthetic-data harness with mock callsigns, mock ICAOs, and `America/Los_Angeles` timezone — no metadata leakage, no EXIF, no real flight data. The audit confirmed all of that.
+
+  This patch lands as a standalone version rather than getting folded into the eventual public-init commit because the working tree's history of intermediate states (in this private archive) deserves a clear "this is the moment we crossed the public-readiness line" marker. The next several patches (README rewrite, repo scaffolding, GitHub Releases-based update channel) build toward v2.99.x as the "ready but not pushed" state and v3.0.0 as the public cutover.
+
+## [2.95.0] — 2026-05-07
+
+### Added
+- **The System card on the diagnostics page now shows swap memory alongside RAM, with colour cues that escalate as swap pressure grows.** When swap is configured but unused (the healthy common case), the row reads in default text colour — no alarm, just visibility. Light spillover under 10% goes cyan, real pressure over 10% goes amber, sustained paging over 50% goes red bold. Aircraft-tracker boxes that start dipping into swap usually have an underlying memory pressure problem (a runaway cache, a memory leak, an ADS-B feed spike) — surfacing swap on the same diagnostics card you visit anyway means you'll see it as soon as it happens, rather than discovering the problem only after performance degrades.
+
+  Behind the scenes: `psutil.swap_memory()` collects total, used, and percent the same way `virtual_memory()` does for RAM. The server-side health classification mirrors the existing `load_health` tier pattern (ok/light/busy/warn), so the diagnostic page's colour palette stays consistent — the same shades you already read for "host load is fine vs concerning vs alarming" now apply to swap. When swap isn't configured at all (`swap.total == 0`), the row is suppressed entirely; the diagnostics page on a no-swap install looks the same as before.
+
+  The CSS adds four `.swap-*` classes mirroring the existing `.load-*` palette, sitting next to those rules in `status.html` so any future colour tuning happens in one place. The Swap row sits between Memory and Disk in the System card — RAM-adjacent because that's the first thing a user looks at when investigating memory pressure.
+
+  This is the visual-cue version of the alerting concern — when you visit the diagnostics page and swap is being touched, you'll notice it. A future patch could add active alerting (banner notification, email, etc.) when swap crosses a threshold, but the diagnostics card is the high-leverage starting point: it's the page operators check intentionally and frequently. Filed under "do this if/when alerting becomes a real ask, not before."
+
+  Smoke-tested across all five tier boundaries (no-swap, exists-unused, light, busy, warn) and against a real `psutil.swap_memory()` call on a no-swap host (returns total=0 cleanly, swap row suppressed in UI). No new test file added — the change is small, the logic is bounded, and the test pattern for endpoint smoke testing isn't established in this codebase.
+
+  Manual-test focus: deploy on a host with swap configured; load /status; the Swap row should appear between Memory and Disk. If swap is in use, the value should colour-shift per tier. On a no-swap host (or a fresh container where swap.total == 0), no Swap row should render at all.
+
+## [2.94.0] — 2026-05-07
+
+### Changed
+- **The Time zone setting now lives under Display alongside the date and time format settings, where it belongs.** It used to be in the Stats section, which made sense when the Stats card was the only consumer but reads as misplaced now that timezone affects email digest scheduling, notification quiet hours, search-window boundaries (`today`, `last:Nd`), and any time display that goes through the shared formatter. Anyone looking for "what timezone does this app use" naturally checks Display first; that's now the right answer.
+
+  Behind the scenes: this is a UI reorganization, not a config schema change. The setting still writes to `stats.timezone` in the config JSON — backend code that reads `CONFIG["stats"]["timezone"]` (and there's quite a bit of it across server.py, search.py, the digest scheduler, and the timezone-aware bucketing logic) keeps working without modification. Existing installs upgrade with no config rewrite. The `data-path="stats.timezone"` attribute on the form input stayed exactly where it was; only the surrounding form-label markup moved sections.
+
+  This is a known short-term path/UI mismatch — the visible label says "Display → Time zone" but the underlying key is `stats.timezone`. Filed as a follow-up to consolidate the setting under `display.timezone` with a config migration that copies the value forward and falls back to `stats.timezone` for one or two releases. Doing that migration tonight would require touching every backend reader of the field, which is beyond the scope of a UI reorg patch and risks breaking deployments mid-upgrade. The mismatch is contained to the JSON file most users never look at; the UI label is what matters for discoverability.
+
+  Two help-text strings elsewhere in config.html updated to match the new location: the email digest description ("in your Stats timezone" → "in your configured time zone") and the notification quiet-hours blurb ("Uses the Stats tab timezone." → "Uses your configured time zone (Display → Time zone)."). Without those updates, users would have followed the help text to the Stats section and not found the setting.
+
+  The Display section subtitle changed from "date and time format preferences" to "date, time, and timezone preferences" to advertise the new contents. The Stats section is one form-row shorter and reads more focused — it's now exclusively about Stats-tab behavior (auto-refresh, longest-track gap, new-record alerts, card visibility) rather than mixing a global setting in.
+
+  Closes the consistency arc that opened with v2.90.0's drill panel migration. The full arc:
+    v2.90.0 — Stats drill panel HTML table → CSS-grid + sortable
+    v2.92.0 — Aircraft detail Sightings table HTML table → CSS-grid + sortable (server-side sort)
+    v2.93.0 — Watchlist Label column sortable
+    v2.94.0 — Time zone setting moves to Display
+
+  Every user-facing tabular view now uses the same canonical CSS-grid + .row-grid-header family, every data column on the four list tabs is sortable, and the configuration form groups settings by domain rather than by historical accident.
+
+## [2.93.0] — 2026-05-07
+
+### Changed
+- **The Watchlist tab's Label column is now sortable like every other data column on the page.** Click the Label header to sort A→Z; click again to flip to Z→A; click any other column to switch the sort target. Watchlist entries without a label sort to the start in ascending order, the end in descending — same convention as empty strings everywhere else in the UI.
+
+  Behind the scenes: this is the smallest of the v2.90-v2.94 consistency arc fixes — one line of HTML changed. The Label column header was the lone non-sortable data column on the four list tabs (Live, Watchlist, Military, Search), audited as a real gap during the consistency planning pass that opened with v2.90.0's drill-panel migration. The fix wires the existing `srt('watchlist', 'watchlist_label')` handler — `srt()` already supports any column name, and its fallback comparator (`cmp()`) does a `localeCompare` for any column not in the numeric whitelist, so no JS changes were needed beyond adding the `.sortable` class, `data-c` attribute, and `onclick` handler to the column header span. The data is already on each row (rendered as `ac.watchlist_label` on line 2704), so the comparator picks it up without any backend or render-pipeline change.
+
+  Closes the consistency arc for the four list tabs. Every data column on Live, Watchlist, Military, and Search is now sortable; non-data columns (Track, WL pill action) remain non-sortable as designed. The Stats drill panel (v2.90.0) and aircraft detail Sightings table (v2.92.0) handle their own sort via separate but visually-aligned mechanisms.
+
+## [2.92.0] — 2026-05-07
+
+### Changed
+- **The aircraft detail page's Sightings table now uses the same column-header style as the rest of the app, and every column is sortable.** Click Time to flip newest-first / oldest-first. Click Callsign to sort alphabetically. Click Alt or Speed to find the highest, lowest, fastest, or slowest sighting in the aircraft's history. The active column shows a small arrow indicator; clicking the same column again reverses direction. Sort resets to the default (most recent first) every time you load a different aircraft's detail page.
+
+  Behind the scenes: the Sightings table was previously rendered as an HTML `<table>` with `<th>` cells and no sort wiring, the same pattern the v2.90.0 drill panel migration replaced on the Stats page. v2.92.0 finishes that consistency arc — every user-facing tabular view in the app (Live, Watchlist, Military, Search, Stats drill panels, and now aircraft detail Sightings) renders through the same canonical CSS-grid + `.row-grid-header` + `.row-card` family with `.sortable` column-click semantics. Visual treatment is uniform: uppercase muted blue-grey headers, monospace dense rows, hover highlight, sort-arrow indicator. The grid template is fixed at five columns (Time, Callsign, Alt, Speed, Position) with content-shaped widths and Position filling remaining space.
+
+  Sort is server-side, not client-side. The reasoning: the Sightings table is paginated, so a click-to-sort that only reordered locally-loaded rows would be misleading — "show me when this aircraft flew highest" needs to consider all sightings, not just the first 100. `/api/all/drill` gains two new query params, `order` (one of `seen_at` / `callsign` / `altitude` / `speed`) and `dir` (`asc` or `desc`); the parser whitelists both and falls through to the legacy `seen_at desc` for unknown values, so any pre-v2.92.0 caller (or stale frontend state) gets the same response it always did. Clicking a header resets `_sightingsState.offset` to zero and clears the row buffer, then refetches — page-1 is the new sort's first page, and load-more continues from there. NULL values for altitude or speed (position-only sightings) sort to the end regardless of direction, matching the existing `_build_order_by_clauses` convention in the search page. Tie-break is always `seen_at DESC` so the "most recent within a tied group" intuition holds — important when sorting by callsign, where many sightings share a value.
+
+  CSS-side, the canonical `.row-grid-header` and `.row-card` styles live inline in `index.html` today, and the aircraft detail page is a separate template that loads only `theme.css`. v2.92.0 duplicates the relevant base rules (font, color, uppercase, hover) into `aircraft.html` so it doesn't depend on the index template's inline CSS to render correctly. This is a known short-term drift point — visual changes to the canonical row-grid styles need to land in both places until a future patch consolidates them into `theme.css`. The duplication is documented in the CSS comment block above the rules so the next person to tune the visual sees the warning.
+
+  The legacy `<table class="sightings-table">` markup is gone; the `.sightings-table` CSS rules are kept for one release as a no-op safety net (the DOM no longer uses those classes, so the rules don't match anything) and will be pruned next pass. The `clearSightingsAnchor` selector that watches for the `?sighting={ts}` URL-anchor highlight got the new `.row-card.sightings-grid.row-anchored` class added alongside the legacy selector — defensive double-coverage during the transition.
+
+  End-to-end smoke test against a real DB confirmed all six sort variants emit valid SQL, NULLs land at the end of altitude and speed sorts regardless of direction, and unknown column names fall through to `seen_at desc`. Existing 253 tests still pass; no new test file was added because the sort-handler change is small enough and well-covered by manual verification.
+
+  Manual-test focus before deploy: open an aircraft detail page (preferably one with hundreds or thousands of sightings), click each column header, confirm rows reorder and the arrow flips on second click. Click Load more and confirm the next page continues the same sort. Navigate to a different aircraft and confirm sort resets to the default. The `?sighting={ts}` URL-anchor flow (clicking a sighting from a Stats drill panel that lands on the detail page with that row highlighted) should still find and scroll to the right row — the selector update handles the grid migration there too.
+
+## [2.91.0] — 2026-05-07
+
+### Added
+- **You can now search by aircraft category and by rolling time windows.** Five new tokens land in the Search box: `commercial`, `general_aviation` (alias `ga`), `helicopter` (alias `heli`), `unknown`, and `last:Nd` for any positive integer N. So `helicopter today` returns choppers seen so far today, `last:7d commercial` returns commercial aircraft from the past week, `last:30d ga` returns general-aviation aircraft from the past month. Multiple categories in one query OR together — `commercial helicopter` returns aircraft that are either, the way you'd naturally read it. Time-window tokens align to local-midnight calendar boundaries (matching how `today` already works), so `last:7d` means "today and the six prior calendar days" rather than "the past 168 rolling hours."
+
+  Behind the scenes: each category token resolves to a `seen_aircraft.category = ?` filter against the column added in v2.89.0. Multi-category tokens emit individually as `{match: "in", value: [...]}` filters which a new post-pass in `parse_query` merges into a single IN-clause filter — `commercial helicopter` becomes `seen_aircraft.category IN ('commercial', 'helicopter')` rather than the AND-collision (`= 'commercial' AND = 'helicopter'`) that's empty by definition. The merge unions values by field while preserving first-occurrence order, so the user's typing order is what reads back. Aliases (`ga` → `general_aviation`, `heli` → `helicopter`) follow the existing `mil`/`military` precedent.
+
+  The `last:Nd` parser accepts any positive integer N. `last:7d`, `last:30d`, `last:90d`, `last:1d` all work; `last:0d`, `last:-3d`, `last:foo`, `last:7` (no `d` suffix) all fall through to free-text by the forgiving-parser convention. The window starts at local midnight (N-1) days before today's local midnight and ends at tomorrow's local midnight — half-open `[start, tomorrow_midnight)` which the existing time_range SQL clause emits as `last_seen_at >= ? AND last_seen_at < ?`. Aligning end_ts to tomorrow's midnight (not "now") avoids an edge-of-second exclusion bug end-to-end testing surfaced: when a sighting's `last_seen_at` equals the query's captured `now` to the second, strict `<` would drop it. The current day is now covered inclusively regardless of when in the day the query runs.
+
+  A new `match: "in"` type joins `exact` and `prefix` in the SQL filter dispatcher. The IN-clause emits `{column} IN (?, ?, ...)` with one placeholder per value; an empty value list defends against degenerate input by returning `1=0` rather than the SQL syntax error `IN ()` would raise.
+
+  Notably *not* changed: the `military` / `mil` token. It still resolves to the existing live-config-based filter (icao_prefixes, callsign_prefixes, special_aircraft) on every query, so an operator tuning the prefix list sees changes take effect immediately. Unifying it with the `category = 'military'` column would have been more consistent with the Stats Category Mix card but slower to respond to config changes — and immediate response is what operators expect from prefix tuning. The two paths can diverge slightly when a prefix is added or removed (old rows still carry the old category from prior polls); that's a real-world feature, not a bug.
+
+  Also notably not added: an `all_time` keyword. With no time token in the query, search already covers the full retention window. An explicit `all_time` keyword would be a no-op; not worth the parser surface.
+
+  Tests: 27 new in `test_search_v2_91_tokens.py` covering each category token (canonical + aliases + case-insensitivity), the multi-category merge, the `_filter_clause` IN-clause emission, the `last:Nd` parser (1d/7d/30d/tz-offset/narrower-wins composition), and rejection of malformed forms. End-to-end against a real DB with seeded aircraft confirms the parsed tokens compose correctly with the existing search machinery — the boundary bug above was found by that end-to-end check, not by the unit tests, which underlines that AST + unit testing isn't a substitute for SQL execution against a real schema.
+
+  What this enables: "most frequent helicopter today," "fastest commercial last 30 days," "GA aircraft this week" — combinations previously impossible to express in the Search box. The next release (v2.92.0) makes `sort:sightings` window-aware so `last:7d sort:sightings` orders by sightings *within the window* rather than by lifetime sighting_count.
+
+## [2.90.0] — 2026-05-07
+
+### Changed
+- **Stats drill panel column headers now match the rest of the app and every column with a sortable value is clickable to sort.** Click any data column in any drill panel — Hits, Altitude, Speed, Distance, First Seen, Callsign, ICAO, Type, Bearing, Watchlist label — and the rows reorder by that column. Click again to flip direction. Numeric columns default to descending on first click (highest-first reads better for "fastest", "highest altitude", etc.); string columns default to ascending. The visual treatment now matches the Live / Watchlist / Military / Search column-header strips: same uppercase, same monospace, same muted blue-grey, same hover behavior, same little arrow indicator next to the active column.
+
+  Sort state resets every time you open a drill — the drill panel is transient by design, and the backend's natural ordering carries meaning per card (longest_track returns by duration desc, fastest by speed desc, etc.). Reverting to that ordering on each open preserves the meaning. Within an open drill, your sort persists until you close the panel.
+
+  Behind the scenes: the drill panel's renderer was an HTML `<table>` with `<th>` cells and no sort wiring at all, while every other tabular view in the app — Live, Watchlist, Military, Search — uses CSS-grid markup with the canonical `.row-grid-header` + `.sortable` mechanism and a click handler (`srt()` for the four list tabs, `srtSearch()` for Search). The drill panel's separate code path is the visual inconsistency users have been seeing every time they click into a Stats card. v2.90.0 migrates the drill renderer to the same CSS-grid + `.sortable` family, with a new `srtDrill(cardId, col)` mirroring the existing handler shape.
+
+  The migration reuses the existing `.row-grid-header` and `.row-card` classes directly — no parallel CSS family to maintain, so any future visual tuning of the column-header strip propagates to drill panels automatically. The per-preset column widths are set inline on the wrapper via `style="grid-template-columns: ..."` (computed from the column class names by a new `_drillGridTemplate(columnSet)` helper) because each drill preset has a different column count and content profile; inlining the template keeps that per-preset config in JS rather than spraying `.drill-grid-hits` / `.drill-grid-extreme` / etc. CSS classes that nobody would remember to keep in sync.
+
+  Sort key resolution uses a small dispatch table (`DRILL_SORT_KEYS`) that maps each column's display accessor (`altitude_ft`, `time_label`, `distance_label`, etc.) to the row's raw numeric/string field (`altitude`, `seen_at`, `distance`). The display fields are formatted strings unsuitable for numeric compare ("12,775 ft" doesn't sort as a number); the raw twins are already on the enriched row from the existing render path, so sorting can use them directly without changing any of the existing column tuple definitions in `DRILL_COLUMN_SETS`. The `rank` column has a null sort field and renders as a non-sortable `<span>` (sorting a row index is meaningless).
+
+  Sort happens client-side. Drill row counts are bounded — default 25 per drill, "View all" up to a few hundred — so re-sorting in JS on click is fast and avoids any backend churn. The renderer caches the enriched rows in a module-scope `_drillCache[cardId]` keyed off the source card; clicking a header calls `rerenderDrillBody(cardId)` which sorts the cached rows and replaces the body innerHTML in place. Header stays put, only the rows re-render. The cache is dropped when the drill closes, when a new drill opens for the same card, or when "View all" expansion fetches a wider dataset.
+
+  What this fixes: the visual inconsistency you noticed — "TOP 5 AIRCRAFT TYPES" / "MILITARY BRANCHES" / "CATEGORY MIX" headers above the cards looking different in style from the drill panel's "# CALLSIGN ICAO TYPE HITS" headers below them. Now they're rendered by the same CSS rule. What this doesn't fix yet: the aircraft detail page's Sightings table (different code path, still HTML `<table>` with no sort) and the one column on Watchlist that isn't sortable (Label). Both filed for follow-up — the Sightings table is the bigger structural change of the two and lands as v2.91.0; the Watchlist Label fix is a one-line change and folds in opportunistically.
+
+  Manual-test focus before deploy: open a Stats card, scan that the headers visually match the Live tab's headers (uppercase, muted blue-grey, monospace), click each sortable column to confirm rows reorder, click twice to confirm direction flips, close and reopen to confirm sort resets. Test against Today's Extremes (numeric-heavy: Altitude, Speed, Distance), Composition row drills (Hits, plus the chain-drill click target should still navigate to Search), and the all_* aggregate drills ("View all N operators" etc.) for the alternate panel shape.
+
+## [2.89.1] — 2026-05-07
+
+### Fixed
+- **Updates page timeout bumped from 120s to 240s.** The v2.89.0 deploy on a busy install (50K seen_aircraft rows, ~88K military_sightings rows) ran migration v7's backfill past the 120-second budget the polling state machine was sized for, even though the apply itself succeeded — the UI gave up first and surfaced "Update timed out after 120s" while migration v7 was still finishing. Bumping to 240s leaves comfortable headroom for the kind of one-shot backfill costs we'd expect from future migrations on Pi 4B installs with a year of accumulated data, without changing anything else about the apply flow. Pure UX hedge; no schema change.
+
+  The original 120s budget came from v2.87.2, sized against migration v6's estimated 8-28s backfill. Migration v7's estimated cost was "single-digit seconds" but the real-world cost was higher — 50K UPDATE statements over WAL with `synchronous=2` adds up even on a fast disk, and the budget includes service stop + start time on top of the migration itself. 240s sized against "biggest realistic single migration on a Pi 4B with a full retention window of data" rather than "what the test VM happens to do."
+
+  This is the kind of timeout that's better tuned generously than tight: the cost of a too-long timeout is a user waiting longer to see the timeout error in the rare case the apply truly failed; the cost of a too-short timeout is a misleading error on a successful apply, which is the bug we just hit. Erring generous.
+
+  Also worth filing forward: future migrations should be benchmarked against a real production-scale DB before estimating the cost in the migration docstring. v7's estimate was eyeballed at "single-digit seconds" based on 50K rows × small per-row work; the actual cost was bounded more by SQLite's WAL fsync overhead than by the per-row Python work. Estimates that ignore WAL/fsync will keep being wrong by similar margins.
+
+## [2.89.0] — 2026-05-07
+
+### Added
+- **`seen_aircraft.category` column populated by the collector — first piece of the search-by-category feature.** Sets up the data the next two releases will use to add search tokens like `commercial`, `general_aviation`, and `helicopter` (military already exists), plus time-window tokens like `last:7d` and `last:30d`. The original idea was a stats card showing "most frequent aircraft per category"; on closer look the underlying use case — finding aircraft that fly your airspace regularly, broken out by what kind of aircraft they are, across windows like today / 7 days / 30 days / all time — is a far better fit for the search system than for a static dashboard card. v2.89.0 lays the foundation; v2.90.0 will add the search tokens; v2.91.0 will adjust the sighting-count sort to mean "count within the window" so "most frequent in last 7 days" sorts correctly.
+
+  User-visible in this release: the Stats Composition section's Category Mix card and its drill panel both still work exactly the same way — same labels, same counts, same drill behavior. The work that changed is internal: classification heuristics (helicopter type codes, commercial type-code prefixes, military-membership lookup) used to live inline in two places in `server.py` (the card path at v2.85.9 and the drill panel at v2.52.1), and the card path re-derived classification on every render with a Python loop over today's `seen_aircraft` rows. Now the heuristics live in one new module (`categorize.py`), and the card reads from the column with a single SQL `GROUP BY`. Faster (no per-render Python loop), and — more importantly — there's now a column the search system can filter on without duplicating the heuristics again.
+
+  Behind the scenes: schema migration v7 adds `seen_aircraft.category TEXT` plus `idx_seen_category` for fast `WHERE category = ?` filters, then backfills every existing row by classifying it against the new heuristics. Military membership for the backfill is determined transitively — if any `military_sightings` row exists for a given ICAO, that ICAO was correctly identified as military by some prior poll's `is_military()` call, so the backfill inherits that determination. Robust to a missing `military_sightings` table (older test fixtures and conceivably pre-v2.51 installs): when absent, every aircraft falls through to type-only classification, with forward-going polls upgrading them later via the sticky-military rule.
+
+  Sticky-military semantic, enforced in the collector's `seen_aircraft` UPSERT via a SQL `CASE` expression: once an aircraft is classified `military`, it stays military across subsequent polls regardless of whether the next poll's `is_military()` returns False. The motivating bug class is feeder flicker — `dbFlags` (one of the signals `is_military` checks) isn't always populated by every feeder on every poll, and a known military aircraft shouldn't downgrade to `commercial` because one poll happened to miss the flag. Stickiness extends today's `category_mix` "ever-military-this-day" semantic to "ever-military, period" (per seen_aircraft row). False-positive military classifications never self-correct under this rule, but the prefix lists in the military config are tunable and false positives there are the user's intentional configuration.
+
+  The `is_military()` call moved up in the collector's per-aircraft loop so it runs once before the `seen_aircraft` UPSERT (which now needs the result to set `category`), instead of running later as a precondition for the `military_sightings` insert. The result is cached in a local and reused — no second call per aircraft per poll.
+
+  46 new tests across two files: `test_categorize.py` (16 pure-function tests covering military precedence, helicopter type codes, commercial prefix and exact-match sets, GA fallback, unknown for empty types, whitespace handling), and `test_migration_v7.py` (14 end-to-end tests covering migration backfill across each category, transitive military membership, idempotent re-run; sticky-military across simulated multi-poll sequences; rewritten card and drill queries against the new column). Existing 141 search + 23 schema migration + 12 designator + 16 session-track + 4 preflight tests all still pass.
+
+  Schema preflight (`STATS_EXPECTED_SCHEMA`) updated with the new column. After this deploy `verify_stats_schema()` should report 82 expected columns across 8 tables present.
+
+  No user-visible feature in this release. The visible payoff lands in v2.90.0 when search learns the category and time-window tokens.
+
+## [2.88.0] — 2026-05-07
+
+### Added
+- **Stats `longest_track` query rewritten to read from a new per-aircraft per-day session-tracking rollup table.** Drops from ~1.4-1.7 seconds to single-digit milliseconds — the last big slow Stats query is now fast. Both the summary card and the drill panel benefit; the drill goes from ~700-1700ms to single-digit ms because callsign and aircraft_type are denormalized into the rollup, eliminating the follow-up `all_sightings` IN-clause lookup the v2.68 version did. Functionally identical from a user perspective: same gap-aware session detection (a gap longer than `track_gap_minutes` ends a session), same answer for "today's longest continuous visibility per aircraft."
+
+  This is the schema work flagged in the v2.87.5 changelog as "real schema work for another session." The previous implementation was already the optimized version (rewritten in v2.42.9 from a 30+ second window-function SQL pattern to a Python single-pass walk over today's `all_sightings` slice). The Python walk was much faster than the SQL it replaced, but it still pulled 950K+ rows per Stats render — the only meaningful further optimization was moving the work from query time to write time, which is what the rollup does.
+
+  Behind the scenes: schema migration v6 creates `aircraft_track_daily` with one row per `(icao, day_bucket)`, holding the currently-open session and the best closed-or-open session for that day. The collector maintains it on every poll — a `SELECT` against the row's existing state, gap-detection vs continuation, promote-to-best if the in-flight session is now the longest, then `INSERT OR REPLACE`. Two queries per aircraft per poll. Considered expressing the gap-detection logic as an `ON CONFLICT DO UPDATE` like `sightings_hourly` does, but the same CASE expression would have to repeat four times in the SET clause (current_start, best_start, best_end, best_duration all need the "did we just gap?" decision); two queries with Python branching is roughly half the line count and substantially more readable. At 50 aircraft × 20s polls × 2 queries it's ~5 queries/sec/process — well below SQLite's noise floor.
+
+  Day-bucket alignment is local-tz, NOT UTC like `sightings_hourly` and `concurrent_minute`. The other rollups use UTC buckets and read with `bucket >= local_midnight`, which works for SUM/COUNT/MAX aggregations because off-by-one-bucket at the boundary is harmless. For session tracking the bucket boundary matters more — a long flight crossing UTC midnight (which is mid-evening for non-UTC users) would split mid-flight in the rollup and underreport. Local-tz alignment splits sessions only at local midnight, when traffic is minimal, matching the user's mental model of "today." The collector caches the parsed `ZoneInfo` once per config reload so per-poll bucketing stays cheap.
+
+  `track_gap_minutes` config-change behavior matches the existing precedent: collector reads the current value at ingest time and bakes it into the rollup. Changing it (5 → 10, say) propagates forward immediately for new sightings; rollup rows older than the change keep their session boundaries computed at the previous gap. Full effect after the rollup row ages out at midnight. This matches how retention, timezone, and tuning changes already behave — CONFIG reloads update the global, but existing computed state isn't reprocessed. Recompute-on-change was considered (rebuild today's rollup from `all_sightings` when the user saves config) but rejected for v1 simplicity; it's straightforward to add later if the lag turns out to bother anyone.
+
+  Migration v6 backfills today only — yesterday and older buckets don't power any current card and would just inflate migration cost. The backfill walks today's `all_sightings` slice ordered by `(icao, seen_at)`, applies the same session-walk logic as the live collector path, and `INSERT`s one row per aircraft active today. Estimated 5-10s on a 1-CPU reference VM (~50K rows in today's slice), proportionally faster on a Pi 4B with 4 cores. Well within the v2.87.2 polling state machine's comfortable window. The backfill is gated on a row-count check so re-running the migration is a no-op.
+
+  ~hex pseudo-targets (TIS-B/MLAT) are written to the rollup but filtered on read, matching the `sightings_hourly` pattern. Self-consistent in both directions: live collector writes all aircraft, migration backfill writes all aircraft, every read query filters via `WHERE icao NOT LIKE '~%'`. Marginally larger rollup (~5-15%) for the simplicity of one consistent rule.
+
+  16 new tests in `test_session_track.py` covering both layers: pure-unit tests for `_local_day_bucket` (UTC, west-of-UTC evening, east-of-UTC early morning, invalid-tz fallback, gap clamping), and end-to-end tests against a real SQLite DB driving the migration v6 backfill across ten scenarios (empty DB, single sighting, continuous session, gap-splits-session, gap-at-exactly-threshold, global winner across aircraft, ~hex filtered on read, callsign/type denormalized, idempotent re-run, simulated collector writes vs migration backfill agreement). The "simulated collector writes" test specifically catches the bug class where the migration backfill walk and the live UPSERT logic could disagree on session semantics — same lesson filed forward from v2.86.4 → v2.87.3, only runtime-against-real-schema catches that.
+
+  Schema preflight (`STATS_EXPECTED_SCHEMA`) updated to include `aircraft_track_daily` and its 9 columns, so future drift on this table surfaces at startup time the way the v2.87.3 hedge intends.
+
+  Stats slow-query log should be clean after this deploy. The remaining flagged item — `watchlist_frequency` at ~500ms, just over the threshold — is on a different code path (watchlist tab, not Stats) and stays watch-only.
+
+## [2.87.5] — 2026-05-07
+
+### Changed
+- **Stats `fastest` query rewritten to use the `sightings_hourly.max_speed` rollup column instead of scanning `all_sightings`.** Drops from ~1.7 seconds to single-digit ms on busy installs — same shape as the v2.86.6 `highest_altitude` rewrite. The query continues to pull top-N candidates from the sorted speed result, then filter in Python via the type-aware speed ceiling that rejects transponder glitches (e.g. a B763 reporting 1010 kt, well above the type's plausible 700 kt ceiling).
+
+  Subtle improvement on glitchy data: the original `all_sightings`-based version could have all 20 candidate slots filled by sightings of a single very-glitchy aircraft (200 sightings of one B763 reporting 1010 kt, before the next-fastest aircraft shows up at row 201). Python filter rejects all 20, no fallback — the card returns null. The rollup-based version is naturally diverse (one row per icao per hour), so the same scenario contributes only a handful of rows from the glitchy aircraft, leaving plenty of room for legit candidates.
+
+  LIMIT bumped from 20 to 50 as cheap insurance for the multi-hour glitchy aircraft case. In the all_sightings version, 20 rows often meant 1-2 different aircraft (many sightings each), which was plenty of headroom. In the rollup version, 20 rows means 20 different (icao, hour) pairs, and a single glitchy aircraft active for several hours could contribute multiple rows. 50 is still tiny on a 200K-row rollup and gives comfortable margin against realistic glitch counts (most installs see 1-3 glitchy aircraft per day, each contributing 1-5 hour buckets, so 30+ slots remain for legit answers). End-to-end tested with a synthetic glitchy-aircraft dataset before shipping; the test caught the LIMIT-saturation case explicitly and validated the bumped limit handles realistic profiles correctly.
+
+  Remaining Stats slow-query work after this patch: `longest_track` (still ~1.7s, returns 950K+ rows). That one is a different shape — the algorithm fundamentally needs every (icao, seen_at) pair from today to compute longest contiguous span per ICAO with gap detection in Python. The current implementation is already the optimized version (rewritten from a 30+ second SQL window-function pattern in v2.42.9), and the only meaningful further optimization is a per-aircraft per-day session-tracking rollup maintained by the collector. That's real schema work for another session. Also still pending: `watchlist_frequency` at ~500ms, low priority, different code path.
+
+## [2.87.4] — 2026-05-07
+
+### Fixed
+- **Schema preflight WARNING about `watchlist_sightings.label` was the preflight catching its own typo, not a real schema bug.** When v2.87.3 added `STATS_EXPECTED_SCHEMA` I listed the watchlist label column as `label`; the actual column name in the schema is `watchlist_label`. The Stats queries use the correct name, so no real bug existed — just the hedge complaining about its own bookkeeping.
+
+  This is a real-world demonstration of the hedge working exactly as designed: the WARNING surfaced on the very next deploy after v2.87.3, an obvious signal something was off, easy to investigate (one line in the schema_migrations.py diff vs the actual `CREATE TABLE` in collector.py), trivial to fix. If a future schema drift were the *cause* of a real Stats bug instead of a typo in expectations, the same loop would surface it the same way — log line at startup, single-table to investigate, single-line fix.
+
+  The lesson: hedges that are noisy when wrong and silent when right are the easy half of defensive programming. The hard half is keeping the expected list in sync with the queries — that's the discipline this hedge supports rather than replaces, and one deploy in, the discipline already feels less abstract.
+
+## [2.87.3] — 2026-05-07
+
+### Added
+- **Schema pre-flight check at server startup.** A new `verify_stats_schema()` function runs after migrations complete and before the server starts listening, verifying that the columns the Stats endpoint's queries expect actually exist in the live schema. If a column is missing — either because a migration didn't run, or because someone added a column reference to a query without adding the corresponding migration — a WARNING is logged with the specific table+column. The server still starts (we don't want a hedge that fails closed and locks users out), but the warning surfaces the problem at startup time rather than at the next time someone clicks Stats.
+
+  This is a hedge, not a guarantee. The motivating case was v2.86.4 — a Stats query selected `last_altitude` from `seen_aircraft`, but `last_altitude` is a column on `sightings_hourly`, not `seen_aircraft`. Python AST validation and the test suite couldn't catch it because the SQL was syntactically valid Python; it only failed when SQLite tried to bind the column name against the live schema. The user-visible result: the entire Stats tab returned "No stat cards to show," because the SQL error propagated up to the outer try/except, which returned 500 with empty cards.
+
+  How the new pre-flight catches that class: a hand-maintained `STATS_EXPECTED_SCHEMA` dict in `schema_migrations.py` lists every table and column the Stats endpoint references. At startup, the function runs `PRAGMA table_info(table)` for each entry and compares the expected columns to what's actually present. Missing columns or tables produce specific WARNING log lines naming the gap. Verified end-to-end against four scenarios before shipping (healthy schema → no warnings; missing column → fired; missing table → fired; sentinel test where `STATS_EXPECTED_SCHEMA` lists a column that doesn't exist on the table → fired).
+
+  Honest scope: this catches drift well IN ONE DIRECTION but not the other. If someone adds a column reference to a Stats query AND adds the corresponding entry to `STATS_EXPECTED_SCHEMA`, the pre-flight will catch a typo (because the typo'd column won't actually exist in the schema). If someone adds the column reference and forgets to update `STATS_EXPECTED_SCHEMA`, the pre-flight is silent. So the discipline is "update both lists when changing one" — the same discipline whose absence caused v2.86.4 in the first place. Why bother, then? Because (a) it costs nothing at runtime, (b) it costs little to maintain (one line per column), (c) it catches *some* of the relevant bug class, and (d) it surfaces schema drift even when no query change is involved (e.g., a migration that should have run but didn't).
+
+  Future hardening, if this lighter approach proves itself: extract the inline Stats queries into a single dict at module scope and run real `EXPLAIN` against each at startup. That's a bigger refactor (40+ inline queries, mid-function) and not worth the churn until/unless this hedge demonstrates real value in practice.
+
+## [2.87.2] — 2026-05-07
+
+### Changed
+- **Updates page now shows live status throughout the apply-and-restart window instead of going to a dead browser page.** Click Apply, the page now stays alive and tells you what's happening: "Service is restarting and applying migrations. Elapsed: 12s." with a spinner that updates every second. Once the service is back up running the new version, the page reloads cleanly with the new release in place. If something goes wrong and the service never comes back, the page surfaces a timeout error after 120 seconds with a hint about checking the journal — instead of leaving you staring at the browser's "this site can't be reached" page.
+
+  Behind the scenes: the previous flow did a setTimeout(reload, 3500) after the apply request, which meant if the migration or restart took longer than 3.5 seconds, the reload hit a dead server and the browser showed its native error page. That worked fine for the v2.4x/v2.5x era when migrations were small and apply was fast (~1-2s), but with the schema migrations introduced by v2.87.0 (`concurrent_minute` backfill, ~10s on the test VM, longer on a Pi 4B with year-of-data installs) the 3.5s budget started overflowing routinely. The new flow polls a lightweight `/api/version` endpoint every second, transitioning through `apply-sent → restarting → verifying → complete` (or `→ timeout`), so the user sees continuous progress and the reload only happens once the new version is actually serving.
+
+  Implementation: added a tiny `/api/version` endpoint that returns just `{version: "X.Y.Z"}` from in-memory state, no DB access — fast enough to poll cheaply even when a Pi is busy doing post-restart work. The frontend captures the current version before the apply request, then enters a polling loop that uses an AbortController-bounded fetch (2.5s per poll) so a half-restarted service that hangs requests can't get the page stuck. The "verifying" state explicitly handles the case where the service answers with the OLD version (rare — would mean the apply silently rolled back; we keep waiting up to the 120s timeout rather than declaring victory or failure).
+
+  Polling cadence: 1 second, with 2.5s per-fetch timeout. Total polls within the 120s window: up to 120. Cheap on the server, responsive in the UI.
+
+  Renders four kinds of state messages with elapsed time:
+    - "Applying update — do not refresh." (initial, before the POST)
+    - "Service is restarting and applying migrations. Elapsed: Ns." (the common middle state, spinner + counter)
+    - "Service is up but still on X.Y.Z. Waiting for X.Y.Z+1… Elapsed: Ns." (the rare we-see-the-old-version branch)
+    - "✓ Update complete — now running X.Y.Z+1. Reloading page…" (success)
+    - "⚠ Update timed out after 120s. The service didn't come back up running X.Y.Z+1. Check `sudo journalctl -u aerodrome -n 100` for what happened, then reload this page." (timeout)
+
+  Doesn't change anything on the apply path itself — the server-side apply script is unchanged. This is purely a frontend UX improvement around an existing flow that was always going to take however long it took.
+
+## [2.87.1] — 2026-05-07
+
+### Changed
+- **Stats `lowest_altitude` query rewritten to use a new `sightings_hourly.min_nonzero_altitude` column.** Drops from ~1.9 seconds to single-digit ms on busy installs. This was the deferred follow-up from v2.86.6, where I caught (just before shipping) that `MIN(min_altitude) WHERE min_altitude > 0` over `sightings_hourly` would silently drop buckets where the same aircraft was both grounded and airborne in one hour — taxi-then-takeoff, landing-then-taxi. The new column tracks the minimum across non-zero observations only, preserving correctness for the rewrite.
+
+  Behind the scenes: schema migration v5 adds `min_nonzero_altitude REAL` to `sightings_hourly` and backfills it from `all_sightings` via a single `UPDATE FROM` with a GROUP BY aggregation (~10-30s on busy installs at upgrade time). The collector's per-poll UPSERT writes the column forward-going, with the same NULL-skipping MIN conflict-resolution pattern the existing `min_altitude` column uses. NULL stays a meaningful value here — aircraft only ever seen on the ground (or without altitude data) legitimately have no non-zero altitude to record. The Stats query filters those out via `WHERE min_nonzero_altitude IS NOT NULL`.
+
+  End-to-end correctness verified before shipping: a synthetic test database with the v2.86.6 trap case (one aircraft with mixed ground + 200ft + 500ft readings in the same hour, plus aircraft with only ground readings) returns the right answer (200ft from the mixed aircraft) and correctly preserves NULL for the ground-only one. The collector's forward-going UPSERT was also tested: a poll with altitude=150 properly lowers `min_nonzero_altitude` from 200 to 150, while a subsequent poll with altitude=0 (taxi) drops `min_altitude` to 0 but leaves `min_nonzero_altitude` at 150.
+
+  Combined Stats endpoint speedup history (rollups + denorm columns over the v2.85 → v2.87 arc): `range_rose_histogram`, `top_countries` (v2.85.2), `top_types`, `top_operators`, `category_mix`, `daily_counts_7d` (v2.85.9), `unique_today` (v2.86.2), `furthest` (v2.86.4 broken / v2.86.5 hotfix), `highest_altitude` (v2.86.6), `peak_simultaneous`, `average_concurrent` (v2.87.0), `lowest_altitude` (this patch). Every Stats card that previously scanned `all_sightings` for an aggregation now reads from a precomputed rollup or denormalized column. The Stats page should now load in well under 100ms even on a 1-CPU VM with 15M+ rows. Remaining slow-query log noise (`watchlist_frequency` at ~500ms) is a different category — different code path, not on this work's path; revisit if it becomes painful.
+
+## [2.87.0] — 2026-05-07
+
+### Changed
+- **Stats `peak_simultaneous` and `average_concurrent` now use a precomputed minute-resolution rollup table instead of GROUP BY-ing `all_sightings` on every Stats page render.** Both queries dropped from over a second to sub-millisecond on a 1-CPU test VM with 14.7M rows. These were the last two queries on the Stats page that were still scanning `all_sightings` in aggregation form; this patch closes that work.
+
+  Behind the scenes: schema migration v4 introduces a new `concurrent_minute(minute_bucket, count)` table — one row per 60-second bucket, populated by the collector on every poll. Each poll, the collector does an `INSERT … ON CONFLICT DO UPDATE` keyed by `minute_bucket`, with the conflict resolution preserving the *maximum* count seen at any sub-poll within the bucket. The Stats queries become `SELECT MAX(count) FROM concurrent_minute WHERE minute_bucket >= ?` and `SELECT AVG(count) …`, both single-index seek + scan over ~1440 rows/day.
+
+  Subtle semantic note worth surfacing: the previous `GROUP BY seen_at/60, COUNT(DISTINCT icao)` query computed the *union* of aircraft seen across all sub-polls within a 60-second bucket. The new rollup stores the *maximum* count seen at any single sub-poll. For the default 60-second poll cadence these are identical (one sub-poll per bucket). For sub-60s cadences the new metric is arguably more meaningful: "what's the largest number of aircraft visible at the same instant?" rather than "what's the union of aircraft across all instants in this minute?" The MAX-style aggregation also avoids the union's counterintuitive case where aircraft A and B never coexisted but both appeared within the same 60-second window. This is documented in the migration source comments for any future maintainer wondering why the answer might differ slightly from a naive `all_sightings` re-derivation.
+
+  Backfill on first startup: the migration scans `all_sightings` once and populates `concurrent_minute` from the historical data, using the original `COUNT(DISTINCT icao)` semantic for retroactive coverage. On a busy install (15M rows, 1-CPU VM) this takes roughly 30 seconds — paid once at upgrade time, after which forward-going writes use the tighter MAX-per-sub-poll semantic. Without backfill, the Stats cards would show 0 until midnight rolls over to a fresh day. The migration is idempotent: re-running on an already-populated table is a no-op.
+
+  Retention: the new table is pruned alongside `all_sightings` using the same `all_days` retention setting. The rollup mirrors `all_sightings` coverage, so beyond `all_days` it's just storage waste — keeping the invariant simple.
+
+  Hardening lesson applied from yesterday: this release was end-to-end tested against a real SQLite database before shipping (migration creates the table with the right schema, backfill produces correct counts, ON CONFLICT MAX logic preserves the larger value, idempotency on re-run). The v2.86.4 column-typo regression that broke the entire Stats tab would have been caught by exactly this kind of pre-flight check, so I made the discipline mandatory for any change that touches schema or new column names. Filed for the broader hardening pass: `verify_columns_exist()` startup pre-flight as a CI-level guard.
+
+  Remaining Stats slow-query work: `lowest_altitude` still scans `all_sightings` because the naive `MIN(min_altitude) WHERE min_altitude > 0` over `sightings_hourly` would silently drop buckets where the aircraft was both grounded and airborne in the same hour (taxi-then-takeoff, landing-then-taxi). The clean fix is a per-bucket `min_nonzero_altitude` column on `sightings_hourly` maintained by the collector — filed for v2.87.1.
+
+## [2.86.6] — 2026-05-07
+
+### Changed
+- **Stats `highest_altitude` query rewritten to use the sightings_hourly rollup.** The previous all_sightings scan was hitting ~1.9 seconds on a 1-CPU test VM with 14.7M rows; the new query reads `MAX(max_altitude)` from sightings_hourly, which has a per-aircraft per-hour pre-aggregated max altitude column populated by the collector. Same answer (the bucket's max-this-hour, MAXed across all today's hours, equals the global max altitude any aircraft reached today), but on a ~70× smaller table — drops to single-digit ms. The typeof() defensive guard and ~hex (TIS-B/MLAT) exclusion are both preserved.
+
+  `lowest_altitude` was deliberately NOT rewritten. The naive equivalent (`MIN(min_altitude) WHERE min_altitude > 0` from sightings_hourly) has a real correctness issue: a bucket can contain BOTH ground (altitude=0) AND airborne sightings of the same aircraft within one hour — taxi-then-takeoff, landing-then-taxi, etc. The bucket's `min_altitude` would be 0, so the `> 0` filter would exclude that bucket entirely, never seeing the airborne low-altitude readings. The all_sightings scan is correct because it operates at per-sighting resolution. The clean fix is a per-bucket `min_nonzero_altitude` column maintained by the collector; filed for a future schema patch.
+
+  Worth filing as a real lesson alongside this patch: when porting an aggregation from a per-row table to a pre-aggregated rollup, always check whether the WHERE-clause filters compose with the aggregation. `WHERE altitude > 0` over per-row data and `WHERE min_altitude > 0` over per-bucket data are NOT the same predicate — the latter excludes any bucket whose minimum-anywhere was zero, even if other rows in the bucket would have qualified individually. This is the sort of mistake AST validation and unit tests can't catch; needed careful semantic reasoning to spot.
+
+  Combined Stats endpoint speedup history (rollups + denorm columns over the v2.85.x → v2.86.x arc): `range_rose_histogram` (v2.85.2), `top_countries` (v2.85.2), `top_types`/`top_operators`/`category_mix`/`daily_counts_7d` (v2.85.9), `unique_today` (v2.86.2), `furthest` (v2.86.4 broken / v2.86.5 hotfix), `highest_altitude` (this patch). Remaining work: `peak_simultaneous`/`average_concurrent` (need a new minute-resolution rollup table) and `lowest_altitude` (needs the `min_nonzero_altitude` schema work above).
+
+## [2.86.5] — 2026-05-07
+
+### Fixed
+- **v2.86.4 broke the entire Stats tab. This patch unbreaks it.** The v2.86.4 furthest-query rewrite selected `last_altitude AS altitude` from `seen_aircraft`, but `last_altitude` is not a column on that table — it lives on `sightings_hourly`. SQLite raised "no such column: last_altitude," the exception propagated up to the outer try/except in `get_stats`, which returned a 500 response with empty cards. The frontend then correctly rendered "No stat cards to show. Check Configuration → Stats." This patch drops the nonexistent column reference and trims the corresponding `altitude` field from the response dict — the frontend's `furthestCard` renderer doesn't display altitude anyway, only ICAO, callsign, aircraft_type, distance, and bearing.
+
+  Worth filing as a real lesson: AST validation and the search-query test suite can't catch SQL queries that reference nonexistent columns. The query is syntactically valid Python; the column-name typo is only detectable at runtime against a real database. The same trap applies to any field-name change between table and query — exactly the failure mode the v2.81.x note about "field-shape changes require cross-language grep, not same-language one" was filed for, and which I walked into anyway. Two options for catching this class of bug going forward: (1) a CI step that opens a real schema'd database and runs each Stats card's queries; (2) a `verify_columns_exist()` helper called once at server startup that pre-flights every Stats query against the schema. Filed for the broader hardening pass.
+
+  Also worth noting: this is the second time in two days I've shipped a structural change without verifying the symptom went away. v2.86.4 marketed itself as a 240× speedup; what it actually delivered was an unusable Stats tab. The right discipline is: deploy → click the affected page → confirm visible behavior → declare victory. I shipped without that step.
+
+## [2.86.4] — 2026-05-07
+
+### Changed
+- **Stats furthest query rewritten to read from seen_aircraft.last_distance.** The previous all_sightings scan was hitting ~3.1 seconds on a 1-CPU test VM with 14.7M rows; the new query runs in roughly 13 milliseconds (confirmed via the `stats_furthest_prerank` performance-diagnostic probe at 13.2ms). The performance-diagnostic page already exposed this exact pattern as a probe — using it directly closes the loop on the v2.85.x stats query work.
+
+  Behind the scenes: `seen_aircraft.last_distance` (added in v2.60.1, populated by the collector on every poll, indexed for Search's distance-sort) holds the great-circle distance in km from the receiver to each aircraft's most recent observed position. The new query is a simple `ORDER BY last_distance DESC LIMIT 1` against that column — no SQL pre-rank proxy, no Python haversine loop, no full-result-set haversine since the column is already pre-computed. The compass bearing for the result still uses `distance.compass_bearing` because that's a one-off computation on the single winning row, fast either way.
+
+  Subtle semantic change worth documenting: "furthest today" now means "the aircraft whose most-recent observation today was furthest from the receiver" rather than "the aircraft that was furthest from the receiver at any point during today." For most users these produce identical answers; they diverge only when an aircraft both went far AND came close before being lost. The casual "Furthest aircraft today" framing on the Stats card naturally reads as "where it was last seen" so the new semantic matches user intuition. Power users who want true-historical-max can wait for a future schema change tracking per-aircraft daily max distance.
+
+  v2.42.9 history (preserved in source comments for future maintainers): the previous all_sightings approach used a SQL pre-rank by squared-coord-proxy + Python haversine on the top 50 to avoid pulling 500K+ rows to Python on a busy-airspace Pi. That was a real win against the original "fetch everything to Python" code, but was still O(positioned-sightings-today) in cost. The new approach is O(distinct-aircraft-today), which on a typical busy install is ~50× smaller.
+
+  This closes the last remaining Stats slow-query log line. Combined with v2.85.2 (`range_rose_histogram`, `top_countries`), v2.85.9 (`top_types`, `top_operators`, `category_mix`, `daily_counts_7d`), and v2.86.2 (`unique_today`), the entire Stats endpoint now reads from rollup tables or pre-computed `seen_aircraft` columns rather than scanning `all_sightings` for aggregations. The full Stats page should now load in single-digit-hundred milliseconds even on a 1-CPU VM with 15M+ rows.
+
+## [2.86.3] — 2026-05-07
+
+### Added
+- **Aircraft detail page map now has a dark/light theme toggle.** Click the small button in the top-right corner of the map — sun icon means dark mode is active (click to switch to light); moon icon means light mode is active (click to switch to dark). Standard "icon-shows-destination-state" convention used by most apps.
+
+  The map now defaults to **dark tiles**. Aerodrome's UI is dark-themed throughout, and the bright OSM tiles from v2.86.0 looked jarring in context — like opening a window into a different design system. Carto Dark Matter (free, no API key) provides cartography that fits Aerodrome's dark palette: dark gray base, light labels, subtle road/water differentiation. The original OpenStreetMap standard tiles remain available via the toggle for users who want maximum cartographic detail.
+
+  Behind the scenes: both tile layers are pre-created at map-init time and stored in `_posMapState.lightTiles` / `_posMapState.darkTiles`. The toggle just calls `removeFrom(map)` on the active layer and `addTo(map)` on the inactive one — no re-init, no flicker. Choice is persisted to `localStorage` under the key `aerodrome.map_theme` so it sticks across page navigations and browser refreshes. Falls back to 'dark' if localStorage is unavailable (private browsing mode, disabled storage).
+
+  Convention worth filing alongside this work: persistence belongs to **user-taste preferences** (theme, units, etc.), not **transient interactions** (current zoom, current expand state). The expand button from v2.86.1 deliberately doesn't persist — every detail page starts at default 420px height — because expansion is a "right now" decision per-aircraft. Theme is a "this is how I want maps to look" decision once. Different shapes, different storage policies.
+
+  Position: top-right of the map. Only empty corner — zoom controls live top-left, expand button bottom-left, OSM/Carto attribution bottom-right. Visually separates "view state" controls (expand) from "preference" controls (theme).
+
+  Both tile providers attribute correctly per their respective licenses. OSM and Carto attribution links live in the bottom-right corner of the map and update when the layer swaps; the v2.86.0 dark-theme override styles continue to apply.
+
+## [2.86.2] — 2026-05-07
+
+### Changed
+- **Stats unique_today query rewritten to use the sightings_hourly rollup table.** On busy installs the previous query was hitting the 500ms slow-query threshold and showing up in the logs (1854ms observed on a 1-CPU test VM with 14.7M rows in `all_sightings`). The new query scans `sightings_hourly` instead — same answer (both tables have a row for every distinct icao+hour combination), but sightings_hourly is roughly 70× smaller, so the `COUNT(DISTINCT icao)` finishes in single-digit milliseconds instead of multi-second.
+
+  Behind the scenes: this is the same fix shape that v2.85.9 applied to `top_types`, `top_operators`, `category_mix`, and `daily_counts_7d`. Every "scan all_sightings to count distinct aircraft" query has a sightings_hourly equivalent that's faster for the same answer; this patch closes one of the last two remaining instances (the other, `furthest`, is harder because it needs true-maximum distance which sightings_hourly doesn't track — separate work).
+
+  The previous `INDEXED BY idx_all_seen_icao` planner hint (added in v2.42.7 to defend against a 20-second planner misregression) is no longer needed: sightings_hourly is small enough that planner choice doesn't move the needle. Comment block in the source preserves the historical context so future maintainers understand why the hint was there in the first place.
+
+  Diagnostic confirmation: the performance-diagnostic page already has a probe (`unique_aircraft_count_rollup`) that exercises the rollup pattern over a full year of data, and reports 47.8ms on the same 1-CPU VM. "Today" is one day, so the production query is much faster than that.
+
+## [2.86.1] — 2026-05-06
+
+### Added
+- **The aircraft detail page map now has an expand button.** Click the small button in the bottom-left corner of the map (four arrows pointing outward) to double the map's height from the default 420px to 840px. Click again (arrows now point inward) to collapse back. Useful when you want to study a cluster of dots in detail without the rest of the page crowding the map.
+
+  Behind the scenes: the button lives in Leaflet's `bottomleft` control container, which keeps it cleanly positioned inside the map with no z-index hacks and no collision with OSM attribution (bottom-right) or zoom controls (top-left). The toggle flips an `.expanded` class on `#positionMap` which CSS animates over 200ms; after the transition completes, the JS calls Leaflet's `invalidateSize()` so the map recomputes tile positions for the new viewport — without that step, the area below the original 420px viewport stays unfilled until the user pans. The expand/collapse icon pair is the standard "four corner brackets pointing outward / pointing inward" shape used by most map UIs (Google Maps, Mapbox), inlined as SVG constants in the template so they render consistently across browsers and themes without an icon-font dependency.
+
+  Two-state toggle rather than three-step cycle. Considered cycling 420 → 840 → 1260 → back to 420 but rejected it: most users who want a bigger map want "noticeably bigger," and an extra click to cycle through a third size is more friction than the affordance is worth. 840px was picked over 1260px (closer to fullscreen) because it fits comfortably inside most laptop viewports without pushing the rest of the page off-screen — useful expansion without losing the surrounding context.
+
+  State doesn't persist across page navigations. If you expand the map on aircraft A and then navigate to aircraft B, B's map starts at the default 420px height. Considered persisting via localStorage, deferred — the value of remembering the preference is small relative to the simplicity of "every detail page starts the same way."
+
+## [2.86.0] — 2026-05-06
+
+### Added
+- **The aircraft detail page now has an interactive position map.** Click into any aircraft and scroll to "Position history" — instead of the placeholder that's lived there since v2.53.0 ("Map view will be added in a future release"), you now see every position fix recorded for that aircraft plotted on a real-world map, color-coded by altitude. Green dots are ground-level/low altitude, yellow is mid-altitude, orange is high, red is cruise. The receiver's own location is marked with a standard pin so you can see where the aircraft was relative to home.
+
+  Four time-window buttons above the map let you switch scope: 24h, 7d, 30d, or All. Default is 24h. Each click refetches the position data and replaces the dot layer in place — the map instance, tile layer, and receiver marker persist across switches so panning/zooming stays smooth. The window picker matches the discrete-button pattern used elsewhere in the app (Stats range rose's window selector, etc.).
+
+  Behind the scenes: design call locked at the start of the session — dots only, no track lines connecting them. The dot density itself communicates flight pattern (heavy fliers cluster, transients show single dots, repeat visitors stand out). Track-line visualization gets messy fast for aircraft with multiple separate visits and would require a session-break heuristic; users wanting actual flight paths use the external Track ↗ link to airplanes.live or whichever provider they have configured. The dot-only approach also sidesteps a class of edge cases (ferry flights, disconnected tracks, gap-threshold tuning) entirely.
+
+  Map library: Leaflet 1.9.4, bundled locally to `static/leaflet/` rather than served from a CDN. Aerodrome's installs are often on home networks where CDN reachability isn't guaranteed, so all 162 KB of JS+CSS+marker images ship in the release zip. Tiles come from OpenStreetMap directly (`https://tile.openstreetmap.org/{z}/{x}/{y}.png`) with the standard "© OpenStreetMap contributors" attribution rendered in the bottom-right of every map.
+
+  Performance: Leaflet's canvas renderer (`L.canvas()` with `preferCanvas: true`) is used instead of the default SVG renderer because SVG gets sluggish past ~1,000 markers, and a heavy local flier with 30-day history can easily hit 5,000+ position fixes. Canvas scales to 10,000+ comfortably even on the Pi 4B 4GB. The server caps response size at 10,000 positions; if the underlying query exceeds that, the result is even-sampled (stride = ceil(N/limit), recent positions kept) and a small "(sampled)" tag appears in the meta line above the map so the user knows.
+
+  No-receiver fallback: if `receiver.latitude` and `receiver.longitude` aren't configured, the server returns `receiver: null` in the position response and the frontend renders a config nudge in place of the map — a small panel pointing at `/configuration#receiver` with brief instructions on what to set. The map needs an anchor point to be useful, and silently centering on (0,0) or guessing from the data would be worse than telling the user they're missing a one-time setup step.
+
+  Backend: new endpoint `/api/aircraft/{icao}/positions?window=24h|7d|30d|all` queries `all_sightings` filtered by ICAO and the window's lower bound, returning `[seen_at, lat, lon, altitude]` tuples in chronological order plus the receiver coords (for client-side map anchoring) and a `truncated` flag. Uses the tuned `_open_db_conn` helper so it benefits from the v2.85.0 connection-cache work.
+
+  Lessons filed alongside this release: (1) the v2.79.0 `distance.py` extraction was groundwork specifically for this feature, called out at v2.79.0 ship time as such — three months later it's actually paying off. The discipline of "extract first, build the feature on the extracted base later" worked. (2) Bundling the map library locally rather than CDN-loading it adds release-zip weight (162 KB) but pays off on the first install where CDN reachability matters. The same principle applied to v2.42.x's pure-JS markdown renderer; consistent stance across the project.
+
+## [2.85.12] — 2026-05-06
+
+### Changed
+- **Time format setting now applies across the entire product.** v2.85.11 introduced the `display.time_format` setting (12h / 24h / auto) on the Configuration → Display tab and wired it into the Live tab's time displays as a partial first cut. This patch finishes the job: every remaining admin page header timestamp, the aircraft detail page sighting tables, the Stats tab "updated at" stamp, the search results "first seen" times, the notifications "last sent" timestamps on the Configuration page, the log viewer's entry timestamps — all of them now consult the same setting and render consistently. Pick "Auto" / "12h" / "24h" once and the whole UI follows.
+
+  Behind the scenes: instead of having every page fetch `/api/ui-config` to learn its time format preference, the server now injects the setting directly into every served template via the existing `_serve_template` helper. A tiny `<script>window._aerodromeTimeFormat='...'</script>` block lands right before `</head>`, immediately followed by `<script src="/static/timefmt.js"></script>`. The shared formatter self-initializes synchronously from that variable, so by the time any page's inline JS calls `formatTime()` the format flag is already resolved. No async fetch latency, no first-render-uses-wrong-format flash, no per-page boilerplate to wire it up.
+
+  Eleven templates touched (status, performance, logs, docs, updates, diagnostics, diagnostics-slow-queries, diagnostics-watchlist, aircraft, config, index). Each had its own inline `fmtTime()` helper or inline `toLocaleString({hour12: ...})` call; each is now a one-liner delegating to `formatTime`, `formatTimeFull`, or `formatDateTime` from `static/timefmt.js`. Final grep across all templates returns zero remaining inline time-format calls — single source of truth achieved. The admin-page audit harness from v2.85.10 was useful here: with eleven near-identical edits across templates, the temptation to ship without verifying header consistency is real, and the harness catches drift that manual review would miss.
+
+  Documented exclusions (places that intentionally keep their current format regardless of the user setting): track playback timeline labels in index.html (24-hour-only inside a graphic where horizontal space is tight), export filenames (24-hour for sortability), raw log content lines emitted by Aerodrome's logger (we don't reformat the system's own log timestamps; only the page's header timestamp and the per-entry display timestamps are reformatted).
+
+  Lesson worth filing alongside this one: when N templates each have their own copy of a small helper, sooner or later they drift. v2.85.10's audit harness was the right response to drift in admin page headers; v2.85.11 + v2.85.12's `static/timefmt.js` is the right response to drift in time formatters. Pattern: when a small piece of behaviour is "duplicated identically" across many files, the duplication itself is technical debt — extract once, reduce churn forever.
+
+## [2.85.11] — 2026-05-06
+
+### Added
+- **`display.time_format` config setting (12h / 24h / auto) on the Configuration → Display tab.** Lets users pick how times render across the UI: "12h" forces 12-hour with AM/PM regardless of locale, "24h" forces 24-hour, and "auto" (the default) respects the user's browser locale (US locales render 12-hour, most others render 24-hour). Live-reloadable — no restart needed.
+
+  Behind the scenes: a new shared frontend module `static/timefmt.js` exposes `formatTime`, `formatTimeFull`, and `formatDateTime` helpers that consult the setting. Pages call `initTimeFormat(mode)` after fetching `/api/ui-config` and then use the helpers everywhere they previously rolled their own `toLocaleString({hour12: ...})` calls. The new endpoint field is `display.time_format` in the `/api/ui-config` response, alongside the existing `display.date_format` (which now lives in the same `display` block).
+
+  Why this exists: before this patch every template defined its own inline `fmtTime()` helper, all subtly different. The Live tab was hard-coded 12-hour with AM/PM. The diagnostics pages were hard-coded 24-hour. The search results were 24-hour despite being on the same page as the 12-hour Live tab. There was no way for users to pick a single format for the whole app, and no central source of truth meant any single change had to be applied to ten templates by hand. This patch fixes both problems.
+
+  Scope discipline: this initial patch wires the setting into the Live tab's `fmtTime()` and `fmtTimeExact()` helpers — the most visible user-facing time displays in the app. Subsequent patches migrate the remaining time displays (admin-page header timestamps, aircraft detail page sighting tables, search results, Stats refresh stamp, watchlist alert popovers, etc.) one or two templates at a time. Pages not yet migrated continue using their inline formatters and thus ignore the user's preference for now — this is a known follow-up rather than a bug. The migration order is by visibility: most-used pages first.
+
+  Documented exclusions (places that should keep their current format regardless of the user setting): track playback timeline labels (24-hour-only inside a graphic where space is tight), export filenames (24-hour for sortability), raw log content in the log viewer (we don't reformat the system's own log timestamps).
+
+## [2.85.10] — 2026-05-06
+
+### Added
+- **Admin-page consistency audit harness at `scripts/admin_audit.py`.** Renders every admin page's top 140 pixels (the header region) using the same Playwright + mock-data infrastructure as the documentation screenshot harness, then stacks the captures into a single vertical strip plus a browser-viewable HTML grid. Drift in header structure — extra elements, missing buttons, different gear-menu placement, off-by-one alignment — is instantly visible when stacked, where it's invisible when each page is reviewed in its own browser tab.
+
+  Audit set as of this release: Status, Configuration, Logs, Performance, Documentation, Diagnostics hub, Diagnostics: Slow queries, Diagnostics: Watchlist. Pages with intentionally bespoke header structure (the public Live/Watchlist/Military/Stats/Search tabs, the setup-guide, per-aircraft detail pages) are deliberately excluded; the audit is for pages that should match each other.
+
+  Behind the scenes: across v2.84.1–v2.84.6 (Apr 2026) Aerodrome shipped six consecutive releases with admin-page header inconsistencies — each one caught by manual user review on the test bench, none caught by automated checks. The failure pattern was always the same: a refactor or a new feature added a slightly-different header structure to one or two admin pages while leaving the others alone, and because admin pages are typically reviewed one at a time in separate tabs, the structural drift never surfaced until the user happened to navigate between two affected pages and notice the difference. Six bugs of the same shape with the same root cause is a tooling gap, not a discipline gap.
+
+  The harness fixes the gap by reusing the screenshot infrastructure that was already known-working (synthetic mock data, fetch stubs, Playwright headless browser) and adding the one missing element: side-by-side comparison. Output is two artifacts in `screenshots/admin-audit/` — `admin-audit-strip.png` (single PNG with all eight headers stacked, suitable for a quick visual scan) and `admin-audit-grid.html` (resizable browser view at full resolution). Both are gitignored as verification artifacts, not source of truth — they get regenerated whenever the admin-page templates change.
+
+  Running cost: ~10 seconds on a developer workstation, similar to the existing screenshot harness. CONTRIBUTING.md gained a new section explaining when to run it (before any admin-page template change, when refactoring the shared header pattern, when adding a new admin page).
+
+  Lesson worth filing: the right response to "we keep shipping bugs of shape X" is usually a tool that surfaces shape-X drift early, not a process change asking humans to be more careful. Six tries at "be more careful" failed; one harness ought to retire that bug class. Worth remembering for the next category that surfaces.
+
+## [2.85.9] — 2026-05-06
+
+### Fixed
+- **Four more Stats endpoint queries rewritten to use rollup tables — Stats page should now load in well under a second on production-scale installs.** Following v2.85.2's rewrite of `range_rose_histogram` and `top_countries`, this patch finishes the same job for `top_types`, `top_operators`, `category_mix`, and `daily_counts_7d`. Each was scanning `all_sightings` (25M+ rows on a busy install) when the answer was already available from the smaller `seen_aircraft` (~26k rows) or `sightings_hourly` (~170k rows) tables. Measured timings on a 5M-row / 26k-aircraft synthetic test bench:
+
+  - `top_types`: 6,312 ms → 14 ms (450× speedup)
+  - `top_operators`: 5,690 ms → 24 ms (240× speedup)
+  - `category_mix`: 4,798 ms → 45 ms (107× speedup)
+  - `daily_counts_7d`: 642 ms → 15 ms (43× speedup)
+  - Combined: 17.4 s → 98 ms (177× speedup)
+
+  Behind the scenes: same denormalization pattern as v2.52.1 / v2.85.2. `top_types` moves to `seen_aircraft.aircraft_type` (denormalized at insert time, indexed via `idx_seen_type`). `top_operators` moves to `seen_aircraft.operator` — populated by migration v2 from `last_callsign`'s prefix using the same regex the old Python loop used — which also gets to drop the Python regex pass entirely. `category_mix` moves to a `seen_aircraft` scan with `aircraft_type_desc` (column rename from `all_sightings.type_desc` is the same content). `daily_counts_7d` keeps its proven seven-small-queries shape but switches each one from `all_sightings` to `sightings_hourly`, which has one row per `(icao, hour_bucket)` so daily `COUNT(DISTINCT icao)` is faithful to the original semantics.
+
+  Worth flagging one subtle semantic difference for `top_operators`: the old code aggregated `COUNT(DISTINCT icao)` per callsign and grouped callsigns to operators in Python — meaning an aircraft that flew under two different operator codes within the window would be counted under both. The new code uses each aircraft's *current* operator (the prefix of its most recent callsign) and counts each aircraft once. For aircraft that don't switch operators (the vast majority), results are identical. For ferry flights or recently-repainted airframes, the new query credits only the current operator. Arguably more accurate for "who's flying these aircraft right now," and the test-bench top-5 came out the same up to one swap at a tie.
+
+  Combined with v2.85.2's two prior rewrites, the Stats endpoint's full set of all_sightings-scanning aggregation queries are now done. Pi user's earlier 197-second Stats endpoint capture should drop to under 5 seconds on the same hardware. The rough rule of thumb is now: any query that scans all_sightings for an aggregation should ask whether the answer lives in seen_aircraft or sightings_hourly first. Filed.
+
+## [2.85.8] — 2026-05-06
+
+### Fixed
+- **Synthetic feeder backfill now produces a fully-usable database for testing.** The maintainer-side `tools/synthetic_feeder/backfill.py` script populates `all_sightings` with synthetic ADS-B history at scale, but versions before this patch left two related tables under-populated: `seen_aircraft` was empty (zero rows) and the table was at base schema (only 4 columns instead of the migrated 16). The cause was load-order: `collector.init_db()` runs a "safety net" `INSERT INTO seen_aircraft FROM all_sightings GROUP BY icao` to seed derived state, but the backfill calls `init_db()` BEFORE bulk-loading `all_sightings`, so at seed-time `all_sightings` is empty and nothing gets inserted. And schema migrations are wired through `main.py` at app startup, not `init_db()` — so the synthetic backfill, which only goes through `init_db()`, never triggered the migration path.
+
+  Symptoms on a fresh synthetic-only install (no live collector): Search returned nothing because `seen_aircraft_fts` had no rows. Stats endpoint queries that scan `seen_aircraft.country` / `.operator` / `.last_seen_at` errored with `no such column` since those columns only get added by migration v1. Detail-page sub-queries that join through `seen_aircraft` returned no rows. The synthetic DB was useful for raw `all_sightings` testing but unrepresentative of a real Aerodrome install for everything else.
+
+  Behind the scenes: backfill now adds two steps after the bulk load and rollup population. First, replay the same `INSERT OR IGNORE INTO seen_aircraft (icao, first_seen_at, first_callsign, first_aircraft_type) SELECT icao, MIN(seen_at), '', '' FROM all_sightings GROUP BY icao` that `init_db` does — gets one row per distinct ICAO with the base columns set. Second, call `apply_schema_migrations(conn, "synthetic_feeder backfill")` which adds the missing columns via `ALTER TABLE`, runs migration v1's existing backfill logic to populate them from `all_sightings` / `sightings_hourly` / `country_for_icao()`, creates the search-related indexes, and marks every row as `fts_dirty=1` so the next collector cycle flushes them all to FTS5.
+
+  Verified by checking final state on a 200k-row test backfill: `seen_aircraft` ends up with all 16 columns, all 2,000 expected rows, every Stats query path that joins through it returns results, and the migration-driven country lookup resolves ~45% of synthetic ICAOs (the random hex generator produces hex strings that fall in real-world country blocks at roughly that rate, which is consistent with intent — they're meant to look like real ICAOs even if not specifically registered).
+
+  No `init_db` re-run, no schema duplication. The backfill piggybacks on Aerodrome's own migration logic, so any future schema changes flow through automatically — same design property the v2.85.1 dynamic index capture-and-restore was after.
+
+## [2.85.7] — 2026-05-06
+
+### Changed
+- **Capacity card Daily growth row now shows only the MB-per-day side** (e.g. "+116 MB"). v2.85.6 had switched it to show both rows and MB to match the Database card's format, but that turned out to duplicate information across two adjacent cards — the Database card right above already shows the full "+703k rows · +116 MB" line, and the Capacity card's purpose is disk-planning math, where MB/day is the only side that actually drives the projection. Same compact formatter as before (one-decimal under 100, integer at or above), just the MB component. The two cards now read as complementary rather than redundant: Database card states the current rate of change in both dimensions, Capacity card uses the disk-relevant slice of that rate to feed its projection.
+
+## [2.85.6] — 2026-05-06
+
+### Changed
+- **Capacity card "Daily growth" row now matches the Database card's format and includes the rows side.** Previously the Capacity card showed only the MB side (e.g. "116.2 MB per day") using the older `fmtSize` formatter. Now it shows both sides in the v2.85.5 compact form: `+703k rows · +116 MB` on busy installs, `+8,247 rows · +1.4 MB` on quiet ones. The two cards now read consistently for the same metric — both labeled "Daily growth", both showing the same trailing-7-day average from the backend, both using the same magnitude-aware compact format.
+
+  Behind the scenes: lifted `fmtRowsCompact` and `fmtMbCompact` from inside the Database card's IIFE to module scope alongside the existing `fmtSize` helper. The Database card was the only call site at v2.85.5; v2.85.6 adds the Capacity card as a second consumer. Single source of truth means the format threshold logic (10,000 rows → 'k', 1,000,000 → 'M', 100 MB → integer) lives in one place — if we tune those thresholds later, both displays move together rather than drifting. Same fundamental backend numbers under the hood; both cards just display them now.
+
+## [2.85.5] — 2026-05-06
+
+### Changed
+- **Daily growth metric on the Status page Database card now uses a compact format that scales with magnitude.** On busy installs (hundreds of thousands of rows per day) the single-row line now reads `+703k rows · +116 MB`. On quiet installs (a few thousand rows per day) it reads `+8,247 rows · +1.4 MB` — full precision where the precision matters. The threshold is 10,000 rows/day for the rows side and 100 MB/day for the MB side: below those thresholds the exact number conveys real planning information; above them the rounded form reads the same to a human and saves the horizontal space the verbose form was overflowing into. Replaces the two-row split from v2.85.4 with a single-row line that fits cleanly at any data scale.
+
+  Honest accounting on this trio of patches (v2.85.3 → v2.85.4 → v2.85.5): v2.85.3 added the metric using full-precision formatting, which fit fine on quiet test data but overran the card width on a busy install (the 12.6M-row test bench produced "+702,965 rows/day · +116.2 MB/day" which wrapped between "MB/" and "day"). v2.85.4 dodged the overflow by splitting onto two rows. v2.85.5 lands at the format that should have shipped first — magnitude-aware compact display that stays on one row at any scale and reads naturally either way. The pattern of "ship → notice the issue at production scale → fix → notice the fix has its own awkwardness → re-fix" is the cost of not testing display elements at both quiet and busy data scales before the first ship. Filing the lesson: when the design specifies a number, also spec what that number looks like at the smallest and largest realistic values, and verify both before shipping.
+
+## [2.85.4] — 2026-05-06
+
+### Fixed
+- **Daily growth metric on the Status page Database card no longer wraps mid-unit on busy installs.** Introduced one release ago in v2.85.3, the metric was rendered as a single value `+702,965 rows/day · +116.2 MB/day` — fine on quiet installs where the numbers stay short, but on installs ingesting hundreds of thousands of rows per day the combined string exceeded the Database card's fixed width and wrapped between "MB/" and "day", which read as a typo rather than a wrap. Fix is two-line rendering: rows-per-day on its own row, MB-per-day on the row below it. Matches the existing label-then-value pattern used by every other row in the card and stays clean at any viewport width without forcing `white-space: nowrap` (which would have caused horizontal overflow instead).
+
+## [2.85.3] — 2026-05-06
+
+### Added
+- **Daily growth metric on the Status page Database card.** Shows how many rows and MB the database is gaining per day, computed as a trailing 7-day average. Format is `+82,400 rows/day · +12.4 MB/day` — rows for capacity-planning intuition, MB for the human "is my disk going to fill up" gut check. The metric pairs naturally with the Capacity card right below it: Daily growth answers "how fast am I growing right now?" while Capacity answers "where will that take me at my current retention setting?"
+
+  Behind the scenes: this is purely a frontend addition — the data was already computed. `_compute_capacity_metrics()` in capacity.py has been calculating `rows_per_day` and `mb_per_day` since v2.50.30 (it needs them for the Capacity card's settled-size projection), but those numbers weren't surfaced as a standalone display anywhere. Adding the row to the Database card just reads from the existing `c.database.capacity` payload that the Status endpoint already returns. No new DB query, no schema change, no API change.
+
+  Same graduated `data_source` gating the Capacity card uses: with less than 24 hours of accumulated data the row shows "still accumulating" rather than extrapolating from a tiny sample (a busy first hour multiplies to absurd numbers and a quiet first hour misleads downward). Between 1 and 7 days of data it shows the number with an "(estimated)" suffix because the 7-day window isn't fully populated yet. Past 7 days it shows the number plain. This matches the proven shape from Capacity card design — "the number is right when the suffix is gone, the suffix tells you when to come back" is a less-confusing UX than alternatives like "show 1-day average for new installs, switch to 7-day later" which would have the number jump as the methodology silently changed.
+
+  Why trailing 7-day specifically: cumulative average (total ÷ days) is stable but lags reality on installs whose activity is changing — busier-receiver days or recent backfills get averaged with weeks-old quiet periods, producing a number that doesn't match what the user just saw. Trailing 24-hour is reactive but bounces around for any single quiet day (weather, outage, weekend). Trailing 7-day smooths daily noise while still reflecting recent reality, which is what most monitoring tools converge on. Fortunately the existing capacity computation already used this shape.
+
+## [2.85.2] — 2026-05-06
+
+### Fixed
+- **Stats page should now load in seconds rather than tens of seconds on production-scale installs.** Two of the heaviest Stats queries (`range_rose_histogram` and `top_countries`) were scanning the full `all_sightings` table for their respective time windows — sustainable at modest data scales but increasingly painful as installs accumulate history. On a 25.2M-row test install range_rose alone took ~12 seconds; on the Pi user's earlier diagnostic capture the Stats endpoint total reached 197 seconds with these two queries dominating the cost. Both queries can be answered just as well from rollup tables that already exist for similar purposes. Rewriting them is essentially a denormalization fix — no behaviour change at the chart level, ~70× row reduction at the SQL level.
+
+  **`range_rose_histogram` switched to `sightings_hourly`.** The polar range-rose chart shows where aircraft tend to be relative to the receiver across a configurable time window (default 30 days). The previous shape used a covering index on `all_sightings(seen_at, lat, lon)` to scan the window's worth of position data, group by a coarse lat/lon grid, and weight each grid cell by the number of position fixes inside it. At 25M rows the index walk alone took 12 seconds. The new shape queries `sightings_hourly`, weights each row by `sighting_count`, and groups the same way. ~150× fewer rows scanned (173k hourly rollup rows vs 25M raw sightings), measured at 8141 ms → 118 ms on the test bench (69× speedup, same total weight, same visual chart shape). Tradeoff worth flagging: aircraft that pass through multiple grid cells within a single hour collapse to whichever cell contains their last-observed position — under-counts direction diversity for fast overflights by ~12% in cell count terms but distributes the same total weight, so the chart shape is visually similar. For statistical-distribution purposes (which is what the chart is for) this approximation is fine. Future fix-shape if precise per-position fidelity becomes important: a dedicated `range_rose_grid` rollup table maintained on insert.
+
+  **`top_countries` switched to `seen_aircraft.country`.** The Top 5 Countries card was running `SELECT DISTINCT icao FROM all_sightings WHERE seen_at >= ?` then bucketing each ICAO to a country in Python via the `country_for_icao()` hex-prefix lookup. At 25M rows that's a full index walk plus a Python loop over every distinct ICAO in the window. The new shape queries `seen_aircraft.country` (denormalized at insert time by the same `country_for_icao()` function), grouped server-side via SQL on the indexed column, with `LIMIT 5` applied at the database. Roughly 1000× row reduction (~26k seen_aircraft rows vs ~25M all_sightings rows). Same visual output — the country values match because they're produced by the same function.
+
+  Behind the scenes: this is the same denormalization pattern v2.52.1 used to fix the Top Countries drill (3045× speedup at the time). Same shape applies to several other Stats queries we haven't touched yet — `top_operators`, `top_types`, `category_mix` all run aggregations against `all_sightings` that could move to `seen_aircraft` rollups for similar wins. Worth queuing as v2.85.3 if Stats feels slow on real hardware after this patch lands.
+
+  Lesson worth filing: every "scan all_sightings for an aggregation" query is a candidate for the same fix shape. The right rule of thumb is "if the question can be answered from the rollup, ask the rollup." The v2.50.0 introduction of `sightings_hourly` and the v2.52.1 denormalization on `seen_aircraft` were both designed for exactly this purpose, but only some of the pre-existing aggregation queries were retrofitted at the time. The remaining ones are surfacing now as installs accumulate larger histories.
+
+## [2.85.1] — 2026-05-06
+
+### Fixed
+- **Synthetic feeder backfill tool no longer leaves the database with a missing index that breaks the Stats endpoint.** The maintainer-side `tools/synthetic_feeder/backfill.py` script (used to populate a fresh database with synthetic ADS-B history at scale for testing) drops indexes on `all_sightings` before the bulk-insert phase to speed up loading, then recreates them afterward. v1.0–v1.2 of the tool used a hardcoded list of three index names for the recreate step, which drifted from what `collector.init_db` actually creates: `idx_all_seen_lat_lon` was added to the schema in v2.42.13 (covering index for `range_rose_histogram` and `distance_histogram` queries) and the backfill tool never learned about it. The Stats endpoint's range-rose query uses an `INDEXED BY idx_all_seen_lat_lon` hint which raises a hard error rather than falling back to a slower plan when the index is missing — so on synthetic-backfilled databases the entire Stats endpoint failed with `no such index: idx_all_seen_lat_lon` and the Stats tab rendered as "No stat cards to show" despite all cards being correctly enabled. Surfaced during stress-testing on a 25.2M-row synthetic install.
+
+  Behind the scenes: `_drop_indexes_for_load` now captures each user index's full `CREATE INDEX` statement from `sqlite_master` before dropping. `_create_indexes_after_load` replays those exact captured statements after the bulk load. No more hardcoded list to drift. Future schema changes in `init_db` or migrations that add new indexes get handled automatically — the captured set always matches what was actually present pre-drop. Verified by running a fresh backfill and confirming the resulting index set on `all_sightings` is byte-identical to what `collector.init_db` produces directly.
+
+  Lesson worth filing alongside this one: the original backfill code had a comment saying "if init_db adds a new index in a future release, the user re-runs backfill on a fresh DB and init_db creates the index up-front there too" — pushing the failure mode to "future user error" rather than fixing it. That comment was wrong: `init_db` does run during backfill's init phase and does create the index, but the drop step then removed it, and the recreate step didn't restore it. When you write a comment that starts with "if X happens in the future, the user just needs to..." — that's a hint to do the work now. The right shape (dynamic capture-and-restore) was always available; I shipped the brittle shape because it was faster to write. Two weeks later it surfaced as a bug. Net cost higher than just doing it right the first time.
+
+  This patch only affects the synthetic feeder tool; the core Aerodrome service is unchanged. Existing synthetic databases can be repaired in-place with a one-line SQL command (`CREATE INDEX IF NOT EXISTS idx_all_seen_lat_lon ON all_sightings(seen_at, lat, lon)`) followed by `ANALYZE all_sightings` — full regeneration is not required.
+
+## [2.85.0] — 2026-05-06
+
+### Fixed
+- **Aircraft detail page should now load in seconds rather than minutes on memory-constrained installs.** Four hot-path endpoints — <code>/api/search</code>, <code>/api/search/aircraft/&lbrace;icao&rbrace;</code>, <code>/api/aircraft/&lbrace;icao&rbrace;</code>, and the <code>/aircraft/&lbrace;icao&rbrace;</code> HTML route — were opening their database connections with raw <code>sqlite3.connect()</code>, which gives SQLite's default 2 MB cache regardless of what the user configured under Configuration → Database. The other endpoints use the tuned <code>_open_db_conn</code> helper that applies the user's profile settings (32-256 MB cache, 128-512 MB mmap, memory temp_store). The four hot-path endpoints didn't, and on memory-constrained installs (notably a Pi 4B 4 GB running a 12.6M-row 2 GB database alongside dump1090/readsb) the consequence was severe: per-aircraft working set didn't fit in the 2 MB connection cache, so every detail-page sub-query repeatedly re-fetched the same index pages from disk. Combined with OS page cache pressure from competing services, the detail page took 3-4 minutes to load and sometimes 500'd entirely on the second click.
+
+  Behind the scenes: the slow-query diagnostic page added in v2.84.0 made this concretely diagnosable for the first time. The connection-tuning audit section explicitly flagged the four offending endpoints (red "untuned" markers next to a "tuned" helper that was already used by six sibling endpoints). The fix is mechanical — five lines of diff per call site, switching <code>sqlite3.connect(db_path)</code> to <code>_open_db_conn(db_path)</code>. The helper is identical apart from applying the user's tuning PRAGMAs at connect time. No behaviour change beyond cache size on production-class installs; significant behaviour change on memory-tight installs where the tuning was never being applied.
+
+  Triangulating the diagnosis took the full week of v2.84.x work. The slow-query ring buffer captured timings on the test bench; the synthetic feeder reproduced the user's data scale on a fresh VM; the diagnostic plan-checks proved the query plans themselves were fine on every install we measured; the connection-tuning audit identified which endpoints respected the profile and which didn't. With all that evidence in hand the actual code change is small. Worth filing the meta-lesson: the diagnostic infrastructure built across v2.84.0 - v2.84.6 paid for itself in this one v2.85.0 fix. Without it we'd have spent weeks chasing index pathology, query rewrites, or schema changes that the data would have ruled out had we been able to see it. The cost of building good triage tools rounds to nothing compared to the cost of fixing the wrong thing.
+
+  Endpoints unchanged: <code>/api/search</code>'s startup-time tail-resolution helper at server.py:108 and the receiver-coordinates recompute path at server.py:548 still use raw <code>sqlite3.connect()</code> because they're administrative one-shots, not user-clicked hot paths. The connection-tuning audit page now reflects the fully-tuned state with a "verified in v2.85.0" stamp; future audits will surface any new endpoints that drift back to untuned defaults.
+
+## [2.84.6] — 2026-05-05
+
+### Fixed
+- **Slow-query diagnostic plan-check timings are now meaningful — the three checks run sequentially in production order rather than in parallel.** v2.84.5 fired the three EXPLAIN-and-execute calls via `Promise.all` for fast page load, but parallel execution compromised the measurement: all three queries hit `all_sightings` filtered by the same ICAO, contended for the same OS page-cache fills and I/O bandwidth, and reported `duration_ms` values inflated by mutual interference. The headline number on the page ("Actual execution time on your hardware") was supposed to tell the user what one query costs in isolation; under `Promise.all` it told them what three parallel queries cost while fighting each other for cache. For a diagnostic whose primary value IS the measurement, that's a correctness bug, not just a polish issue.
+
+  Behind the scenes: switched to sequential `await` in production order — `detail_recent_sightings` runs first (it's the one fired by `/api/aircraft/{ICAO}` when a real aircraft detail page loads), then `drill_select` and `drill_count` (both fired by `/api/all/drill` after the detail data arrives). This means the first check pays cold-cache cost and the next two see partially warm cache, exactly the same pattern a user experiences when they click an aircraft from Live. The diagnostic timings now match production cost rather than describing a parallel-load scenario that never actually happens. Result slots and buttons reordered to match the execution sequence so the visible top-to-bottom order on the page matches the order the queries actually ran. The "Re-run all" button now goes through the same sequential pipeline so a deliberate refresh produces the same kind of measurement as the auto-run.
+
+  Worth noting: SQLite's WAL mode handles concurrent readers correctly — the parallel version wasn't broken from a locking perspective, just from a measurement perspective. The whole point of timing queries against the user's actual data is that the numbers reflect what the user will actually experience. Three queries fighting each other for cache slots is not what they'll experience; one query running, then the next, then the next, is. Caught by user asking the right question — "do we need to run these in a particular order to ensure they don't conflict with each other's readings?" — before deploying the v2.84.5 page to production.
+
+## [2.84.5] — 2026-05-05
+
+### Fixed
+- **Slow-query diagnostic now auto-runs all three query-plan checks on page load and shows them stacked, matching the other diagnostics' "fetch on load, offer to re-run" pattern.** v2.84.0 shipped the page with three buttons that the user had to click individually before any plan-check data appeared in the report — and the report's "Copy diagnostic report" button hid that gap until the user actually copied an empty section. Every other diagnostic in the app (Performance, Watchlist) auto-fetches its data on load and offers a "Run again" button for refresh; the slow-query page silently expected manual interaction. Inconsistent and not discoverable. Now the three plan checks run automatically the moment the page loads, in parallel via `Promise.all`. The labelled buttons remain but read "Re-run: Sightings list (lifetime)" etc. — they re-fetch just one check after data changes (e.g. after a backfill or a planner-affecting `ANALYZE` run); a new "Re-run all" button at the right end refreshes everything at once.
+
+  Behind the scenes: the page previously had a single `<div id="explainBody">` that each `runExplain()` call replaced. With auto-run-all, the third explain's result wins and the first two disappear — wrong. v2.84.5 splits this into three per-shape result slots (`explainResult-drill_select`, `explainResult-drill_count`, `explainResult-detail_recent_sightings`) so each result renders into its own container and stays put. Re-running a single check only refreshes its own slot; Re-run all updates all three. The `_reportState.explainResults` list also got a small-but-real fix: the previous behaviour was to append every click forever, which would have included stale results from earlier re-runs in the copied report. Now each new result for a given query label replaces the prior entry for that label, so the report reflects current state.
+
+  Sixth admin-page-consistency miss in a row, but a more substantive one — this one's about interaction model rather than visual styling. The cosmetic misses on the slow-query page (header, back link, copy button, hdr-meta, copied-tag CSS) were each independently visible; this one was only catchable by trying to use the page end-to-end as a user would. The screenshot harness filed in v2.84.3 / v2.84.4 wouldn't have caught this — interaction-model audits need a different tool. Worth filing alongside the screenshot work: when adding a new diagnostic, the explicit checklist should include "does this auto-run its work on load like sibling diagnostics, or does it require manual interaction?" — same answer expected as sibling diagnostics, asked before the manual audit cycle.
+
+## [2.84.4] — 2026-05-05
+
+### Fixed
+- **The green "copied to clipboard" notification on the slow-query diagnostic page now actually appears when you click Copy diagnostic report.** The v2.84.1 release added the markup (the `<span class="copied-tag" id="copiedTag">`) and the JavaScript flash logic (toggling the `.show` class for 1500ms) but never added the CSS rule that styles `.copied-tag` and `.copied-tag.show`. Without the CSS, the span had no styling — toggling a non-existent class did nothing visible. The Copy button worked (the clipboard write succeeded, and the report copied) but the user got no visual confirmation, so it looked like the button did nothing. Same canonical pattern Performance and Watchlist diagnostics already use: `color: var(--green); font-size: 11px; opacity: 0` with a 0.2s transition and a `.show { opacity: 1 }` modifier.
+
+  Behind the scenes: also renamed the slow-query page's primary-button modifier from the two-class form `.btn.primary` (which mine used) to the single-class form `.btn-primary` (which Performance and Watchlist use), and updated the Refresh button's markup from `class="btn primary"` to `class="btn btn-primary"`. Functionally equivalent — both forms produce the same cyan button — but matching the canonical naming means future developers reading either page see the same convention. The CSS-rule miss was the actual bug; the class-name diff is housekeeping while we're in the same lines of code.
+
+  Fifth admin-page-consistency miss in a row, fourth on the slow-query page specifically (header pattern v2.84.1, Updated timestamp v2.84.2, hdr-meta CSS sizing v2.84.3, copy-tag CSS + button-class form here). The repeat-failure rate on this page especially is an unambiguous tooling signal — the manual audits between sibling diagnostic pages keep missing different specific differences each time. The screenshot harness wiring filed in v2.84.3 stays the right next-session deliverable. Until that's in place, expect a v2.84.5 to surface another miss tomorrow.
+
+## [2.84.3] — 2026-05-05
+
+### Fixed
+- **Slow-query diagnostic page no longer throws "Error: _reportState is not defined" when the Connection Tuning Audit section loads.** The v2.84.0 build referenced `_reportState` from five places in the JavaScript (the loadRecent / runExplain / loadTuning side-effect assignments and the buildReport reads) but never declared it — the `let _reportState = {recent: null, explainResults: [], tuning: null}` line that was supposed to live at the top of the script block was lost during a partial edit and didn't ship. v2.84.1 added the consumers (the assignments inside the load functions) on top of the still-missing declaration, which made the bug visible in production. v2.84.3 adds the declaration at the top of the script block where it should have been from the start, and patches the one remaining gap that was also missed: `loadRecent()` was reading from `_reportState.recent` for the report builder but never writing to it, so even with the declaration in place the report's first section would have always rendered empty. Both bugs caught by the user; both surgical fixes here.
+
+- **Top-right header text on four admin pages now matches the canonical sizing.** Audit found that aircraft.html, diagnostics.html, diagnostics-watchlist.html, and diagnostics-slow-queries.html were rendering the version + Updated timestamp at `font-size: 12px` with `color: var(--t3)` (dimmer), while the seven other admin pages used `font-size: 11px` with `color: var(--t2)`. The four off-spec pages looked subtly bigger and dimmer than the rest — visible when navigating between them. The four are now aligned to the canonical 11px/--t2 spec. Same theme as the v2.84.1 / v2.84.2 fixes: cosmetic drift across admin pages that I keep missing in manual audits.
+
+  Fourth admin-page-consistency miss in a row (header pattern in v2.84.1, back-link/copy-button in v2.84.1, Updated timestamp presence and format in v2.84.2, hdr-meta CSS sizing here). The pattern is mechanical drift, and the fix is mechanical: the screenshot harness at `scripts/screenshots.py` already exists and already supports rendering arbitrary admin pages. Wiring it to render every admin-page header into a single side-by-side comparison strip on every minor bump would catch these in seconds — exactly the kind of investment the repeat-failure rate now justifies. Filing this as the explicit next-session deliverable, not a vague aspiration.
+
+## [2.84.2] — 2026-05-05
+
+### Fixed
+- **The "Updated" timestamp in the header now appears on every admin page in a single canonical format.** Pre-v2.84.2 the timestamp was inconsistent across the app — four pages (the diagnostics hub, the Watchlist alert diagnostic, the Documentation viewer, and the Logs viewer) didn't show one at all, and the seven that did used three different formats: full-with-seconds 24-hour ("May 5, 18:43:19"), bare 24-hour-time-only ("18:43:19"), and 12-hour hour:minute ("6:43 PM"). Different pages showing different timestamp shapes makes the header feel unreliable — am I looking at when the page rendered, when the data refreshed, or just a clock? Especially confusing when navigating between pages: the timestamp shifts shape unpredictably.
+
+  Behind the scenes: the canonical format is now Format A (`month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false` → "May 5, 18:43:19"), already in use on Configuration and Check-for-updates and matched there because both pages have the same semantic — wall-clock at page render. Added the timestamp + Format A to the four pages that lacked it; standardized the three pages using other formats. Two pages intentionally NOT changed: the Live tab (index.html) and the Status page (status.html) both use the smart `fmtTime()` helper that shows server data freshness ("11:43 PM" / "Yesterday 11:43 PM" / "May 3, 11:43 PM") because those pages display live-refreshing data from the server and "Updated" there means "this data was current at..." rather than "this page rendered at..." — that distinction is real and worth preserving.
+
+  Lesson worth filing (third one this session): admin-page consistency is harder than it looks. v2.84.0 missed the header pattern (caught by user). v2.84.1 missed the Back link and Copy button (caught by user). v2.84.2 catches a timestamp inconsistency that's been there for many releases and is older than v2.84.0. The lesson keeps repeating because we don't have a side-by-side rendering check that surfaces these cosmetic drifts visually. The screenshot harness at `scripts/screenshots.py` already exists for the documentation flow; wiring it to render every admin-page header into a single comparison strip on minor bumps would catch these in seconds, not after a week of user reports. Filing as a concrete next-session task — same lesson three releases in a row warrants tooling investment.
+
+## [2.84.1] — 2026-05-05
+
+### Fixed
+- **Slow-query diagnostic page now follows the same conventions as every other admin page.** The v2.84.0 release shipped the page with three small-but-real inconsistencies: the header used a custom shape with a five-item gear menu (Home / All diagnostics / Performance / Logs / Configuration) instead of the canonical pattern with brand mark + dot + standard six-item menu (Status / Diagnostics / Logs / Documentation / Configuration / Check for updates + theme switcher); there was no "← Back to Diagnostics" link in the toolbar, even though every other diagnostic has one; and there was no "Copy diagnostic report" button, even though Performance and Watchlist diagnostics both produce pasteable reports as their primary user value. All three are user-pointed-out misses from the v2.84.0 build.
+
+  Behind the scenes: the header is now lifted verbatim from `templates/performance.html` so future menu changes touch one canonical place (worth filing as a small-shared-component refactor for a future session — the same five-line settings-menu HTML is now duplicated across six admin pages). The Back link follows the diagnostics-watchlist toolbar pattern. The Copy button uses the same three-tier clipboard fallback as the other diagnostics: tier 1 modern Clipboard API for HTTPS/localhost, tier 2 `execCommand('copy')` via a hidden textarea for HTTP LAN installs (the Pi user's case), tier 3 a manual-select modal as last resort.
+
+  The report builder stitches three sections in page order: recent slow queries with their EXPLAIN plans, on-demand query-plan checks the user has clicked this session, and the connection-tuning audit. Empty sections render a one-line "no data" note rather than being omitted — silence is ambiguous, a stated absence is informative. Each slow query entry includes the timestamp, endpoint, label, duration, row count, SQL, parameters, and EXPLAIN plan; each on-demand check includes the sample ICAO used, duration on the user's hardware, SQL, parameters, and plan. The audit section flags TUNED/UNTUNED status with the same color coding the page uses.
+
+  Lesson worth filing: when adding a new admin page, the audit checklist should explicitly include "header matches the others, gear menu matches the others, page has the same toolbar buttons others have." All three were independently caught by the user; none of them required new design thinking, just consistency with patterns already established on five sibling pages. A periodic side-by-side rendering of all admin pages (via the screenshot harness at `scripts/screenshots.py`) would have caught these in the v2.84.0 build cycle. Worth wiring in next session.
+
+## [2.84.0] — 2026-05-05
+
+### Added
+- **New Slow-query diagnostic page replaces the SSH+SQL workflow that triage was previously stuck behind.** When a click felt slow on a remote install, the previous workflow involved asking the user to grep journalctl for access logs, capture file logs separately, and run `sqlite3 ... EXPLAIN QUERY PLAN ...` by hand against their database. That friction wall meant the data we actually needed for triage was never obtained, and "the page is slow" reports stayed unactionable. The new page at <code>/diagnostics/slow-queries</code> (also reachable from the diagnostics hub at <code>/diagnostics</code>) surfaces three things directly in the browser: a ring buffer of recently-slow queries with their SQL parameters and EXPLAIN output expandable inline, on-demand query-plan checks against the user's actual database, and a connection-tuning audit listing every endpoint and whether it respects the Configuration → Database profile. None of these required SSH access; all of them were previously SSH-only.
+
+  Behind the scenes: a new <code>slow_query_log</code> module provides a 200-entry process-local ring buffer (<code>collections.deque(maxlen=200)</code> behind a thread lock — bounded memory, thread-safe append/iterate, no persistence). Queries that exceed 500ms are recorded with their EXPLAIN QUERY PLAN captured at the same moment they were actually slow against the same data — plan capture only runs in the slow-path branch so non-slow queries pay zero overhead. Three production paths got the wrapper: <code>/api/all/drill</code> (both the SELECT and COUNT for the sightings table on the aircraft detail page), the <code>recent_sightings</code> query inside <code>detail_page_data_for_aircraft</code>, and the existing Stats slow-query wrapper at server.py:2945 (which previously only wrote to the file log — now also feeds the ring buffer with plan captured). The instrumentation pattern is consistent so adding a fourth or fifth endpoint later is two lines: import <code>time_query</code> from <code>slow_query_log</code>, replace the <code>conn.execute(...).fetchall()</code> call.
+
+  The connection-tuning audit is hand-maintained rather than auto-detected — auto-detection would lag refactors and false-positive on test code. The current audit names five production endpoints and their tuning status, with a "verified in v2.84.0" stamp that keeps the maintenance honest as the codebase changes. Three endpoints currently render red (<code>/api/search</code>, <code>/api/search/aircraft/&lbrace;icao&rbrace;</code>, <code>/api/aircraft/&lbrace;icao&rbrace;</code>) — they open default <code>sqlite3.connect()</code> instead of the tuned <code>_open_db_conn</code>, so they get SQLite's default 2MB cache regardless of what profile the user configured. Filed as a separate fix (v2.84.1+) because the audit alone is the right v2.84.0 deliverable; surgical fixes to those endpoints belong in their own release with the diagnostic page available to verify the impact.
+
+  The on-demand EXPLAIN buttons run three canonical query shapes (sightings drill SELECT, sightings drill COUNT, detail page recent-20) against the seen_aircraft row with the highest sighting count — worst-case parameters because heavy flyers are exactly when planner mis-picks hurt the most. Output shows the SQL, the parameter values used, the actual EXPLAIN QUERY PLAN, and the real execution time on the user's hardware. The query whitelist is server-side and uses a regex-validated query-shape label rather than accepting raw SQL — the user can't post arbitrary SQL through the diagnostic UI even if they wanted to. Adding new shapes is one entry in the <code>shapes</code> dict.
+
+  Lesson worth filing: triage tools that require SSH access don't get used. Same shape as the v2.34.x logs viewer fix (file logs that required SSH became a logs viewer at <code>/logs</code>). Worth a periodic audit of "what diagnostic data exists in the codebase but currently requires SSH to obtain" — the answer is the next thing to build into the UI. The Stats endpoint slow-query file log (existing since v2.41.x) is now reachable from the diagnostic page; the access-log-based "which endpoint took 240 seconds" question is still SSH-only but is the next obvious target.
+
+## [2.83.5] — 2026-05-05
+
+### Fixed
+- **Performance diagnostic no longer measures and reports timings for a query that no production code path runs.** The diag's Q5 block timed three variants of the All-tab page query — `recent_browse_page_rollup` (always-run, labeled "production query"), `recent_browse_page_window_legacy` (gated, regression check), and `recent_browse_page_raw_fallback` (gated, backfill scenario). All three measured a CTE-over-`sightings_hourly` GROUP BY shape that drove the All-tab page body. The All tab was removed in v2.67.0 (Phase 1D, October 2025); Search inherited the "browse all aircraft" intent but uses a different query shape entirely (FTS5 against `seen_aircraft_fts` joined to `seen_aircraft`, not GROUP BY over `sightings_hourly`). The probes had no production consumer for ~14 minor releases. The v2.80.0 rename from `all_tab_page_*` to `recent_browse_page_*` was cosmetic and didn't change what was being measured — the new label just made the absence of a current consumer harder to spot.
+
+  Behind the scenes: surfaced when the Pi user's perf-diag at v2.83.4 showed 1067 ms for the rollup probe on his 12.6M-row install. Initial reaction was "concerning, that's a hot path under load" — but a quick grep for the query pattern in production code paths returned only the probe itself. Same shape of mistake the v2.50.10 fix caught in reverse: that release found probes labeled as production timing the obsolete pre-rollup query path, making perf-diag understate the v2.50.0 rollup migration's impact. This release finds probes labeled as production timing a query path that no longer has a production consumer, making perf-diag overstate the importance of a 1067 ms result.
+
+  The whole Q5 block is removed (not relabeled, not gated). Removed: 3 probes, ~80 lines of CTE SQL plus comment context. The `legacy_probes_skipped` counter dropped from 3 to 1 (only `unique_aircraft_count_raw_fallback` remains gated under `?include_legacy=true`); the frontend's "(N probes skipped)" message gained explicit singular/plural handling so it reads correctly at either count. The v2.50.18 / v2.50.20 / v2.50.25 history with reference numbers for the GROUP BY + self-join optimization is preserved in the changelog if a future surface ever needs the rollup-grouped query shape and wants to re-introduce an appropriately-named probe.
+
+  Lesson worth filing: when a surface is removed (All tab in v2.67.0), the supporting infrastructure — perf-diag probes, indexes, helper functions, fallback code paths — should be audited too. v2.50.22 caught redundant indexes after v2.50.17's covering composites; same pattern applies to probes when their consumers go away. Worth one more audit pass: confirm no lingering helper functions, indexes, or migration code paths still reference the v2.41-era All-tab query shapes. Filed for a future cleanup session — not done now to keep this patch tight.
+
+## [2.83.4] — 2026-05-05
+
+### Fixed
+- **Searching for a US tail number now finds the aircraft even when registration data hasn't been resolved.** Bug surfaced by Pi user: typing `N969TC` into Search returned 0 results, but visiting `/aircraft/AD7F41` directly showed an aircraft whose callsign throughout the sightings table was `N969TC`. The aircraft was clearly in the database — Search just couldn't find it. Root cause: for US general-aviation aircraft (Cessnas, Pipers, single-pilot operators, etc.) the pilot transmits the tail number AS the ADS-B callsign, so `seen_aircraft.last_callsign` is `N969TC` while `seen_aircraft.registration` may be NULL — populated only after the hexdb resolver succeeds, which doesn't happen for every aircraft (hexdb has limited GA coverage, and the resolver may not have reached this ICAO yet). Pre-v2.83.4 the parser routed any token matching the US-tail regex (`^N[0-9][A-Z0-9]{0,4}$`) to a single exact-match `registration` filter. With registration empty, the WHERE clause matched zero rows and the user got an honest-but-misleading "no matches" page.
+
+  Behind the scenes: the fix uses the parser's existing `ambiguous` mechanism (the same machinery that handles type-vs-registration collisions like `B738` matching both as type code and registration prefix). When a token matches the US-tail regex, the parser now emits two filters — exact match on `registration` AND exact match on `last_callsign` — bound into a single ambiguous-group ID that `_build_where` translates into `(seen_aircraft.registration = ? OR seen_aircraft.last_callsign = ?)`. Aircraft with the registration field populated still match (the original happy path); aircraft with the registration empty but the tail visible as callsign now also match. Airline and military callsigns (UAL2024, RCH507, EVAC1) don't match the US-tail regex, so this widening doesn't introduce false positives — only tokens shaped like US registrations trigger the OR'd query. Two new regression tests in `test_search.py` cover both populated states (callsign only, registration only); 141 tests passing now.
+
+  Lesson worth filing: Search semantics implicitly assumed registration was always populated when present, but in production `registration` is asynchronously-resolved metadata, not source-of-truth identity. The source-of-truth identity for an ADS-B sighting is the ICAO hex address; everything else is derived. Filters that key off derived columns need to handle the case where derivation hasn't completed (or never will). Worth a periodic audit of other filter paths that may have the same shape — `operator` is similarly derived from callsign prefix and could have the same gap for unrecognized airlines.
+
+## [2.83.3] — 2026-05-05
+
+### Fixed
+- **Description column on Live, Watchlist, and Military now reads in the same sans-serif font as Search, and the last-seen timestamp column matches Search's smaller size.** v2.83.1 / v2.83.2 brought ICAO sizing to parity, but two further row-card-vs-search-card mismatches remained: the Description column on row-card was inheriting `font-family: var(--mono)` from the `.row-card` base rule (which suits ICAO/callsign/numeric cells), while Search's `.c-desc` has no font-family override and inherits sans-serif (Outfit) from the body. Even at the same px size, mono and sans render at noticeably different metrics — that's what produced the lingering "Search reads bigger and easier" perception after the ICAO fix. Last-seen timestamps were 12px on row-card (inherited from `.row-card` base) versus 11px on Search (explicit). Both fixed with two surgical CSS rules — `.row-card .cell-desc { font-family: var(--font); }` and `.row-card .col-seen { font-size: 11px; }` — without touching the cells where the existing mono/12px treatment is appropriate (ICAO, callsign, type, speed, altitude, distance, squawk).
+
+  Behind the scenes: this is the third "row-card vs search-card surface drift" patch in a row (v2.83.1 missed the class-name target, v2.83.2 fixed that, v2.83.3 catches what v2.83.1's font-size-only check didn't surface). The pattern is consistent enough to file: when two structurally-similar surfaces drift over time, "fix the drift" patches benefit from a side-by-side dump of every CSS property that applies to each cell, not just the one property that initially seems relevant. v2.83.1's flaw was checking font-size only; the description difference was font-family, the last-seen difference was a different cell entirely. Filed as a working principle for future cross-surface work: dump every property, diff the table, then fix.
+
+### Added
+- **New Country column on the Military tab.** Sits between Description and Speed in the column order, matching where the same column lives on Search. Country is derived from the ICAO 24-bit address using the same `country_for_icao` helper that backs the Stats "Top 5 countries" card — `military_sightings` doesn't store country (the table only has fields the collector writes per-sighting), but the lookup is a pure function of the ICAO hex, so resolving at API-response time is essentially free. Header is sortable using the existing `srt('military', 'country')` machinery; cell content ellipsis-truncates with hover-tooltip for long names ("United States" / "United Kingdom" easily exceed the column width on tablet portraits). Hidden at the 700px mobile breakpoint where the row collapses to ICAO + Description + Track + WL like the other tabs do.
+
+## [2.83.2] — 2026-05-05
+
+### Fixed
+- **v2.83.1's ICAO sizing fix actually applies now.** The previous patch shipped a CSS rule targeting `.row-card .c-icao { font-size: 16px; }`, intending to bring Live/Watchlist/Military ICAO sizing up to match Search. The rule was a complete no-op in production: `.row-card` markup uses class `.cell-icao` (with the `cell-` prefix), but Search's `.search-card` markup uses `.c-icao` (without). The same column on two structurally similar surfaces had drifted to different class names, and the v2.83.1 fix matched the Search naming rather than the row-card naming. Verified by user inspection after deploy — the ICAO column still rendered at 12px on all three tabs.
+
+  Behind the scenes: the dual naming convention (`c-icao` / `c-callsign` / `c-desc` on Search vs `cell-icao` / `cell-callsign` / `cell-desc` on the row-card tabs) is real structural drift between the two surfaces — the Search card was authored later (v2.51.0) and adopted a more terse class prefix without unifying with the row-card prefix that was already in use. Worth cleaning up in a separate refactor; not done here because that's a wider change touching every cell rule on both surfaces, and the immediate goal was just to get the ICAO size parity that v2.83.1 promised. The fix is a one-character substitution: `.c-icao` → `.cell-icao` in the v2.83.1 rule. Lesson worth filing: even "trivial" CSS rules deserve verification by reading the rendered markup, not just the existing CSS in nearby rules; this is the second time this session that "Python and JavaScript / two surfaces drifted" has caused a regression to ship before the user pointed it out.
+
+## [2.83.1] — 2026-05-05
+
+### Fixed
+- **ICAO column on the Live, Watchlist, and Military tabs now renders at the same larger font size that Search uses, bringing all four list tabs into visual parity.** The four tabs all show the same row layout — ICAO + Type + Callsign + Description + numeric columns — but until now the ICAO column on three of them rendered noticeably smaller than the same column on Search, making Search feel more readable than the dashboards even though they're displaying the same kind of data. The other columns (Type, Callsign, Description, Speed, Altitude, etc.) were already identical at 12px in both contexts; only the leftmost ICAO column differed, and because that's the most visually prominent column on the row, the size mismatch made the whole tab read as denser/smaller than Search.
+
+  Behind the scenes: Search's `.search-card` rule has no base `font-size`, so its `.c-icao` inherits the browser default of 16px. Live/Watchlist/Military use `.row-card` with `font-size: 12px` set on the parent, which cascades to `.c-icao` and makes the ICAO render at 12px. The fix is one CSS rule — `.row-card .c-icao { font-size: 16px; }` — that mirrors Search's behavior for the one cell that drives the perceived size difference. Other row-card columns intentionally stay at the inherited 12px because dense numeric columns (Speed, Altitude, Distance, Squawk) read better at the smaller size; the goal was visual parity on the prominent column, not a wholesale bump of every cell. Verified by reading the screenshots side-by-side: Search shows "AB97CA" at the larger size while Live's "AB2760" was visibly smaller despite being in the same column position with the same column header.
+
+## [2.83.0] — 2026-05-05
+
+### Added
+- **Search now has a Sort dropdown on phone-size screens, plus a "Sort: <column> ↓" chip with one-click reset to default.** On mobile (≤700px) the column-header strip collapses to ICAO + Description + Track + WL — no other columns visible, so clicking column headers to sort wasn't an option there. The new Sort dropdown sits in the Search toolbar next to Rows: and lets you pick from 17 useful column-direction combinations (Last seen — newest first, Distance — nearest first, Track length — longest first, Speed — fastest first, Country A→Z, etc.). Two-direction options on the symmetric columns where both directions are commonly useful (last seen, distance, track length, altitude, speed); single-direction (ascending) on the asymmetric columns where 90% of users want A→Z (country, operator, type, callsign, ICAO, squawk). Desktop users at >700px keep the existing clickable column headers — the dropdown is mobile-only because it's redundant on desktop where the headers do the same job faster.
+
+  Behind the scenes: dropdown and column-header click both read/write the same `_searchState.sort` and persist to the same localStorage key, so they're alternate UX entry points to one mechanism rather than parallel implementations. The CSS uses a single `.sort-mobile-only` class with `display:none` by default and `display:inline-flex` at `@media (max-width: 700px)` — same 700px breakpoint that drives the column-strip collapse so the dropdown appears at exactly the moment the columns disappear. `_searchPaintSortArrow()` (called after every search render) was extended to also sync the dropdown selection to the active sort, so column-header clicks on desktop, dropdown changes on mobile, and localStorage rehydration on page load all converge to a coherent visible state. A separate DOMContentLoaded sync (matching the existing `searchPageSize` pattern from v2.62.0) handles the case where a persisted sort is loaded before the first search runs — without it, the dropdown would show "Default (relevance)" while the chip claims a non-default sort is active.
+
+  The reset-to-default affordance is the new sort chip in the chip strip below the search input. Whenever `_searchState.sort` is non-null, the chip renders as "Sort: Last seen ↓" (column name plus direction arrow matching the column-header indicator), with × to clear. Backed by a new `clearSearchSort()` function that's also reachable from the dropdown's own "Default (relevance)" option — both paths set sort to null, remove the localStorage key, and re-run. The chip was the right pattern over an inline reset button or a dropdown menu item: chips are an idiom users already know on this page (date-range presets and filter tokens both render this way), the chip strip exists on both breakpoints with no breakpoint-conditional code, and it's discoverable from anywhere on the result page including states where the dropdown isn't visible (desktop). Desktop users get a side benefit — they previously had no built-in clear-sort affordance at all (a third click on a column header doesn't reset; you had to find a different header or wait for localStorage to expire, which it doesn't). Now they get the same × the mobile users do.
+
+## [2.82.1] — 2026-05-05
+
+### Fixed
+- **Clicking the "Track length" column header in Search now actually sorts the results.** v2.81.0 added the Track length sort to `SORTABLE_COLUMNS` in search.py and wired the column header markup to `onclick="srtSearch('track_length')"`, but missed updating the parallel JS map (`_SEARCH_SORT_DEFAULT_DIR` in templates/index.html) that the `srtSearch` handler uses to validate the column name and pick the initial sort direction. The handler's guard read `if (!_SEARCH_SORT_DEFAULT_DIR[col]) return;` — so when the map didn't have `track_length`, the click silently returned with no error and no sort. Visible regression on desktop (the column itself only renders at >900px); the existing test suite didn't catch it because all 139 tests exercise SORTABLE_COLUMNS via the Python search executor, never the JS click path.
+
+  Behind the scenes: this is the second time a v2.81.0-shaped bug has surfaced from "added the column on the Python side, missed the parallel JS structure" — the v2.81.0 cross-language mismatch lesson (filed in that session) wanted the audit to span both languages in one pass, and clearly didn't. Filing again. The default direction `'desc'` matches the per-column default in search.py's `_SORT_DEFAULT_DIR` so clicks behave consistently between the JS handler's first-click direction and the Python-side default when no sort is set.
+
+## [2.82.0] — 2026-05-05
+
+### Added
+- **New `peak_today` Search filter — type `peak_today` to see exactly the aircraft seen during today's peak simultaneous moment.** Closes the long-standing v2.68.0 limitation: clicking "View in Search →" on the Stats "Peak simultaneous" card used to fall back to today's full list because Search had no peak-moment filter, which meant you couldn't tell from the chip strip whether you were looking at the peak set or the day's set. With the new token, the redirect lands on exactly the same aircraft the drill panel shows. The chip renders as "Peak today (15 aircraft at 14:32)" so you can see what moment was selected. Composes with other tokens — `peak_today military` for military aircraft at the peak, `peak_today watchlist` for watchlist hits at the peak, `peak_today B738` for 737-800s at the peak, etc. Documented in the in-app help panel and the Search syntax docs page.
+
+  Behind the scenes: implemented as on-the-fly resolution rather than a stored `peak_moments` table. The handoff queue had assumed a v3→v4 schema migration would be needed, but pressure-testing the alternative showed the existing drill-panel query at server.py:4187 already computes peak_today on demand in milliseconds against the bounded today-slice of `all_sightings` — the same query the Stats card has run in production since v2.41.19 with no perf complaints. Adding a stored table would have meant a schema migration, daily-rollup hook, recompute-on-late-arrival logic, and ongoing maintenance, all to cache a query that was already cheap. Same logic as the v2.81.0 track_length pivot: derivable from existing tables, query cost already paid by another consumer. The new `_resolve_peak_today_if_present` helper in search.py runs the peak-bucket lookup against the live DB connection at execute_search time and mutates the filter dict in place to add `peak_icaos`, `peak_at_ts`, and `peak_count` — the resolved fields ride on the API response so the frontend can render the "(N aircraft at HH:MM)" chip detail without a second round-trip. `_build_where` reads `peak_icaos` and emits a straight `seen_aircraft.icao IN (...)` clause; an empty list (no sightings today) emits `1=0` for an honest empty result rather than every aircraft, matching the military/watchlist degradation pattern.
+
+  One subtle correctness fix shipped alongside: the existing drill-panel query used `ORDER BY n DESC LIMIT 1` with no tiebreaker, leaving SQLite free to pick whichever bucket it wanted on tied days (multiple minutes sharing the same max count). The new search filter uses an explicit `bucket_min ASC` tiebreaker — earliest minute wins. Without aligning both queries, drill and Search could disagree on which moment to highlight, and a user navigating between them would see different aircraft. Added the same tiebreaker to server.py:4194 in this release so the two surfaces always agree. Eight new tests in `test_search.py` (139 total now, up from 131) cover token recognition, parse-time tz handling, composition with other filters, the unresolved-filter safe `1=0` clause, peak detection with synthetic `all_sightings` data, empty-DB degradation, tied-bucket earliest-wins, and full-executor round-trip including composition with country filters.
+
+## [2.81.2] — 2026-05-05
+
+### Changed
+- **CHANGELOG.md is now fully readable as an admin-facing upgrade history from v2.50.0 forward — Tier 2 maintenance pass complete.** With v2.81.1's Tier 1 and this release's Tier 2 done, every entry covering the current schema, the Search feature build, the All-tab removal, the perf-diag work, and the v2.81.0 track-length sort opens with a plain-language headline you'd recognize as an admin. Skim the bolds across releases for an upgrade summary; read the first paragraph of any entry that catches your eye for practical detail; continue into the dev paragraph only if you want the implementation story. No code, schema, config, or behavior changes — purely a docs-quality improvement.
+
+  Behind the scenes: this release rewrote the bold leads on roughly 70 entries from v2.66.x through v2.50.1 — every minor release between the v2.81.1 Tier 1 landmark set. Light pass per the original tiering plan: bold lead in user voice, body left intact. Combined with v2.81.1's 22 landmark rewrites and the "How to read this changelog" preamble, the changelog from v2.50.0 forward is now the canonical admin-facing upgrade history. The pre-v2.50 entries are deliberately left dev-voiced per the preamble — they predate this convention, would require deeper archaeology to recast accurately, and the in-app Updates tab surfaces only recent releases anyway. Filed as Tier 3 historical archaeology, killed unless surfaced.
+
+### Notes
+- **No code, schema, config, or behavior changes.** CHANGELOG-only edit.
+- **Editorial rule documented at the top of the file.** Future entries follow the bold-lead-in-user-voice → "Behind the scenes" → dev-paragraph shape; bump-version.sh's auto-generated one-liner gets manually expanded into both halves at release time.
+- **Tier 3 status: killed unless surfaced.** Pre-v2.50 entries remain as-is. The preamble notes this explicitly so future readers don't expect uniform treatment across the file's full history.
+
+## [2.81.1] — 2026-05-05
+
+### Changed
+- **CHANGELOG.md is now easier to read at a glance — bold leads describe what changed in plain language, with technical detail moved into a "Behind the scenes" paragraph below.** If you upgrade Aerodrome and want a quick "what changed for me" summary, you can now skim the bold sentences across recent releases and get a coherent upgrade history without entering the dev paragraphs. Open any entry that catches your eye for the practical detail; continue into the dev paragraph only if you want the implementation story. A new "How to read this changelog" preamble at the top of the file documents the convention so future entries stay consistent. No code or behavior changes — this release is purely a docs-quality improvement.
+
+  Behind the scenes: editorial pass over 22 recent and landmark entries — v2.81.0, v2.80.x (the perf-diag revisit and its two follow-up patches), v2.79.x (distance.py extraction), v2.78.0 (`escapeHtml` dedup), v2.77.0 (Search screenshot harness), v2.76.0 (Search mobile breakpoint fix), v2.75.0 (defensive XSS audit), v2.74.0 (firstTimeSeenCard click-to-detail), v2.73.0 (× Clear on detail-page anchor), v2.72.0 (dead-code excision), v2.71.0 (Tail Resolver probe gating), v2.70.0 (`hour:LO-HI` and `distance:<N`), v2.69.x (`first_seen_today`), v2.68.0 (`longest_track` redirect cleanup), v2.67.x (Phase 1D — All tab removal), v2.60.x (Phase 1A.5 — sortable columns + stored last_distance), v2.51.x (Search feature project completion), v2.50.0 (hourly rollup landmark). Each entry's bold lead was rewritten in user voice — what changed for the admin, in vocabulary they'd recognize — and an explicit "Behind the scenes" / "Under the hood" transition hands off to the existing dev paragraph (which was preserved verbatim where possible). The pre-v2.50.x entries are deliberately not rewritten; they predate this convention, would require deeper archaeology to recast accurately, and the in-app Updates tab surfaces only recent releases anyway. Filed under "killed unless surfaced" in the working notes.
+
+### Notes
+- **No code, schema, config, or behavior changes.** CHANGELOG-only edit. Restart not required to take effect; the file is the file.
+- **Editorial rule formalized** in the new "How to read this changelog" preamble: bold lead is a complete user-facing sentence in plain language, first paragraph stays in user voice, "Behind the scenes" / "Implementation" / "Under the hood" transition then hands off to dev voice. Future entries follow this shape; bump-version.sh's auto-generated one-liner gets manually expanded into both halves at release time, same as the v2.50.x pattern but with explicit user-voice lead.
+
+## [2.81.0] — 2026-05-05
+
+### Added
+- **New "Track length" column in Search.** Each result row now shows how long an aircraft stayed in your receiver's coverage area, rendered as a compact duration: "2h 15m" for one that lingered, "45m" for a typical pass, "<1m" for a brief flyover, "—" for one-sighting blips. Click the column header to sort — longest tracks first by default; click again to surface the briefest sightings. The column is hidden on narrow screens (<900px) alongside the "Last seen" column to keep the mobile layout tight.
+
+  Behind the scenes, the value is computed on-the-fly from each row's existing `first_seen_at` and `last_seen_at` timestamps via SQL `ORDER BY (seen_aircraft.last_seen_at - seen_aircraft.first_seen_at)` — no new database column, no schema migration, no backfill machinery, no risk of staleness, zero ongoing maintenance code. The handoff originally filed a stored `track_length_sec` column on `seen_aircraft` with v3→v4 migration and background-thread backfill (mirroring v2.50.0's hourly-rollup pattern); a brief design pass before building flagged that approach as overengineered for what reduces to one arithmetic expression and an entry in `SORTABLE_COLUMNS`. The stored-column path was right for `last_distance` (v2.60.1) because distance can't be derived from anything else on the row; track length is just two timestamps' difference. The on-the-fly path is faster to ship, easier to reason about, and saves a release cycle of migration plumbing.
+
+### Implementation
+- **`search.py`**: one entry added to `SORTABLE_COLUMNS` (`"track_length": "(seen_aircraft.last_seen_at - seen_aircraft.first_seen_at)"`) and one to `_SORT_DEFAULT_DIR` (`"track_length": "desc"`). The existing `_resolve_order_direction` validator and the `<col> IS NULL, <col> <dir>` ORDER BY prefix from v2.60.1 give NULL-handling for free — rows where either timestamp is NULL sort last regardless of direction. SQL injection-safe by construction (user input is matched against dict keys, never interpolated into SQL).
+- **`templates/index.html`**: new `h-tracklength` header span between "Last seen" and the existing Track ↗ link in the Search results strip; new `c-tracklength` cell in `_renderSearchCard` between the `c-time` and `c-track` cells; grid template column added (80px, matching Last seen width); 900px breakpoint hides both alongside Last seen so the mobile collapse remains clean. CSS class names disambiguate from the existing `h-track` / `c-track` (the FlightAware/FR24 link column) — visually distinct columns, internally distinct identifiers. New `_fmtDuration(secs)` helper added next to `_searchAgo`: renders `<1m` for 0–59 sec, `Nm` for 60–3599 sec, `Xh Ym` for ≥3600 sec, `—` for null/negative (defensive). Distinct from `_searchAgo` (which formats time-since-an-event); the duration helper formats the length of a window. Zero-duration rows (one-sighting aircraft where `first_seen_at == last_seen_at`) render as dim `—` in the cell rather than `0m`, since a literal zero is more visual noise than signal — users sorting ASC still see those rows clustered at the top via the SQL ORDER BY.
+- **`test_search.py`**: 5 new tests added (126 → 131). Coverage: track_length is in the sort allowlist (no fall-through to relevance); DESC default direction surfaces longest-track aircraft first when no explicit direction is passed; ASC surfaces shortest-track aircraft first; NULL track_length (when `last_seen_at` is NULL) sorts last in both directions via the existing IS-NULL guard; sort applies correctly within a filtered result set with the score-DESC tie-break.
+
+### Notes
+- **Restart-only.** No schema, config, or DB changes. Hard-refresh browser to pick up the JS/CSS.
+- **Performance.** The new sort adds an arithmetic expression to the ORDER BY but reads from the same `seen_aircraft` rows the query already scans. Production-scale sanity check: TestClient verified the `/api/search?order=track_length` path returns 200 with correct ordering on a synthetic fleet; the perf-diag endpoint isn't probing this specific query shape (the existing `search_match_bm25` probe covers FTS5 MATCH + bm25 + JOIN, which is the heavier path), but the additional cost is negligible — no extra index reads, no extra joins.
+- **Honest framing on the design pivot.** The handoff was emphatic about the stored-column approach, with NULL handling, backfill strategy, and v3→v4 migration all written out. Pushing back on a written plan needs a real reason; the reason here was that derivable-from-existing-data columns rarely earn their storage cost. v2.60.1's `last_distance` was the exception (distance isn't derivable). Filed as a lesson: when a feature reduces to "sort by a derived expression," the default should be "add it to the SORTABLE_COLUMNS map" and only escalate to stored-column-with-backfill when measurement shows a real performance need.
+- **Why not also add a `track:>1h` parser filter?** Out of scope for this release. The handoff's locked queue had this as Session N+2 (peak-moment filter), and parser filter tokens are a separate audit surface (`docs/SEARCH_SYNTAX.md`, `_renderSearchHelpPanel` if added, etc.). Sort and filter are independent capabilities; users can sort by track length without typing anything. Adding a filter token if the sort feature surfaces real user intent is a clean follow-up.
+
+### Comprehensive testing plan
+
+After installing v2.81.0, restart the service and hard-refresh Search.
+
+**A. New column visible**
+
+A1. Search results header strip shows a "Track length" column between "Last seen" and the Track ↗ link, with the standard sortable-arrow affordance.
+
+A2. Each result row shows a track-length value: e.g. "2h 15m" for a 2-hour-15-minute track, "45m" for a 45-minute track, "<1m" for very brief sightings, "—" for one-sighting aircraft.
+
+A3. On viewports narrower than 900px, both the "Track length" column and the "Last seen" column are hidden — the mobile collapse remains clean.
+
+**B. Sort interaction**
+
+B1. Click the "Track length" header. Results re-sort with longest tracks first (DESC default). The sort arrow points down on that column; other columns' arrows clear.
+
+B2. Click again. Direction flips to ASC; shortest tracks first. Useful for spotting brief flyovers.
+
+B3. Click a different column (e.g. "Last seen"). Track-length arrow clears, new column's sort takes over.
+
+B4. Refresh the page. The track-length sort is preserved across reloads via the existing `_SEARCH_SORT_STORAGE_KEY` localStorage key (no new persistence machinery).
+
+**C. Sort + filter together**
+
+C1. Type a filter (e.g. `mil` or `today`) AND click the "Track length" header. Results show only the filtered subset, sorted by track length within that subset.
+
+C2. URL-share: copy the URL after sorting; reopen in a new tab. The `?order=track_length&dir=desc` URL params restore the sort.
+
+**D. Edge cases**
+
+D1. One-sighting aircraft (where first_seen_at ≈ last_seen_at, track_length is 0 or near-zero): rendered as dim "—" in the row. Sortable: under ASC they cluster at the top of the results; under DESC they cluster at the bottom.
+
+D2. Aircraft with NULL last_seen_at (very rare — would indicate a corrupt row): sorts to the end of the results in both directions, doesn't crash the row render.
+
+## [2.80.2] — 2026-05-05
+
+### Fixed
+- **Performance diagnostics "Copy report" output now shows a clean em-dash where the FTS5 shadows row's row count is "not applicable."** Previously the copied text reported a `?` for that one cell, which looked like a malfunction even though the data underneath was correct. The on-screen Performance page already rendered the correct em-dash; only the copy-to-clipboard text export was inconsistent. Pasted reports — into GitHub issues, support chats, your own notes — now render the same convention as the page itself.
+
+  Behind the scenes: the HTML view (line ~354 of `templates/performance.html`) already used `—` for missing fields uniformly — count_ms, span_days, size_bytes, oldest_ts, newest_ts all fall back to em-dash when null. The text export at line 557 had a pre-existing `'?'` fallback for null rows counts that predated v2.80.0 and never fired in normal output, because every inventory row had a numeric rows count. v2.80.0's aggregated `seen_aircraft_fts (shadows)` row was the first inventory entry with `rows: null` deliberately set (count is meaningless across five aggregated shadow tables), and the text export's `?` fallback became user-visible for the first time. Same root cause as v2.80.1's hint-loop crash: the v2.80.0 inventory shape change introduced a nullable field without grepping for downstream consumers. The HTML rendering path was updated; the text export path wasn't. v2.80.1's hotfix focused on the server-side crash and didn't audit template consumers — that audit is what this release does. The other `'?'` fallbacks in the template (version strings, db_file path, query error message) are header/error positions that only fire on broken JSON and aren't part of normal table-cell rendering, so they stay as-is.
+
+### Notes
+- **Restart-only.** Single-character template edit. Hard-refresh browser to pick up the JS change.
+- **Lesson re-filed, sharper this time.** v2.80.1 noted "grep for downstream readers of the changed field" as the missing checklist step. I wrote that lesson and then didn't apply it — the v2.80.1 audit covered server.py only, not the templates that consume the same JSON shape. The honest pattern is: when a backend field changes shape, the audit needs to span both server-side consumers and every template that reads the JSON, in one pass. Filing as: "field-shape changes require a cross-language grep, not just a same-language one."
+- **No remaining inconsistencies.** Audit of the full template confirms `'—'` is the convention for null fields in normal table rendering. The shadows row now displays consistently between HTML view and text export.
+
+## [2.80.1] — 2026-05-05
+
+### Fixed
+- **Performance diagnostics page now loads cleanly again — v2.80.0 had a crash that surfaced as a cryptic "JSON.parse: unexpected character" error on the page.** The page fetched the diagnostic, which crashed server-side, which returned an HTML error page, which the page tried to parse as JSON and failed on the very first character. End-user impact: clicking "Run diagnostic" produced an unhelpful red banner with no useful detail. v2.80.1 fixes the underlying server-side crash; the page loads and renders the full diagnostic as intended.
+
+  Behind the scenes: the aggregated `seen_aircraft_fts (shadows)` row introduced in v2.80.0 is appended to the table inventory with `"rows": None` because a row count is meaningless across five aggregated shadow tables — the size is the interesting number, not the count. The hint-generation loop at the end of the endpoint then walked the inventory looking for tables with more than 10 million rows (to advise on retention reduction) using `t.get("rows", 0)`. The default-value form of `dict.get` only kicks in when the key is missing; here the key was present with a None value, so the comparison `None > 10_000_000` raised TypeError, which crashed the route, which produced FastAPI's default 500 HTML error page, which surfaced client-side as the cryptic `JSON.parse: unexpected character at line 1 column 1` — the parse failure on the leading `<` of the error HTML. The fix is one line: `(t.get("rows") or 0) > 10_000_000` coerces both missing-key and None-value to 0. The other comparisons in the same hint block (`size_bytes`, `q.ms`, `io.throughput_mb_s`) were audited and confirmed safe — their fields are always assigned numeric values in success paths, and their `.get()` defaults handle the missing-key case correctly.
+
+### Notes
+- **Restart-only.** No schema, config, or template changes — single-line edit in `server.py`.
+- **Lesson filed.** v2.80.0 introduced a new shape into the inventory (`rows: None` for aggregated rows) without grepping for downstream consumers of the changed field. The hint-generator was the only such consumer and it broke. Symmetric to the v2.80.0 lesson about checking the perf-diag inventory when adding new tables: when adding new field shapes (especially nullable ones), grep for downstream readers of that field and update their guards. The bigger honest read is on the test plan — v2.80.0 shipped with a written "load `/performance` and inspect the rendered output" verification step in its changelog, and the bug surfaced on the first real load after install. The test plan was filed; it just wasn't executed before shipping. The crash fires on any install once the shadows row is in the inventory, not just at production scale, so a single page-load pre-ship would have caught it.
+
+## [2.80.0] — 2026-05-05
+
+### Changed
+- **Performance diagnostics page now reports a complete picture of your database — every table with its on-disk size and row count, plus timings for the queries that actually drive Search, Stats, and the aircraft detail page.** Pre-v2.80.0 the page omitted four of the nine tables Aerodrome maintains (including `sightings_hourly`, the production hot table) and didn't probe `/api/search` at all. Reading the diagnostic could leave you with the impression that you were measuring a different application than you were actually running. v2.80.0 closes those gaps.
+
+  Behind the scenes, this was triggered by a maintainer review of an actual production diag output that surfaced three concrete gaps: (1) the Tables inventory listed only 5 of the 9 user-facing tables, missing `sightings_hourly`, `hexdb_cache`, `hexdb_events`, and FTS5 shadow tables; (2) probe labels still said `all_tab_*` even though Phase 1D removed the All tab in v2.67.0; (3) the production hot path post-Phase 1D — `/api/search` with FTS5 MATCH + bm25 — wasn't probed at all.
+
+### Added
+- **Search probe** (`search_match_bm25`): production query shape mirroring `search.py:execute_search` — `seen_aircraft` JOIN `seen_aircraft_fts` MATCH + bm25 ORDER BY + LIMIT 50. Uses a hardcoded MATCH string (`"B738 OR A320 OR DAL"`) covering common type codes and a callsign prefix so the probe is reproducible across installs while still exercising the multi-term OR path that bm25 ranks. Skipped (with `skipped: true` and a `skip_reason`) if `seen_aircraft_fts` is empty (first-boot before backfill completes).
+- **FTS5 dirty-flag lag probe** (`fts5_dirty_count`): counts rows in `seen_aircraft` with `fts_dirty=1`. The v2.51.0 batch-flush pattern sets this flag on rows whose FTS-indexed fields change; the cycle-end batch flush clears them. Healthy installs report 0–50; sustained values >100 indicate the batch flush is broken or stalled and Search results are showing stale data.
+- **Stats drill probe** (`stats_furthest_prerank`): the v2.68.0 cos²-scaled coordinate-distance proxy that narrows candidates before the Python haversine refinement loop. Catches index-coverage drift on `seen_aircraft` (last_lat / last_lon / last_seen_at columns).
+- **Aircraft detail page probes** (two): `aircraft_detail_pk_lookup` (PK lookup on `seen_aircraft` by ICAO; should be sub-millisecond) and `aircraft_detail_sightings_page` (paginated `all_sightings` query for one ICAO with default page size 100). Sample ICAO is taken from `seen_aircraft LIMIT 1` — bypasses the "row doesn't exist" path.
+- **Per-table size_bytes via dbstat virtual table.** `dbstat` is a SQLite virtual table that exposes per-btree page counts; SUM(pgsize) per table name gives storage footprint. Available on SQLite ≥3.7.9 compiled with `SQLITE_ENABLE_DBSTAT_VTAB` (the manylinux wheels include this). Falls through silently if unavailable.
+- **FTS5 shadow tables aggregated row.** SQLite auto-creates 5 shadow tables for every FTS5 virtual table (`_data`, `_idx`, `_content`, `_docsize`, `_config`). v2.80.0 sums their sizes and surfaces a single `seen_aircraft_fts (shadows)` row in the inventory, with the `shadow_tables` array exposed via tooltip on the frontend table row. Pre-v2.80.0 these were invisible — on busy installs they can account for 5–15% of the DB file size.
+- **hexdb_events retention surface.** `oldest_age_days` + `rows` count rendered as a separate card in the frontend and a separate section in the text export. Catches `cleanup_old_data` retention regressions: healthy installs report oldest age below the configured retention (default 7 days); a regression shows older rows piling up. Frontend warns (amber) if oldest > 14 days.
+
+### Renamed
+- **All `all_tab_*` probe labels → current-purpose names.** Frontend renders labels from the JSON payload (no hardcoded matching), so the rename is safe:
+  - `all_tab_count_rollup` → `unique_aircraft_count_rollup`
+  - `all_tab_count_raw` → `unique_aircraft_count_raw_fallback`
+  - `all_tab_page_rollup` → `recent_browse_page_rollup`
+  - `all_tab_page_rollup_legacy` → `recent_browse_page_window_legacy`
+  - `all_tab_page_raw` → `recent_browse_page_raw_fallback`
+- **Probe comments updated** to point at current consumers (Search, Stats, aircraft detail page) where they previously referenced the removed All tab.
+- **Frontend "row counts + retention span" subtitle** → "row counts, sizes, retention span" to reflect the new Size column.
+
+### Implementation
+- **`server.py`**: `perf_diagnostics` endpoint expanded by ~100 lines. Table inventory reorganized as a `TABLE_SPECS` tuple list with `(name, ts_column, ts_is_bucket)` so adding future tables is one line. dbstat lookups happen as a second pass after the row-count loop so the timing reported in `count_ms` isn't padded by dbstat overhead.
+- **`templates/performance.html`**: added Size column to Tables card, added hexdb_events retention card between Queries and I/O Baseline, added size + retention to text export. New JS uses the existing `_fmtBytes` helper (no new helpers needed).
+- **No DB schema changes.** The new probes query existing tables; the new inventory rows surface tables that already existed but weren't measured. Restart-only upgrade.
+- **No new tests.** Existing 126 tests cover the underlying queries; the diag endpoint is a measurement surface rather than a behavioral one. Manual verification via "load `/performance` and inspect the rendered output" is the right shape.
+
+### Notes
+- **Restart-only upgrade.** Hard-refresh browser to pick up the JS/CSS changes.
+- **Probe budget**: pre-v2.80.0 routine probes ran ~38 ms total on a typical install. v2.80.0 adds 5 routine probes (Search, fts5_dirty, Stats drill, aircraft detail PK, aircraft detail sightings page) plus the hexdb_events retention check. Expected routine total: ~50–80 ms. Well under the 5-second budget; the legacy-probes flag still gates the 130+ second window-functions probe.
+- **dbstat fallback**: if `SELECT SUM(pgsize) FROM dbstat WHERE name = ?` fails (very old SQLite or no dbstat compile flag), the size column shows `—` for every row. The diag still works; just no size breakdown.
+- **FTS5 backfill state**: the Search probe's `skipped: true` branch only fires on a truly fresh install before FTS5 backfill completes. Once `seen_aircraft_fts` has any rows, the probe runs against real data. Mid-backfill installs measure partial coverage, which is honestly what the user is seeing in production at that moment — not a bug.
+- **Honest acknowledgment**: the Tables inventory had been incomplete since v2.50.0 (sightings_hourly added) and v2.49.0 (hexdb tables added). Two indexes on those tables were already in the Indexes section — meaning the perf-diag knew about the tables at the index level but not at the inventory level. Internal inconsistency in one report. This is the kind of drift that builds when an endpoint isn't periodically re-audited against current schema; filed as a lesson — major schema additions should include "perf-diag inventory updated?" in the checklist.
+- **Lesson on label rot**: probe labels that reference UI surfaces should be checked when those surfaces change. v2.67.0 (Phase 1D) removed the All tab and didn't rename the perf-diag probes. v2.72.0 hygiene release updated probe comments but left labels alone. v2.80.0 finally renames. Filed: when removing a UI surface, grep the perf-diag for label references too.
+
+### Comprehensive testing plan
+
+After installing v2.80.0, restart the service. Open the Performance page (gear menu → Performance) and:
+
+**A. Tables inventory now shows all 9 tables**
+
+A1. Tables card lists: `all_sightings`, `military_sightings`, `watchlist_sightings`, `seen_aircraft`, `sightings_hourly`, `hexdb_cache`, `hexdb_events`, `stats_records`, `seen_aircraft_fts`, `seen_aircraft_fts (shadows)` — 10 rows total (the FTS5 virtual table + the aggregated shadow row).
+
+A2. Each row shows a Size value (e.g. "115 MB", "12 MB") instead of "—". If your DB file is 139 MB and the rows sum to ~135 MB, the remaining ~4 MB is page-level overhead and free space — that's expected.
+
+A3. The shadows row has a tooltip listing the individual shadow table names (`seen_aircraft_fts_data`, etc.). Hover to see them.
+
+**B. New probes appear in Query timings**
+
+B1. New probes visible: `search_match_bm25`, `fts5_dirty_count`, `stats_furthest_prerank`, `aircraft_detail_pk_lookup`, `aircraft_detail_sightings_page`. Each has a timing in green/amber/red and a clickable plan.
+
+B2. `fts5_dirty_count` should report 0 ms with rows≈0 on a healthy install. If it shows persistent non-zero counts across multiple loads, the FTS5 batch flush is broken — investigate `collector.py:_flush_fts_dirty_batch`.
+
+B3. `search_match_bm25` typically reports under 50 ms even on a busy install; FTS5 + bm25 is fast.
+
+B4. `aircraft_detail_pk_lookup` should be sub-millisecond (0.0–0.5 ms).
+
+**C. Renamed probes still work, with new names**
+
+C1. `unique_aircraft_count_rollup` (was `all_tab_count_rollup`) shows the same timing it used to.
+
+C2. `recent_browse_page_rollup` (was `all_tab_page_rollup`) shows the same timing.
+
+C3. With `?include_legacy=true`, the legacy probes show with their renamed labels too.
+
+**D. hexdb_events retention card**
+
+D1. New card visible between Query timings and Disk I/O baseline. Shows row count + oldest event age.
+
+D2. On a healthy install with retention working: oldest age in single-digit days. If it's >14 days, the card warns amber.
+
+**E. Text export ("Copy report")**
+
+E1. Click "Copy report" → paste into a text editor. The text version now includes:
+   - Per-table size in the Tables section
+   - A new "--- hexdb_events retention ---" section between I/O baseline and Hints
+   - All renamed probe labels
+
+**F. Synthetic regression check (advanced)**
+
+F1. Manually mark a row with `UPDATE seen_aircraft SET fts_dirty = 1 WHERE icao = (SELECT icao FROM seen_aircraft LIMIT 1);` then reload the perf-diag. `fts5_dirty_count` should now show ~1 row. After the next collector cycle (60s), it should be back to 0.
+
+## [2.79.1] — 2026-05-04
+
+### Changed
+- **No user-visible changes — this release is a code-cleanup follow-up to v2.79.0, with bit-identical numerical output verified.** The Stats page's "furthest aircraft" card and the range-rose chart still render exactly as they did in v2.79.0 (literal float-equality, not just display-precision parity); this release just consolidates two pieces of duplicated math onto the centralized helper that v2.79.0 introduced. Safe to install or skip — same install gets you the same behavior.
+
+  Behind the scenes: direct follow-up to v2.79.0's `distance.py` extraction. Two sites in `server.py` had 7 lines each of duplicated `phi1/phi2/dlam/y/x/atan2` trig that produced a compass bearing — pre-v2.79.0 they predated the centralized helper, and at v2.79.0 ship time I filed them as a follow-up rather than refactor in-flight. v2.79.1 closes that follow-up. Both sites now read `bearing = _dist_compass_bearing(rx_lat, rx_lon, lat2, lon2)`.
+
+### Implementation
+- **Site 1**: `/api/stats` → `furthest` card → bearing computation inside the per-row scan that picks the furthest aircraft. Pre-v2.79.1: 7 lines of inline trig. Post-v2.79.1: one `_dist_compass_bearing(...)` call. The surrounding logic (the dist-proxy SQL pre-rank, the haversine refinement) is unchanged.
+- **Site 2**: `/api/stats` → range rose grid construction. Same 7-line trig block, called once per (lat_bucket, lon_bucket) cell. Same one-line replacement.
+- **Numerical equivalence verified.** Tested the pre-replacement inline trig against `distance.compass_bearing` on six representative point pairs including prime-meridian and antimeridian crossings. All produced bit-identical floats (not just within display precision — actually equal). The refactor changes zero numerical output.
+- **Code reduction**: ~14 lines deleted, 2 lines added (one call per site). `server.py` shrinks by ~12 lines net.
+- **Filed at v2.79.0 ship time** — said "Filed as a follow-up: ... those sites could be replaced with `_dist_compass_bearing` calls. Deferred — not part of the distance.py extraction proper, and changing them risks subtle drift that wasn't audited in this release." v2.79.1 does the audit (six point-pair equivalence test) and the replacement.
+
+### Notes
+- **Patch-level bump.** Pure code-quality refactor with bit-identical numerical output. No behavior change at any precision, no API change, no schema change. Patch bump is the honest call here; minor would imply a behavior shift that doesn't exist.
+- **Restart-only upgrade.** No DB schema changes.
+- **One inline `math.` reference remains in `server.py`** at line 3061: `cos_rx_lat_sq = math.cos(math.radians(rx_lat)) ** 2`. That's not bearing math — it's a SQL pre-rank proxy used in the v2.42.9 furthest-aircraft optimization (squared coordinate distance scaled by cos²(lat) to approximate great-circle distance for ranking). Different concern, stays inline. `import math` at the top of `server.py` remains needed for that one site.
+- **Honest acknowledgment**: the v2.79.0 changelog said three inline bearing sites existed (lines 3081-3087, 3645, 3061). v2.79.1 audit found only two (the lines 3061 site is the SQL pre-rank, not bearing math — I miscounted at v2.79.0 filing time). Filing the corrected count here so future maintainers don't go looking for a third site.
+
+### Comprehensive testing plan
+
+After installing v2.79.1, restart the service and hard-refresh the browser. Then walk through:
+
+**A. No regressions on the affected cards**
+
+A1. Stats tab → Today's Extremes → Furthest card. Should show the day's furthest aircraft with its distance and bearing label (e.g. "32.4 mi · NE 47°"). Bearing matches what v2.79.0 showed for the same data.
+
+A2. Stats tab → Coverage section → Range rose chart. Should render the same 16-direction × 6-bucket polar grid as v2.79.0. Bearings determine which directional wedge each cell falls into; if any drift had occurred, cells near 22.5° / 45° / 67.5° / etc. boundaries would migrate between wedges.
+
+**B. Numerical equivalence (advanced — for the curious)**
+
+B1. Pre-upgrade: note the bearing in the Furthest card (e.g. "47°").
+
+B2. Upgrade. Same aircraft (or a similar one): the bearing should read EXACTLY the same — not "within ±1°", but the same integer. Pre-v2.79.1 displayed bearings rounded with `round(bearing, 0)`; v2.79.1 produces the same float to many decimal places, so the rounded display is identical.
+
+B3. Range rose: take a screenshot pre-upgrade. Take another post-upgrade with the same aircraft set. The two should be visually indistinguishable.
+
+**C. Code-quality validation**
+
+C1. `grep -c "math\.atan2" server.py` returns `0` (was `2` pre-v2.79.1).
+
+C2. `grep -c "_dist_compass_bearing" server.py` returns `4` (the import on line 45, the alias on line 3823, and the two new call sites). Pre-v2.79.1 it returned `3`.
+
+## [2.79.0] — 2026-05-04
+
+### Changed
+- **No user-visible changes — internal refactor that consolidates the distance and bearing math used across Stats, Search, and the collector into a single `distance.py` module.** Distance values shown in the UI are unchanged (down to the float). This release is groundwork for cleaner internals and sets up the future aircraft-detail-page-map feature; safe to install without expecting any visible difference.
+
+  Behind the scenes: pre-v2.79.0 the haversine math was duplicated across four sites — `server.py`'s top-level `_haversine` (km-only, null-safe), two local `haversine` definitions inside the stats and records endpoints (multi-unit, no null-safety), and `collector.py`'s `_haversine` (multi-unit, no null-safety). The `compass_bearing` helper was also defined inline in the records endpoint. Centralizing in `distance.py` makes the math the single source of truth and sets up the deferred aircraft-detail-page-map feature with cleaner module boundaries.
+
+### Implementation
+- **New `distance.py` module** (~125 lines) exporting:
+  - `haversine(lat1, lon1, lat2, lon2, unit="km")` — multi-unit, null-safe by default. Returns `None` if any coordinate is `None`. Defaults to km because that's the canonical storage unit (per the v2.60.1 design — `seen_aircraft.last_distance` stores km, frontend converts at render time). Returns the raw float; rounding is the caller's concern.
+  - `to_user_unit(km, unit)` — converts a stored km value to the user's display unit. Rounds to one decimal to match the legacy v2.60.1 `_distance_km_to_user_unit` behavior.
+  - `compass_bearing(lat1, lon1, lat2, lon2)` — initial compass bearing in degrees [0, 360). Standard forward-azimuth great-circle formula.
+- **`server.py` changes:**
+  - Top-level `from distance import haversine as _dist_haversine, ...` import added.
+  - `_haversine(lat1, lon1, lat2, lon2)` now delegates to `_dist_haversine(..., unit="km")`. Existing call sites at lines 484 and 568 unchanged — same signature, same null-safety, same return value.
+  - `_distance_from_receiver(ac_lat, ac_lon)` keeps its config-reading wrapper but delegates the unit conversion to `_dist_to_user_unit`.
+  - `_distance_km_to_user_unit(km)` keeps its config-reading wrapper but delegates the conversion logic to `_dist_to_user_unit`.
+  - The two local `haversine` definitions inside endpoints are now `haversine = _dist_haversine` aliases. Call sites unchanged.
+  - The local `compass_bearing` definition inside the records endpoint is now `compass_bearing = _dist_compass_bearing`. Call sites unchanged.
+- **`collector.py` changes:**
+  - Top-level `from distance import haversine as _dist_haversine` import added.
+  - `_haversine(lat1, lon1, lat2, lon2, unit="mi")` now delegates to `_dist_haversine(..., unit=unit)`. Single existing call site at line 2416 unchanged.
+- **No frontend changes.** Distance helpers are server-side only; the frontend's `fmtDist` formatter receives already-converted values from the backend.
+
+### Notes
+- **Restart-only upgrade.** New module file requires the service to reimport. No DB schema changes.
+- **Numerical equivalence verified to display precision.** The legacy multi-unit haversine used precomputed unit-radius constants (`R = {"mi": 3958.8, "nmi": 3440.065, "km": 6371.0}`); `distance.py` computes in km using `EARTH_RADIUS_KM = 6371.0` then converts using the standard `0.621371 mi/km` and `0.539957 nmi/km` factors. The legacy mile-radius `3958.8` corresponds to `6371.0 * 0.621378`, slightly different from the standard `0.621371` — a real ~0.001% drift at any receiver-range distance. After rounding to one decimal place (the v2.60.x display convention), the difference is invisible. Verified empirically against four representative point pairs at 10mi/30mi/60mi/200mi: all matched to 1 decimal.
+- **The 0.621371 factor is the correct ICAO/SI value.** Carrying forward the slightly-wrong `3958.8` mile-radius would have propagated a small error indefinitely. Standardizing on the SI factor is the honest call.
+- **`distance.py` is a leaf module.** It imports only `math` and `typing`; no circular-import risk with `server.py` or `collector.py`.
+- **Filed as a follow-up**: the inline bearing math at `server.py` lines 3081-3087 (in the stats `furthest` card) and lines 3645, 3061 didn't previously use the local `compass_bearing` helper. Now that there's a centralized one in `distance.py`, those sites could be replaced with `_dist_compass_bearing` calls. Deferred — not part of the distance.py extraction proper, and changing them risks subtle drift that wasn't audited in this release.
+- **Honest acknowledgment**: this extraction was filed at v2.71.0 (Phase 3) and deferred through eight releases. The cost of doing it carefully turned out to be similar to the other Phase 3 architectural items — about 30 minutes of audit + targeted edits. No good reason to have deferred this long.
+
+### Comprehensive testing plan
+
+After installing v2.79.0, restart the service and hard-refresh the browser. Then walk through:
+
+**A. Distance display correctness across all surfaces**
+
+A1. Live tab — every aircraft row should show a distance like "12.4 mi" (in your configured unit). Visual identical to v2.78.0.
+
+A2. Watchlist tab — same as Live. Watchlist entries with positions should show distances.
+
+A3. Military tab — same. Military aircraft with positions should show distances.
+
+A4. Search tab — run a query that returns recently-seen aircraft. Distance column should populate.
+
+A5. Stats tab → Furthest card — the "X miles" record value should match a manual haversine of (receiver_lat, receiver_lon, aircraft_lat, aircraft_lon).
+
+A6. Stats tab → All-time records → Furthest_ever — same.
+
+A7. Aircraft detail page → Sightings table → Position column — distances per row should populate.
+
+**B. Numerical precision check (advanced)**
+
+B1. Pre-upgrade: note the displayed distance for one currently-tracked aircraft (e.g. "12.4 mi").
+
+B2. Upgrade. Same aircraft, same approximate position: the displayed distance should still read "12.4 mi" — within ±0.1 of the pre-upgrade value at typical receiver-range distances. (At 200mi+, the displayed value may differ by 0.1 in rare cases due to the conversion-factor change. This is expected and within display precision.)
+
+**C. Unit-switching (if you have multiple ADS-B receivers in different unit configs)**
+
+C1. Switch `receiver.distance_unit` from "mi" to "km" in config.yaml. Restart. Distances now show in km.
+
+C2. Switch to "nmi". Same — values render in nautical miles.
+
+C3. Switch back to "mi". Original behavior restored.
+
+**D. Code-quality validation (for the curious)**
+
+D1. `grep -n "def haversine\|def _haversine" *.py` should now show `distance.py:def haversine` as the canonical site, plus the `server.py:_haversine` and `collector.py:_haversine` thin-wrapper delegates. Pre-v2.79.0 there were four real implementations.
+
+D2. The two stats-endpoint local definitions (`def haversine` inside endpoints at lines 3031 and 3823 pre-v2.79.0) are gone — replaced by `haversine = _dist_haversine` alias lines.
+
+## [2.78.0] — 2026-05-04
+
+### Fixed
+- **No user-visible changes — internal cleanup that consolidated two near-identical copies of the `escapeHtml` helper function into one canonical version.** No call sites change behavior; the rendered HTML is byte-identical for every existing input. This release plugs a latent risk where a future change could have rendered the literal string "null" in the DOM if a code path passed `null` directly to the helper without a guard.
+
+  Behind the scenes: two `function escapeHtml(s)` declarations existed at lines 4421 and 4752 — both at script top-level scope, so JavaScript's hoisting rules made the LATER one win for every callsite in the file. The two implementations differed in one meaningful way: the first (canonical) had `if (s == null) return ''` as a null-safe guard; the second did not. In practice every callsite already gates with `|| '—'` or a truthy check before passing to `escapeHtml`, so the difference never bit production output — but a future callsite passing null directly would have rendered `"null"` in the DOM (because `String(null) === "null"` not `""`). v2.78.0 keeps the null-safe canonical at line 4421 and replaces the second declaration with a tombstone comment.
+
+### Implementation
+- **No callsite changes.** The 30+ `escapeHtml(...)` invocations across the file are unchanged. They were already going to one of the two definitions; now they all resolve to the canonical null-safe one.
+- **Tombstone comment** at the former second-definition site explains the deduplication, the hoisting trap, and why the difference never bit production. Future maintainers reading the file see why the comment is there instead of inferring it from `git blame`.
+- **`escHtml` (the third helper) is preserved.** It's a different beast — DOM-based escape using `textContent` → `innerHTML`, which has slightly different semantics (no `&#39;` for `'`). 78 callsites use it; migrating them to `escapeHtml` would be a multi-release audit. Filed as a follow-up: rename `escHtml` to something more clearly distinct from `escapeHtml` (e.g., `escHtmlDom`) so the difference is obvious at the call site.
+- **`templates/aircraft.html`'s separate `escapeHtml` declaration** is unrelated — different file, different scope. Untouched.
+- **`templates/diagnostics.html`'s `esc` helper** also unrelated. Untouched.
+
+### Notes
+- **Restart-only upgrade.** Hard-refresh browser to pick up the JS change.
+- **No behavior change for end users.** Same output for every existing callsite; the null-safety improvement is latent (only matters for callsites that pass `null` directly, which none currently do).
+- **Streaming-order risk previously flagged was wrong.** Across releases v2.75.0 / v2.76.0 / v2.77.0 I deferred this cleanup citing "streaming-order risk" — the worry being that hoisting wouldn't cover a call from a script block parsed before the definition. In reality `templates/index.html` has a single inline `<script>` block spanning from line ~1900 to ~7710 containing all the application JS, so hoisting applies uniformly across every callsite. The deferred concern was based on an incorrect mental model. Lesson filed: when I flag a risk multiple times without investigating, that's a signal I should investigate, not defer further.
+- **Honest acknowledgment**: this dedup was filed at v2.75.0 during the XSS audit and deferred three times. The cost of doing it carefully turned out to be substantially less than the cost of carrying the duplicate forward through three releases. Real lesson: small deferred items have a way of compounding into mental overhead that exceeds their actual fix cost.
+
+### Comprehensive testing plan
+
+After installing v2.78.0, restart the service and hard-refresh the browser. Then walk through:
+
+**A. No regressions on normal data**
+
+A1. Live tab — aircraft cards render with their callsigns, types, descriptions, distances, etc. Visual identical to v2.77.0.
+
+A2. Watchlist tab — cards render with watchlist labels, callsigns, types. Visual identical.
+
+A3. Military tab — cards render with MIL pills, callsigns, types. Visual identical.
+
+A4. Search tab — run a query (e.g. `today`). Result cards render with operator, country, type pills. Visual identical.
+
+A5. Watchlist removal modal — open the modal (Watchlist tab → click × on any chip → see the confirm modal). The modal's label interpolation (which the second-definition's comment said was its purpose) should still escape angle brackets correctly. Try with a watchlist label that has `<` in it — should render as literal text in the confirm message.
+
+**B. Code-quality validation (for the curious)**
+
+B1. Open the served `index.html` in a browser dev console. Run `escapeHtml.toString()`. Should show the canonical null-safe definition (one with `if (s == null) return ''`), not the older string-only one.
+
+B2. `grep -c "function escapeHtml" templates/index.html` returns `1`. Pre-v2.78.0 it returned `2`.
+
+## [2.77.0] — 2026-05-04
+
+### Added
+- **The README's Screenshots section now shows the Search tab in action — the placeholder note that's been there since v2.67.0 is replaced with a real rendered image.** No application behavior change; this is a docs improvement. If you've been browsing the README on GitHub, the Search tab is the last image to appear in the screenshot strip.
+
+  Behind the scenes: the README's Screenshots section had a placeholder note for the Search tab since v2.67.0 (Phase 1D, when `screenshot_all` was removed alongside the All tab) reading "Screenshot: regenerate via `python3 scripts/screenshots.py` after starting the service." That placeholder has lived through ten subsequent releases. v2.77.0 closes the gap with a real renderer that switches to the Search tab, types `today` into the input, fires `runSearch()` against a synthetic `/api/search` response, and captures the rendered results page. The README now embeds `docs/screenshot-search.png` like the other tabs.
+- **`SEARCH_RESPONSE` mock fixture in `scripts/screenshots.py`.** Eight result rows covering a believable mixed fleet — A321 (Delta + JetBlue), B737/B738 (United + Southwest), B777 (United), C17 (USAF, military), C172 (general aviation, watchlist-tagged), CL60 (RCAF, military, Canada). Demonstrates the chip strip's TIME_RANGE + DATE chips for the `today` token, the result count + execution-ms header, the MIL pills on military rows, the watchlist label pill on the watchlist-tagged row, the country column, and the distance column with mi units. Row shape mirrors `search.py`'s `execute_search()` return shape — every field the frontend's `_renderSearchCard` reads is present.
+
+### Implementation
+- **`scripts/screenshots.py` additions:**
+  - `SEARCH_ROWS` list (8 entries) with the canonical search-row dict shape: icao, registration, last_callsign, callsign, aircraft_type, aircraft_type_desc, operator, country, last_lat, last_lon, last_seen_at, sighting_count, first_seen_at, last_speed, last_altitude, last_squawk, last_distance_km, distance, score. The `distance` field (already converted to user-units) is the one the frontend's render path reads; `last_distance_km` mirrors the wire format the server stores. Including both keeps the fixture honest about what the real API returns.
+  - `SEARCH_RESPONSE` payload wrapping the rows with the `/api/search` envelope: ok, query, parsed_filters (the time_range filter for "today"), free_text, time_range, total_count, rows, execution_ms, error.
+  - Three new fetch-stub routes: `/api/search/suggestions` (empty, defensive), `/api/search/aircraft/` (empty sightings, defensive), and `/api/search` (the real payload). Order matters — the more-specific suggestions and per-icao routes come first so they match before the bare `/api/search` prefix.
+  - `screenshot_search(browser)` renderer: switches to Search tab via `go('search')`, sets the input value to `today`, calls `runSearch()` directly (more reliable than dispatching an input event the Search tab might or might not be listening to), waits 800ms for the render. Output: `docs/screenshot-search.png` at the harness's default 1400×1100 viewport.
+  - Wired into the `main()` renderer list right after `screenshot_military`, so the rendered batch order matches the tab order in the app.
+- **`README.md`**: replaced the placeholder paragraph at line 70–72 with an `![Search tab](docs/screenshot-search.png)` reference. The Search section's lead-in description is unchanged.
+
+### Notes
+- **Restart-only? No — the screenshot is a build artifact, not a runtime concern.** Maintainers run `python3 scripts/screenshots.py` to regenerate the README assets after meaningful UI changes; this release just makes that command produce one more file. Existing users see no behavior change in the running app.
+- **The `today` query in the screenshot**: chosen to demonstrate the v2.65.0 relative-date token (a Phase 2 feature), which renders a TIME_RANGE chip in the chip strip — visually richer than a bare-word query like `B738` would produce. The `parsed_filters` mock matches what `parse_query("today")` actually emits at runtime.
+- **Why `runSearch()` is called directly**: in the real app, typing into the input triggers a debounced search via the `input` event listener. In the harness, `setInputValue + dispatchEvent(new Event('input'))` would still need the debounce to settle; calling `runSearch()` straight cuts that wait and produces the deterministic frame for capture.
+- **Filed in the v2.67.0 changelog comment**: "if a Search-tab screenshot is wanted, add a screenshot_search renderer that switches to the Search tab and triggers a query against a mock /api/search response. Filed." That filing matured today. The filed → done transition is recorded in the in-code comment for future similar gaps.
+
+### Comprehensive testing plan
+
+After installing v2.77.0, no service restart needed (this release only affects the screenshot harness). To verify locally:
+
+**A. Regenerate screenshots**
+
+A1. From the project root: `python3 scripts/screenshots.py`. Expected output includes `screenshot-search.png` (130–140 KB at the default viewport).
+
+A2. Open `docs/screenshot-search.png`. Should show:
+- Search tab selected (cyan underline on "Search" in the tab strip)
+- "today" in the search input
+- Date-range preset chips ("Today", "Last 7 days", "Last 30 days", "Custom range")
+- Result header: "8 of 8 matches for today 14.2 ms"
+- Two filter chips: TIME_RANGE and DATE (with their resolved values)
+- Eight result cards with mixed fleet — A321, B777, B737, B738, C17 (with red MIL pill), C172 (with orange watchlist label), CL60 (red MIL pill, Canada country)
+- Distance column populated (e.g. "24.5 mi", "36.7 mi") — not dashes
+- All standard columns: ICAO, Type, Callsign, Description, Operator, Country, Speed, Altitude, Distance, Squawk, Last Seen, Track ↗, +WL
+
+**B. README rendering**
+
+B1. View the README (in GitHub or any markdown previewer). The Screenshots section's "Search" subsection should now show the rendered image instead of the placeholder text.
+
+B2. Image dimensions and visual style match the surrounding screenshots (Live, Watchlist, Military, Stats) — same dark theme, same tab strip, same gear icon position.
+
+**C. Harness regression check**
+
+C1. The full screenshot batch (`python3 scripts/screenshots.py` running all renderers) should still produce all 18 of the previously-existing images plus the new `screenshot-search.png` — 19 total. No previously-passing renderer should fail because of the new fetch-stub routes.
+
+C2. The render order in `main()` puts Search right after Military and before Stats — matches the tab order in the app's actual tab strip.
+
+## [2.76.0] — 2026-05-04
+
+### Fixed
+- **Search results page now switches to its mobile-friendly compact layout at the same screen width as the other tabs (700px instead of 640px).** If you've ever viewed Aerodrome on a tablet portrait or a narrow laptop window between 640–700px wide, the Search tab kept its full desktop layout while Live, Watchlist, and Military had already collapsed to their compact form — a small visual inconsistency users would notice when switching tabs. The breakpoint is now unified.
+
+  Behind the scenes: the Search-tab card grid had a `@media (max-width: 640px)` breakpoint while the other three list tabs use `@media (max-width: 700px)` for the same column-collapse purpose. The v2.59.3 comment on the Search rule explicitly called out the intent ("matching how Live, Watchlist, Military, and All cards collapse on mobile") but landed on a different value. Result: on screens between 640–700px wide (some tablet portraits, some narrow laptop windows), the Search tab kept its desktop-shape grid while the other tabs had already switched to the compact mobile layout — a real visual inconsistency users would notice when switching tabs at those widths. v2.76.0 unifies the Search breakpoint to 700px to match.
+
+### Implementation
+- **One-line CSS edit** at `templates/index.html` line 1126: `@media (max-width: 640px)` → `@media (max-width: 700px)`. The rule body (which columns to hide, which grid template to apply) is unchanged.
+- **Comment block updated** to document the v2.76.0 reconciliation alongside the v2.59.3 history. Three reasons recorded: (a) 700px matches three tabs against Search's one, (b) the v2.59.3 author intended parity, (c) collapsing slightly earlier is the safer default for tablet portraits.
+- **The v2.59.3 reference to "All cards"** also updated — the All tab is gone post-Phase 1D, so the comment now reads "Live, Watchlist, and Military cards" matching the actual current state.
+- **The other 640px breakpoint at line 702 (search-input-wrap) is intentionally unchanged.** It governs a different concern: when the search input + Help button + Export button can't fit on one line. The input row stays at 640px because the input + two buttons do still fit at 700px wide; wrapping at 700px would be slightly aggressive for that element.
+- **No JS, no Python, no schema changes.** Pure CSS unification. 126 tests pass unchanged.
+
+### Notes
+- **Restart-only upgrade.** Hard-refresh browser to pick up the CSS change.
+- **What changes for users**: on a viewport between 640px and 699px wide, the Search tab now hides type/callsign/speed/altitude columns and switches to the compact `70px 1fr 30px 28px` grid template — identical to what the Live/Watchlist/Military tabs already do at those widths. Pre-v2.76.0 the Search tab kept showing all desktop columns and rows would feel cramped.
+- **What does NOT change for users**: at viewports ≥700px wide, the Search tab is identical to before (the 900px → desktop-shape transition is unchanged, the desktop layout is unchanged). At viewports ≤639px wide, the Search tab is also identical to before (the compact mobile layout was already kicking in at 640px). The behavior change is strictly the 640–699px band.
+- **Honest acknowledgment**: this was a pure inconsistency that the v2.59.3 author tried to fix but didn't actually fix. Real lesson: when a comment says "match X" and the value differs from X, the comment is the source of truth for intent, the value is a candidate for the bug. v2.76.0 closes a 17-release-old polish gap.
+
+### Comprehensive testing plan
+
+After installing v2.76.0, restart the service and hard-refresh the browser. Then:
+
+**A. The behavior-change band (640–699px wide)**
+
+A1. Open the browser DevTools, switch to responsive design mode, set viewport to 680px wide (or any value between 640 and 699 inclusive).
+
+A2. Open the Search tab. Run a query that returns results. The result cards should now show only ICAO + description + Track + +WL columns — same compact layout as the Live/Watchlist/Military tabs at this width.
+
+A3. Switch to Live → Watchlist → Military. Each tab should show the same compact column structure (just with each tab's specific columns).
+
+A4. Switch back to Search. Visual continuity — the column collapse pattern feels the same across tabs now.
+
+**B. Boundary check (≥700px wide)**
+
+B1. Set viewport to 720px wide. Switch through Live → Watchlist → Military → Search. All four tabs should show the same set of columns (callsign, type, etc.) — the desktop-ish 900px layout (Search) or wider tier (other tabs). No regressions.
+
+B2. Set viewport to 1200px (full desktop). All tabs render their full column sets as before.
+
+**C. Boundary check (≤639px wide)**
+
+C1. Set viewport to 600px wide. Search tab's compact mobile layout should still work — same as Live/Watchlist/Military. No change in behavior at this width.
+
+C2. Set viewport to 400px (phone portrait). All four list tabs render the compact layout cleanly.
+
+**D. Search input row (intentionally unchanged)**
+
+D1. At 660px wide, the search input + Help button + Export button should still fit on one line (or wrap if your specific button widths are different). The input-row breakpoint is intentionally separate from the card-grid breakpoint and stays at 640px.
+
+D2. At 600px wide, the input row may wrap (depending on button widths) — this is the existing v2.51.0 behavior, unchanged.
+
+## [2.75.0] — 2026-05-04
+
+### Fixed
+- **Defensive UI hardening — fields that originate from aircraft broadcasts (callsign, type code, type description, military and watchlist labels) are now consistently HTML-escaped before being rendered.** No observable change in normal operation: every value you see in the UI continues to look identical. The protection matters in the edge case where a malicious transmitter broadcasts a field containing HTML-like characters; pre-v2.75.0 a few rendering paths could have allowed those characters to reach the DOM unescaped. The realistic risk model is low (no privilege escalation, no network-based attack), but the right shape for these is "escape every interpolation that touches innerHTML, no exceptions."
+
+  Behind the scenes: triggered by the v2.74.0 incidental catch (callsign was unescaped in `firstTimeSeenCard`). A systematic sweep found similar gaps on the three primary tab row builders and several smaller defense-in-depth concerns. The realistic risk model is low — the v2.74.0 catch and these are all "malicious-broadcaster" or "self-XSS" surfaces (no privilege escalation), not network-based attacks — but the right shape for these is "escape every interpolation that touches innerHTML, no exceptions."
+
+### Critical fixes (broadcast-controlled fields → innerHTML)
+
+These are the v2.74.0-class issues — fields originating from ADS-B broadcasts (callsign, aircraft type, type description) interpolated unescaped into the rendered DOM. A malicious actor with a transmitter could in principle inject HTML into these fields. Now escaped via `escapeHtml()`:
+
+- **Live tab row builder** — `ac.callsign`, `ac.aircraft_type`, `ac.type_desc`, plus `ac.icao` in the `data-icao` HTML attribute
+- **Watchlist tab row builder** — same four fields, plus `ac.watchlist_label` (user-config-derived, lower-risk but consistency matters), plus `ac.seen_at` in the `data-seen-at` attribute
+- **Military tab row builder** — same fields as Live, plus `data-icao` and `data-seen-at` attributes
+- **Per-aircraft sightings table row** (`_drillSightingsTable`) — `s.callsign` was unescaped
+
+### Defense-in-depth fixes
+
+These are surfaces where the upstream constraints make XSS very unlikely (server-normalized values, server-controlled config), but escaping is still the correct shape:
+
+- **`aircraftLink(icao)`** — ICAO escaped in both the href attribute and the link text. ICAOs are normalized to 6 hex chars by the server's ADS-B parser, but a future parser regression shouldn't have a path to inject HTML.
+- **`trackLink(icao)`** — `url` escaped in the href attribute. The URL template comes from the server-controlled `track_link_provider` registry; substitutions are constrained alphanumerics. Belt and suspenders.
+- **`mil_color` style attribute injection** — escaped on Live tab, Watchlist tab, Military tab, AND Search tab pill renderers. `mil_color` is admin-config-derived; a malformed hex value (e.g. `red; background: url(javascript:...)`) would have injected CSS. Now safe across all four tab variants.
+- **`mil_label`** — escaped in the visible text of the pill on Live/Watchlist/Military tabs. Was already escaped in the Search tab pill's title and visible text; this completes the surface.
+- **Watchlist chip rendering** (`renderWLChips`) — chip's visible label and id text were unescaped. The `idAttr` JS-literal escape was already in place; now the HTML-attribute escape is too. User-config surface, self-XSS only, but a config copy-paste with `<` would have rendered as broken HTML.
+- **`furthest_ever` records formatter** — `r.extra` field (carries the unit string `'mi'`/`'km'`/`'nmi'`) escaped before interpolation. Server-controlled, but the formatter is a public path and consistency wins.
+
+### Implementation
+
+- **All escapes use `escapeHtml(String(value))`** — the existing helper in `templates/index.html` (defined twice, see Notes below). Wraps `String()` defensively because `null`/`undefined`/numeric values can reach these paths and need stringification before regex replacement.
+- **JS-literal-escape pattern preserved** where the value lands inside `onclick="...('${value}')"`. The watchlist chip render uses `String(id).replace(/'/g, "\\'")` for the JS-literal layer AND `escHtml()` for the visible-text layer — two different escaping concerns, two different escapes.
+- **No behavioral changes.** Every test in the 126-test suite passes. The visible UI is identical for normal data; the only observable difference is that broadcast-controlled or config-derived values containing HTML metacharacters now render as literal text instead of as DOM.
+- **Templates audited:** `index.html`, `aircraft.html`, `diagnostics.html`, `diagnostics-watchlist.html`, `config.html`, `status.html`, `docs.html`, `logs.html`, `performance.html`, `updates.html`. `aircraft.html` and `diagnostics.html` were already clean (the relevant interpolations were escaped). The other admin/diagnostic templates either use static content or already escape via `esc()` / `escapeHtml()` helpers.
+
+### Notes
+
+- **Restart-only upgrade.** Hard-refresh browser to pick up the JS changes.
+- **Two `escapeHtml` definitions in `index.html`** (lines 4381 and 4703 with identical implementation) — filed as a separate cleanup item. Not addressed in this release because changing function-definition placement could break callsite ordering during streaming. Both definitions work identically.
+- **Real risk model**: ADS-B broadcasts are not authenticated, so a local actor with a transmitter can broadcast arbitrary callsigns and ICAO IDs. Practically, broadcast power is constrained by FCC regulation and physical reception range; the typical attacker model isn't "remote network attacker" but "someone within RF range of your antenna." The XSS surface, if exploited, would run JS in the user's browser session — but the same user is generally the only one looking at their own ADS-B receiver dashboard, so the practical impact is "self-XSS via radio." Still worth fixing — see "right shape" framing above.
+- **Honest acknowledgment**: this audit took ~30 minutes of grep work and turned up substantively more than expected. Lesson filed: the v2.74.0 callsign fix flagged a class of issues, and the right response was an immediate sweep rather than filing it for "the next release in this area." Prioritization stand: this should have been done at v2.74.0 ship time alongside the firstTimeSeenCard fix. v2.75.0 closes the gap.
+- **Filed as a separate Phase 3 item**: extract the duplicate `escapeHtml` definitions into a single canonical helper. Deferred because the change touches function-ordering in a streaming context and warrants its own focused PR.
+
+### Comprehensive testing plan
+
+After installing v2.75.0, restart the service and hard-refresh the browser. Then walk through:
+
+**A. No regressions on normal data**
+
+A1. Live tab — aircraft cards render with their callsigns, types, descriptions, distances, etc. Visual identical to v2.74.0.
+
+A2. Watchlist tab — cards render with watchlist labels, callsigns, types. Visual identical.
+
+A3. Military tab — cards render with MIL pills, callsigns, types. Visual identical.
+
+A4. Search tab — result cards render with operator, country, type pills. Visual identical (already escaped in v2.74.0 era).
+
+A5. Aircraft detail page — sightings table row callsigns render normally.
+
+A6. Stats tab → "First time seen today" card — rows render normally (this is the v2.74.0 fix; verify it still works).
+
+A7. Stats tab → All-time records → Furthest row — distance + unit ("478.6 mi") renders normally.
+
+**B. Synthetic injection check (advanced — requires DB write access)**
+
+B1. Stop the service. Open `aerodrome.db` in `sqlite3`. Update one row in `all_sightings` with `UPDATE all_sightings SET callsign = '<img src=x onerror=alert(1)>' WHERE icao = (SELECT icao FROM all_sightings LIMIT 1);`. Restart the service.
+
+B2. Open the Live tab and the Search tab. The injected callsign should render as literal text (`<img src=x onerror=alert(1)>` visible in the row), NOT trigger an alert dialog. Pre-v2.75.0, this would have triggered the alert.
+
+B3. Reset the row: `UPDATE all_sightings SET callsign = '...original value...' WHERE icao = ...;`.
+
+**C. Watchlist chip injection check**
+
+C1. In Configuration → Watchlist → add a new entry with label `<script>alert(1)</script>`. Save.
+
+C2. Reload the page. The watchlist chip should render with the literal text visible, NOT trigger an alert.
+
+C3. Remove the entry.
+
+**D. mil_color CSS injection check**
+
+D1. In Configuration → Military → special_aircraft block, add an entry with `mil_color: "red; background-image: url('https://example.com/x.png')"`. Save.
+
+D2. Live tab — the row's left-border-color should fall back to invalid (browser ignores unparseable CSS) rather than loading the external resource. Pre-v2.75.0, the unescaped color would have injected the background-image declaration.
+
+D3. Reset the entry.
+
+## [2.74.0] — 2026-05-04
+
+### Added
+- **"First time seen today" Stats card rows are now clickable — tap any row to jump straight to the aircraft's detail page, anchored to the exact first-sighting row.** Until v2.74.0 those rows were inert text: you could see "this aircraft was new today" but had to copy the ICAO into the URL bar to drill into it. Click anywhere on a row now and you land on `/aircraft/{ICAO}` with the first-sighting row highlighted.
+
+  Behind the scenes: the "First time seen today" Stats card shows up to ~10 ICAOs with their first-seen timestamps. v2.74.0 makes each row clickable: click anywhere on a row to navigate to `/aircraft/{ICAO}?sighting={first_seen_at}`, which lands the user on the aircraft detail page anchored to the exact first-sighting row (using the v2.61.0 anchor flow that v2.73.0 just gave a × Clear affordance to). Closes the polish gap explicitly filed at v2.69.0 ship time.
+
+### Implementation
+- **CSS (`templates/index.html`)**: new `.stat-list li.list-row-clickable` rule. Subtle cyan-tinted hover (`rgba(6,182,212,0.08)`), 4px padding with -6px margin offset so the hover background extends slightly past the row text without altering layout. Same hover-tint pattern as `.record-row-clickable` on the All-time records card. No chevron `::before` indicator (this is direct navigation, not the chain-drill expand pattern that `.drillable-list li.drill-row::before "›"` signals on Composition cards).
+- **Renderer (`firstTimeSeenCard`)**: each `<li>` now gets `class="list-row-clickable"` and an `onclick` calling `viewAircraftDetails(icao, first_seen_at)` — the same helper used by drill panels, contextual links, and detail-page navigation throughout the app. Defensive guard: rows without an ICAO or `first_seen_at` (shouldn't happen — the data comes from `seen_aircraft` which always has both) stay inert with no clickable styling. Mirrors the `.record-row-clickable` pattern's defense.
+- **Real bonus catch**: the prior renderer had `${cs}` (unescaped callsign) in the row template. Callsigns come from ADS-B broadcasts and are typically alphanumeric, but a malicious ground actor with a transmitter could in principle inject HTML into a callsign field. v2.74.0 fixes this with `escHtml(cs)`. Honest acknowledgment: this was a latent XSS surface I noticed while editing the renderer — the Stats endpoint stringifies callsigns through Python with no special escaping, and the template wasn't escaping on the way out. Real ship-while-here fix.
+- **No backend changes.** `viewAircraftDetails` and the `?sighting=` URL flow have existed since v2.61.0; this release just makes more rows feed into them.
+- **No new tests.** Pure UI feature with no parser/SQL surface; existing 126 tests cover the data path that backs the card.
+
+### Notes
+- **Restart-only upgrade.** Hard-refresh browser to pick up the CSS + JS changes.
+- **Pairs naturally with v2.69.0 + v2.73.0.** v2.69.0 added the "View all in Search →" button at the bottom of the card (lifts the in-card list cap by sending users to Search). v2.73.0 added × Clear/Dismiss on the detail-page anchor (lets users dismiss the cyan highlight after browsing). v2.74.0 adds row click-to-detail (gets users from the card to the detail page in one click). Together: the firstTimeSeenCard is fully usable end-to-end.
+- **Hit target is the whole row, not just the ICAO text.** Better discoverability and easier on mobile/touch. The hover tint extends slightly past the text via the negative margin trick, matching the `.drillable-list li.drill-row` pattern that's been the convention since the Stats Wave 3 work.
+- **Honest acknowledgment**: v2.69.0 shipped the View-all button but explicitly punted on row-clickability "as a separate polish item." That polish item is what v2.74.0 closes. Should have shipped both together; filed as a lesson: when adding a per-row Search redirect to a list card, also consider whether the rows themselves should be navigable — both questions are answerable in one design pass.
+
+### Comprehensive testing plan
+
+After installing v2.74.0, restart the service and hard-refresh the browser. Then walk through:
+
+**A. Click-to-detail from firstTimeSeenCard**
+
+A1. Open Stats tab → History section → "First time seen today" card. Card shows up to ~10 ICAOs with timestamps. Each row should now have a faint cyan highlight on hover.
+
+A2. Click anywhere on a row (the ICAO span, the callsign, the type, the timestamp on the right — anywhere). Should navigate to `/aircraft/{ICAO}?sighting={first_seen_at}`.
+
+A3. The detail page should load with v2.73.0's "Anchored on {timestamp}. × Clear" banner above the sightings table, and the matching first-sighting row highlighted in cyan.
+
+A4. Click × Clear on the banner. Banner and row highlight disappear; URL strips `?sighting=`.
+
+**B. Hover & cursor**
+
+B1. Mouse over any row in the firstTimeSeenCard. Cursor should change to pointer; row should get a subtle cyan tint background. Mouse off → tint fades out.
+
+B2. Mouse over the "View all in Search →" button below the list. The button still works as before (existing v2.69.0 behavior, unaffected).
+
+**C. Edge cases**
+
+C1. **No new aircraft today**: card empty state shows "no new aircraft today — everything flying today has been seen before". No rows, no clickability concerns. View-all button does NOT render (existing v2.69.0 empty-state behavior).
+
+C2. **Many new aircraft (busy day)**: card shows the first ~10 rows with a "+N more" counter. All visible rows clickable. The +N more text is NOT clickable (it's not an `<li>`); use the View-all-in-Search button to see the rest.
+
+C3. **Callsign with HTML chars**: if a malicious actor transmits a callsign containing `<` or `>`, the row should render the literal characters as text, not as HTML. (Pre-v2.74.0 this would have rendered as HTML — real XSS surface, fixed in this release.)
+
+**D. Visual regression check**
+
+D1. Other Stats cards using `.stat-list` (Top types, Top operators, Military branches, Category mix, Top countries) — should look unchanged. They use `.drillable-list` (different class), so the new `.list-row-clickable` rule doesn't affect them.
+
+D2. The Top types card row click still expands the chain-drill panel (existing behavior). Not affected.
+
+D3. All-time records card (`.record-row-clickable`) — visual and behavior unchanged. Different class, different renderer, untouched.
+
+## [2.73.0] — 2026-05-04
+
+### Added
+- **New "× Clear" / "× Dismiss" button on the aircraft detail page lets you remove the highlighted-row anchor without reloading the page.** When you click through from a Stats card or contextual link with a `?sighting=` link, the matching row in the sightings table gets a cyan border highlight (existing v2.61.0 behavior). Until v2.73.0 there was no way to dismiss that highlight short of refreshing the page without the query parameter — meaning if you wanted to browse other sightings without the visual anchor for context, you were stuck with it. v2.73.0 adds a small banner above the sightings table with a × button to clear it; one click removes the highlight, removes the banner, and cleans the URL.
+
+  Behind the scenes:
+  - **Found state** ("Anchored on {timestamp}. × Clear"): cyan-toned banner, parallels the row's cyan border. Renders when the anchor row is found in the loaded sightings.
+  - **Miss state** ("No sighting found at {timestamp} — may have been pruned by retention. × Dismiss"): the existing amber miss-banner now also has a × button. Same handler.
+  - **Click behavior**: removes the row's `.row-anchored` class (clearing the cyan border), removes the banner, and strips the `?sighting=` query param from the URL via `history.replaceState`. A subsequent refresh or copy-link will not re-anchor.
+
+### Implementation
+- **CSS (`templates/aircraft.html`)**: new `.anchor-found-banner` rule (cyan-toned, mirrors the existing amber `.anchor-miss-banner`); `.anchor-clear-btn` shared style for the × button on both banners. Both banners now use `display: flex` with a `.text` flex-1 child so the × sits at the right edge of the banner regardless of message length.
+- **JS (`templates/aircraft.html`)**: `_resolveSightingsAnchor` success branch now constructs the found-banner before the existing scroll-into-view. The miss-banner construction in the all-pages-loaded branch updated to use the same structured shape (text span + clear button). New `clearSightingsAnchor()` function performs the four-step dismiss: (1) remove `.row-anchored` from any matching row, (2) remove the banner element, (3) strip `?sighting=` from the URL via `history.replaceState` (preserves other query params and the path/hash), (4) clear `_sightingsState.anchorTs` and set `_anchorResolved = true` so subsequent re-renders (e.g. page-size change) don't re-apply the anchor styling.
+- **No backend changes.** The aircraft detail page is a pure render; the anchor logic was already client-side.
+- **No new tests.** Pure UI addition; no parser/SQL surface. The existing 126 tests remain green.
+
+### Notes
+- **Restart-only upgrade.** Hard-refresh browser to pick up the CSS + JS changes.
+- **Other query params preserved.** `clearSightingsAnchor()` parses the URL with `URL` and uses `searchParams.delete('sighting')`, so anything else in the query string survives. (In practice the aircraft detail page only uses `?sighting=`, but defensive code is right here.)
+- **Browser back-button**: `history.replaceState` rather than `pushState` so the back button still goes to the previous page (e.g. the Stats card the user came from), not back to the same detail page with the anchor restored.
+- **No "redirect-back" flow.** Some apps remember "where the user came from" and offer a back link; we don't. The browser back button is the right surface for that, and it works correctly because we use replaceState.
+- **Honest acknowledgment**: the lack of a dismiss affordance was a real UX gap going back to v2.61.0 when the anchor flow was first introduced. Filed in the polish queue as part of Phase 3 cleanup; this release closes it.
+
+### Comprehensive testing plan
+
+After installing v2.73.0, restart the service and hard-refresh the browser. Then walk through:
+
+**A. Found-banner (anchor found in current rows)**
+
+A1. Open Stats tab → Today's Extremes → click any drill panel card (e.g. Furthest). Click any row in the drill panel — should navigate to `/aircraft/{ICAO}?sighting={ts}`.
+
+A2. Detail page should show a cyan-tinted banner above the sightings table reading "Anchored on {date/time}." with a "× Clear" button at the right edge.
+
+A3. The matching row in the sightings table should also have a cyan left-border + tinted background (existing v2.61.0 behavior, unchanged).
+
+A4. Click "× Clear". Three things should happen simultaneously:
+   - The cyan banner disappears.
+   - The cyan row highlight goes away.
+   - The URL in the browser bar updates to remove `?sighting=...` while staying on the same page.
+
+A5. Refresh the page. Should NOT re-anchor — page loads fresh without the cyan border, no banner.
+
+**B. Miss-banner (anchor row was pruned)**
+
+B1. Construct a synthetic miss case: copy an aircraft URL with a `?sighting={ts}` for a timestamp that doesn't exist in that aircraft's sightings (e.g. an arbitrary very-old unix timestamp). Open it.
+
+B2. The page loads, paginates through all available sightings, and after exhausting them, shows the existing amber miss-banner. NEW in v2.73.0: the banner now has a "× Dismiss" button at the right edge.
+
+B3. Click "× Dismiss". The banner disappears and the URL strips the `?sighting=` param.
+
+B4. Refresh the page. Should NOT re-render the miss banner.
+
+**C. Edge cases**
+
+C1. Page-size change while anchor is active: open `/aircraft/{ICAO}?sighting={ts}` → wait for found-banner → change Rows: dropdown to a different size. The page re-fetches sightings; the found-banner should still show (because `_sightingsState.anchorTs` is still set), and the row should still highlight after the new fetch.
+
+C2. Page-size change AFTER clicking × Clear: the dismiss should clear `_sightingsState.anchorTs`, so subsequent page-size changes do not re-render the anchor.
+
+C3. Manual URL edit: paste `/aircraft/{ICAO}` (no `?sighting=`) — page loads with no banner, no row highlight. Same as before v2.61.0.
+
+C4. URL with other query params: `/aircraft/{ICAO}?sighting=12345&debug=1`. Click × Clear. URL becomes `/aircraft/{ICAO}?debug=1` (other params preserved).
+
+**D. Visual regression check**
+
+D1. Watchlist tab cards, Military tab cards, Stats card layouts — no visual change. The CSS additions are scoped to `.anchor-found-banner`, `.anchor-miss-banner`, and `.anchor-clear-btn` — none of those exist outside the aircraft detail page.
+
+D2. The miss-banner visual change is structural (was a single string, now is a span + button). The amber color, padding, and border are unchanged. Should look essentially identical except for the new × button at the right edge.
+
+## [2.72.0] — 2026-05-04
+
+### Removed
+- **No user-visible changes — internal cleanup that removed ~150 lines of unreachable code and CSS that became orphaned when the All tab was removed in v2.67.0.** A single user-visible string was also corrected: an "All tab" reference in a banner that hadn't been updated when the tab was removed now reads "click the ICAO" instead.
+
+  Behind the scenes: Phase 3 hygiene cleanup. The v2.66.0 changelog flagged `renderDrillTable` as unreachable (every drillable card in `DRILL_COLUMNS` has either `preset` or `rowPreset` set, all of which route through the Option C full-width panel instead of the inline drill renderer). v2.67.0 (Phase 1D) removed the All tab — the destination that `renderDrillTable`'s footer button pointed at via `safeJumpToAllTab` → `jumpToAllTab`. With both upstream signals in place, the entire dead chain came out:
+  - `renderDrillTable(cardId, rows)` — the inline drill renderer (~80 lines)
+  - `jumpToAllTab(cardId, ev, value)` — its footer-button onclick handler (~40 lines)
+  - `safeJumpToAllTab(...)` — the try/catch wrapper around `jumpToAllTab` (~7 lines)
+  - The legacy branch in `toggleDrill()` that called `renderDrillTable` — collapsed to a defensive return (~25 lines simplified)
+  - `.tw-wrap` / `.tw-overlay` / `.tw-overlay.show` / `.tw-overlay-inner` CSS — orphaned with the All tab's in-place refresh overlay (~20 lines)
+  - `.row-card.row-highlighted` and `tr.row-highlighted` CSS — applied by the since-removed All-tab Stats jump flow; verified no JS adds the class anywhere (~10 lines)
+- **Misplaced comment block fixed.** The `// v2.41.28: defensive wrapper around jumpToAllTab` comment was stranded above the unrelated `expandCompositionDrill` function. Removed alongside the wrapper it described.
+
+### Fixed
+- **User-visible banner string referenced the dead All tab.** The truncation banner shown when a Search drill's sightings list is capped at 50 rows read "narrower window or All tab for full data." With the All tab gone in v2.67.0, that's a dead-end reference. Changed to "narrow your window or click the ICAO for the full aircraft view." Real catch — this isn't a comment, it's user-facing text that was missed in the v2.67.0 audit. Filed as honest acknowledgment: my Phase 1D audit checklist needed a `grep -rn "All tab" templates/` pass to catch user-visible strings (the v2.67.1 cleanup did the markdown but missed JS string literals).
+
+### Changed
+- **~15 stale code comments updated** to reflect post-Phase 1D state across `templates/index.html`, `server.py`, `collector.py`, `search.py`, `config_validator.py`, and `scripts/screenshots.py`. Selective triage applied — only updated comments that **actively describe current behavior in terms of the gone All tab**. Comments that are version-stamped historical accuracy (e.g. "v2.40.1 composite index for the All tab grouping query") were left as-is — rewriting them would erase real history. Comments that already had a v2.67.0 (Phase 1D) tombstone were also left alone. Examples of what changed:
+  - `_renderAddWlButtonInline`: "Live, Watchlist, Military, and All tab" → "Live, Watchlist, and Military"
+  - `refreshFirstSeen`: "Watchlist, Military, and All tabs" → "Watchlist and Military tabs"
+  - `_pollSystemStatus` tab counters: "Live / Watchlist / Military / All tabs" → "Live / Watchlist / Military tabs"
+  - Add-to-watchlist modal: "invoked from Live/Military/All tables" → "invoked from Live/Military tables"
+  - `screenshots.py` first-seen test fixture: "Watchlist, Military, and All tabs"
+  - `config_validator.py` `all_tab` block: clarified that validation is preserved purely for backwards-compat
+  - `search.py` two callsites: "today preset on the All tab" / "same pattern the All tab uses" → updated to current state
+  - `server.py` four callsites: peak/slowest/altitude card comments + diagnostics probe comment
+  - `collector.py` three v2.50.0 hourly-rollup comments
+
+### Implementation
+- **Real audit performed before each deletion.** Verified `renderDrillTable`'s reachability by grepping every cardId in `DRILL_COLUMNS` against the `preset`/`rowPreset` fields — all 13+ have one or the other, confirming the v2.66.0 "unreachable" claim. Verified `jumpToAllTab` had no callers outside `safeJumpToAllTab`, and `safeJumpToAllTab` had no callers outside `renderDrillTable`'s returned HTML — three-link chain, all dead with the head function. Verified `_searchQueryForStatsCard` survives — `runRowDrill` still calls it for the Composition-card row-click chain-drill path.
+- **`.row-highlighted` orphan check**: `grep -rn "row-highlighted\|rowHighlighted" --include="*.py" --include="*.html" --include="*.js"` returned only the CSS rules themselves — no JS code adds the class. Confirmed safe to delete.
+- **Tombstone comments** placed at deletion sites pointing at the v2.66.0 unreachability note and the Phase 1D removal so future maintainers can see the chain. Following the project's existing convention of marking removals with version-stamped reasoning.
+- **126 tests pass unchanged.** No new tests added — this is pure dead-code excision and comment reflow with no behavioral surface.
+- **JS/CSS brace deltas validated** at each step of the deletion to catch accidental over-deletion. All deltas zero throughout.
+
+### Notes
+- **No backend schema changes; restart-only upgrade.** Hard-refresh browser to pick up the JS/CSS changes.
+- **No public API surface changes.** `/api/stats/drill` and `/api/all/drill` are untouched. The frontend just stops calling certain dead-code paths into the renderer.
+- **The 47 "All tab" references that remain in code comments** are intentional: historical version-stamped notes, v2.67.0 (Phase 1D) tombstones explaining what was removed and why, and false-positive matches like `// Re-fetch all tab data` (where "all tab" means "every tab", not "the All tab"). Removing those would damage the codebase's historical record.
+- **What's NOT in this release**: no behavior change for any user-visible flow. The Stats card drill panels, Search page, and per-aircraft detail pages all behave identically. The user-visible banner string fix is the only behavior-adjacent change, and it's strictly an improvement (the old text was misleading post-v2.67.0).
+- **Honest acknowledgment**: the user-visible banner string was missed in the v2.67.x audit because my checklist focused on `*.md` files and the file-creation flow, not on JS string literals. Lesson now filed: after a major UI surface removal, a follow-up `grep -rn "<old-feature-name>" templates/` for user-visible strings should run alongside the markdown/PDF/screenshots passes. v2.72.0 catches this one; the lesson generalizes to future surface removals.
+
+### Comprehensive testing plan
+
+After installing v2.72.0, restart the service and hard-refresh the browser. Then walk through:
+
+**A. No regressions on drill panels**
+
+A1. Stats tab → Today's Extremes section → click any card (Furthest, Highest altitude, Lowest altitude, Fastest, Slowest, Longest track). Drill panel expands as a full-width row at the bottom of the .stats-grid. Top-25 aircraft visible with their per-card metric.
+
+A2. Click any row in the drill panel. Should navigate to `/aircraft/{ICAO}` with the appropriate `?sighting=...` query param if the row has a `seen_at`.
+
+A3. Click a different card while one is expanded. Old panel collapses, new one expands.
+
+A4. Press Esc with a panel open. Panel collapses.
+
+**B. Search redirects (the surviving redirect surfaces)**
+
+B1. Stats tab → Furthest card → click "View in Search →" footer button. Should land on Search with `today` query active and sort applied to distance desc.
+
+B2. Stats tab → Highest altitude / Fastest / etc. → all the surviving Today's Extremes cards. Each redirects correctly.
+
+B3. Stats tab → Composition cards (Top types, Top operators, Top countries, Military branches, Category mix). Click the panel-level "Expand to all" button — panel re-renders with the full list (not a Search redirect).
+
+B4. Click any individual row inside an expanded Composition panel. Should redirect to Search with the appropriate filter (`B738` for a top-type row, etc.).
+
+**C. Search drill banner (the user-visible string fix)**
+
+C1. Search tab → run a query that returns aircraft with many sightings (e.g. `today`). Click "N sightings ↗" on any result row. Sightings region expands.
+
+C2. If the result has more than 50 sightings, the truncation banner now reads "Showing N of M — narrow your window or click the ICAO for the full aircraft view." (Pre-v2.72.0 it read "narrower window or All tab for full data.")
+
+**D. Composition card row-clicks (dead-code-removal regression check)**
+
+D1. Stats tab → Top types card → expand drill panel → click any row (e.g. "B738"). Should redirect to Search with `B738` query. (`runRowDrill` calls `_searchQueryForStatsCard`, which survives this release; row-click chain-drill is the surface that's most likely to regress if the dead-code excision missed something.)
+
+D2. Repeat for Top operators, Military branches, Category mix, Top countries.
+
+**E. CSS regression check**
+
+E1. Watchlist tab cards: borders, padding, background colors all rendering as before. (The `.row-card.row-highlighted` rule is gone, but no JS code added that class anyway, so this is just confirmation that the removal didn't break neighboring rules.)
+
+E2. Drill table rendering: no visual difference. (The `tr.row-highlighted > td` rules are gone; same reason.)
+
+**F. Code-quality validation (for the curious)**
+
+F1. View the rendered page source: `renderDrillTable`, `jumpToAllTab`, `safeJumpToAllTab` should all be absent from the JS. `_searchQueryForStatsCard` should still be present.
+
+F2. `grep -c "renderDrillTable\|jumpToAllTab\|tw-wrap\|tw-overlay\|row-card.row-highlighted\|tr.row-highlighted" templates/index.html` returns the count of references; should be only the tombstone comments documenting the removals (~5–10 matches), not actual usage.
+
+## [2.71.0] — 2026-05-04
+
+### Fixed
+- **Status page no longer reports a misleading "hexdb.io read timeout" error when your track-link provider doesn't actually need that service.** If you're on `airplanes_live` (or any provider that uses ICAO hex directly), the Tail Resolver card now reads "Not in use" with a clean explanation instead of repeatedly probing hexdb.io and surfacing transient timeout errors as a scary red status. No configuration change required — Aerodrome reads your existing `track_link_provider` setting and gates the probe accordingly.
+
+  Behind the scenes: caught when the user noticed the Status page repeatedly showing `HTTPSConnectionPool(host='hexdb.io', port=443): Read timed out. (read timeout=2)` while running on `airplanes_live` — a provider that uses ICAO hex directly and never calls the resolver. The probe ran every 30s regardless of whether anything in the install actually needed hexdb, and when hexdb.io was slow or briefly down the timeout exception bubbled up to the Status card as a scary error string. The fix: gate the probe on the same signal the frontend already uses for `refreshTails()` — if `track_link_providers[chosen].reg_required` is false, skip the network call entirely and show a clean "Not in use" status.
+
+### Changed
+- **Tail Resolver card layout when not in use.** The Status row now reads "Not in use" (cyan, ok-styled) instead of "Reachable" / "Unreachable" — the card no longer claims a probe outcome it didn't actually measure. The "Not in use — *Provider* uses the ICAO hex directly and doesn't need tail-number lookup" explanatory note is now rendered independently of the cache-stats availability check (pre-v2.71.0 it was nested inside the cache-stats IIFE and would disappear if `db_available` was false on first boot, which made the card briefly mysterious for fresh installs). Cache-stats rows are also suppressed when not-in-use to avoid three rows of zeros next to the explanatory text.
+
+### Implementation
+- **Server (`server.py /api/status`)**: provider lookup moved from the bottom of the hexdb_check block to the top so the same `provider_requires_tail` value can gate the network probe. When false, synthesizes `{"ok": True, "response_ms": None, "error": None, "cache_stats": None, "probe_cached_age_sec": 0, "probe_skipped": True}` instead of running the request. The cache-stats attachment and provider-context attachment paths run after the conditional, unchanged. Defensive default: if the provider config can't be read (malformed config), `provider_requires_tail` defaults to True so we don't accidentally hide a real outage.
+- **Frontend (`templates/status.html`)**: the Status row branches on `probe_skipped` — when true, renders "Not in use" with ok styling. The "Not in use" explanatory block is pulled out of the cache-stats IIFE so it renders whenever `provider_requires_tail === false`, regardless of whether `db_available` is true. The cache-stats IIFE now also early-returns when `provider_requires_tail === false` to avoid showing zero-rows alongside the explanatory text.
+- **Why Option 1 (gate on track-link only) over Option 2 (also gate on watchlist tail entries)**: a user with tail-based watchlist entries on an airplanes_live install does need hexdb at config-reload time for `resolve_tail_to_icao`, but only at startup, not at runtime. Watchlist-tail resolution failures already log to `tracker.log` at startup. A continuous reachability probe doesn't help that surface — by the time the user looks at the Status page, the watchlist resolution either succeeded (cached) or failed at startup (logged). The probe gate follows the runtime usage signal (track_link provider) rather than the start-time usage signal (watchlist tails). Consistent with the gate `refreshTails()` already applies on the frontend.
+
+### Notes
+- **No backend schema changes.** Restart-only upgrade. Hard-refresh browser to bust the JS cache for the Status card layout.
+- **The hexdb cache (`hexdb_cache` table) and the resolver code paths are unchanged.** When the user does change `track_link_provider` to one that needs a registration (FR24, AirNav, PlaneFinder), the probe re-engages on the next `/api/status` poll and the card returns to its full Reachable/Unreachable behavior with cache-stats rows.
+- **`probe_skipped` is a new field in the `/api/status` `hexdb_resolver` object.** Existing API consumers that don't know about the field are unaffected — they'll see `ok: true` and `error: null` and treat the resolver as healthy, which is the right outcome for installs where it's not in use.
+- **Watchlist tail-entry edge case acknowledged**: an airplanes_live user with tail-based watchlist entries gets startup log messages if hexdb resolution fails for those entries (existing behavior, unchanged). The Status page won't continuously warn about the resolver state in that case — by design. If this turns out to be a real pain point, Option 2 (also gate on watchlist tails) can be filed.
+- **Honest acknowledgment**: this was a v2.49.1-era piece of latent UX debt — the existing "Not in use" explanatory text already existed but was strung along with a continuous probe that produced misleading error noise. The right shape was always to gate the probe; v2.71.0 finally does it.
+
+### Comprehensive testing plan
+
+After installing v2.71.0, restart the service and hard-refresh the browser. Then walk through these:
+
+**A. airplanes_live (default provider, doesn't need reg)**
+
+A1. Open the Status page. Tail Resolver card should show:
+- Light: green dot
+- Status row: "Not in use" (cyan)
+- No "Response time" row (probe wasn't run)
+- No warn-box error (no error to show)
+- "Not in use — airplanes.live uses the ICAO hex directly..." explanatory note visible
+- No cache-stats rows below
+
+A2. Header banner should NOT show "advisory issue with tail resolver" — gear icon stays clean.
+
+A3. Network monitor: open browser dev tools, watch the network tab while staying on the Status page through one auto-refresh cycle (default 10s). Confirm no request to `hexdb.io` is made by the server (only by the dev tools' page reload, not by the server-side probe — which is invisible to the browser anyway, so the real test is the absence of the timeout error string).
+
+**B. Switch to FR24 (provider that DOES need reg)**
+
+B1. Configuration → Receiver → change Track link provider to "Flightradar24" (or AirNavRadar / PlaneFinder). Save. Restart service.
+
+B2. Reload Status page. Tail Resolver card should now show:
+- Light: green dot (or amber if hexdb is actually down)
+- Status row: "Reachable" (or "Unreachable")
+- Response time row: actual ms
+- If unreachable: warn-box error string visible
+- No "Not in use" explanatory note
+- Cache-stats rows visible
+
+B3. Confirms that the probe re-engages when the provider changes.
+
+**C. Edge cases**
+
+C1. Malformed config (e.g., `track_link_provider: "unknown_provider_name"`): server defaults to `TRACK_LINK_FALLBACK` (airplanes_live), which doesn't require reg, so the card shows "Not in use." Acceptable.
+
+C2. Config read failure (extreme edge — file permissions broken?): server's defensive default is `provider_requires_tail = True`, so the probe runs and the user gets normal Reachable/Unreachable behavior. They won't accidentally have a real hexdb outage hidden from them.
+
+C3. Stale cached error from before the upgrade: the `hexdb_probe_cache` is in-memory, cleared on restart. On a fresh restart with airplanes_live, the cache is empty, the new "skip probe" branch fires, and there's no stale error to clear. Confirmed by reading the server code path.
+
+**D. Watchlist tail entries (acknowledged limitation)**
+
+D1. If you have a watchlist entry like `{tail: "N12345"}` on an airplanes_live install: at startup, the collector calls `resolve_tail_to_icao("N12345")` which DOES hit hexdb. If hexdb is down at that moment, a startup log line says `Watchlist: could not resolve tail 'N12345'` and the entry is silently dropped from the runtime watchlist. The Status page card still shows "Not in use" — the probe-gate doesn't know about watchlist tails. This is the documented limitation; check `tracker.log` if you suspect a watchlist entry isn't matching.
+
+## [2.70.0] — 2026-05-04
+
+### Added
+- **Search now supports hour ranges and one-sided distance bounds.** Two new Search syntax additions: `hour:14-16` matches a contiguous range of hours (inclusive on both ends — three full hours covering 14:00 through 16:59), and `distance:<100` / `distance:>200` match aircraft under 100 or over 200 in your configured distance unit. The chip strip renders these naturally ("hour 14–16", "< 100 mi", "> 200 mi") so the result reads cleanly in your search history.
+
+  Behind the scenes: extends the existing `hour:N` single-bucket filter to support contiguous hour ranges. `hour:14-16` matches the three-hour window covering hours 14, 15, AND 16 (inclusive on both ends). `hour:0-23` is the full day. `hour:14-14` degenerates to single-hour behavior, equivalent to `hour:14`. Wraparound (`hour:23-1`) is rejected — users wanting "23:00 today plus 00:00–01:00 tomorrow" can run two queries. Range alignment respects `stats.timezone` the same way single-hour queries do (matches the Patterns histogram bucketing). Distance comparisons extend the existing `distance:LO-HI` two-sided range with single-bound forms; the chip strip renders these as "< 100 mi" and "> 200 mi" rather than the awkward "null–100 mi" the previous generic range chip would have produced.
+
+### Implementation
+- **Hour parser (`search.py:_classify_single_token`)**: the `hour:` token handler now branches on whether the value contains a `-`. Range form parses both bounds as integers, validates `0 ≤ lo ≤ hi ≤ 23` (rejects out-of-range or wraparound), and computes the unix range `[midnight + lo*3600, midnight + (hi+1)*3600)`. The `+1` on the upper bound implements inclusive-on-both-ends semantics — hour 16 means up through 16:59:59. Single-hour form unchanged. Both branches use the same `tz_offset_sec`-aware midnight computation.
+- **Distance parser (`search.py:_classify_single_token`)**: the `distance:` token handler now checks for the `<` or `>` prefix BEFORE attempting the existing `LO-HI` parse. Comparison forms produce a range filter with one bound set to None: `distance:<100` → `[None, 100]`; `distance:>200` → `[200, None]`. Numeric value validated as non-negative; `<0` and `>-5` fall through to free text. Two-sided ranges unchanged.
+- **WHERE builder (`search.py:_build_where`)**: distance range branch rewritten to handle the None-bound case. Always emits the `last_distance IS NOT NULL` guard. Lower bound emits `>= ?` for two-sided ranges, `> ?` for `distance:>N` (so the comparison op matches the user's intent). Upper bound emits `< ?` in both two-sided and `distance:<N` cases (exclusive-on-hi matches both bucket convention and the `<` operator). Skip the corresponding clause when a bound is None.
+- **Frontend chip rendering (`templates/index.html`)**: the existing range-chip branch detects None-bound values and renders "< N unit" or "> N unit" instead of the literal "null–N" string. The two-sided "LO–HI unit" rendering is unchanged.
+- **Inline help cheatsheet (`templates/index.html:_renderSearchHelpPanel`)**: updated the "Hour of day" row to show `hour:14` AND `hour:8-10` examples; updated the "Distance" row to show `distance:50-100` AND `distance:<25` AND `distance:>200`. Cheatsheet matches doc surface — applying the v2.69.1 lesson about two-surface drift.
+- **Documentation (`docs/SEARCH_SYNTAX.md`)**: added "### Hour of day" and "### Distance" subsections after Date. Both cover the new syntax and explain the inclusive-inclusive (hour) vs inclusive-exclusive (distance) asymmetry. Auto-rendered into the in-app Documentation viewer.
+- **13 new parser tests (`test_search.py`)**: 6 hour-range tests (basic, single-bucket-degeneracy, full-day, wraparound rejection, out-of-bounds rejection, tz-aware), 7 distance-comparison tests (`<` shape, `>` shape, `<` WHERE clause, `>` WHERE clause, two-sided regression, `<` invalid input rejection, `>` invalid input rejection). 126 total tests now pass (was 113).
+
+### Notes
+- **No backend schema changes.** Restart-only upgrade. Hard-refresh browser to bust the JS cache.
+- **Hour and distance asymmetry is intentional.** Hour ranges are inclusive on both ends because they read as calendar intervals ("hours 14 through 16" naturally includes hour 16). Distance ranges are inclusive-exclusive because they read as buckets ("50–100 mi" is a 50-mile-wide bucket; making it 51-mile-wide would be surprising). The asymmetry is documented in `docs/SEARCH_SYNTAX.md` and the in-app cheatsheet so users can reason about it.
+- **Manual typing**: users can compose freely — `today hour:8-10 military` returns military aircraft seen this morning between 08:00 and 10:59; `B738 distance:>200` returns 737-800s ever seen at over 200 mi (lifetime view, doesn't add a `today` constraint); `distance:<25 watchlist today` returns close-by watchlist aircraft seen today.
+- **No new database queries.** Both extensions reuse the existing WHERE clause shapes — they just emit different parameter combinations.
+- **Phase 3 Tier 1 complete with this release.** All four queue items closed:
+  - ✅ longest_track redirect cleanup (v2.68.0)
+  - ✅ first_seen_today filter (v2.69.0 + v2.69.1 doc patch)
+  - ✅ hour:LO-HI range syntax (v2.70.0)
+  - ✅ distance:<N / distance:>N comparison syntax (v2.70.0)
+
+### Comprehensive testing plan
+
+After installing v2.70.0, restart the service and hard-refresh the browser. Then walk through these:
+
+**A. Hour ranges**
+
+A1. Type `hour:14-16`. Chip strip shows date chip "Hour 14:00–16:00 today" or similar (whatever the existing chip-renderer produces). Results show aircraft seen between 14:00 and 16:59:59 today.
+
+A2. Type `hour:8-10`. Same shape; window is 08:00–10:59:59 today.
+
+A3. Type `hour:0-23`. Full-day window, equivalent to `today`. Verify by also running `today` and confirming similar result counts.
+
+A4. Type `hour:14-14`. One-hour window, equivalent to `hour:14`. Verify same count.
+
+A5. Type `hour:23-1`. Should fall through to free-text — the chip shows the dashed-border "free text" treatment, not a date chip. (Wraparound rejected.)
+
+A6. Type `hour:14-25`. Same as A5 — out-of-bounds rejected, falls through to free text.
+
+A7. Type `today hour:8-10`. Two narrowing date constraints; the parser's narrower-wins logic picks the hour range. Same result as A2.
+
+**B. Distance comparisons**
+
+B1. Type `distance:<100`. Chip shows "Distance < 100 mi" (or your configured unit). Results include only aircraft under 100 of the receiver.
+
+B2. Type `distance:>200`. Chip shows "Distance > 200 mi". Results include only aircraft over 200.
+
+B3. Type `distance:50-100`. Chip shows "Distance 50–100 mi" (existing behavior, unchanged).
+
+B4. Type `distance:<0`, `distance:<abc`, `distance:>-5`, `distance:>abc`. All should fall through to free text — invalid bounds rejected.
+
+B5. Type `military distance:<50`. Two chips: Military + Distance. Results include only military aircraft under 50.
+
+**C. Composition with other filters**
+
+C1. Type `B738 hour:8-10 today`. Returns 737-800s seen during the morning rush today.
+
+C2. Type `watchlist distance:>100`. Returns watchlist aircraft seen at over 100 of the receiver, lifetime.
+
+**D. Help cheatsheet**
+
+D1. Click the "?" button next to the Search input. Cheatsheet should now show:
+- "Hour of day" row: `hour:14`, `hour:8-10`, with "specific hour or inclusive range (0–23)" tail.
+- "Distance" row: `distance:50-100`, `distance:<25`, `distance:>200`, with "bucket range, under, or over (your configured unit)" tail.
+
+D2. Open the docs page (`/documentation#search_syntax`). New "Hour of day" and "Distance" subsections visible after the "Date" subsection.
+
+**E. Edge cases**
+
+E1. tz handling: change `stats.timezone` in config (`America/Los_Angeles` if you're not already on it), restart, hard-refresh. Run `hour:14-16`. Window should align to 14:00–16:59:59 in the configured zone.
+
+E2. Distance unit: change `receiver.distance_unit` to `km` in config, restart. Run `distance:<100`. The 100 should be interpreted as km. Chip shows "< 100 km".
+
+E3. Empty input + back-button: run a hour-range query, navigate away, navigate back. Hash URL `#search?q=hour:14-16` should restore the same query (existing hash-restore behavior unchanged).
+
+## [2.69.1] — 2026-05-04
+
+### Fixed
+- **The Search "?" help cheatsheet now lists the `first_seen_today` token alongside the rest of the Search syntax.** v2.69.0 added the parser token, the chip rendering, the Stats card redirect, and the documentation page entry — but missed the inline cheatsheet that pops up when you click the "?" button next to the Search input. Caught by a user who opened the cheatsheet expecting to see the new token documented. Now consistent across all four surfaces.
+
+  Behind the scenes: the cheatsheet is a separate render path from `docs/SEARCH_SYNTAX.md` — it lives inline in `templates/index.html` as a hard-coded HTML block per `Search syntax`-titled panel — so the v2.69.0 doc edit didn't propagate to it.
+
+### Implementation
+- Added a `<div class="help-row">` for "First seen today" between the existing Watchlist and Date rows. Matches the formatting pattern used by the other boolean tokens (`military`, `watchlist`): a `<code>` chip with the literal token plus a dim explanatory tail.
+- Cheatsheet is rendered by `_renderSearchHelpPanel` in `templates/index.html` (around line 4445).
+
+### Notes
+- **No code-behavior changes.** Documentation patch only. Restart not required, but a hard-refresh is needed to pick up the new HTML block.
+- **Honest acknowledgment**: v2.69.0 had a real "did I update everywhere this token is documented" check that I executed for `docs/SEARCH_SYNTAX.md` but missed for the inline cheatsheet. Two-surface drift between the in-app docs and the inline help is a real risk to file — there's no shared source of truth between these two surfaces. A future Phase 3 polish item could extract them to a shared source. Filed.
+
+## [2.69.0] — 2026-05-04
+
+### Added
+- **New `first_seen_today` Search filter — find aircraft whose first-ever sighting on your receiver was today.** Type `first_seen_today` in the Search box to see only today's brand-new aircraft, or combine with other tokens (e.g. `first_seen_today military` for new military aircraft, `first_seen_today B738` for new 737-800s). The "First time seen today" Stats card now also has a "View all in Search →" button that opens this filtered view with full pagination.
+
+  Behind the scenes: matches aircraft whose first-ever sighting on this receiver was today (per `stats.timezone`). Composes naturally with the rest of the parser: `first_seen_today military` returns military aircraft seen for the first time today; `first_seen_today B738` returns 737-800s seen for the first time today; `today first_seen_today` is equivalent to `first_seen_today` alone (the extra `today` token is redundant since "first seen today" already implies "seen today"). The chip strip emits "First seen today" with no value separator, matching the boolean-filter chip pattern used by `military` and `watchlist`. Backs the v2.66.0-era gap where the Stats "First time seen today" card was the only Stats surface that didn't have a Search redirect (the v2.66.0 changelog explicitly omitted one because Search lacked the filter to back it; v2.69.0 closes that gap).
+
+### Implementation
+- **Parser (`search.py`)**: new `lower == "first_seen_today"` branch in `_classify_single_token`. Returns a boolean filter dict with the precomputed `first_seen_range` field set to today's local-day window (computed via the same tz-aware math as `today` and `hour:N` — `((now + tz_offset_sec) // 86400) * 86400 - tz_offset_sec` for midnight, plus 86400s for the day-end). Storing the timestamps on the filter dict keeps `_boolean_filter_clauses` tz-clean — no need to re-thread `tz_offset_sec` to the WHERE-builder.
+- **WHERE builder (`search.py:_boolean_filter_clauses`)**: new branch detects the `first_seen_today` filter, reads the precomputed range, and appends `seen_aircraft.first_seen_at >= ? AND seen_aircraft.first_seen_at < ?`. Same shape as the existing `time_range` clause but bound to `first_seen_at` rather than `last_seen_at`. AND-composes with all other filters per the existing clause-merging logic.
+- **Frontend chip rendering (`templates/index.html`)**: `FILTER_FIELD_LABELS['first_seen_today']` set to `'First seen today'`. The existing boolean-filter branch in the chip renderer handles it without code changes — `match === 'boolean'` causes the chip to render with just the label (no value separator), and the field doesn't get the `.filter-chip-military` / `.filter-chip-watchlist` styling class so it inherits the default chip border/padding.
+- **Stats card button (`templates/index.html:firstTimeSeenCard`)**: new "View all in Search →" button below the "+M more" counter. Calls `redirectFirstSeenTodayToSearch(event)`. The button uses the existing `.drill-all-link` class for visual consistency with the rest of the Stats redirect buttons.
+- **Redirect helper (`templates/index.html:redirectFirstSeenTodayToSearch`)**: clears persisted date-range preset (matches v2.63.1 jumpToAllTab behavior — Stats redirects shouldn't inherit stale presets), sets the URL hash to `#search?q=first_seen_today`, switches to the Search tab, populates the input, and calls `runSearch`. No sort applied (relevance order is fine for "show me today's new aircraft"); leaves any user-active sort untouched.
+- **Documentation (`docs/SEARCH_SYNTAX.md`)**: new "First seen today" subsection between "Watchlist" and "Date" with examples and the cross-link to the Stats card. Auto-rendered into the in-app Documentation viewer.
+- **5 new parser tests (`test_search.py`)**: token recognition, tz-offset window alignment, composition with other filters, composition with `today` token, and `_build_where` clause emission. 113 total tests now pass (was 108).
+
+### Notes
+- **No backend schema changes.** `seen_aircraft.first_seen_at` is a long-standing column; the new code just reads it. Restart-only upgrade.
+- **No new database queries.** The clause is added to the existing Search WHERE statement.
+- **Performance**: `first_seen_at` doesn't have a dedicated index, but Search queries always also have other constraints (FTS query, time_range, or the score-ordered LIMIT) that bound the result set well before this clause matters. No measurable latency impact on test queries.
+- **Manual typing**: users can type `first_seen_today` directly into the Search input. Combines with everything: `first_seen_today military C172` returns the C172 military aircraft (if any) seen for the first time today; `first_seen_today United States` returns US-registered aircraft seen for the first time today.
+- **Aircraft-detail-page navigation from the Stats card**: the in-card list items are still not click-to-detail (matches their previous behavior). Filed as a separate Phase 3 polish item if desired — the v2.69.0 scope is the View-all-in-Search redirect and the parser token, not the per-row click target.
+- **Phase 3 progress**: 2 of 4 Tier-1 items complete (longest_track redirect cleanup in v2.68.0, first_seen_today filter in v2.69.0). Remaining: `hour:14-16` range syntax, `distance:<100`/`distance:>200` comparison syntax.
+
+### Comprehensive testing plan
+
+After installing v2.69.0, restart the service and hard-refresh the browser. Then walk through these:
+
+**A. Parser token**
+
+A1. Open Search tab. Type `first_seen_today` and press Enter. Chip strip should show "First seen today" (no value, just the label). Results show aircraft whose `first_seen_at` falls within today's local-day window. If nothing was new today, the empty state appears.
+
+A2. Type `first_seen_today military`. Two chips: "First seen today" + "Military". Results AND both filters.
+
+A3. Type `first_seen_today B738`. Two chips: "First seen today" + Type "B738". Results show 737-800s seen for the first time today.
+
+A4. Type `first_seen_today United States`. Two chips: "First seen today" + Country "United States".
+
+A5. Type `today first_seen_today`. Two chips: "First seen today" + Date chip "Today". Results identical to (A1) — `today` is redundant when `first_seen_today` is already present, but doesn't break the query.
+
+**B. Stats card redirect**
+
+B1. Open Stats tab → History section → "First time seen today" card. Card shows up to ~10 ICAOs, possibly a "+N more" counter for installs with many new aircraft. **New** "View all in Search →" button visible at the bottom-right of the card.
+
+B2. Click "View all in Search →". Should navigate to Search tab with input pre-populated to `first_seen_today` and the full list of today's new aircraft as paginated results.
+
+B3. Verify the date-range preset clearing: from any Search session, click Last 7 days preset. Then navigate back to Stats and click the View-all button. Should arrive at Search with NO preset chip — the Last-7-days was cleared by the redirect.
+
+**C. Edge cases**
+
+C1. **No new aircraft today** (everything you see today has been seen before). The "First time seen today" card shows the empty state — `no new aircraft today — everything flying today has been seen before`. The "View all in Search →" button does NOT appear (the empty branch returns early, no button rendered). Correct: nothing to view.
+
+C2. Manual typing of the token at the start of the day (when `first_seen_today` matches every aircraft currently visible). The query still runs in milliseconds; the WHERE clause adds bounded constraints, doesn't blow up.
+
+C3. Reload the page after running a `first_seen_today` query. The query persists in the URL hash (`#search?q=first_seen_today`) so a hard reload keeps the user on the same query.
+
+**D. Documentation**
+
+D1. Open `/documentation#search_syntax`. New "First seen today" subsection visible between "Watchlist" and "Date".
+
+## [2.68.0] — 2026-05-04
+
+### Changed
+- **Stats "Longest track today" card now shows results inline instead of a misleading "View in Search →" button — and the inline list is dramatically faster on Pi-class hardware.** Pre-v2.68.0 clicking the card's redirect button opened Search with a "today, sorted by recency" view that wasn't actually ranked by track duration; the panel you came from already had the right answer (top 25 aircraft by today's longest contiguous track). The redirect was removed; the inline panel is now the sole authoritative answer. Performance on the same data went from ~30+ seconds (often timing out) to ~0.5–1.5 seconds on a Pi with 700K daily rows.
+
+  Behind the scenes: Phase 3 cleanup. v2.66.0 wired the redirect to fall back to a `today` filter sorted by `seen_at desc` because Search has no track-length sort; the v2.66.0 changelog flagged this as an honest limitation. In practice the fallback was misleading — clicking the card landed users on a Search results page ranked by arrival time rather than track duration, which is meaningfully different from the panel they came from. The drill panel itself already shows the top-25 aircraft ranked by today's longest contiguous track (server-side Python walk computes the per-icao best session), and that's the honest answer to "show me today's longest tracks." Following the `first_time_seen_today` precedent: drop the misleading button entirely. Users still get the ranked top-25 inline; clicking any row navigates to the aircraft detail page (existing behavior).
+- **`/api/stats/drill?card=longest_track` rewritten from window-function SQL to a Python single-pass walk.** Latent perf bug surfaced as part of the redirect cleanup. The drill endpoint used the same `LAG + SUM(OVER) + ROW_NUMBER(OVER)` pattern that v2.42.9 specifically called out as 30+ seconds on a Pi with ~3M rows for the corresponding stats summary card — but only the summary card was rewritten, the drill endpoint retained the slow SQL. With the v2.68.0 redirect cleanup, the drill click becomes the **primary** way to access this data (no more Search redirect to fall back to), so the slow path matters more. Rewritten to mirror the v2.42.9 card-path pattern: stream `(icao, seen_at)` rows via `idx_all_seen_icao` covering index, walk in Python tracking longest contiguous span per icao (gap > `track_gap_minutes` ends a session), emit ranked rows. Observed cost on a Pi with ~700K rows/day: ~500-1500ms total (vs prior 30+s). Same gap-aware semantics as the summary card.
+
+### Implementation
+- **Frontend (`templates/index.html`)**: removed the `case 'longest_track':` branch from `_searchRedirectForExtremesCard`. The function now returns `null` for that cardId, which causes `renderOptionCDrillPanel` to suppress the footer button entirely (existing behavior — same path the `default` branch takes for unmapped cards). Comment block above the function updated to describe the v2.68.0 reasoning and the `first_time_seen_today` precedent. The `peak_simultaneous` honest-limitation note remains since that redirect is unchanged.
+- **Backend (`server.py /api/stats/drill?card=longest_track`)**: replaced the four-CTE window-function SQL with a Python walk. SELECT scans `(icao, seen_at)` ordered via `INDEXED BY idx_all_seen_icao`; results grouped by icao in a dict, each group's timestamps sorted, walked once tracking session bounds (start, last, duration). Per-icao best stored as a tuple. Final list sorted by duration desc. Callsign and aircraft_type resolved via a single follow-up `IN (...)` query against `idx_all_icao` capped at the top-100 ranked icaos (drill panel renders top-25 by default, View-all expand bypasses cap; even on busy receivers the user-visible portion never exceeds ~100 rows, beyond which rows render with empty callsign/type but identifiable ICAO).
+- **Cap rationale**: 100 ICAOs × ~1 row/icao from the IN-clause query (we keep only the latest seen_at per icao via dict-first-write semantics) = ~100ms metadata query. Below 100 the IN-clause is fast enough that capping doesn't matter; above 100 we'd be transferring 100s-of-MB for users who'll never scroll that far.
+- **108 tests pass unchanged.** No new tests added — the rewrite preserves the prior contract (same input parameters, same output row shape, same gap semantics) and the existing summary card tests cover the gap-aware Python walk pattern.
+
+### Performance
+
+| Scenario | v2.67.2 | v2.68.0 |
+|---|---|---|
+| Quiet receiver (~50K rows/day) drill click | ~3-5s | ~50-150ms |
+| Suburban receiver (~300K rows/day) drill click | ~10-15s | ~200-500ms |
+| Busy receiver (~700K-1M rows/day) drill click | ~30-60s | ~500-1500ms |
+| Pi with ~3M rows | unusable (timeout-territory) | usable (~1-3s) |
+
+The drill endpoint now has the same latency profile as the summary card. On lightweight receivers the win is modest in absolute terms (a few seconds) but qualitative — the click feels responsive instead of "did the page hang?"
+
+### Notes
+
+- **No backend schema changes; restart-only upgrade.** Hard-refresh browser after install to bust the JS cache for the frontend redirect change.
+- **Bookmarks to a Stats-redirected Search URL like `#search?q=today` arriving from longest_track**: the URL still works (it's just a normal Search query). v2.68.0 simply doesn't generate that URL anymore from the drill panel. Users who saved the URL get the same arrival-time-sorted view as before.
+- **Track-length sort in Search remains a separate Phase 3 feature.** v2.68.0 doesn't add it. The architectural note from the v2.68.0 design discussion: a real "today's track length" sort in Search would require precomputing the per-icao value (running the Python walk every search query is 10x slower than the current sort and would impact every Search interaction). That's a substantial change with schema implications — filed for Phase 3+ if there's user demand beyond the now-removed redirect.
+- **Honest acknowledgment**: the v2.42.9 rewrite of the summary card path explicitly identified the same anti-pattern in the drill endpoint at the time, but the drill endpoint wasn't rewritten because the summary card was higher-traffic and the drill click was tolerable on smaller receivers. v2.68.0 finally addresses it. The reason is the redirect cleanup: with no Search fallback, the drill click is the primary surface for this data, so its latency now matters more.
+- **PII scrub fix**: the v2.67.2 CHANGELOG entry describing the screenshot PII removal accidentally included the real IP address it was claiming to redact (a textual reference to the IP that the PII scrub tool flagged on the next pass). Scrubbed in v2.68.0.
+
+## [2.67.2] — 2026-05-04
+
+### Fixed
+- **In-app PDF documentation and dashboard screenshots now reflect the post-Phase 1D layout — no more outdated references to the All tab.** v2.67.0 removed the All tab from the running app, but the PDF Overview document and the README's screenshot strip still showed the old five-tab layout. v2.67.2 catches that drift: regenerated all 18 dashboard screenshots and corrected the two paragraphs in the PDF that described the All tab as a feature row.
+
+  Behind the scenes: caught when the user reviewed the in-app documentation and noted that the overview document hadn't been regenerated to reflect Phase 1D. Two specific corrections in `docs/overview.md` (the markdown source the PDF builder consumes):
+  - The "What it does" section had a feature row labeled "All: complete searchable history of every aircraft seen within the retention window." That bullet is now "Search: full-text search across every aircraft your receiver has ever seen, going back as far as your retention window allows. Type a callsign, ICAO, type, country, operator, or relative-date token like `today`, `hour:14`, `distance:50-100`, `military`, `watchlist`. Sortable columns, date-range presets, page-size control, CSV export, and shareable hash URLs. Stats drill-panels deep-link here with the right filters and sort already applied." — accurate to v2.67.0+ behavior.
+  - The "Data model" section described "configurable per-tab retention (All / Military / Watchlist)" which was true in v2.66.x but stopped being accurate in v2.67.0 — retention is per-table, and one of the tabs is gone. Reworded to "configurable per-table retention (`all_sightings`, `military_sightings`, `watchlist_sightings`)" — the tables themselves still exist (the All table backs Search; that didn't change), and the retention keys still control them. The naming is more precise.
+- **Stale dashboard screenshots showed the old All tab and old version banners.** Caught when the user pointed out that the regenerated screenshots in v2.67.1 (well, the absence of a regeneration step) left v2.67.0/v2.67.1 shipping with `screenshot-live.png`, `screenshot-watchlist.png`, `screenshot-military.png`, `screenshot-stats.png`, `screenshot-export.png`, `screenshot-docs.png` still showing the v2.50.30-era tab strip with "Live · Watchlist · Military · Stats · All". Regenerated all 18 harness-driven screenshots via `scripts/screenshots.py`. New screenshots show the correct v2.67.2 tab strip (Live · Watchlist · Military · Stats · Search), the new aircraft-link cyan styling, and the post-v2.59.x card-row layout.
+- **`screenshot-config-notifications.png` had embedded PII and stale v2.40.1 branding.** The previous hand-captured version showed an "ADS-B Aerodrome" header (the old branding from before the rename) and a real LAN IP that matches the project's PII-scrub pattern — a binary asset that text-only PII scrubs missed. Added a `screenshot_config_notifications` renderer to the harness so future regenerations use synthetic data (the standard test-net IP `192.0.2.10` and synthetic ntfy URL `https://ntfy.sh/aerodrome-abc123`). The new screenshot is in v2.67.2's distribution.
+
+### Implementation
+- `docs/overview.md`: two text edits in the "What it does" feature-row block and the "Data model" section. The PDF builder is `scripts/build_overview_pdf.py`; it was rerun after the markdown edits.
+- `docs/Aerodrome_Overview.pdf`: regenerated. Now stamped at v2.67.2 (was v2.67.1 before this patch). 897.3 KB; 258 changelog entries summarized; 73 endpoints reflected (was 74 in v2.66.2 before `/api/all` was removed).
+- `scripts/screenshots.py`: new `screenshot_config_notifications` async renderer added between `screenshot_config_stats` and `screenshot_export`. Registered in the `renderers` list inside `main()`. Uses `switchTab('notifications')` then 800ms wait for the tab's local-ntfy fetch attempts to settle (they fail in the synthetic environment because `/api/ntfy/status` isn't mocked, which produces a realistic "Local ntfy server: Error" state — acceptable for a screenshot, mirrors what a fresh install looks like before ntfy is configured).
+- `docs/screenshot-config-notifications.png`: regenerated. PII-clean.
+- All harness-driven screenshots regenerated: `screenshot-live.png`, `screenshot-watchlist.png`, `screenshot-military.png`, `screenshot-stats.png`, `screenshot-status.png`, `screenshot-config.png`, `screenshot-config-database.png`, `screenshot-config-alerts.png`, `screenshot-config-backup.png`, `screenshot-config-stats.png`, `screenshot-config-notifications.png` (new), `screenshot-export.png`, `screenshot-docs.png`, `screenshot-logs.png`, `screenshot-performance.png`, `screenshot-diagnostics.png`, `screenshot-diagnostics-watchlist.png`, `screenshot-setup-guide.png`. 18 total.
+- 108 tests pass unchanged.
+
+### Notes
+- **No code changes; this is documentation-and-assets only.** Restart not strictly required, but a service restart will refresh the in-app documentation viewer's cached PDF and screenshots faster than waiting for the browser to re-fetch.
+- **9 hand-captured screenshots remain unchanged** from earlier releases: `screenshot-full-backup.png`, `screenshot-load-average.png`, `screenshot-load-overload.png`, `screenshot-notification-stats.png` (phone screenshot — not regenerable from harness), `screenshot-ntfy-update-card.png` (phone screenshot), `screenshot-sudoers-drift-standalone.png`, `screenshot-sudoers-required.png`, `screenshot-uninstall-ntfy.png`, `screenshot-upload-zone.png`. None are referenced from user-visible markdown (only from historical CHANGELOG entries), so their staleness is not user-visible.
+- **Honest acknowledgments:** The v2.67.0 ship missed the user-facing documentation audit; the v2.67.1 patch caught markdown/text references but missed the PDF and screenshots; v2.67.2 catches both. Real lesson now filed: when a user-visible UI surface is removed, the validation checklist is (a) code, (b) markdown/text docs, (c) the PDF that's built from those docs, (d) screenshots embedded in those docs. All four need explicit checks. Filing.
+
+## [2.67.1] — 2026-05-04
+
+### Fixed
+- **In-app documentation no longer mentions the All tab — every doc surface is updated to point at Search instead.** v2.67.0 removed the All tab from the running app but left documentation that still mentioned it. Caught when the user landed on the Search syntax help page (`/documentation#search_syntax`) and read "**2,000 sightings** — hard cap on lifetime sightings drill (use the All tab for unbounded sighting history)" — the suggested next step pointed at a UI surface that no longer exists. v2.67.1 sweeps nine separate doc surfaces to point users at the current paths.
+
+  Behind the scenes: updates across nine surfaces:
+  - **`docs/SEARCH_SYNTAX.md`**: the Limits section's "use the All tab for unbounded sighting history" now reads "click the ICAO to open the aircraft detail page (`/aircraft/{ICAO}`), which paginates the full sighting history via Load more" — pointing the user at the actual current path.
+  - **`docs/PERFORMANCE.md`**: the `all_days` retention key explanation no longer says "page back into the All tab"; reworded to "search or browse aircraft history beyond that window via the Search tab." Two performance benchmark rows in the query timing table renamed from "All tab count" / "All tab first page" to "Search count" / "Search first page" — same underlying queries, accurate label.
+  - **`docs/SEARCH_DESIGN.md`**: historical context note in the Context section updated to acknowledge the All tab existed only in v2.51.0's era, before v2.67.0.
+  - **`API.md`**: the dashboard route listing updated from "Live, Watchlist, Military, Stats, All tabs" to "Live, Watchlist, Military, Stats, Search tabs". The Aircraft data section's `/api/all` endpoint replaced with `/api/search` documentation; `/api/all/drill` description updated to clarify it's now the aircraft-detail-page consumer (not the All tab). The `/api/export?tab=all` row updated to `tab=watchlist` (the `all` value was removed in v2.67.0). curl example in "Calling these from outside the dashboard" updated to use `tab=military` instead of `tab=all`.
+  - **`config.yaml.example`**: the `all_tab.default_page_size` block removed. The config key was the All-tab pagination default; with the tab gone the key is unread by `server.py`. Existing user configs that still have it set will be silently ignored on load (no error).
+  - **`README.md`**: significant rework — TOC entry "[All tab](#all-tab)" dropped; screenshot block for the All tab replaced with a Search tab description plus a note that the screenshot can be regenerated via the harness; Stats tab feature bullet's "jump to the All tab with that aircraft filtered in" reworded to "jump to the Search tab with that aircraft filtered in and the record-setting sighting highlighted in cyan on the aircraft detail page"; All tab feature bullet replaced entirely with a Search tab feature bullet covering parser tokens, sortable columns, date-range presets, page size, export, and shareable hash URLs; First-seen chips and Squawk codes bullets updated to drop "and All"; Drill-down panel bullet rewritten to remove the "shared across All tabs" claim and the All-tab-specific lazy-load callout (the panel is now the dedicated detail page); Stats notes paragraph "do not affect the Live, Watchlist, Military, or All tabs" → "do not affect the Live, Watchlist, or Military tabs"; the `### All tab` configuration sub-section dropped entirely.
+  - **`CONTRIBUTING.md` and `DEVELOPMENT.md`**: bump-version.sh example commands updated — "Added CSV export for All tab" → "Added CSV export for the Search tab".
+  - **`scripts/screenshots.py`**: All-tab data fixture removed (~50 lines: `_ALL_RAW`, `_BY_ICAO_FLAT`, `ALL_AIRCRAFT` build); `'all'` payload entry and `if (url.includes('/api/all'))` mock route dropped from the synthetic-fetch wrapper; `screenshot_all` renderer function removed and dropped from the `renderers` list in `main()`. The embedded README content used to render `screenshot-docs.png` updated — All-tab bullet replaced with a Search-tab bullet. `docs/screenshot-all.png` deleted from disk (no longer reachable from any markdown).
+  - **`server.py`**: the database-size performance hint message ("consider shorter retention for the All tab or moving to a USB SSD") reworded to "consider shorter retention (`retention.all_days` in config) or moving to a USB SSD." Hint surfaces on the Performance diagnostic page when the database exceeds 5 GB.
+
+### Notes
+- **No code-behavior changes.** This is a documentation-only patch on top of v2.67.0. The running app behaves identically; only the on-page help, README, API doc, and supporting markdown are updated. Restart not required if you don't care about the documentation viewer reflecting the new content immediately, but a restart is cheap and reflects the changes everywhere.
+- **Internal code comments still reference "the All tab"** in places like `collector.py`, `search.py`, `server.py`'s legacy SQL query comments. These describe the architectural lineage (e.g. "the All tab page query falls back to raw `all_sightings` while the rollup is hot"). They're not user-visible and accurate descriptions of how the underlying SQL was originally designed; updating them would be a separate code-comment cleanup pass. Filed as Phase 3.
+- **The screenshot harness no longer renders `screenshot-all.png`.** If a Search-tab screenshot is wanted in the README in the future, add a `screenshot_search` renderer that switches to the Search tab and triggers a query against a mock `/api/search` response. Filed.
+- **Honest acknowledgment owed:** v2.67.0 ship missed the user-facing documentation audit. Code was clean, validation was clean, but `grep -rn "All tab" docs/ *.md` would have caught all of this in the v2.67.0 build. The lesson — when removing a major user-visible surface, the validation checklist should include explicit doc audit, not just code validation. Filed.
+
+## [2.67.0] — 2026-05-04
+
+### Removed
+- **The All tab is gone — Search is now the canonical "show me every aircraft" surface.** If you've been using the All tab to browse the full sighting history, every capability has moved to Search: date-range presets, full-text and parser-token filtering, sortable columns, page-size control, CSV export, and Stats drill-panel deep-links. The Search tab also adds capabilities the All tab never had (operator and country columns, distance-range filters, hour-of-day filters, deep-link sharing). The old `/api/all` endpoint is removed; the export menu's `tab=all` option is gone. Live, Watchlist, Military, and Stats tabs are unchanged.
+
+  Behind the scenes: Phase 1D of the "Search becomes canonical" effort. The All tab originally served as the browse-every-aircraft view, with date-range presets, a search box, page-size control, and a 11-column row layout. Over Phase 1 (v2.56.0–v2.66.2), Search absorbed every one of those capabilities — date-range chips and presets (v2.62.0), page-size persistence (v2.62.0), Operator and Country columns (v2.64.0), sortable column headers (v2.60.0), full-result-set distance sort (v2.60.1), parser tokens for `today` / `hour:N` / `distance:LO-HI` (v2.65.0), tz-aware time semantics (v2.66.2), and Stats drill-panel deep-links (v2.66.0). With Search at feature parity, the All tab was redundant chrome that confused first-time users about which surface to use for "show me every aircraft."
+- **`/api/all` endpoint removed.** The endpoint backed only the All-tab grouping query. `/api/all/drill` is **kept** — it powers the per-sighting history table on the aircraft detail page (`/aircraft/{ICAO}`) and is unrelated to the All tab itself; the shared URL prefix is historical.
+- **`/api/export?tab=all` removed.** The export endpoint still supports `tab=watchlist` and `tab=military`. Search has its own export path (Export ▾ menu on the Search tab) that uses `/api/search` + frontend CSV stitching, which is independent and unaffected.
+- **`.all-grid` CSS rules removed** from desktop, the 900px breakpoint, and the 700px mobile breakpoint. `.live-grid`, `.watchlist-grid`, and `.military-grid` are unaffected.
+
+### Implementation
+
+**Frontend (`templates/index.html`):**
+- Tab strip `<div class="tab" data-t="all">` removed.
+- Entire `<div class="panel" id="p-all">` block removed (markup, presets, controls, search box, page-size selector, Apply/Clear buttons, Export menu, sortable column headers, row container, Load-more bar). Replaced with an explanatory comment marking Phase 1D.
+- Functions removed: `fetchAll`, `loadMoreAll`, `_normalizeAllAircraft`, `onPageSizeChange`, `setPreset`, `setPresetUserClick`, `clearAllFilters`, the `toLocal` helper, the date-controls init IIFE, the `allSearch` keydown listener IIFE.
+- State removed: `allTabCurrentFromTs`, `allTabCurrentToTs`, `allTabOffset`, `allTabPageSize`, `allTabTotal`, `allTabHasMore`, `allTabLoading`, `activePreset`. `D.all` removed from the `D` object literal; `'all'` removed from the `sorts` dict and the `validTabs` set in the deep-link handler.
+- Render dispatcher: `'all'` removed from the `bid` map (`{live, watchlist, military}` only) and from the `emptyMsg` map. The `else` branch in `render()` that emitted the `.row-card.all-grid` markup is gone.
+- Refresh hooks: `'all'` removed from the tab list inside `refreshFirstSeen`, `refreshTailMap`, and `findAircraftByIcao`. `render('all')` calls removed from `refreshFirstSeen`, `refreshTailMap`, and the add-watchlist callback.
+- `go(t)`: the `if (t==='all' && !D.all.length) fetchAll();` activation line is gone. Only Search retains a tab-switch hook (`_searchOnOpen`).
+- Export: `else { // all` branch removed from `exportLatest`; `if (tab === 'all')` filter-passthrough block removed from `exportAllSightings`.
+- Legacy `renderDrillTable` (the unreachable inline drill path) keeps its comment about `_searchQueryForStatsCard(cardId, '')` returning null in v2.66.0 — still accurate post-Phase 1D.
+- Net frontend reduction: ~510 lines (panel markup ~90, JS functions ~290, CSS rules ~40, dispatcher branches ~50, miscellany ~40).
+
+**Server (`server.py`):**
+- `/api/all` endpoint and its 230 lines of grouping-query logic removed (rollup-vs-raw fallback, server-side filter parsing, stat enrichment).
+- `/api/export` `tab == "all"` branch removed; the validation error message updated to `"Must be watchlist or military."`.
+- Header endpoint summary updated.
+- `/api/all/drill` comment updated to note that the endpoint is now exclusively used by the aircraft detail page.
+- Net server reduction: ~230 lines.
+
+**Tests:** 108 unchanged. The All-tab path had no automated test coverage; removing the code didn't change any test surface.
+
+### Notes
+
+- **No backend schema changes; restart-only upgrade.** Hard-refresh browser to bust the JS cache.
+- **All-tab URL deep-links no longer work.** A bookmarked URL like `https://aerodrome.../?tab=all` previously landed on the All tab; now `validTabs` doesn't include `'all'` so the deep-link handler ignores the param and the user lands on the default Live tab. Notification deep-links (`/?tab=watchlist&icao=...`) for non-All tabs are unaffected.
+- **The aircraft detail page is unchanged.** Detail pages (`/aircraft/{ICAO}`) still use `/api/all/drill` for the sightings history table; nothing about that flow changed.
+- **Stats redirects to Search are unchanged.** All v2.66.0 redirect destinations still point at Search with the right filters and sorts. Phase 1D is purely about removing the redundant All tab.
+- **Watchlist and Military tabs are unchanged** — same data, same fetch, same render. The shared rendering code in `render()` that previously had a 3-way branch (Watchlist / Military / All) is now a 2-way branch (Watchlist / Military).
+- **Search is the only tab that supports browse-every-aircraft now.** Empty Search shows the suggestions panel; typing any token (or using a Stats redirect) runs a query.
+
+### Comprehensive testing plan
+
+After installing v2.67.0, restart the service and hard-refresh the browser (Cmd-Shift-R / Ctrl-Shift-R). Then walk through these in order:
+
+**A. Tab strip**
+
+A1. The tab strip should show: Live · Watchlist · Military · Stats · Search. **NO** All tab. The Stats tab visibility still depends on config (hidden when stats.enabled = false), unchanged.
+
+A2. No JavaScript console errors on page load. The browser DevTools console should be clean — no `ReferenceError: fetchAll is not defined`, no `setPreset is not defined`, no `Cannot read property of undefined` from anywhere.
+
+A3. Click each remaining tab in turn (Live → Watchlist → Military → Stats → Search). All should switch panels correctly. The active-tab cyan underline should follow the click.
+
+**B. Live / Watchlist / Military unchanged**
+
+B1. Live tab: aircraft list renders, refresh interval still pulls fresh data every 30s, count badge updates.
+
+B2. Watchlist tab: configured aircraft show up. Click "+ Add" on a Live row; verify it appears on Watchlist after one poll cycle. Pre-existing entries' chips still show.
+
+B3. Military tab: military aircraft list renders. The MIL pill colors (red, etc.) per config still apply on row borders.
+
+B4. **Refresh hook test:** open Watchlist, wait for auto-refresh (~30s). Verify chips for first-seen, registration tail, etc., still populate. (These flow through `refreshFirstSeen` and `refreshTailMap`, which had `'all'` removed from their tab loops in v2.67.0 — the remaining loops over `['watchlist', 'military']` should still work.)
+
+**C. Search at feature parity**
+
+C1. Open Search tab. Empty state shows "Search across every aircraft seen on this receiver" with the four "Try one" suggestion chips. Same as before.
+
+C2. Type a query (e.g. `B738`). Results render with all columns: ICAO, Type, Callsign, Description, Operator, Country, Speed, Altitude, Distance, Squawk, Last seen, Track, +WL.
+
+C3. **Sort by any column**: click each column header in turn. Arrow indicator should update; results re-sort. Reload page — sort persists from localStorage.
+
+C4. **Date range presets**: click Today / Last 7 days / Last 30 days. Chip strip shows the preset chip. Reload — preset persists.
+
+C5. **Custom date range**: click Custom range, pick from/to. Search re-runs with the explicit window.
+
+C6. **Page size**: change Rows: 100 / 250 / 500. Re-runs with new size, persists.
+
+C7. **Export**: Export ▾ → Current page (CSV) → downloads. Export ▾ → All matches (CSV) → downloads (paginates server-side up to the cap).
+
+C8. **Parser tokens**: type `today`, `hour:14`, `distance:50-100`, `military`, `watchlist`, `2026-04-30` — each renders the corresponding chip. Combine: `B738 today` shows Type + Date chips.
+
+**D. Stats tab — drill-panel redirects all still work**
+
+D1. **Composition cards** (Top 5 Aircraft Types, Operators, Countries, Military Branches, Category Mix): expand each → "View all N {nouns}" button → expands inline. No tab switch.
+
+D2. **Today's Extremes**: Furthest, Highest altitude, Lowest altitude, Fastest, Slowest, Longest track. Each card → expand → "View in Search →" → lands on Search with `today` filter and the right column sort.
+
+D3. **Today panel**: Unique today, Military today, Watchlist today, Peak simultaneous → "View in Search →" → Search with the right query.
+
+D4. **History · Last 7 days**: click any daily bar → inline panel → "View in Search →" → Search filtered to that date.
+
+D5. **Patterns · Aircraft by hour**: click any hourly bar → "View in Search →" → Search with `today hour:N`.
+
+D6. **Coverage · Positions by distance**: click any distance bucket → "View in Search →" → Search with `today distance:LO-HI`.
+
+**E. Aircraft detail page**
+
+E1. From any tab, click any ICAO link. Detail page (`/aircraft/{ICAO}`) loads. Top section shows aircraft metadata.
+
+E2. **Sightings history table** loads — this is the `/api/all/drill` consumer, the reason that endpoint stays alive. Rows render, pagination works (Load more button at the bottom).
+
+E3. From a Stats record card (e.g. "Highest altitude on AKA001"), click the row → navigates to `/aircraft/AKA001?sighting={ts}` with the v2.61.0 anchor highlight on the matching row.
+
+**F. Deep links and notifications**
+
+F1. Old All-tab deep link `https://aerodrome.../?tab=all` should now land on the default Live tab (the deep-link handler ignores invalid tab names). No error.
+
+F2. Watchlist notification deep link `https://aerodrome.../?tab=watchlist&icao=ABC123&highlight=1` still routes to Watchlist tab and tries to highlight the row. Unaffected by Phase 1D.
+
+**G. Edge cases**
+
+G1. Resize browser to <700px. Mobile layout: tab strip should still fit (one fewer tab now). Each remaining tab's mobile rendering unchanged.
+
+G2. Open Search in private/incognito tab (no localStorage). Sort, page size, date range default to baselines. No errors.
+
+G3. Try a server-side request to `/api/all` directly (e.g. via curl). Should 404 (endpoint genuinely removed). Hit `/api/all/drill?icao=ABC123` directly — should still return the sightings list (endpoint still alive).
+
+G4. Stats tab with stats disabled in config: Stats tab itself is hidden (unchanged behavior), but the absence of the All tab doesn't introduce any new failure mode.
+
+**H. Honest limitations / things to flag**
+
+- **Track-length sort, peak-moment filter, and first-seen-today filter still missing** from Search — same limitations as v2.66.0. Longest track and Peak simultaneous redirects fall back to `today`, the First time seen today card has no View-in-Search button.
+- **`distance_unit` from CONFIG['receiver']** still defaults to `"mi"` if unset. Distance filter conversions and chip labels respect the configured unit.
+- **`stats.timezone`**: v2.66.2's tz-aware parser still applies. If unset, `today` and `hour:N` tokens default to UTC windows.
+
+## [2.66.2] — 2026-05-04
+
+### Fixed
+- **Search `today` and `hour:N` tokens now respect your configured `stats.timezone` instead of the server's local time.** Surfaced when the v2.66.1 chart-drill "View in Search →" redirect from Patterns → Aircraft by hour returned 0 matches even though the panel showed 25 aircraft for that hour. Root cause: the v2.65.0 parser computed `today` and `hour:N` windows in **server-local time** (via `time.localtime` + `mktime`). The Patterns hourly histogram buckets aircraft using **`stats.timezone` from CONFIG**. When the server runs UTC but stats.timezone is set to a different zone (e.g. America/Los_Angeles), the parser's "hour 12" was UTC noon while the histogram's "hour 12" was Pacific noon — same numeric hour, completely different unix-timestamp windows. The redirect populated `today hour:12` in the input, the parser built a window 7 hours off from where the actual aircraft sat, and execute_search returned an honest 0 matches.
+
+### Implementation
+- `parse_query` (in `search.py`) gained a `tz_offset_sec: int = 0` parameter. The default of 0 (UTC) preserves the existing surface for any external callers and matches the behavior of stats.timezone being unset.
+- `_classify_single_token` accepts the offset and threads it to the `today` and `hour:N` branches. Both now compute "today midnight in user-tz" as `((now + tz_off) // 86400) * 86400 - tz_off`. `hour:N` adds `h * 3600` to that midnight. The result is a unix-timestamp window that exactly matches the histogram's `((seen_at + tz_off) / 3600) % 24` bucketing — verified by `test_hour_token_tz_offset_matches_histogram_semantics`.
+- `server.py /api/search` now reads `CONFIG['stats']['timezone']`, computes the offset using `zoneinfo.ZoneInfo(tz_name).utcoffset(now)` (sampled at "now" so DST is handled correctly), and passes it to `parse_query`. Same pattern the histogram backend uses. Falls back to 0 silently if zoneinfo is unavailable or the config is unset.
+- The `time.mktime` + `time.localtime` calls were dropped from `today` / `hour:N`. Pure unix-timestamp arithmetic is simpler, deterministic, and doesn't depend on the server's environment timezone.
+- 4 new parser tests in `test_search.py` covering: today aligns to user-tz midnight, hour:N aligns to user-tz hour, hour:N matches histogram bucketing exactly (boundary checks), default offset=0 → UTC alignment.
+- 2 v2.65.0 tests updated: `test_today_token_resolves_to_local_day` and `test_hour_token_basic` now assert against unix-modulo-86400 rather than `time.localtime` since the default behavior shifted from server-local to UTC. These tests document the new contract: default offset=0 → UTC; explicit offset → user-tz.
+- 108 tests pass (104 + 4 new).
+
+### Notes
+- **No backend schema changes; restart-only upgrade.** Hard-refresh browser to bust JS cache.
+- **Existing manual queries change semantics.** A user who manually typed `today` or `hour:14` on v2.65.0 / v2.66.0 / v2.66.1 with a non-UTC server got server-local windows. v2.66.2 always uses `stats.timezone` if set, otherwise UTC. This is a behavior change for one edge case: server runs in a non-UTC timezone AND `stats.timezone` is unset. In that scenario the parser now uses UTC where it previously used server-local. Filed as documented; the right answer is to set `stats.timezone` in config.
+- **Server-side preset filters (the All tab "Today" preset) are unaffected.** Those use a different code path (`_day_bounds_ts`) which already reads `stats.timezone`.
+- **The fix unblocks all three chart-drill redirects** (Last 7 days, Aircraft by hour, Positions by distance) when `stats.timezone` is set. The Last 7 days redirect uses an explicit YYYY-MM-DD date which the date parser handles independently — wasn't affected by this bug, but the new tz-aware semantics apply to today/hour tokens that may follow.
+- **Remaining limitations from v2.66.0 still apply:** longest_track and peak_simultaneous fall back to `today` (no track-length / peak-moment Search filter); first_time_seen card has no View-in-Search button.
+
+## [2.66.1] — 2026-05-04
+
+### Fixed
+- **"View in Search →" buttons on Stats chart drill panels now actually navigate when clicked.** Affected three surfaces all using `renderChartDrillTable`: Stats → History → Last 7 days bar drill, Stats → Patterns → Aircraft by hour drill, Stats → Coverage → Positions by distance drill. The button rendered correctly with proper styling, but clicks never invoked the redirect handler. The cause was a quoting collision: the v2.66.0 button HTML used a double-quoted `onclick=` attribute with `${cardJson}` and `${valueJson}` interpolations, both of which contain `JSON.stringify` output (always double-quoted strings). The browser parsed the rendered `onclick="redirectChartDrillToSearch("daily_counts_7d", "2026-04-30", event)"` as an empty `onclick` attribute followed by garbage `daily_counts_7d`, etc., as orphan attributes. Single-quoting the outer `onclick` attribute resolves the collision since JSON.stringify never emits single quotes.
+
+### Implementation
+- `renderChartDrillTable` (in `templates/index.html`): one-character change per quote — outer `onclick="..."` → `onclick='...'`. The interpolated `${cardJson}` and `${valueJson}` content is unchanged. Inline comment added documenting the gotcha so future buttons rendered with JSON.stringify content avoid the same collision.
+- `redirectExtremesToSearch` and `expandCompositionDrill` buttons (Composition cards, Today's Extremes, Today panel) are not affected — those interpolate `'${cardId}'` (already single-quoted strings inside double-quoted attributes), and the cardId values (`furthest`, `top_operators`, etc.) contain no characters that collide with either delimiter.
+- 104 tests pass unchanged.
+
+### Notes
+- **No backend changes; restart-only upgrade.** Hard-refresh browser (Cmd-Shift-R / Ctrl-Shift-R) to bust the JS cache after install.
+- **All other v2.66.0 verification cases (Sections A, B, C, G, H, I from v2.66.0's testing plan) were already working.** Only Sections D, E, F (the three chart-drill cases) were broken. After this fix all v2.66.0 redirect targets should work as documented.
+
+## [2.66.0] — 2026-05-04
+
+### Added
+- **Stats cards now expand inline and offer "View in Search →" deep-links.** Composition cards (Top 5 Aircraft Types, Top 5 Operators, Top 5 Countries, Military Branches, Category Mix) show the same expandable drill panel as before — top 25 of N rows by default. The footer button now reads "View all 132 types" / "View all 108 operators" / etc., and clicking it re-fetches the same panel with the cap removed and replaces the content in place. Same panel, same column layout, just a longer list. No tab switching, no Search redirect — the aggregate data lives in Stats.
+- **Today's Extremes drill panels redirect to Search.** All six cards (Furthest, Highest altitude, Lowest altitude, Fastest, Slowest, Longest continuous track) now show a "View in Search →" button at the bottom of their drill panels. Each redirects with `today` filter plus a sort matching the panel's metric: Furthest sorts by distance desc, Highest altitude by altitude desc, Fastest by speed desc, etc. Lowest/Slowest sort ascending. Lands on the Search results page with the full filtered-and-sorted aircraft list.
+- **Today panel drill redirects to Search.** Unique aircraft today, Military aircraft today, Watchlist hits today, and Peak simultaneous all gain "View in Search →" footer buttons. Each redirects with the appropriate query: `today`, `military today`, `watchlist today`, `today` respectively, sorted by `seen_at desc`.
+- **Last 7 days drill redirects to Search.** Clicking a daily bar in the History section opens the existing aircraft list as before; the "View in Search →" footer button now redirects to Search with the specific date as the query (`2026-04-30` for example), so the user can browse the full day's aircraft on Search instead of a 25-row inline cap.
+- **Aircraft by hour drill redirects to Search.** Clicking an hourly bar in Patterns opens the inline list; the new footer button redirects to Search with `today hour:N` (using v2.65.0's hour token) sorted by seen_at desc. Shows the full hour's aircraft list on Search.
+- **Positions by distance drill redirects to Search.** Clicking a distance bucket bar in Coverage opens the inline list; the new footer button redirects to Search with `today distance:LO-HI` (using v2.65.0's distance token) sorted by distance desc. The 250+ bucket uses `distance:250-9999` since the parser requires a finite upper bound.
+- **Server: `/api/stats/drill?all=1` query param** bypasses the 25-row cap that gates the default drill response. Used exclusively by the Composition card "View all N {nouns}" expand button — every other caller still gets the capped response for render budget reasons.
+
+### Changed
+- **Reverted v2.64.0's panel-level redirect machinery.** The v2.64.0 design landed Composition card "View in Search" clicks on a sorted-but-empty Search query showing all aircraft sorted by operator/type/country. That solved the wrong problem — the user wanted to see the FULL list of operators (the aggregate), not a list of all aircraft sorted by operator. v2.66.0 routes Composition panel-level clicks to the new inline-expand path instead. The `_searchState.fromRedirect` flag, the `browseSorted` helper, the `runSearch` empty-query-with-redirect bypass, and the sort-application code in `jumpToAllTab` and `chainDrillAggregate` are all removed. The Operator and Country columns added to Search results in v2.64.0 are kept — they're independently useful.
+
+### Implementation
+- **Server (`server.py /api/stats/drill`)**: new `all: bool = Query(False, alias="all")` parameter. Local var rebound to `bypass_cap` to avoid shadowing Python's `all()` builtin. Existing `total_count = len(rows)` line stays; `rows = rows[:25]` is now gated on `if not bypass_cap`.
+- **Frontend `_searchQueryForStatsCard`**: reverted from v2.64.0's `{q, sort}` shape back to plain string-or-null. Empty value (panel-level call) now always returns null; row-level calls return the same query strings as v2.63.x. Composition cards' panel-level button never reaches this function in v2.66.0 — it routes to `expandCompositionDrill` instead.
+- **Frontend `_searchState`**: `fromRedirect` field removed.
+- **Frontend `runSearch`**: empty-query-with-redirect bypass removed; back to plain empty-state behavior on empty query.
+- **Frontend `jumpToAllTab` / `chainDrillAggregate`**: sort application code and `_searchState.fromRedirect` setter removed. Both now do simple `q | null` mapping → hash + runSearch. Neither writes to `_searchState.sort` anymore.
+- **Frontend `renderOptionCDrillPanel`**: footer dispatches by category. Three branches: `context` truthy → no button (row-level drill already filtered); `isAggregate && hiddenCount > 0` → "View all N {nouns}" → `expandCompositionDrill(cardId, event)`; `!isAggregate` → "View in Search →" → `redirectExtremesToSearch(cardId, event)` when `_searchRedirectForExtremesCard` returns a mapping.
+- **Frontend new functions**:
+  - `expandCompositionDrill(cardId, ev)` — finds the open panel via `data-source-card-id` selector, fetches `/api/stats/drill?card=...&all=1`, re-renders the panel via `renderOptionCDrillPanel`. Loading-state on the existing button while the fetch is in flight.
+  - `_searchRedirectForExtremesCard(cardId)` — returns `{q, sort}` per cardId. Maps furthest/highest_altitude/lowest_altitude/fastest/slowest/longest_track and unique_today/military_today/watchlist_hits/peak_simultaneous.
+  - `redirectExtremesToSearch(cardId, ev)` — applies the mapping: clears date-range preset, sets `_searchState.sort` and persists to localStorage, sets the URL hash, switches to Search tab, populates the input, calls runSearch.
+  - `_searchRedirectForChartDrill(cardId, value)` — maps the three chart-drill cardIds (`daily_counts_7d`, `hourly_histogram`, `distance_histogram`) plus their bucket values to `{q, sort}`.
+  - `redirectChartDrillToSearch(cardId, value, ev)` — same flow as `redirectExtremesToSearch` but parameterized by both the card and the bucket value.
+- **Frontend `renderChartDrillTable`**: signature gained `cardId` and `value` parameters. When both are provided, the renderer appends a footer with the "View in Search →" button wired to `redirectChartDrillToSearch`. Older callers without the new parameters still get the table without the footer (no breakage).
+- **Frontend `toggleChartDrill`**: now passes `cardId` and `value` through to `renderChartDrillTable`.
+- **Frontend `renderDrillTable` (legacy inline path)**: comment updated to note the path is unreachable in v2.66.0 — every cardId in DRILL_COLUMNS routes through Option C. The button code is kept as defensive fallback for any future cardId added without DRILL_COLUMNS metadata.
+- **104 tests pass** unchanged. No new tests needed — the added behavior is UI redirect logic, not parser/SQL semantics that the test suite covers.
+
+### Notes
+- **No backend schema changes; restart-only upgrade.**
+- **Honest limitations documented:**
+  - **`longest_track`**: Search has no track-length sort yet. The "View in Search →" button falls back to `today` sorted by `seen_at desc` — user sees today's full aircraft list, not specifically ranked by track length. Filed as Phase 3.
+  - **`peak_simultaneous`**: Search has no "peak moment" filter. Falls back to `today` sorted by `seen_at desc`. Same situation as longest_track. Filed as Phase 3.
+  - **First time seen today card**: no "View in Search" button added. Search has no `first_seen_today` filter and the closest approximation (`today`) returns aircraft seen today including ones seen previously — meaningfully different from the card's contents. A misleading button was judged worse than no button.
+  - **Distance histogram 250+ bucket**: parser's `distance:LO-HI` requires a finite upper bound, so the redirect uses `distance:250-9999`. Practically equivalent (almost no aircraft are tracked past ~300 mi anyway) but worth knowing.
+- **Phase 2 of the Search-canonical strategy is now complete.** v2.65.0 landed parser tokens; v2.66.0 wires them up. Phase 1D (All-tab removal proper) returns to the front of the queue.
+
+### Comprehensive Testing Plan
+
+After installing v2.66.0, restart the service and hard-refresh the browser (Cmd-Shift-R / Ctrl-Shift-R) to bust the JS cache. Then walk through these in order:
+
+**A. Composition cards expand inline (Category A)**
+
+A1. Stats → Top 5 Aircraft Types card → click chevron to expand. Panel shows "ALL AIRCRAFT TYPES · TOP 25 OF 132" header. Footer says "Showing top 25 of 132 aircraft types" left, "View all 132 aircraft types" right. Click the button. Panel content replaces in place — header changes to "ALL AIRCRAFT TYPES · TOP 132 OF 132" (or similar based on your data), all rows visible, footer button gone. Scrolling works inside the panel.
+
+A2. Same test for Top 5 Operators ("View all N operators"). Same test for Top 5 Countries ("View all N countries"), Military Branches ("View all N branches"), Category Mix ("View all N categories").
+
+A3. Click any row inside an expanded Composition panel (e.g. "DAL — Delta Air Lines" inside Top 5 Operators expanded). Should navigate to Search with `DAL` in the input, results show all Delta aircraft. Same Search filter behavior as before — row clicks unchanged.
+
+A4. Close the Composition card's panel (esc × button) and re-expand. Panel re-renders fresh with top 25, button is back. Expand state doesn't persist.
+
+A5. **Edge case — fewer than 25 rows total.** If you have fewer than 25 categories (e.g. only 8 military branches), the panel should NOT show the "View all N" button — `hiddenCount` is 0 since everything fits. Verify on Military Branches if your data has <25 branches.
+
+**B. Today's Extremes redirect to Search (Category B)**
+
+B1. Stats → Today's Extremes section → click Furthest aircraft chevron. Panel shows "FURTHEST AIRCRAFT · TOP 25 OF N" with the table. Footer says "Showing top 25 of N aircraft" left, "View in Search →" right. Click the button. Should navigate to Search showing the full N aircraft (not 25), Distance column header has ▼ arrow indicator (sorted distance desc). Search input shows `today`, chip strip shows "Date: Today".
+
+B2. Highest altitude → "View in Search →" → Search sorted by Altitude desc, today filter. Lowest altitude → Altitude asc. Fastest → Speed desc. Slowest → Speed asc.
+
+B3. Longest continuous track → "View in Search →" → Search filtered to `today`, sorted by Last seen desc. Honest limitation: this isn't actually sorted by track length (Search lacks that sort), so the order won't match the panel's order. The user sees today's full list as the closest approximation.
+
+B4. Verify `_clearSearchDateRangeForRedirect` works: from any Search session, click "Last 7 days" preset. Run a query. Now navigate to Stats → Furthest → "View in Search →". Should arrive at Search with NO preset chip — the "Last 7 days" was cleared by the redirect.
+
+**C. Today panel redirect to Search**
+
+C1. Stats → Today section → click "Unique aircraft today" → expand drill → "View in Search →" → Search filtered to `today`, sorted by Last seen desc.
+
+C2. Same for "Military aircraft today" — query is `military today`, military filter chip + Today date chip both visible.
+
+C3. Same for "Watchlist hits today" — query is `watchlist today`.
+
+C4. Click "Peak simultaneous" card → "AIRCRAFT AT PEAK MOMENT · TOP 25 OF N" panel → "View in Search →" → Search filtered to `today`, sorted by seen_at desc. Honest limitation: Search has no "at peak moment" filter, so the redirect shows today's full list — not specifically the aircraft at the peak moment. User sees more aircraft than the card showed.
+
+**D. History · Last 7 days redirect**
+
+D1. Stats → History section → Last 7 days bar chart → click any daily bar (e.g. Thursday). Inline panel opens with that day's aircraft (top 25 of N). Footer has "View in Search →" right. Click. Search input shows the date (e.g. `2026-04-30`), chip shows "Date: 2026-04-30". Results show that day's full list.
+
+D2. **First time seen today card**: NO "View in Search" button visible (deliberate — Search lacks first_seen_today filter). User can scroll the inline `+N more` list within the card.
+
+**E. Patterns · Aircraft by hour redirect**
+
+E1. Stats → Patterns section → Aircraft by hour bar chart → click any hourly bar (e.g. 14:00). Inline panel opens with that hour's aircraft. Footer "View in Search →". Click. Search input shows `today hour:14`, chip shows "Date: Hour 14:00 today".
+
+E2. Click hour 0 (midnight). Query `today hour:0`. Verify chip shows "Date: Hour 00:00 today". Click hour 23. Query `today hour:23`.
+
+**F. Coverage · Positions by distance redirect**
+
+F1. Stats → Coverage section → Positions by distance bar chart → click first bucket "<50 mi". Inline panel opens with aircraft in that bucket. Footer "View in Search →". Click. Search input shows `today distance:0-50`, chip strip shows "Date: Today" + "Distance: 0–50 mi".
+
+F2. Click "100-150 mi" bucket. Query `today distance:100-150`. Click "250+ mi". Query `today distance:250-9999` (the open-ended bucket gets a finite upper bound — practically equivalent).
+
+**G. v2.64.0 revert verification**
+
+G1. Open Search directly (don't redirect from Stats). Empty input shows the empty-state suggestions panel (B738/United States/JBU2229/A3298A "Try one" chips). Type a query — works as expected. Empty input behavior is back to v2.63.x.
+
+G2. Verify `_searchState.sort` persistence is unaffected for normal Search use: type a query, click a column header to sort, reload page. Sort persists. (Stats redirects DO overwrite the persisted sort with the panel's sort — that's intentional, each redirect carries a deliberate sort intent.)
+
+G3. Composition card row-click (e.g. DAL inside Top 5 Operators expanded) still works — navigates to Search filtered to DAL.
+
+**H. Mobile / narrow viewport**
+
+H1. Resize browser to <900px. Open a Composition card panel. Footer button should still be visible. Click "View all N operators" — panel expands inline as expected. Same for Today's Extremes "View in Search →" — clicks should still work; results page may collapse columns per existing mobile behavior but the redirect itself fires correctly.
+
+**I. Edge cases**
+
+I1. Composition card with FEWER than 25 entries (e.g. only 5 military branches). Expand panel. No "View all N" button shows (everything fits in 25-row default). No bug — `hiddenCount === 0` case.
+
+I2. Empty-state Today's Extremes (no aircraft today yet, e.g. just-after-midnight). Card shows the empty state. Clicking the chevron — if drill data is empty, panel shows "No aircraft to show" without a footer button. No crash.
+
+I3. Network failure during `expandCompositionDrill` re-fetch. Button text reverts to "View all N {nouns}", button re-enables. User can retry.
+
+I4. Click "View in Search →" twice in rapid succession (double-click). Second click re-fires the redirect — same destination, same results. No state corruption.
+
+## [2.65.0] — 2026-05-03
+
+### Added
+- **Three new Search filter tokens: `today`, `hour:N`, and `distance:LO-HI`.** Type `today` to filter to the current day, `hour:14` for a specific hour bucket today, or `distance:50-100` for a distance band in your configured units. Tokens compose: `B738 today` shows today's Boeing 737-800s; `military hour:14` shows military aircraft active at 14:00 today; `distance:0-25` shows close-range aircraft only. The chip strip below the input renders friendly labels ("Date: Today", "Date: Hour 14:00 today", "Distance: 50–100 mi") so you can see exactly what got applied.
+- **Search parser `hour:N` token.** Filters to a specific hour-of-day bucket on today's date. N must be an integer 0–23. Builds a 1-hour `time_range` window. Composes with `today` (same window narrowed to one hour). Without `today`, the hour filter still applies to today by default — common case is "show me what flew at 14:00 today" which doesn't need explicit `today`. Range support (`hour:14-16`) is filed for Phase 3.
+- **Search parser `distance:LO-HI` token.** Filters to aircraft whose `last_distance` falls within the bucket range. Bounds are interpreted in the user's configured display unit (mi/km/nmi from `receiver.distance_unit` in config); the WHERE clause builder converts to canonical km for the column comparison. Examples: `distance:50-100`, `distance:0-25`, `distance:200-250`. Single-bound syntax (`distance:<100`, `distance:>200`) filed for Phase 3.
+- **Friendly chip labels for the new tokens.** A `today`-derived time_range chip reads "Date: Today" instead of the literal date. An `hour:14`-derived chip reads "Date: Hour 14:00 today". Distance range chips read "Distance: 50–100 mi" using the configured display unit.
+- **Help panel coverage.** The `?` panel on Search now documents `today`, `hour:N`, and `distance:LO-HI` syntax with examples.
+
+### Changed
+- **Time-range merging is now "narrower wins" instead of "last wins".** Previously, multiple time tokens in a query (e.g. `today hour:14`) would resolve to whichever came last in the token order. With both tokens producing time_range output and the user's intent being "narrow to 14:00 specifically," the parser now picks the smaller window (smaller `end - start` delta) regardless of order. Same query works as `today hour:14` or `hour:14 today`. No backward-compat break — single-token queries behave identically; the only change is multi-token combinations.
+
+### Implementation
+- **`search.py` parser additions in `_classify_single_token`**: three new branches recognize `today` (bare lowercase), `hour:N` (integer 0–23 after the colon), and `distance:LO-HI` (two non-negative numbers separated by dash). Each does its own validation and falls through to free text on malformed input — `hour:abc` matches as free text rather than producing an error. `today` and `hour:N` build their windows from `time.localtime()` + `time.mktime()` to respect the server's local timezone for boundary calculation. The half-open `[start, end)` shape composes with the existing `time_range` SQL clause unchanged (no SQL changes needed).
+- **`parse_query` time_range merging** (lines ~263–276): replaced the "last time range wins" comment + assignment with a "narrower wins" comparison that keeps whichever incoming range has the smaller delta. Single-token queries are unaffected; only multi-token combinations see new behavior.
+- **`_build_where` distance handling** (lines ~877–896): new `to_km` multiplier computed once at the top of the function based on `distance_unit` (1.0 for km, 1/0.621371 for mi, 1/0.539957 for nmi — same constants the existing display code uses). The filter loop now special-cases `field == "distance"` AND `match == "range"`: pulls the `[lo, hi]` from the filter, multiplies each by `to_km`, and emits a SQL clause `last_distance >= ? AND last_distance < ?` (with `IS NOT NULL` guard since the column is nullable). The clause uses the half-open `[lo, hi)` convention to match the parser's range semantics.
+- **`execute_search` signature**: gained `distance_unit: str = "mi"` parameter, threaded through to `_build_where`. Default `"mi"` keeps existing tests passing unchanged.
+- **`server.py /api/search`**: new line reads `CONFIG['receiver']['distance_unit']` (defaulting to `"mi"`) and passes it to `execute_search`. Same config key the existing distance-display code reads.
+- **Frontend `_renderFilterChips`**: new branch for `match === 'range'` filters formats the value as `${lo}–${hi} ${unit}` using the existing `distUnit` global (loaded by `loadUiConfig` from `/api/ui-config` at page init). Time-range chip now detects 1-hour windows starting at `HH:00` today (renders as "Hour HH:00 today") and 24-hour windows starting at local midnight today (renders as "Today"). Falls back to the date-range label otherwise.
+- **`FILTER_FIELD_LABELS`**: gained a `'distance': 'Distance'` entry for the chip label.
+- **Help panel**: three new `<div class="help-row">` entries above the "Combine" footer documenting `today`, `hour:N`, and `distance:LO-HI` with examples.
+- **8 new parser tests added** to `test_search.py`: `test_today_token_resolves_to_local_day` (24h delta, midnight start, no free-text fallthrough), `test_hour_token_basic` (1h delta, exact HH:00 start), `test_hour_token_boundaries` (0 and 23 both valid), `test_hour_token_rejects_invalid` (24, -1, abc, empty all fall through), `test_distance_range_basic` (50–100 produces correct filter), `test_distance_range_rejects_invalid` (missing dash, non-numeric, lo>=hi, negative all fall through), `test_today_and_hour_narrower_wins` (both orders produce 1h window), `test_distance_unit_conversion` (mi/km/nmi conversion verified end-to-end via `_build_where` params).
+- **104 tests pass** (96 existing + 8 new).
+
+### Notes
+- **No backend schema changes; restart-only upgrade.**
+- **Phase 2 of the Search-canonical strategy is now half-shipped.** v2.65.0 lands the parser tokens. v2.66.0 wires Stats drill-panel "View in Search" buttons to use these tokens, plus converts Composition cards to inline-expand instead of redirecting to Search. Comprehensive testing plan ships with v2.66.0 as the user requested.
+- **The parser-token additions are independently useful** — even before v2.66.0 wires them up, users can manually type `today`, `hour:14`, or `distance:50-100` into the Search input and get filtered results. Useful for ad-hoc queries.
+- **Distance unit conversion happens server-side**, in `_build_where`. The parser stores raw bounds in the user's display unit; the conversion to canonical km happens at WHERE-clause construction. This means `distance:50-100` always maps to "50 to 100 in whatever your display unit is" regardless of where the query came from (typed manually, deep-linked URL, future Stats redirect).
+- **The parser still runs lowercase** for token matching (`today`, `Today`, `TODAY` all work). Same rule as `military` / `mil` / `watchlist` / `wl`.
+- **`today` resolution is timezone-sensitive**: a query typed at 11:59 PM local will produce a different window than one typed at 12:01 AM local five minutes later. Consistent with the existing Stats "Today" preset, which has the same property.
+- **Phase 1D (All-tab removal proper) is still queued** for after Phase 2 lands. v2.63.0's prep work is complete; the actual surgery (drop panel, drop tab, drop endpoint, drop fetchAll/clearAllFilters/setPreset) waits for Phase 2 wiring to settle.
+
+## [2.64.0] — 2026-05-03
+
+### Added
+- **New Operator and Country columns in Search results — sortable, with hover tooltips for long values.** Both columns sit between Description and Speed in the column order. Click either header to sort alphabetically (the backend has supported these sorts since v2.60.0; v2.64.0 just exposes them in the column header strip). Values like "United Airlines" and "United States" ellipsis-truncate when wider than the cell; hover any truncated value to see the full text. Country is no longer rendered as a chip inside the Description cell — that chip's job is now the dedicated column.
+- **Composition card "View in Search →" redirects now sort by the panel's metric.** When you click View-in-Search at the bottom of an expanded Top 5 Operators panel showing 25 of 108 operators, you land on Search showing all aircraft sorted alphabetically by Operator — making the new Operator column useful immediately. Same pattern for Top 5 Aircraft Types (sorted by Type), Top 5 Countries (sorted by Country), Military Branches (filtered to military, sorted by Operator). The panel-level click is now meaningfully distinct from row-level clicks (which still filter to the specific operator/type/country and don't apply a sort).
+
+### Fixed
+- **Composition cards' panel-level "View in Search" was producing empty results since v2.59.4.** The button generated an empty query (`''`) which `runSearch` then routed to the empty-state suggestions panel rather than running browse mode. Compounded after v2.62.0 by stale date-range presets silently filtering results when present (already addressed by v2.63.1's `_clearSearchDateRangeForRedirect`). v2.64.0 makes redirect-triggered runSearch with empty query bypass the empty-state and run browse mode (`last_seen_at desc` if no sort active, panel sort if redirect supplied one).
+
+### Implementation
+- **`templates/index.html` Search row layout**: `.search-row-grid` template gained two columns (`minmax(110px, 0.9fr)` for Operator, `minmax(100px, 0.8fr)` for Country) inserted between Description and Speed. Description column shrunk slightly (`minmax(180px, 1.4fr)` → `minmax(140px, 1.2fr)`) to make room. Both new columns hidden at <900px breakpoint along with Distance/Squawk/Time — Operator and Country names are wide enough to crowd narrow desktops / tablets badly. Existing <640px mobile breakpoint already drops everything except ICAO + Description + Track + WL, so no further mobile change.
+- **`_renderSearchCard`** gained `operator` field read + `operatorCell`/`countryCell` constructions. Country chip removed from `descCell`. Cells use the new `.c-operator` / `.c-country` CSS classes which apply `nowrap`, `overflow:hidden`, `text-overflow:ellipsis` for truncation.
+- **`_SEARCH_SORT_DEFAULT_DIR`** gained `operator: 'asc'` and `country: 'asc'` entries. The frontend sort allowlist now matches the backend `SORTABLE_COLUMNS` map (operator and country were already in the backend since v2.60.0).
+- **Search results header markup** gained two new `<span class="h-operator sortable">` / `<span class="h-country sortable">` elements with click handlers wired to `srtSearch('operator')` / `srtSearch('country')`. Same arrow indicator + persistence behavior as existing headers.
+- **`_searchQueryForStatsCard` return shape upgraded** from `string | null` to `{q: string, sort: {col, dir} | null} | null`. Returning null still means "no mapping known" (render-time `!= null` checks unchanged). The new `sort` field carries the panel-level sort recommendation; row-level returns set sort to null (default relevance order). Category Mix panel returns null on empty-value clicks because aircraft category isn't a stored sortable column — the panel-level button now omits cleanly on Category Mix while row clicks still filter by category name.
+- **`jumpToAllTab` and `chainDrillAggregate`**: both now read `mapping.q` and `mapping.sort` from the new return shape. Both apply the sort to `_searchState.sort` and persist via the same localStorage key (`aerodrome_search_sort_v1`) used for user-clicked column sorts. Both set `_searchState.fromRedirect = true` immediately before the deferred `runSearch()` call.
+- **`runSearch`** consumes the `fromRedirect` flag exactly once per call. When present (and even with empty query), bypasses the empty-state branch and runs browse mode via `_fetchSearchPage`. Manual visits to the Search tab still hit the empty-state when no query is typed, preserving the discoverability UX.
+- **`_searchState.fromRedirect`** added to the state object's initial declaration as `false`. Single-shot semantics: set to `true` by redirect callers, consumed by runSearch, reset to `false` immediately so the next manual interaction restores normal behavior.
+- **96 tests pass** unchanged. No backend changes — the backend has supported all sort columns and empty-query browse mode since v2.60.0.
+
+### Notes
+- **No backend changes; restart-only upgrade.**
+- **Adding two columns shifts the desktop Search results layout** — the Description column is narrower than before to make room. Type descriptions like "Boeing 737-800" still fit comfortably; longer ones may truncate (existing ellipsis behavior preserved).
+- **Phase 1D — All-tab removal — is still the next major release.** This release was scope-detoured by the bug discovery; v2.65.0 returns to the All-tab removal proper. Phase 1 progress unchanged: ✅ 1A, 1A.5, 1B, 1C, 1E, 1F, prep done in 2.63.0 — only the actual surgery remains.
+- **The "View in Search →" button is still missing** on Today's Extremes, Today's Aircraft at peak moment, First time seen today, Last 7 days drill, Aircraft by hour, and Positions by distance. Filed under "needs Phase 2 parser tokens" — the next session adds the `today` token which unlocks Today / First-time-seen / Today's Extremes (3 of 6).
+- **Operator/Country sorts are alphabetical, NULL last** — same NULL handling as every other sort. Aircraft without an operator (private/general aviation) cluster at the end of an operator-sorted view.
+- **Mobile users (<900px)** see exactly the same Search columns as before. The new columns are hidden alongside Distance/Squawk/Time/Description-secondary at narrow widths. If you want to expose Operator/Country on mobile, they're individually toggleable via CSS — filed as a Phase 2 polish item if it becomes a real need.
+
+## [2.63.1] — 2026-05-03
+
+### Fixed
+- **"View in Search →" from Stats Composition cards no longer inherits a stale date-range preset that could produce empty results.** Bug surfaced after v2.62.0 added Search preset persistence: a user who had any preset active from a prior Search session (commonly "Last 7 days") would see every Composition card "View in Search →" click silently filtered to that window. Composition cards (Top 5 Aircraft Types, Top 5 Operators, Military Branches, Category Mix, Top 5 Countries) span all-time data, so a 7-day filter regularly produced empty result sets — the user clicked "View in Search" expecting to see all military aircraft and got "0 matches" instead. The chip strip showed the inherited preset chip but didn't make the connection obvious. Same bug affected the Composition row chained-drill (e.g. clicking a country inside the expanded Top 5 Countries panel).
+
+### Implementation
+- New `_clearSearchDateRangeForRedirect()` helper in `templates/index.html`. Wipes both `_searchState.dateRange` AND its localStorage persistence, then refreshes the date-bar UI to drop any active preset highlight. Called from `jumpToAllTab()` (Composition card chevron clicks) and `chainDrillAggregate()` (Composition row clicks within the expanded Option C panel) immediately before the navigation kicks off.
+- Wipe is permanent across sessions. Reasoning: the user demonstrating they care about Stats redirects working correctly is a stronger signal than preserving the persisted preset across navigation contexts. If they want the preset back, reapplying it from the Search tab restores both in-memory state and persistence cleanly.
+- Direct deep-link Search URLs (`#search?q=...` typed or pasted into the URL bar) are NOT affected — those are deliberate Search navigations and the user's persisted preset legitimately applies. Only cross-tab redirects from Stats clear the preset.
+
+### Notes
+- **No backend changes; restart-only upgrade.**
+- **Bug 2 — many drill panels still missing the "View in Search →" footer button entirely** — is filed and deferred. The cards affected are: First time seen today, Last 7 days unique-aircraft drill, Aircraft by hour, Positions by distance, Today's Extremes (Furthest, Highest altitude, etc.), and Today (Aircraft at peak moment). The button can be added once Search's parser supports the missing tokens — relative-date `today` (unlocks half), distance filter, and hour filter (unlock the rest). Adding `today` is queued for the next session.
+- **Composition cards' "View in Search →" button itself was working** — the routing was correct, the query was being constructed, the input was being populated, runSearch was being called. The bug was that runSearch then applied a stale persisted preset that filtered the results away. v2.63.1 doesn't change the redirect path itself, only what runSearch finds in `_searchState.dateRange` when it executes.
+- **The wipe doesn't affect other persisted Search preferences.** Sort column preference (`aerodrome_search_sort_v1`) and page-size preference (`aerodrome_search_pagesize_v1`) are independent — both stay in place across Stats redirects, which is the right behavior since neither has the same context-mismatch problem as date range.
+- **96 tests pass** unchanged.
+
+## [2.63.0] — 2026-05-03
+
+### Changed
+- **No user-visible feature changes — internal prep release for the upcoming Phase 1D All-tab removal.** Rehomes a few dependencies, drops affordances that pointed at surfaces about to disappear, and clears dormant code. The All tab itself stays for one more version (its removal lands in v2.67.0). Five distinct items below.
+- **Rollup-migration banner promoted to a global system banner.** Previously lived inside the All-tab panel and was updated by the All-tab fetch loop, which meant users on Live/Watchlist/Stats/Search wouldn't see the "first-time setup is optimizing your data" message even though the optimization was running. New `#systemBanner` div sits above the tab strip; a 30s `_pollSystemStatus()` poller hits `/api/status` and shows/hides the banner based on `hourly_rollup.phase`. First poll fires at DOMContentLoaded so the banner appears without waiting for the interval. Failure to fetch is silent — banner stays in current state.
+- **"View all in All tab →" button dropped from Stats cards without a Search mapping.** The `furthest` and `longest_track` cards in particular have no parser-supported way to reproduce their "highest distance" / "longest track" filter via Search yet (filed as Phase 2: distance and track-length filters). Rather than route those clicks at a tab that's about to disappear, the button now only renders when a mapping exists. The card itself still shows the top result, and clicking that aircraft's row still navigates to its detail page.
+- **Stats redirect functions renamed.** `jumpToAllTabForAircraft` → `viewAircraftDetails`, `jumpToAllTabForRecord` → `viewRecordAircraftDetails`. These haven't actually targeted the All tab since v2.59.4 (when they were rewritten to navigate directly to `/aircraft/{ICAO}`), but the misleading names persisted as a known followup. With the All tab leaving in v2.64.0, the function name becomes actively wrong; renaming now is hygiene rather than cosmetics.
+- **Dormant code removed.** Five separate cleanup items: `_allTabHighlight` global state + `_applyRowHighlight()` + `_clearAllTabHighlight()` (dormant since v2.59.4); `_awaitAllTabDataForIcao()` (defined but uncalled since v2.59.4); the legacy fallback path inside `chainDrillAggregate()` (every chainable cardId has a Search mapping, so the path was unreachable); `addWlCell()` (dormant since v2.59.1 when card layouts replaced table layouts); the `if(tab==='all' && _allTabHighlight)` reapply call in the render dispatcher; the `setPresetUserClick` and `clearAllFilters` highlight clears; the `allSearch` input watcher's highlight-clear branch.
+
+### Implementation
+- **`templates/index.html`**: new `<div id="systemBanner">` above `.tabs-wrap`, hidden by default; new `_pollSystemStatus()` async function near `wireTabBarArrows`; setInterval at DOMContentLoaded plus an immediate first call. Old `allMigrationBanner` / `allMigrationText` divs removed from inside the All-tab panel. The inline rollup-state fetch inside `fetchAll()` was removed — banner state is now exclusively driven by the global poller.
+- **Stats button drop**: `renderOptionCDrillPanel` and `renderDrillTable` both now omit the All-tab fallback button when `_searchQueryForStatsCard()` returns null. `jumpToAllTab()` lost its fallback branch (the one that called `go('all')` + `setPreset('today')` + `fetchAll()`) — when the cardId isn't mapped, the function now returns silently. The button no longer renders for unmapped cards, so this branch was unreachable; removing it is defense-in-depth against any future card that accidentally calls `jumpToAllTab()` post-1D.
+- **Function rename**: `jumpToAllTabForAircraft` → `viewAircraftDetails`; `jumpToAllTabForRecord` → `viewRecordAircraftDetails`. Six call sites updated (drill row clicks, record card row clicks, comments). `aircraft.html` was checked and has no references to the old names.
+- **Dormant code removal totals**: ~110 lines deleted across the highlight machinery, the chainDrillAggregate fallback, `_awaitAllTabDataForIcao`, and `addWlCell`. Replaced with explanatory comments noting "v2.63.0 (Phase 1D prep): X removed because Y" so future readers can find the rationale without `git blame`.
+- **96 tests pass** unchanged. No backend changes in this release.
+
+### Notes
+- **No backend changes; no schema changes; restart-only upgrade.**
+- **The All tab itself is unchanged in this release.** Users see exactly the same tab list, the same panel content, the same drill behavior. The only visible difference is (a) the migration banner now appears on every tab during initial backfill rather than only the All tab, and (b) the furthest/longest_track Stats cards no longer show their View-all button.
+- **The 30s poll interval is conservative.** /api/status is cached server-side; a tighter poll wouldn't cost much. Picked 30s to match the typical user attention span without waste — backfill completion within a 30s window of the actual finish reads as "instant" to the user.
+- **v2.64.0 (next session) will remove the All tab proper**: the `<div id="p-all">` panel, the `<span class="tab" data-t="all">`, the `/api/all` endpoint, `fetchAll`/`clearAllFilters`/`setPreset`/`setPresetUserClick`/`onPageSizeChange`, the All-tab Export menu items, the count badge, mobile nav arrow logic. With the prep in this release, that surgery becomes a clean removal pass — no live callers cross the boundary into the dropped code.
+- **The function rename is a minor breaking change** for any external user who somehow had JS hooked into `jumpToAllTabForAircraft` or `jumpToAllTabForRecord` (extremely unlikely; the functions are internal to `templates/index.html`). Documented here for completeness.
+
+## [2.62.0] — 2026-05-03
+
+### Added
+- **Search now has date-range presets (Today / Last 7 days / Last 30 days / Custom) and remembers your preferred page size across reloads.** The preset row appears below the search input AFTER the first search renders — the empty Search state stays uncluttered, but as soon as you have results to narrow, the row materializes. The active preset shows as a chip in the chip strip (e.g. "Date: Last 7 days") with × dismiss. Preset choice persists across queries via localStorage, so once you pick a window all subsequent searches default to that window until you clear it. Built-in presets recompute their endpoints each search (so "Today" means today-as-of-now, not today-as-of-when-saved); custom ranges store the explicit timestamps as picked.
+- **Phase 1F — page-size persistence on Search.** The existing Rows selector (100 / 200 / 500 / 1000) now remembers your choice across page reloads via localStorage under `aerodrome_search_pagesize_v1`. The dropdown markup still shows 100 as the default in HTML; on page load, JS reads the stored value and updates the SELECT element to match. Falls back to 100 silently when storage is unavailable (private mode, quota exceeded).
+
+### Fixed
+- **Search controls bar mobile overflow.** The Rows selector + Export menu + Help button + Search button + search input were forced onto a single horizontal line because `.search-input-wrap` had no `flex-wrap` rule. At phone widths (<=640px) this overflowed the viewport with the Rows selector clipped off the right edge. Adding `flex-wrap: wrap` at the same breakpoint Search already uses for column collapse means the controls now wrap cleanly to a second row, and `.search-input-inner` takes the full row width so the input stays usable.
+
+### Implementation
+- **Backend (`search.py`)**: `execute_search` gained `from_ts` / `to_ts` keyword arguments. When either is non-None, `parsed["time_range"]` is overridden in-place on a shallow copy before `_build_where` runs. This implements the locked design decision from the v2.62.0 mockup review — preset wins over typed dates in the query, simplest mental model, no zero-result-set surprises from intersecting non-overlapping windows. Half-open `[from, to)` interval semantics consistent with the parser-extracted ranges. Either bound can be None for unbounded-on-that-side queries.
+- **Backend (`server.py`)**: `/api/search` endpoint accepts `from_ts` and `to_ts` query parameters (default 0 = "no bound"). Threads them to `execute_search` only when non-zero, preserving the v2.51 typed-date filtering for the no-URL-param path.
+- **Frontend (`templates/index.html`)**: New `_searchState.dateRange` field holds `{preset, fromTs, toTs}` or null. `srchPreset(presetId)` toggles same-preset off / switches between presets / triggers Custom range UI. `srchCustomApply()` reads the datetime-local inputs and stores explicit timestamps. `_refreshSearchDateBarUI(mode?)` syncs the preset-button highlight + custom-range visibility to state. `_searchPresetWindow(presetId)` computes timestamps for the built-in presets. `_persistSearchDateRange()` writes localStorage on every change. Module-init load restores stored preset (recomputing built-in windows for current time) and stored page-size (with the SELECT element value sync at DOMContentLoaded).
+- **Frontend chips**: `_renderFilterChips()` adds a preset chip before other chips and SUPPRESSES the parser-extracted time-range chip when a preset is active (showing both would mislead the user about what's actually filtering). `removeFilterChip('preset', 0)` clears `_searchState.dateRange`, persists, and re-runs.
+- **Frontend fetch wiring**: `_fetchSearchPage()` and the export path (`_fetchAllSearchResults`) both include `from_ts`/`to_ts` URL params when `_searchState.dateRange` is active. Backend defensively ignores non-positive integers, so the wiring is safe even when one bound is missing.
+- **Mobile fix**: single CSS rule — `@media (max-width: 640px) { .search-input-wrap { flex-wrap: wrap; } .search-input-inner { flex: 1 1 100%; } }`. No JS or markup changes for the overflow.
+- **5 new tests** in `test_search.py` covering: `from_ts` alone filters to-or-after-window, `to_ts` alone filters strictly-before-window, both bounds intersect correctly, URL date-range overrides parser-extracted `time_range` (the core Phase 1E decision), no-URL-params path preserves backward-compat with v2.51 typed-date filtering. All 96 tests pass (was 91).
+
+### Notes
+- **No backend schema changes; no migrations; restart-only upgrade.**
+- **Search tab is now functionally at parity with the All tab for date-range filtering**, the last big remaining gap before Phase 1D (All-tab removal) becomes possible. Page-size selector and column sort were already present from earlier phases. Outstanding gaps: the "Migration banner" UX during initial rollup backfill (specific to All tab; doesn't have a Search analog yet), and the `/api/all/drill` per-row sighting drill (functionally replaced by the v2.61.0 sighting anchor on the detail page).
+- **Built-in preset windows recompute every search.** "Today" stored in localStorage on Saturday at 11pm becomes Sunday's "Today" automatically — the stored value is the preset id, not the timestamps. Only Custom ranges store explicit timestamps.
+- **The preset chip × dismiss clears the preset only**, leaving any other parsed filters intact. So a user who searched "United States" + "Last 7 days" can remove the Last-7-days chip and stay narrowed to United States.
+- **Backward compatibility**: older clients (or curl users) that don't send `from_ts`/`to_ts` get the pre-v2.62.0 behavior — parser-extracted time_range still applies. Only the explicit URL params trigger the override.
+- **Empty-state Search remains clean** — the preset row is hidden until results render. Users discovering Search for the first time see the same uncluttered welcome panel as before.
+
+## [2.61.0] — 2026-05-01
+
+### Added
+- **Aircraft detail page now anchors to a specific sighting when you click through from a Stats record row.** Click "Highest altitude: 49,000 ft on AKA001 at 14:32 today" on the Stats page and you land on `/aircraft/AKA001` with the matching row in the sightings table scrolled into view and highlighted with a persistent cyan left-border so you can see "this is the sighting you came from." The border stays put through scrolling and pagination. If the sighting was pruned by retention, an inline amber banner above the sightings table reads "No sighting found at {timestamp} — may have been pruned by retention." (v2.73.0 later added a × button to dismiss the highlight without reloading.)
+
+### Implementation
+- **`templates/aircraft.html`**: `_sightingsState` gained `anchorTs` (the parsed `?sighting=` URL value, unix seconds) and `_anchorResolved` (a once-per-arrival latch so we don't keep chasing or repeatedly toasting on subsequent re-renders such as page-size changes). `initSightings()` reads `window.location.search` at page init, parses the param, and stores it in state. `_renderSightingsTable()` marks the matching row with `class="row-anchored"` and `data-seen-at="{ts}"` so the new `_resolveSightingsAnchor()` helper can locate it via `querySelector`. The resolver has three outcomes: row found in current page → scroll into view via `requestAnimationFrame` + `scrollIntoView({block: 'center'})`, mark resolved; not found but more pages available → bump `_sightingsState.offset`, call `fetchSightings()` again (which re-renders and re-runs the resolver); all pages loaded with no match → insert the inline `.anchor-miss-banner` above the sightings table with the formatted timestamp, mark resolved.
+- **CSS**: new `.sightings-table tr.row-anchored` rule applies a 3px cyan left-border on the first cell plus a faint cyan background on all cells in the row. New `.anchor-miss-banner` rule for the amber retention-pruned banner with the same visual vocabulary as the existing All-tab migration banner.
+- **`templates/index.html`**: `jumpToAllTabForAircraft(icao, seenAt)` and `jumpToAllTabForRecord(icao, setAt)` now build URLs with `?sighting={ts}` when the timestamp argument is provided. Validates `Number.isFinite(ts) && ts > 0` so malformed timestamps fall back to the timestamp-less URL gracefully. v2.59.4 stub comments updated to remove the "Phase 1B will land this" forward-reference now that it has.
+
+### Notes
+- **No backend changes; no schema changes; restart-only upgrade.** The `?sighting=` param is interpreted entirely in the frontend.
+- **The `seenAt` argument has been preserved on `jumpToAllTabForAircraft` and `jumpToAllTabForRecord` since v2.59.4 specifically anticipating this release** — every Stats redirect call site was already passing the timestamp, the parameter just wasn't doing anything until now. No call site changes needed.
+- **Auto-pagination has a natural stopping point**: it bumps `offset` until `rows.length >= totalCount`. On a typical aircraft with ~500 sightings and 100-row pages, that's at most 5 fetch calls. Bounded by `totalCount` so it can't loop forever even if the data is somehow inconsistent.
+- **The cyan border is persistent**, not a fade. Honest about visual vocabulary: the user navigated here BECAUSE of this specific sighting; the visual shouldn't disappear right when they need to find it. They can always reload the page without `?sighting=` to clear the marker.
+- **Right-click / cmd-click → "Open in new tab"** still works on Stats drill rows (they're `<tr onclick>` not `<a href>`, so this isn't fully clean, but the new URL format is shareable as a deep link). Filed under the existing follow-up: convert clickable Stats drill rows to nested anchors.
+- **91 tests pass** unchanged.
+
+## [2.60.1] — 2026-04-30
+
+### Fixed
+- **"Sort by distance" in Search now returns the closest aircraft globally, not just the closest among the visible page.** v2.60.0 introduced clickable column headers; the distance-sort path was implemented in JavaScript and only saw the current page of results — so on a query matching thousands of aircraft, you'd get the closest of an arbitrary 100-row page rather than the actual closest. v2.60.1 moves the sort to the database where it can see the full result set. Aircraft without coordinates or installs without receiver location configured (NULL distance) sort to the bottom regardless of direction — "closest" should never lead with unknowns.
+
+  Behind the scenes: v2.60.0's distance sort was implemented as a Python post-fetch reorder on the LIMIT-capped page, which meant "sort by distance asc on a query matching 6,800 aircraft" returned the closest of an arbitrary 100-row page rather than the closest globally. v2.60.1 fixes this by storing each aircraft's distance in a denormalized `seen_aircraft.last_distance` column (canonical kilometers) populated at write time by the collector. The Search SQL ORDER BY clause now sorts the column directly, returning correctly-ordered results across the entire matching set. NULL distances sort last regardless of direction — the intuitive behavior since "closest aircraft" should never include unknowns at the top.
+
+### Implementation
+- **Schema migration v3** adds `last_distance REAL` column to `seen_aircraft` plus an `idx_seen_distance` index. `CURRENT_SCHEMA_VERSION` bumped from 2 → 3. Idempotent: re-running treats both the ALTER TABLE and CREATE INDEX as no-ops via duplicate-column catch and `IF NOT EXISTS`. Migration creates the column with NULL values; backfill happens at startup.
+- **Collector write-side update**: the `seen_aircraft` UPSERT in collector.py now computes distance from the receiver and includes it in both the INSERT and the ON CONFLICT UPDATE branches. New `_compute_distance_km(lat, lon)` helper does pure haversine using receiver coordinates pushed in via the new `set_receiver_location(lat, lon)` setter. Aircraft seen without coordinates store NULL — preserved through subsequent updates via `COALESCE(excluded.last_distance, last_distance)`.
+- **Server.py**: `_recompute_all_last_distance(db_path, rlat, rlon)` walks every row in seen_aircraft, computes distance, and bulk UPDATEs. Runs in two places: (1) main.py startup, every boot — keeps the column consistent across edge cases like first-install-after-upgrade or stale data from prior config; (2) the `/api/config` PUT handler, when the user changes receiver latitude or longitude. Cost: ~7K UPDATEs in single-digit seconds even on a Pi. Failures are caught and logged, never blocking the config save.
+- **Search.py**: `SORTABLE_COLUMNS["distance"]` changed from the `__POSTPROCESS_DISTANCE__` sentinel to the actual SQL fragment `seen_aircraft.last_distance`. The ORDER BY construction now wraps EVERY user-chosen column with a `<col> IS NULL` pre-sort key so NULL rows always sort last regardless of direction. SELECT clause includes the new column; row dict construction reads it as `last_distance_km`.
+- **Server.py /api/search handler**: distance annotation now reads the stored `last_distance_km` and converts to user-unit via the new `_distance_km_to_user_unit()` helper. The pre-v2.60.1 per-row haversine + Python post-sort is gone — both replaced by the column read.
+- **Main.py startup wiring**: receiver lat/lon pushed into the collector via `set_receiver_location()` immediately after CONFIG load, before the collector thread starts, so the very first poll cycle writes correct distances.
+- **4 new tests** in test_search.py covering: ascending sort returns rows in increasing distance order, descending reverses, NULL-distance rows always sort last regardless of direction, and (the v2.60.1 fix verification) sort by distance with `limit=2` returns the globally-closest two aircraft, not just the closest of an arbitrary page. Test fixture's `_make_test_db()` schema updated to include the `last_distance` column. 91 tests pass (was 87).
+
+### Notes
+- **Schema migration runs automatically on first start after the upgrade.** No manual steps required.
+- **Initial backfill runs every startup.** This is intentional — keeps the column consistent across crashes, manual schema edits, or any path where the collector wrote stale data. Cost is bounded (single-digit seconds on a Pi for ~7K rows); not enough to delay startup meaningfully.
+- **Receiver-location config changes trigger an immediate full recompute.** The `/api/config` PUT handler detects coordinate changes via diff, then calls the recompute function. Distance unit changes (mi/km/nmi) don't trigger recompute — the stored value is canonical km, unit conversion happens at display time.
+- **Distance is canonical kilometers** in storage. All display surfaces (Search cards, /api/search response, exports) convert to the user's configured unit via `_distance_km_to_user_unit()`. Unit conversion is monotonic linear, so sort order is preserved regardless of which unit the user is viewing.
+- **Performance gain on Pi**: a typical Search query that previously did ~6 trig ops per row × hundreds of rows now does a single column read per row plus a multiply for unit conversion. Sorting by distance went from "sometimes correct, always slow" to "always correct, always fast". The cost moved to write time where it's amortized across normal collector activity.
+- **The v2.60.0 distance-sort caveat in the changelog ("sorts only the current page, not the full result set") is now obsolete and resolved.**
+
+## [2.60.0] — 2026-04-30
+
+### Added
+- **Search column headers are now clickable to sort, and your sort preference persists across queries.** Click any column header on the Search tab (ICAO, Type, Callsign, Description, Speed, Altitude, Distance, Squawk, Last Seen) to sort results. Click again to flip ascending ↔ descending; click a different column to switch. Up/down arrow indicators show the active sort and direction, matching what Live, Watchlist, Military, and All already do. Sort works correctly across paged result sets — sorting by altitude descending returns the highest-altitude aircraft across the entire match, not just within the visible page. Your last-used sort sticks around for subsequent searches via browser localStorage.
+
+  Behind the scenes: Phase 1A.5 of the Search-becomes-canonical arc. Server-side `ORDER BY` for honest semantics across paged result sets — sorting works correctly even when the result set has more matches than the current page. New `?order=&dir=` query parameters on `/api/search`. Both validated against an allowlist (`SORTABLE_COLUMNS` in search.py) — invalid values silently fall back to relevance order, so the endpoint is SQL-injection-safe by construction. Sort preference persists via localStorage under `aerodrome_search_sort_v1`. Storage write/read failures (private mode, quota exceeded) are caught and degrade gracefully — sort still works for the current session.
+
+### Implementation
+- **`search.py`** gained `SORTABLE_COLUMNS` (allowlist of public column ids → safe SQL ORDER BY fragments) and `_SORT_DEFAULT_DIR` (per-column natural starting direction — desc for numeric/time, asc for text). New `_resolve_order_direction(order, direction)` helper validates both and returns either an SQL fragment + 'ASC'/'DESC' or `(None, None)` for fall-through. `execute_search` accepts `order` and `direction` keyword args; constructs ORDER BY accordingly with `score DESC, last_seen_at DESC` always tie-breaking so equally-ranked rows stay stable.
+- **`distance` is sorted in Python** rather than SQL because distance is computed post-fetch in server.py (haversine on lat/lon). When the user picks distance-sort, server.py's /api/search handler re-orders the rows after annotation. Limitation: this sorts only the page returned, not the full result set. Documented as honest tradeoff — sorting by distance across all matches would require denormalizing distance into the seen_aircraft table or computing in SQL with the haversine formula.
+- **`server.py`** `/api/search` endpoint reads `order` and `dir` query string parameters and threads them to `execute_search`. Empty string means "no sort selected" → relevance.
+- **Frontend `_searchState.sort`** holds `{col, dir}` or null. New `srtSearch(col)` function implements the click-cycle: same-column flips direction, different-column starts at the per-column default. Persists to localStorage on every change. Calls `runSearch()` to re-fetch with the new sort.
+- **`_searchPaintSortArrow()`** renders the up/down arrow on the active column after each render. Clears all arrows first, then sets the indicator on the matching `[data-c]` cell.
+- **CSS** added `.search-results-header .sortable` rules with cursor pointer, hover color transition, and arrow font-size — mirrors the existing `.row-grid-header .sortable` rules used by other tabs for visual consistency.
+- **Export path** (`_fetchAllSearchResults`) also includes the sort params so CSV exports reflect the on-screen order.
+- **10 new tests** covering: sort by each major column type (text/numeric/time), both directions, invalid order falls back to relevance, invalid direction uses per-column default, sort interacts correctly with filter, no-params preserves pre-v2.60 relevance behavior. All 87 tests pass (was 77).
+
+### Notes
+- **No database schema changes; no migrations.**
+- **Backend is forward-compatible** — older frontend code that doesn't send order/dir continues to get the same relevance order as before.
+- **The first click on any column applies the per-column default direction** (descending for numeric/time, ascending for text), so the initial sort is intuitive without requiring a second click.
+- **Distance-sort caveat** documented in user-facing notes: sorts the current page, not the full result set. Adequate for typical use (top results visible) but worth knowing for power users running large queries. Filed as a follow-up: denormalize distance or push haversine into SQL if this becomes a real friction point.
+
+## [2.59.6] — 2026-04-30
+
+### Changed
+- **Aircraft list rows in chart drill panels are now clickable and navigate to the aircraft detail page.** Three Stats surfaces share the same renderer and were missing the click handler that other Stats drill panels already had: Last 7 days → click a day bar → list of aircraft seen on that day; Patterns → "Aircraft by hour" → click an hour bar → list of aircraft active that hour; Coverage → "Positions by distance" → click a distance bucket → list of aircraft in that range. The aircraft entries are styled as cyan callsign + grey ICAO (e.g. "DAL334 (A793FD)") which read as links but didn't navigate. Now they do — clicking any aircraft row goes to `/aircraft/{ICAO}` with hover affordance and "View aircraft details" tooltip.
+
+### Implementation
+- `renderChartDrillTable(rows, contextLabel)` rewritten so each `<tr>` carries `class="drill-row-clickable"` plus an `onclick` invoking `jumpToAllTabForAircraft(icao, seen_at)`. v2.59.4 already redirected that function to navigate to the detail page, so no other plumbing needed. Rows without an ICAO (defensive guard, shouldn't happen for these queries) render non-clickable.
+- One change covers all three surfaces because `toggleChartDrill` (the chart-bar handler) routes every chart-drill response through this single renderer.
+
+### Notes
+- **No backend changes; restart-only upgrade.**
+- **Hover affordance** matches every other clickable Stats row in the app — uses the existing `.drill-row-clickable` CSS class.
+- **77 tests pass** unchanged.
+
+## [2.59.5] — 2026-04-30
+
+### Changed
+- **Clicking a row inside an expanded Composition card now opens Search filtered to that specific value, instead of opening another inline panel.** The Composition cards (Top 5 aircraft types, Top 5 operators, Top 5 countries, Military branches, Category mix) have a two-level drill: clicking the card itself opens the full distribution panel (e.g. all 71 aircraft types ranked by sightings); clicking a specific row inside that panel — say "B738 — Boeing 737-800" — used to open ANOTHER inline panel below, listing the 26 specific aircraft of that type. v2.59.5 redirects that second-level click to the Search tab with the appropriate query (`B738` for type, country name for country, operator name for operator, `military {branch}` for branches, category name for category mix). Reuses the `_searchQueryForStatsCard` mapping introduced in v2.59.4. The first-level drill (the panel showing the full distribution) is unchanged.
+- **Tooltip text** on chained-drill rows updated: "See aircraft matching X" → "Search for aircraft matching X".
+
+### Implementation
+- **`chainDrillAggregate(targetCardId, rawValue, display, contextLabel)`** rewritten with the same defensive pattern as v2.59.4's `jumpToAllTab`: at the top, look up a Search query via `_searchQueryForStatsCard(targetCardId, rawValue)`; if a query exists, close the current Option C panel, navigate to `#search?q={query}`, and call `runSearch()` on next tick. If no query exists (no current cardIds fall in this category, but the fallback is kept for future-proofing), fall through to the legacy chained-drill panel rendering — that code path remains untouched.
+- **No new helper functions or new mappings** — entirely reuses the v2.59.4 work.
+
+### Notes
+- **No backend changes; restart-only upgrade.**
+- **Every chainable Composition cardId currently has a Search mapping**, so the legacy chained-drill rendering path is dead in v2.59.5. Kept rather than removed so a future Composition card without a clean Search mapping (e.g. a custom grouping) still gets a usable interaction without rebuilding the chained-drill UI.
+- **The first-level drill (Option C panel) is unchanged.** Clicking a Composition card still expands it in place to show the full ranked list. Only the row-level click changed.
+- **No new Search query patterns introduced.** Same mapping table that handles "View in Search →" buttons (v2.59.4) handles these row clicks (v2.59.5).
+- **77 tests pass** unchanged.
+
+## [2.59.4] — 2026-04-30
+
+### Changed
+- **Stats card aircraft links now navigate to the aircraft detail page instead of the All tab.** Two specific link types changed: clicking an aircraft row inside any Stats drill panel (e.g. "Top aircraft today" → click on AKA001) used to switch to the All tab and run a search; the all-time records card did the same dance with the date window narrowed to the record's set_at timestamp. Both now navigate directly to `/aircraft/{ICAO}` where the full sighting history, type info, registration, country, callsigns, and operator data live in the canonical aircraft surface. The legacy All-tab dance was a workaround from the era before the detail page existed.
+- **Stats card "View all in All tab →" buttons now redirect to the Search tab where a sensible Search query exists.** The button label updates dynamically: cards with a Search mapping show "View in Search →", cards without show the legacy "View all in All tab →". Mappings: top_types/all_types → type code (e.g. `A321`); top_operators/all_operators → operator name; top_countries/all_countries → country name; military_branches/all_military_branches → `military {branch}`; category_mix/all_category_mix → category name; watchlist_frequency → `watchlist`. The Search parser auto-classifies country names and 4-char type codes into typed filters; operator and category lookups go through free-text search which matches the operator/category columns. Cards without a useful Search mapping (`furthest`, `longest_track`) keep the legacy All-tab fallback for now — filed as a follow-up to add relative-date 'today' and distance/track-length filters to Search.
+
+### Implementation
+- **`jumpToAllTabForAircraft(icao, seenAt)`** rewritten: now just `window.location.href = '/aircraft/{ICAO}'`. The previous implementation set `_allTabHighlight`, switched tabs, called `setPreset('today')`, populated `allSearch.value`, awaited the fetch via `_awaitAllTabDataForIcao`, and surfaced a toast on not-found. All gone — the detail page handles loading and presentation natively. The `seenAt` argument is preserved on the function signature (callers still pass it) for Phase 1B which will resolve to `/aircraft/{ICAO}?sighting={seen_at}`.
+- **`jumpToAllTabForRecord(icao, setAt)`** rewritten the same way. Same `setAt` preservation rationale.
+- **`jumpToAllTab(cardId, ev, value)`** rewritten to look up a Search query via `_searchQueryForStatsCard(cardId, value)`. When the lookup returns a query, the function navigates to `#search?q={query}`, calls `go('search')` for tab-switcher consistency, and after a 0ms timeout populates `searchInput.value` and calls `runSearch()`. When the lookup returns null, the function falls back to the legacy All-tab behavior.
+- **`_searchQueryForStatsCard(cardId, value)`** — new helper that maps stats-card identifiers to Search queries. Returns null for unmapped cards. Centralized so the button label code (`renderOptionCDrillPanel` and `renderDrillTable`) can also call it to decide whether to show "View in Search →" vs "View all in All tab →".
+- **Tooltip text** updated on both clickable-row sites: "See this aircraft in the All tab" → "View aircraft details".
+- **`_allTabHighlight` and `_applyRowHighlight`** are now never set/triggered (their two callers were rewritten). Reader code is left dormant with a comment explaining the v2.59.4 status — small, harmless (null-guarded), and the highlight visual could plausibly be reused for Phase 1B "anchor on sighting" if it lands without its own equivalent. Filed as a v2.60+ candidate for removal if 1B doesn't reuse it.
+
+### Notes
+- **No backend changes; restart-only upgrade. No DB migrations. No new tests.**
+- **Same-tab navigation** for both detail-page and Search redirects. Right-click / cmd-click / middle-click would open in a new tab via the browser's default behavior — but only on actual `<a href>` elements; the Stats drill rows are `<tr onclick>` so this affordance isn't quite as clean as on the regular ICAO links elsewhere in the app. Filed as a follow-up: convert clickable Stats drill rows to nested `<a>` for richer navigation behaviors.
+- **Standing rule reaffirmed:** any code or UI that links to a dashboard tab from a record/aircraft/sighting context should be redirected to the appropriate canonical surface (detail page for single aircraft, Search for category-level queries). When new instances are encountered in the codebase or surfaced by the user, the same redirect treatment should be proposed.
+- **77 tests pass** unchanged.
+
+## [2.59.3] — 2026-04-30
+
+### Fixed
+- **Search results on phone-sized screens now show the Track ↗ button alongside ICAO + Description + +WL.** v2.59.2 unified the mobile column collapse on Live, Watchlist, Military, and All tabs to ICAO + Description + Track + WL — but Search itself had a pre-existing 640px collapse rule (from earlier work) that hid `.c-track` and `.h-track`, leaving only ICAO + Description + +WL on phone widths. The five card tabs were inconsistent: Search dropped Track while the others kept it. This release brings Search into parity by removing the Track-hide rule and adjusting Search's mobile grid template from `70px 1fr 60px 30px` to `70px 1fr 30px 28px` so Track ↗ and +WL both fit.
+
+### Notes
+- **No backend changes; restart-only upgrade.**
+- **Pure CSS change** — single `@media (max-width: 640px)` block in `templates/index.html`. No render-function or JS changes.
+- **All five card tabs (Live, Watchlist*, Military, All, Search) now share the same mobile column priority: ICAO + Description + Track + WL.** Watchlist remains the exception in that it shows ICAO + Label + Description (no Track/WL columns inline) since that's the most relevant Watchlist-specific signal — Watchlist entries are already on the watchlist by definition.
+- **77 tests pass** unchanged.
+
+## [2.59.2] — 2026-04-30
+
+### Fixed
+- **Live, Watchlist, Military, and All tabs no longer overflow phone-width screens.** The v2.59.0/v2.59.1 card-conversion's responsive collapse only had a single `@media (max-width: 1100px)` breakpoint that dropped Squawk — at actual phone widths (320–430px) the cards still tried to fit 9–11 columns and either horizontal-scrolled or got clipped off the right edge. v2.59.2 adds a second `@media (max-width: 700px)` breakpoint that aggressively collapses each tab to four columns: ICAO + Description + Track + WL. Tap any ICAO link to get to the aircraft detail page where the full column set (Speed, Altitude, Distance, Squawk, Last Seen, etc.) remains visible. Watchlist's mobile collapse is slightly different — it preserves the Label column instead of Track/WL since that's the most important Watchlist-specific signal and Watchlist doesn't have +WL buttons inline.
+
+### Implementation
+- Added `col-{name}` class names to every column header span and every row cell span across the four card tabs (Live, Watchlist, Military, All). The class names: `col-icao`, `col-callsign`, `col-type`, `col-desc`, `col-speed`, `col-altitude`, `col-distance`, `col-squawk`, `col-seen`, `col-track`, `col-wl`, `col-label`. Sortable column hooks (`data-c="..."`, `srt(...)` onclick) unchanged — these are pure presentation classes layered on top.
+- New `@media (max-width: 700px)` block in `templates/index.html` defines per-tab collapsed grid templates and `display: none` rules for the hidden columns. The four tabs all share the same collapse target except for Watchlist, which keeps the Label column.
+- Card padding tightened from 10px to 8px at phone widths so limited horizontal space goes to content rather than chrome.
+
+### Notes
+- **No backend changes; restart-only upgrade. No DB migrations. No new tests.**
+- **Tablets (700-1100px viewport):** unchanged from v2.59.1. The existing 1100px breakpoint drops Squawk; everything else stays. The new 700px breakpoint only kicks in at phone widths.
+- **Search tab unchanged.** Search already had its own mobile collapse at 900px and 640px breakpoints (working well per user confirmation, see Image 1 from v2.59.1 review). The four newly-converted card tabs now match Search's mobile behavior.
+- **Sort still works on phone.** The hidden columns can't be tapped, but the visible columns (ICAO, Description) remain sortable. Other columns become available again as soon as the viewport widens past 700px.
+- **Stats tab unaffected** — uses records cards, not the column-aligned grid pattern.
+
+## [2.59.1] — 2026-04-30
+
+### Changed
+- **Live and All tabs converted to the same bordered-card visual style as Watchlist, Military, and Search.** Completes the Path B card conversion across all five primary dashboard tabs. Each aircraft is now one bordered, rounded card with 4px gap below; column-header strip pinned below the tabs bar via the same three-level pin stack established in v2.59.0 (header → tabs → column-header). Visual consistency now spans the whole dashboard — switching between Live, Watchlist, Military, All, and Search shows the same row treatment with tab-specific column sets. Stats tab unchanged (records cards, separate visual model). The conversion was deliberately split across two releases (v2.59.0 short tabs, v2.59.1 dense tabs) so the card layout could be reviewed on lighter surfaces before applying to the busiest one (All tab can hold thousands of rows).
+
+### Implementation
+- **Live tab grid** (`.live-grid`): 10 columns — ICAO, Callsign, Type, Description, Speed, Altitude, Distance, Squawk, Track, +WL. No Last Seen column (Live is "what's flying right now"; timestamps would be either "seconds ago" for everything or absent).
+- **All tab grid** (`.all-grid`): 11 columns — same as Military but adds Last Seen. Highest-density tab in the app; responsive `@media (max-width: 1100px)` collapse drops the Squawk column at narrow widths, same as the other card tabs.
+- **`render()` Live branch** rewritten: emits `<div class="row-card live-grid">` with `<span>` cells instead of `<tr><td>`. Same `wlIcaos` / `_renderAddWlButtonInline` integration as Military (v2.59.0). Empty-state placeholder is now a div-based `.empty` block matching the other card tabs.
+- **`render()` All branch** (the previous else-fallback after Watchlist + Military) rewritten: emits `<div class="row-card all-grid">` cards. Sighting count chip remains baked into the ICAO cell as before. The `cols` variable that was used for `colspan` is removed (no longer applicable). The empty-state placeholder is unified across all three grouped tabs (Watchlist, Military, All).
+- **`_applyRowHighlight()`** updated: previously iterated `table.tBodies[0].rows` to find the Stats-jump highlight target. Now searches `#bAll .row-card` first (since All is the only target tab the highlight applies to), with a fallback to legacy table rows for any non-converted contexts. The card-side `.row-card.row-highlighted` rule (added in v2.59.0) provides the cyan tint + cyan left border treatment.
+- **All-tab error fallback** (the rendering path when `/api/all` fetch fails) now emits a div-based `.empty` block instead of `<tr><td colspan="11">`, since `bAll` is now `.row-card-list`.
+- **`addWlCell()` retained** but no longer called — kept for one release in case downstream customizations reference it. Will likely remove in v2.60+. Comment updated to reflect this status.
+
+### Notes
+- **No backend changes; restart-only upgrade. No DB migrations.**
+- **Live tab auto-refreshes every poll cycle.** Card-row rendering performs equivalently to table-row rendering — same DOM size, same browser layout cost. No measurable perf change in casual testing.
+- **All tab pagination, search, date-range filters, and server-side sort all preserved exactly.** The conversion changes the row's wrapping element only; data flow, fetch logic, and pagination state are untouched.
+- **Stats → All-tab navigation (jumpToAllTabForRecord / jumpToAllTabForAircraft) preserved.** The highlight scrolls the target card into view and applies the cyan tint via `.row-card.row-highlighted`.
+- **Browser back/forward, tab badges, emergency-squawk highlighting, MIL/WATCHLIST pills, +Add-Watchlist button state, sort + column arrows, distance-unit toggle all behave identically to v2.59.0.**
+- **77 tests pass** (unchanged from v2.59.0). No new tests added — pure presentation-layer change.
+- **The five primary card tabs (Live, Watchlist, Military, All, Search)** now share `.row-card-list` + `.row-card.{tab}-grid` + `.row-grid-header.{tab}-grid` patterns. Adding a new card tab in the future (or modifying a column set) is a single CSS grid-template-columns + render-function update.
+
+## [2.59.0] — 2026-04-30
+
+### Changed
+- **Watchlist and Military tabs converted from a continuous table to a bordered-card list, matching the Search tab's visual style.** The previous table-with-borders layout has been replaced with one bordered, rounded card per aircraft, with a 4px gap between cards. Same data and behavior — ICAO links, Track ↗ links, MIL pills, watchlist label chips, +Add-Watchlist buttons, hover states, sort, and emergency-squawk highlighting all preserved exactly. The visual model now matches Search's airier, scannable presentation. This is the first half of the Path B card conversion: v2.59.0 covers the short-list tabs (Watchlist, Military) where the airier density is appropriate; v2.59.1 will convert the dense tabs (Live, All) using the same patterns established here.
+- **Column-header strips now pin below the tabs bar, keeping column labels always visible while scrolling.** Three-level pin stack: header (top:0) → tabs row → column-header. The pin offset uses CSS variables (`--aerodrome-header-height` + `--aerodrome-tabs-height`) measured at runtime by `theme.js`, so the bars stay flush across viewport-width changes, theme variations, and zoom levels. Applied to all three card-tab surfaces: Watchlist, Military, and (retroactively per user request) Search. Stats tab is intentionally skipped because it uses records cards rather than the column-aligned card list pattern.
+
+### Implementation
+- **theme.js** extended to ALSO measure the `.tabs-wrap` height alongside the existing header measurement, exposing `--aerodrome-tabs-height` on the document root. The IIFE re-runs on `DOMContentLoaded`, `window.resize`, and `document.fonts.ready` — same triggers as the v2.58.1 header measurement.
+- **Shared CSS** added in `templates/index.html`: `.row-card` / `.row-card-list` (the wrapper structures), `.row-grid-header` (the column-header strip with sticky positioning at `top: calc(var(--aerodrome-header-height) + var(--aerodrome-tabs-height))`), and per-tab grid-template-columns specifications (`.watchlist-grid`, `.military-grid`). Responsive `@media (max-width: 1100px)` collapses non-essential columns at narrow widths (squawk drops first).
+- **Watchlist + Military panel markup** rewritten: `<table>` → `<div class="row-grid-header watchlist-grid">` (or `military-grid`) + `<div class="row-card-list" id="bWatch">` (or `bMil`). Sortable column cells are `<span class="sortable" data-c="...">` so the existing click-sort handlers continue to work unchanged.
+- **`render()` function** updated: the `tab === 'watchlist'` branch and a new `tab === 'military'` branch now emit `<div class="row-card watchlist-grid">` / `<div class="row-card military-grid">` cards instead of `<tr>` rows. The `else` branch (All tab) keeps the `<tr>` rendering until v2.59.1.
+- **`srt()` selector update**: `th[data-c="..."]` → `[data-c="..."]` so it matches both the legacy `<th>` markup (Live + All) and the new `<span>` markup (Watchlist + Military + Search). Same change applied to the Live tab's distance-arrow setup at line 4883 and to the distance-unit refresh selector at line 4889 (`th.col-distance` → `[data-c="distance"]`). All sort behavior is identical to v2.58.1.
+- **Empty-state placeholder** in `render()` is now per-tab: card-list tabs (Watchlist, Military) emit a div-based empty state without the `<tr><td colspan>` wrapper that's invalid markup outside a `<tbody>`. The All tab keeps the `<tr><td colspan>` form until it converts in v2.59.1.
+- **`_renderAddWlButtonInline(ac)`** new helper added next to `addWlCell()`. Returns just the inner `<button>` (no `<td>` wrapper) for use in the new card layout's `.c-wl` cell. Same `wlIcaos` lookup and same "added" state handling as the table version.
+- **Search column-header strip** (`.search-results-header`) updated to use the same `position: sticky; top: calc(var(--aerodrome-header-height) + var(--aerodrome-tabs-height)); z-index: 48; background: var(--bg0);` rule as the new card tabs.
+
+### Notes
+- **No backend changes; restart-only upgrade. No DB migrations.**
+- **The All tab is intentionally NOT converted in this release.** It's the highest-density tab (hundreds to thousands of rows), and converting it shares all the design patterns established here. Splitting the work into two releases (short tabs first, dense tabs second) was the user's preferred shape so they can review the card layout's behavior on the lighter tabs before applying it to the busiest surface.
+- **Live tab is also not yet converted** — same v2.59.1 release.
+- **Stats tab is intentionally skipped from card conversion** because it uses a records-card structure (per-day, per-record cards with their own internal layout), not a column-aligned grid. Different visual model, different conversion target if any.
+- **Browser back/forward navigation between tabs is unaffected** — the panel `.on` class system that drives tab visibility is unchanged.
+- **Export functionality (CSV download) reads from `D[tab]` data state, not from DOM**, so the table → cards conversion has zero impact on exports. Verified by code audit before the change.
+- **77 tests pass** (unchanged from v2.58.1). No new tests added — the change is presentation-layer CSS/HTML/render-function structure, not data or logic.
+
+## [2.58.1] — 2026-04-30
+
+### Fixed
+- **Removed a hairline gap that occasionally appeared between the pinned header and the tabs/breadcrumb bar.** v2.58.0 used a hardcoded `top: 58px` on `.tabs-wrap` (dashboard) and `.crumbs-bar` (aircraft detail page) to position them immediately below the pinned header. The 58px came from the header's expected rendered height: 12px padding × 2 + ~33px content + 1px border. In normal viewing this matched. In practice, the actual rendered height varied by 1-2px under viewport-width changes, theme variations, browser zoom levels, and webfont swap timing — leaving a thin transparent strip between the two pinned bars that exposed scrolling content peeking through. Visible regression in the dashboard (between header and tabs row) and on detail pages (between header and breadcrumb).
+
+### Implementation
+- `static/theme.js` gained a small IIFE that measures `.hdr` rendered height via `getBoundingClientRect()` on `DOMContentLoaded`, on `window.resize`, and on `document.fonts.ready`. The measured height (rounded up to defeat sub-pixel rendering) is set as `--aerodrome-header-height` on the document root.
+- `templates/index.html`'s `.tabs-wrap` rule and `templates/aircraft.html`'s `.crumbs-bar` rule both now use `top: var(--aerodrome-header-height, 58px)`. The 58px fallback covers the brief moment between page render and first JS measurement; once theme.js runs, the variable takes over.
+- All admin pages (Status, Logs, Documentation, Configuration, Updates, Diagnostics, Performance) load `theme.js` and have a `.hdr` element, so the variable is set on every page automatically. They don't have a tabs/breadcrumb bar to reference it, so this is benign for them.
+
+### Notes
+- **No backend changes; restart-only upgrade.**
+- **Rounding direction is intentional.** `Math.ceil()` rounds the measured height up rather than down. Erring toward overlap (which sticky layout handles cleanly — the two elements just touch) is safer than erring toward gap (which is exactly the regression being fixed).
+- **Rare edge case:** if `theme.js` fails to load (CDN block, network error, file removed), the 58px fallback kicks in and the gap might reappear in the variations where it appeared before. Same outcome as v2.58.0 in that case — not worse.
+
+## [2.58.0] — 2026-04-30
+
+### Changed
+- **Nav tabs and aircraft-detail breadcrumb now stay pinned at the top while you scroll long lists.** On the main dashboard the tabs bar (Live, Watchlist, Military, Stats, All, Search) sticks below the header so switching tabs doesn't require scrolling back to the top first; on aircraft detail pages the `Search › Aircraft › ICAO` breadcrumb does the same. Especially noticeable on Search results (which can be 500 rows), All-tab pagination, and Stats records lists. Admin pages already had this behavior since v2.50.16; v2.58.0 brings it to the dashboard and detail page.
+- **Aircraft detail pages now pin a breadcrumb bar below the header.** The detail page (`/aircraft/{ICAO}`) doesn't have main nav tabs (it has a `Search › Aircraft › ICAO` breadcrumb instead). v2.58.0 pulls that breadcrumb out of the inline page content and into a dedicated full-width `.crumbs-bar` element that sticks immediately below the header, mirroring the `.tabs-wrap` pattern on the dashboard. The breadcrumb's "Search" link stays one click away regardless of how deep the user has scrolled into the sightings table or pattern chips. Same `top: 58px` and `z-index: 49` as the dashboard tabs bar so behavior is consistent across surfaces.
+- **Admin pages (Status, Logs, Documentation, Configuration, Updates, Diagnostics, Performance) get the pinned-header behavior automatically** — they were already covered by the `body .hdr` rule in `static/theme.css` since v2.50.16. No per-page changes needed; v2.58.0 simply extends the pattern from "header pins" to "header + secondary nav pins" on the two surfaces (dashboard and detail page) where there's a secondary nav bar to pin.
+
+### Implementation
+- `templates/index.html`: added `position: sticky; top: 58px; z-index: 49` to `.tabs-wrap`. The header was already sticky via theme.css.
+- `templates/aircraft.html`: added a new `.crumbs-bar` element above `.wrap` (the main content container), styled `position: sticky; top: 58px; z-index: 49`. The breadcrumb HTML is now populated by `renderDetail()` writing into `#crumbsBar` instead of being part of the main content's first row. Static placeholder breadcrumb (`Search › Aircraft`) shown during the initial fetch so the bar isn't visually empty while loading.
+- The `top: 58px` value is derived from the header's rendered height (12px padding × 2 + 33px content + 1px border). Comment in CSS notes this so future header padding changes can update both files together.
+
+### Notes
+- **No backend changes; restart-only upgrade.**
+- **Z-index ordering:** scrolling content (panel rows, tables, drill panels) sits below z-index 49 (default). The tabs bar / crumbs bar sit at 49. The header sits at 50. The gear dropdown menu sits at 100 so it pops above everything. Toast notifications sit at 1000 (highest). This stack means pinned bars never get visually punched through by scrolling content, but the gear menu still anchors correctly beneath the gear button.
+- **Mobile/narrow viewport:** existing horizontal tab-scroll affordances (`.tab-scroll-btn` left/right arrows that appear when tabs overflow horizontally) continue to work — sticky positioning doesn't interfere with the absolute-positioned scroll buttons inside `.tabs-wrap`.
+- **No JS changes needed.** Pure CSS implementation. The existing `wireTabBarArrows` overflow-detection still works because `.tabs-wrap` continues to be the scroll-arrow container; only its `position` property changed (relative → sticky).
+
+## [2.57.1] — 2026-04-30
+
+### Fixed
+- **Watchlist label pills on Search results no longer overflow or wrap inside themselves with long labels, and tail-only watchlist entries now match in Search.** v2.57.0 rendered the WATCHLIST pill inside the same 80px-wide cell as the ICAO link; user labels longer than that (e.g. "A3E99C Pilot Smith" — 20 characters) overflowed the cell and crashed visually into the next column. The pill now ellipsis-truncates with the full label available on hover, and the cell stacks the pills below the ICAO instead of competing alongside it. Separately, watchlist entries that specified only a tail number (`{tail: "N12345"}`, no `icao:`) didn't participate in `wl` / `watchlist` filter results — v2.57.1 reverse-queries the existing hexdb cache at startup so tail-only entries behave identically to direct-ICAO entries, network-free.
+- **Tail-only watchlist entries now match in search.** v2.57.0 documented this as a limitation: an entry like `{tail: "N12345"}` (no `icao:` specified) didn't participate in the `wl` / `watchlist` filter or render the WATCHLIST pill on rows, because resolving tail→ICAO normally requires a network call to hexdb.io. The collector resolves these at its own startup and caches in-memory; the server didn't have access to that cache because they're separate processes. v2.57.1 fixes this by reverse-querying the existing `hexdb_cache` SQLite table the collector already maintains: at server startup (and after each watchlist add/remove), the server runs `SELECT icao FROM hexdb_cache WHERE UPPER(registration) = UPPER(?) AND last_outcome = 'positive'` for each tail-only entry and builds a `_RESOLVED_WATCHLIST_TAILS` map. The map is threaded through `execute_search` and `_annotate_watchlist` so tail-only entries behave identically to direct-ICAO entries from the user's perspective — they show up in `wl` / `watchlist` filtering and get the orange WATCHLIST pill on Search cards and detail pages. Network-free, sub-millisecond cost.
+
+### Notes
+- **No schema changes; restart-only upgrade.**
+- **Edge case for fresh installs.** If a tail-only watchlist entry refers to an aircraft that has never been seen by this install, the hexdb_cache won't contain its registration, so resolution still fails. The server logs a warning at startup ("could not resolve 'N12345' via hexdb_cache — aircraft may not have been seen yet on this install"), and the entry silently won't match in search until the aircraft is seen and the collector populates its cache. This is the same outcome as the collector's own startup-time tail resolution: both processes fail open with logged warnings rather than blocking.
+- **Negative cache entries are not used for resolution.** If `hexdb_cache` has a row for a tail with `last_outcome = 'negative'` (the cache remembers a previous failed lookup), the server treats it as unresolved — same as if the row weren't there. This keeps the resolution path conservative.
+- **4 new tests** in `test_search.py` covering the tail-resolution path: resolvable tails surface in search, unresolved tails are silently skipped, mixed icao+tail watchlists produce both matches, and missing `resolved_tails` parameter preserves v2.57.0 behavior. All 77 tests pass (was 73).
+
+## [2.57.0] — 2026-04-30
+
+### Added
+- **Search now recognizes `mil` / `military` / `watchlist` / `wl` as filter tokens, with matching MIL and WATCHLIST pills on result rows.** Type `mil` (or `military`) to get military aircraft; type `watchlist` (or `wl`) to get aircraft on your configured watchlist. Combine: `mil watchlist` returns military aircraft also on the watchlist. Combine with other filters: `wl B738` for watchlist 737-800s, `mil United States` for US military. Result rows now display the same red MIL pill and orange WATCHLIST label pill they show on Live/Watchlist/Military/All — visual language stays consistent across surfaces.
+- **MIL pill on Search cards.** v2.56.0 surfaced `is_military` / `mil_label` / `mil_color` on the search response but the card render didn't yet display them. v2.57.0 closes that gap — military aircraft now show the same red MIL pill on Search cards that they show on Live, Watchlist, Military, and All-tab rows. Visual language is consistent: red across the app means military.
+- **Orange WATCHLIST pill on Search cards.** New annotation. When an aircraft is on the user's configured watchlist, the search card shows an orange chip with the user's custom watchlist label (e.g. "CIRRUS", "Pilot Smith"). Falls back to generic "WATCHLIST" if no label is set. Aircraft that are both military AND on the watchlist get both pills side by side — different colors, different information categories, no visual conflict.
+- **MIL and WATCHLIST pills on the aircraft detail page hero strip.** Both annotations now appear next to the callsign-pill at the top of `/aircraft/{ICAO}` pages. Same color language, same logic. Previously the detail page was the only surface where a military or watchlist aircraft looked indistinguishable from a civilian one — gap closed.
+- **Search help panel rows for the new filters.** The "?" syntax help panel now lists Military and Watchlist alongside the other recognized filter types, with example chips showing both keyword aliases (`mil` / `military`, `watchlist` / `wl`). Users discovering the help panel can find the new syntax without needing to read the full documentation.
+- **`docs/SEARCH_SYNTAX.md` updated** with Military and Watchlist sections covering the keyword aliases, what the matcher considers, how to combine with other filters, and the documented limitation around tail-only watchlist entries.
+
+### Changed
+- **Boolean filter chips render with field-specific colors.** Type `mil` and the chip in the search input renders with a red border and red label text matching the row-level MIL pill. Type `watchlist` and the chip renders orange matching the row-level WATCHLIST pill. The chip text is just the field name ("Military" / "Watchlist") with no value separator — boolean filters don't have a value to show after the colon, and "Watchlist: yes" reads as awkward English. Removing the chip via the × button correctly rebuilds the query string using the field name as the token, so the parser re-recognizes it.
+
+### Implementation
+- **Backend `_build_where` extended with boolean filter handling.** New `_boolean_filter_clauses` helper translates the parser's `match: "boolean"` filters into SQL: military expands to an OR of icao prefix LIKE matches + callsign prefix LIKE matches + special_aircraft IN-list, mirroring `_annotate_military`'s logic so search results match how rows render the MIL pill. Watchlist expands to an OR of icao IN-list + callsign prefix LIKE matches + model substring matches, mirroring `match_watchlist`'s logic. Empty config or empty lists falls back to `1=0` (returns no rows) rather than accidentally matching every aircraft. `execute_search` accepts `mil_config` and `watchlist_config` parameters and threads them to the where-clause builder.
+- **Backend `_annotate_watchlist` mirrors `_annotate_military`.** Sets `is_watchlist` / `watchlist_label` on row dicts. Reads `CONFIG['watchlist']` and matches against icao / callsign-prefix / model-substring (the three SQL-translatable kinds). Tail-only watchlist entries are skipped because resolving tail→ICAO requires a hexdb lookup that isn't appropriate at request time. Documented as a limitation; users with tail-only entries can add the icao explicitly to surface the pill.
+- **`/api/search` and `/api/aircraft/{icao}` annotate is_military + is_watchlist on every response.** Same annotation function wired into both endpoints. Distance computation and military annotation that v2.56.0 added to /api/search are unchanged; watchlist annotation joins them.
+- **14 new tests** covering parser recognition of the four boolean keyword aliases (`mil`, `military`, `watchlist`, `wl`), executor behavior for each filter kind (icao prefix, callsign prefix, special-aircraft, watchlist icao/callsign/model), AND-combination of mil+watchlist, and the empty-config fallback. All 73 tests pass (was 59).
+
+### Notes
+- **No schema changes; restart-only upgrade.**
+- **Tail-only watchlist entries don't surface in search filtering.** The watchlist filter resolves three of the four entry kinds the collector handles (icao, callsign, model). Tail-only entries are skipped because they need a hexdb lookup the collector does at startup but the search path can't redo at request time. Users with tail-only entries can add the resolved icao to the watchlist entry to make those aircraft searchable. Filed as a future improvement opportunity if it becomes a real friction point.
+- **Empty military or watchlist config gives empty results.** A user who types `mil` on an install with no `military.icao_prefixes` configured will see zero matches, not every aircraft. This is intentional — silently matching "all" when a filter is asked for would be misleading.
+- **Phase 1A.5 (sortable column headers) is the next sequenced item.** The v2.57.0 work positioned Search as a fully featured lookup surface; sortable headers add the last piece needed for it to fully replace the All-tab workflow in Phase 1C → 1D.
+
+## [2.56.1] — 2026-04-30
+
+### Fixed
+- **Search "?" help button now correctly closes on second click (it was getting stuck open), and a duplicate Track ↗ link in the drill panel was removed.** The help-button toggle used a display-style check that mistakenly evaluated as "still closed" on the second click, so the panel never reached the close branch. Switched to reading the button's `.active` class as the source of truth — class-membership has no empty-string vs explicit-value ambiguity, so the toggle now correctly closes on second click. Separately, the Search drill panel had its own Track ↗ row from v2.50.37, which became redundant once v2.56.0 added Track ↗ as a per-row column on the Search card; the drill version was removed to avoid the duplicate.
+- **Duplicate Track ↗ link removed from the Search drill panel.** v2.56.0 added Track ↗ as a per-row column on the Search card; the drill panel still had its own Track row from v2.50.37 when the row didn't carry one. The drill version was redundant and visually competed with the row-level affordance. The drill's "View full detail ↗" link to `/aircraft/{ICAO}` stays — that's a different affordance (canonical-detail-page navigation, not external tracker). The tailMap seeding logic that the drill was already doing also stays, since the row-level `trackLink()` benefits from the seeded registration when the resolver hasn't reached the aircraft yet.
+
+### Notes
+- **No schema changes; restart-only upgrade.**
+- **Two more bugs from the same review queued for v2.57.0** (next release, minor bump): search by "mil"/"military"/"watchlist" as recognized filter tokens, and MIL/WATCHLIST pill annotations on the aircraft detail page. Bundled together because they share parser plumbing (boolean filters) and pill-rendering plumbing.
+
+## [2.56.0] — 2026-04-30
+
+### Changed
+- **Search results now show the same column set as the All tab — Speed, Altitude, Distance, Squawk, exact-time Last Seen, plus per-row Track ↗ and "+" Add-Watchlist actions.** Previously the Search card showed ICAO, type code, callsign, country, sightings count, and a relative timestamp — six fields, no per-aircraft state. The All tab showed nine plus actions. Same underlying data on both surfaces; one rendered it, the other didn't. Search cards now carry all of those columns sourced from the same data path as the All tab (sightings_hourly's most-recent bucket per icao). The "latest known state of this aircraft" semantics match exactly. Each card sits in a shared grid (`.search-row-grid`) so columns line up across cards.
+- **New V2 table-aligned card layout.** Each card is now one row in a shared grid (`.search-row-grid`) so columns line up across cards — speeds align under speeds, distances under distances. A column-header row sits above the result list using the same grid template, so the headers anchor visually to the data below them. Each card stays a single bordered block (not a `<table>` element) so the inline drill panel still expands beneath it on click, and Phase 1A.5's sortable headers will be a behavior change rather than a layout rewrite.
+- **Per-row Track ↗ and "+" Add-Watchlist actions.** Both consistent with where they sit on All-tab rows. Track ↗ uses the existing `trackLink()` helper; Add-Watchlist reuses the All-tab's button styling (`.add-wl-btn`) including the "added" state when the icao is already on the watchlist. Click handlers on both stop event propagation so they don't also toggle the card's drill panel — consistent with how the ICAO link behaved since v2.55.0.
+- **Last-seen timestamp now renders as exact local time.** Was relative ("4m ago") in v2.55.0 and earlier; now matches All-tab's exact-time rendering. Per user direction this release.
+- **Backend `execute_search` extended to surface last-state fields.** `last_speed`, `last_altitude`, `last_squawk` live on `sightings_hourly`, not `seen_aircraft` — they change continuously and would invalidate FTS more often than necessary if denormalized to the search table. The executor now LEFT JOINs to a correlated subquery selecting the latest hour_bucket per icao. Same pattern the All tab uses (server.py:1142). Cost is bounded by the existing 500-row LIMIT, so the join overhead is small. LEFT JOIN means aircraft with no rollup row yet (rare — happens only on fresh installs before the first rollup cycle completes) still appear in results with NULL last-state fields, rendered as dim em-dashes.
+- **`/api/search` now computes per-row distance and military annotation server-side.** Distance is haversine of `last_lat`/`last_lon` against the configured receiver location, same as `/api/all` and `/api/live`. Military annotation runs `_annotate_military` on each row to populate `is_military`, `mil_label`, `mil_color` so the Search card can render the same MIL pill styling as Live/Watchlist/Military/All-tab rows. A `callsign` alias key is added alongside `last_callsign` in the row dict so server-side helpers that look for the generic `callsign` key work without rename plumbing.
+- **Responsive collapse rules added for narrow viewports.** Below 900px wide, low-priority columns (Distance, Squawk, Last Seen) drop to keep the row scannable. Below 640px the row collapses further to ICAO + Description + Track + Add-WL only. Existing v2.55.0 behavior of letting Description ellipsis-clip preserved.
+
+### Added
+- **Three new tests in `test_search.py`** covering the v2.56.0 backend changes: `test_last_state_fields_present_when_hourly_populated` verifies last_speed/altitude/squawk surface when `sightings_hourly` has rows; `test_last_state_fields_null_when_hourly_empty` verifies NULLs when the rollup is empty (LEFT JOIN behavior); `test_callsign_alias_for_annotate_military` verifies the `callsign` alias key is populated alongside `last_callsign`. All 19 executor tests + 56 parser tests + 4 detail-page tests pass (59 total).
+
+### Notes
+- **No schema changes; restart-only upgrade.** Schema still at v2. The new fields come from the existing `sightings_hourly` table introduced in v2.50.0; no migrations.
+- **No `/api/search` parameter changes.** Same query string, same response shape (modulo the new fields). Existing API consumers (the Search tab, the suggestions endpoint, anything external if used) get the additional fields for free without code changes.
+- **Phase 1A.5 next.** Sortable column headers on the Search results — server-side sort via new `?order=&dir=` params on `/api/search` with an allow-list of columns (ICAO, Callsign, Type, Description, Speed, Altitude, Distance, Squawk, Last Seen, Sightings count); default ordering remains relevance score; click-cycle is unsorted → desc → asc → unsorted; persist last sort preference in localStorage. The grid structure shipped this release is sized for that follow-up.
+- **The relevance-score ordering is unchanged.** v2.56.0 doesn't add sort behavior; results still come back in the same `score DESC, last_seen_at DESC` order they always did. The data density change is independent of ordering.
+- **Phase 1B (sighting anchor on detail page) and 1C (Stats → Search redirect) sequence after 1A.5.** Doing 1C without 1B would lose the records-precision flow on the detail page, so the order is locked: 1A → 1A.5 → 1B → 1C.
+
+## [2.55.0] — 2026-04-30
+
+### Changed
+- **ICAOs across the dashboard are now clickable links that take you to the aircraft detail page — and the inline drill panel is gone from Live/Watchlist/Military/All.** Previously, clicking an ICAO in any of these tabs expanded a sub-row in place containing the aircraft's metadata grid and per-sighting table. The dedicated aircraft detail page introduced in v2.53.0 provides a strict superset of that — same metadata, same per-sighting table, plus metric tiles, hour-of-day patterns, day-of-week breakdown, altitude/speed/sightings ranges, and a map placeholder for v2 follow-up. Maintaining two surfaces with overlapping content meant every change had to be considered for both. Now there's one canonical "everything about this aircraft" view at `/aircraft/{ICAO}`. The `(count)` sighting badge stays visible but is no longer interactive — grayed out so it reads as supporting information rather than a competing affordance.
+- **ICAOs are now links across every applicable surface.** Click an ICAO in Live, Watchlist, Military, or All to navigate to the detail page. Same-tab navigation by default (right-click for new tab follows browser convention; matches how every other link on the page behaves except the explicitly-cross-tab Track ↗). Cyan styling matches the existing `Track ↗` and `Tail` link conventions; underlines only on hover so a column of ICAOs doesn't read as a wall of underlined text.
+- **The `(count)` badge stays visible but is no longer interactive.** Previously rendered as a click-target for inline expand; now grayed (`var(--t3)`) so it reads as supporting information ("how many sightings of this aircraft in the current window") rather than a competing affordance. The ICAO itself is the click-target.
+- **Search tab inline drill retained.** Per user request — search-and-compare is its own UX pattern where peeking at multiple aircraft in succession without losing query context has real value. The Search tab's `_renderSightingsRegion` and the `_drillSightingsTable` helper were preserved; the surrounding inline-drill machinery for grouped tabs was removed around them.
+
+### Removed
+- **Frontend code for inline-drill expansion (~150 lines).** Functions deleted: `_drillMetaItem`, `_drillMeta`, `renderDrillPanel`, `loadAllDrill`, `togSub`. State containers deleted: the `_allTabExpanded` Set that tracked which sub-rows were open across renders. CSS deleted: `.drill-panel` (the inline variant — the stats `.drill-panel` rule that uses the same class name stays), `.drill-meta`, `.drill-meta-item`, `.drill-sightings-head`, `.drill-truncated-banner`, `.expand`, `.sub-row`, `.sub-wrap`, `.sub-hdr`, and `.subrow-highlighted`. Net file size reduction: ~204 lines from `templates/index.html`.
+- **Sub-row sighting-level highlighting.** The "click longest-flight record on Stats → jump to All tab → highlight the exact sighting moment" feature could no longer work without sub-rows to highlight. Row-level highlight is preserved (`jumpToAllTabForAircraft` and `jumpToAllTabForRecord` still scroll the matching row into view and apply the cyan-tint highlight). Users wanting to inspect the specific sighting moment click the highlighted row's ICAO to reach the detail page where the per-sighting table lives.
+
+### Notes
+- **`/api/all/drill` endpoint is unchanged.** It's still called by the aircraft detail page to populate its sightings table; only the inline-drill consumer was removed. No backend changes in this release.
+- **Click-the-ICAO-to-go-to-detail is the canonical pattern going forward.** Future tabs and surfaces that show ICAO data should use the `aircraftLink(icao)` helper added to `index.html` rather than rendering bare ICAO text. The helper returns `<a class="icao-link" href="/aircraft/{ICAOUP}">ICAOUP</a>` and uppercases the canonical URL so the detail page's uppercase canonical hits directly without a 301 redirect.
+- **No schema changes; restart-only upgrade.** Schema still at v2.
+- **The inline drill in Search has plans separately filed by the user.** Not part of this release.
+
+## [2.54.2] — 2026-04-30
+
+### Fixed
+- **More buttons cleaned up to the canonical 32px height after v2.54.0/v2.54.1 — Watchlist "Clear history", and Stats "Expand all" / "Collapse all" / "↻ Refresh".** v2.54.1 caught it on the Export buttons; this release catches the rest. All four were missing the `.btn` base class (used `class="btn-ghost"` alone, or `class="btn-ghost btn-danger"`), so they got the color overrides but rendered with browser-default sizing instead of the standard 32px. Visually distracting because each sat next to a 32px button.
+  - All four updated to `class="btn btn-ghost"` (or `class="btn btn-ghost btn-danger"` for Clear history). Same fix pattern as the Export buttons.
+- **config.html had its own local `.btn-icon` definition that overrode the theme.css standard.** Defined the icon button as 28×28 with `border-radius: 4px`, while theme.css's standard is 32×32 with 6px radius. The result: the small "✕" remove buttons in the Military prefix list editors were 4px shorter than the inputs they sat next to. Now uses the theme.css standard. The `.btn-icon.danger:hover` red-border-on-hover extension stays — that's a legitimate config-only state.
+
+### Notes
+- **Pattern: any `class="btn-X"` without `class="btn btn-X"` is a bug.** The new theme.css form-control system layers role-specific classes (`.btn-primary`, `.btn-ghost`, `.btn-danger`) on top of the `.btn` base which provides dimensions, font, padding, and transitions. A future grep for `class="btn-(primary|ghost|danger)"(?!.*\bbtn\b)` could be added to the drift detector if this keeps recurring.
+- **No schema changes; restart-only upgrade.**
+- **The "Clear history" red appearance is correct behavior, not a regression.** v2.54.0 standardized `.btn-danger` to OUTLINED red (transparent background, red border, red text). Previously the Watchlist button rendered with whatever browser-default styling crept through; the current outlined red is the intended danger semantic. The Configuration restore-confirmation modal also uses outlined red now.
+
+## [2.54.1] — 2026-04-30
+
+### Fixed
+- **Search toolbar follow-up to v2.54.0 — Export buttons across all tabs now render at the canonical 32px height, and the Search button uses the proper primary-button styling.** Three real bugs that v2.54.0 didn't catch: (1) Export buttons (5 of them, on Live/Watchlist/Military/All/Search) used `class="btn-ghost"` without `.btn`, so they got color overrides but browser-default dimensions; (2) the Search button used `.btn-load-more` instead of `.btn .btn-primary` (semantically wrong — Search is a primary submit, not a "load more" affordance); (3) the Reset and ✕ Clear buttons hit the same missing-base-class trap. All now follow the canonical hierarchy.
+  - **Inline `style="opacity:0.5"` on the disabled Search Export.** v2.54.0's standard `.btn:disabled` rule already handles opacity, so the inline style was redundant. Worse, the JS that toggled the disabled state was setting and unsetting `style.opacity` directly — three sites of manual opacity manipulation that are no longer needed. Cleaned up: JS just sets/unsets the `disabled` attribute, theme.css handles the visual greying.
+- **Three "+ Add prefix" buttons in Configuration were misclassed as `.btn-icon`.** `.btn-icon` is for square 32×32 icon-only buttons; these have text labels. They had `style="width:auto;padding:0 10px"` overrides to force text to fit — defeating the purpose. Migrated to `class="btn btn-ghost"` with the only remaining inline style being `margin-top:4px` (genuine spacing context).
+
+### Notes
+- **No schema changes; restart-only upgrade.**
+- **The Search input is intentionally taller than its toolbar neighbors.** v2.54.0 standardized form controls to 32px, but the Search input uses a separate `.search-input` class with 14px font and larger padding (~42px tall) — by design, since it's the hero of that row. Surrounding controls being 32px lets the Search input visually dominate. This is the design, not a bug.
+
+## [2.54.0] — 2026-04-30
+
+### Changed
+- **All buttons, dropdowns, date pickers, and form inputs across the dashboard now follow a single canonical visual standard — same height (32px), same border-radius (6px), same colors and focus states.** The trigger was a screenshot of the Search tab's toolbar showing four buttons in one row, all at slightly different heights with mixed border-radii (some 4px, some 6px), inconsistent border colors (some cyan, some gray, some none), and one — the "?" help button — visibly square-cornered while its neighbors were rounded. Investigation revealed every template had its own copy of the button/input CSS with slightly different padding (6/7/8px), font sizes (11/12/13px), border colors, and hover states. Buttons in the same row could be 28, 30, 32, or 36px tall depending on which class soup they used. v2.54.0 consolidates everything to a single canonical standard in `theme.css`; per-template CSS is reduced to legitimate extensions only.
+- **Canonical standard now lives in theme.css.** ~250 new lines define the single source of truth for `.btn`, `.btn-primary`, `.btn-ghost`, `.btn-danger`, `.btn-icon`, `.btn-load-more`, `.ctrl-input`, `.ctrl-select`, `.ctrl-date`, `.ctrl-label`, `.settings-btn`, and `.menu-item`. Standard: 32px tall (achieved via 6px top/bottom padding plus 12-14px sides), 6px border-radius universally, 12px font, `1px solid var(--bdr)` at rest with `var(--cyan)` on focus plus a 2px focus-ring shadow. Disabled state at 0.5 opacity with `not-allowed` cursor. Inline-flex with `gap: 6px` so icon+label combinations align without wrappers.
+- **Duplicate CSS removed from every template.** Stripped from aircraft.html, status.html, config.html, performance.html, updates.html, logs.html, docs.html, diagnostics.html, diagnostics-watchlist.html, and index.html. Roughly 200 lines of redundant CSS gone. Per-template files now declare only legitimate extensions: `.btn-ghost.active` for filter buttons in index.html, `.btn-group .btn` flush-border overrides for the segmented log-level control in logs.html, the `.settings-btn { position: relative }` shim in index.html for the alert-pulse `::after` pseudo-element, and the warn/error variants on config and status pages. Everything else inherits from theme.css.
+- **Unified menu state class to `.open`.** Five templates used `.settings-menu.open` while diagnostics.html and diagnostics-watchlist.html used `.settings-menu.on` — same UI element, two different class names, two different JS toggle calls. Now all ten templates use `.open` consistently. The `.on` class is still used elsewhere for tab-active and theme-segment-selected states (different semantics, not a conflict).
+- **Migrated `.btn-cy` → `.btn-primary` in index.html.** Two HTML usages (Watchlist Add button, All-tab Apply button) updated. The `.btn-cy` name was an index.html-only convention; `.btn-primary` is the standard used by config, updates, status, performance — and now everywhere.
+- **Migrated `.btn primary` → `.btn btn-primary` in logs.html.** One HTML usage (Download button). The space-separated variant was a logs-only convention; the hyphen-separated form is what the rest of the app uses.
+- **Search "?" help button now uses `.btn-icon`.** The square 32×32 icon-button class introduced in this release. The help button was previously `.btn-ghost.search-help-btn` with a width override that produced a different rendered shape than `.btn-ghost` alone. Now uses the canonical icon-button class with only an `.active` state extension. Same visual result, intended consistency.
+- **Migrated inline-styled labels to `.ctrl-label`.** Three sites updated (two in index.html for the All-tab and Search-tab Rows: dropdowns, one in aircraft.html for the sightings-panel Rows: dropdown). Previously all three used identical 6-property inline `style=` attributes; now use the shared `.ctrl-label` class with `line-height: 32px` so labels sit on the same baseline as adjacent buttons and inputs.
+
+### Fixed
+- **Broken `var(--card)` and `var(--bg)` references.** logs.html and docs.html referenced these CSS variables that were never defined in theme.css — five sites in logs.html (info-row background, btn-group background, btn background, search-input background, body background) and three in docs.html (md-body code background, table header background, blockquote background). Browsers treat undefined custom properties as transparent / inherit, so those rules silently rendered as unstyled. Replaced with `var(--bg2)` (intended surface background) and `var(--bg0)` (intended page background). Bug was latent — the rules silently fell through, so users saw "no background" instead of the intended subtle surface tint.
+
+### Notes
+- **No behavior changes for end users beyond visual consistency.** Buttons do exactly what they did before; inputs accept the same values; menus open and close the same way. The only thing different is that controls now align visually.
+- **Per-template extensions are clearly marked.** Where a template has a legitimate one-off rule (e.g. index.html's `.btn-ghost.active` for filter buttons, or logs.html's `.btn-group` segmented-control), the rule is preceded by a comment explaining what it extends and why. This makes it easy for future code to know what's a legitimate extension vs what's accidental drift.
+- **Future controls should default to the canonical classes.** When adding a new button anywhere, reach for `.btn-primary` / `.btn-ghost` / `.btn-icon` / `.btn-danger` / `.btn-load-more` from theme.css. Same for inputs (`.ctrl-input`, `.ctrl-select`, `.ctrl-date`) and labels (`.ctrl-label`). Only add a per-template override if the use case is genuinely unique (different shape, different state, different role).
+- **No schema changes.** Schema still at v2. Restart-only upgrade.
+
+## [2.53.6] — 2026-04-30
+
+### Fixed
+- **Aircraft detail page header now shows the "Updated HH:MM AM/PM" timestamp alongside the version, matching every other page.** The aircraft detail page only showed the version, missing the `· Updated <time>` segment that the rest of the app already showed. Visual inconsistency that read as a polish gap. Now matches: timestamp populates when detail data renders, formatted in the same 12-hour clock as the rest of the app.
+
+## [2.53.5] — 2026-04-30
+
+### Fixed
+- **Aircraft detail page header now shows the actual version instead of `v—`.** The page's `/api/status` fetch was reading the response's `aerodrome_version` field, but `/api/status` exposes the version under the key `version`. Same fix that status.html already used for the same span. Bug introduced in v2.53.0 and caught on the live page.
+
+## [2.53.4] — 2026-04-30
+
+### Changed
+- **Aircraft detail page rearranged into a single-column full-width layout — analytical sections now have room to breathe.** The previous two-column structure (280px sidebar with hour-of-day + day-of-week + ranges, main column with sightings) crammed the analytical sections into a narrow column where the histogram bars were thin, day-of-week labels had to be single letters (M/T/W/T/F/S/S — ambiguous), and the ranges list felt squeezed. Now everything stacks vertically at full content width: hero strip → metric tiles → patterns chips → hour-of-day histogram (full width, 90px tall) → day-of-week pattern (full width, 36px tall bars, three-letter labels Mon/Tue/Wed/Thu/Fri/Sat/Sun) → ranges → map placeholder → sightings panel. The map placeholder now sits between Ranges and Sightings instead of buried at the bottom — getting the visual real estate it'll need when the map ships.
+- **Map placeholder moved up the page.** Previously buried at the very bottom under the sightings panel. Now sits between the Ranges section and the Sightings panel, getting prominent placement above the longest section. This addresses the original concern that the map would be too small when added — at full content width it now gets the visual real estate it needs to be the centerpiece of the page when it ships.
+- **Sightings panel moved to the bottom of the page.** Previously in the right column of the two-column layout. Now sits as the last section. As a paginated table that grows with Load-more, putting it last means clicking Load-more doesn't push other content off-screen — the table extends downward into space that's currently empty.
+- **Day-of-week labels now Mon/Tue/Wed/Thu/Fri/Sat/Sun.** Previously M/T/W/T/F/S/S — ambiguous (Tuesday vs Thursday both starting with T, Saturday vs Sunday both starting with S). The full-width layout makes room for three-letter labels without crowding.
+- **Ranges section now horizontal cards.** Previously a vertical key-value list (Altitude / Max speed / Sightings/day each on its own line). At full width that wasted horizontal space and read like a phonebook. Now three side-by-side cards using the same surface treatment as the metric tiles at the top of the page — visually consistent with the rest of the page's metric presentation.
+
+### Notes
+- **No schema changes.** Schema still at v2. Restart-only upgrade.
+- **The page is taller overall.** Each section now gets full-width room, so total vertical scroll from hero to bottom is longer than before. That's fine — each section is more readable now, and the user is on a dedicated page where scrolling is expected behavior, not a tab where compactness matters.
+- **Sparse mode unaffected.** The sparse-mode rendering (used when sighting_count < LOW_SIGHTING_THRESHOLD) didn't use the two-column layout to begin with, so its appearance is unchanged.
+- **Position-history placeholder text adjusted.** Now reads "Until then, positions are visible in the sightings table below" (was "above") since the sightings panel moved.
+
+## [2.53.3] — 2026-04-30
+
+### Changed
+- **Aircraft detail page now shows the full sighting history in a paginated table with Load-more, instead of a 20-row preview.** The previous "20 most recent sightings + view in Search ↗" preview made the user bounce between pages — Search showed the aircraft, which had a "View full detail ↗" link back to the same detail page they came from. Now the detail page is self-contained: same Rows-dropdown (100/200/500/1000) plus Load-more pattern that Search and All already use, with a "Showing N of M" meta line tracking progress. The full sighting set is also no longer retention-bound to 30 days — bookmark an ICAO and come back six months later to see every sighting still in the database.
+- **Detail page sightings use a lifetime window, not retention-bound.** Previously the recent-sightings query implicitly used the retention window (default 30 days for All-tab data). Now passes `from_ts=0` to load every sighting regardless of how old. The detail page is the canonical "everything about this aircraft" view, so it should show every sighting the database still has — bound only by `retention.all_days`, not the rolling sliding window. Bookmark an ICAO and come back six months later to see all sightings within retention, not just those in the last 30 days.
+- **Position history placeholder text updated.** Previous text said "full history accessible via Search" which is no longer accurate (and was part of the navigation loop). Now reads "Until then, positions are visible in the sightings table above" — pointing at the now-self-contained sightings panel on the same page.
+
+### Added
+- **`offset` parameter on `/api/all/drill`.** Existing endpoint took `from_ts`, `to_ts`, and `limit` only — sufficient for the inline Search drill's "expand to lifetime" pattern, which loads up to 2000 in one shot. The detail page needs true offset+limit pagination, so an `offset` parameter joins the existing ones. Defaults to 0 (preserves existing behavior); no upper cap (bounded indirectly by total row count). Search and All callers are unchanged.
+
+### Notes
+- **No schema changes.** Schema still at v2. Restart-only upgrade.
+- **Sparse-mode aircraft also use the paginated panel.** A C172 seen 3 times still renders the full pagination machinery — page-size dropdown, sightings table — because the same skeleton handles both cases. With only 3 rows the Load-more button stays hidden (rows.length === total), the dropdown is functional but doesn't change anything visible. The uniformity is the right call: same UX whether the aircraft has 3 sightings or 30,000.
+- **Performance note: page-size 1000 on a high-traffic aircraft could be slow on busy installs.** The `/api/all/drill` query is ICAO-filtered + ORDER BY seen_at DESC + LIMIT — that's well-indexed (idx_all_icao). Expected to be sub-second even on the Pi user's install with 9.5M total sightings, but if a user reports otherwise we could lower the max page-size. Filed as a watch-this item rather than pre-optimizing.
+- **Navigation loop is now closed.** Detail page → no longer links to Search → user stays on detail page → finds what they need. Removes one of the reasons for the All-tab vs Search consolidation question; that decision can still be made on its own merits when ready.
+
+## [2.53.2] — 2026-04-30
+
+### Changed
+- **"View all sightings ↗" link on the aircraft detail page now goes to Search instead of the All tab.** The "view all sightings ↗" link in the Recent sightings panel and the "full history accessible via..." text in the Position history placeholder both pointed at `/#all`, which dropped the user onto an unfiltered table they then had to manually filter. Now they point at `/#search?q={ICAO}` — Search accepts the bare ICAO as a filter token, so the link goes directly to results for the specific aircraft. Search also shows operator/country/type alongside each result and supports its own per-sighting drill, so it's a richer destination than All for this use case anyway.
+
+## [2.53.1] — 2026-04-30
+
+### Fixed
+- **Aircraft detail page Track ↗ link now uses your configured `track_link_provider` (FlightAware, FR24, planefinder, etc.) instead of always going to airplanes.live.** The v2.53.0 implementation hardcoded the URL to `globe.airplanes.live` instead of respecting the user's `receiver.track_link_provider` config setting that the inline drill, Live tab, Watchlist, Military, and All tabs already honored. Caught before shipping. Now uses the same template-substitution helpers (`{HEX_UPPER}`, `{HEX_LOWER}`, `{REG_UPPER}`, `{REG_LOWER}`) and the same registration-required-but-missing fallback as `trackLink()` everywhere else — consistent across every Track ↗ link in the app now.
+
+### Notes
+- **v2.53.0 was never shipped externally** — caught during the same session that built it. Version bumped to v2.53.1 anyway because the project's convention is one version per change, and v2.53.0 did exist in the working tree with its own changelog entry. Treating as a follow-up correction keeps the version history honest.
+- **Loads providers before rendering**, not in parallel. Avoids a render race where the detail data could arrive before the provider registry, briefly hiding the Track button. One extra serialized round-trip; the `/api/ui-config` payload is small (~1 KB) so the cost is negligible.
+
+## [2.53.0] — 2026-04-30
+
+### Added
+- **New aircraft detail page at `/aircraft/{ICAO}` — a bookmarkable, shareable, deep-linkable view with rich detail for any single aircraft.** Click any ICAO in Search results (or any tab post-v2.55.0) to land on a full page covering identity (callsign, type, operator, country, registration, Track ↗), five metric tiles (Sightings, Days active, Max altitude, Avg/day, Peak hour), pattern chips (weekday vs weekend operation, time-of-day peaks, primary callsign, cruise altitude), hour-of-day histogram, day-of-week pattern, altitude/speed/sightings ranges, the full sighting history table, and a placeholder for an interactive map (deferred). URLs are case-insensitive (lowercase ICAOs redirect to uppercase canonical form) so links you share work regardless of how the URL was typed.
+- **Hybrid layout: identity strip + 5 metric tiles + pattern chips + 2-column detail + position history.** Top hero strip shows ICAO, callsign pill, type, operator, country, registration, and a Track ↗ link. Below: five metric tiles (Sightings, Days active, Max altitude, Avg/day, Peak hour). Then a row of derived pattern chips. Then a two-column section: sidebar with hour-of-day histogram + day-of-week pattern + altitude/speed/sightings ranges; main column with the 20 most-recent sightings table including position. At the bottom, a placeholder section reserved for a future interactive map (v2 follow-up — see Notes).
+- **Insight chips: deterministic computed patterns.** Each chip is a small rule operating on the aircraft's data and only emits when the signal is strong enough to be informative. Conservative by design — vague signals produce no chip rather than a misleading one. Initial chip set: Weekday operation (≥80% Mon-Fri), Weekend operation (≥80% Sat-Sun), Time-of-day peak (3-hour window holding ≥40% of activity, labeled morning/afternoon/evening/overnight), Cruise altitude (one 4000-ft band holding ≥50% of bucket altitudes; rendered as flight level above FL180), Primary callsign (one callsign holding ≥60% of sightings), Active days (always emits when full mode — "N of M days").
+- **Adaptive sparse mode for low-sighting-count aircraft.** Aircraft with fewer than 10 sightings (configurable constant `LOW_SIGHTING_THRESHOLD`) get a stripped-down page: facts + first-seen/last-seen + the recent-sightings table, with an explanatory notice that analytics aren't shown. Computed analytics on n<10 are statistically meaningless and would mislead users — better to honestly say "not enough data" than to render hour-of-day distributions on 3 sample points.
+- **`/api/aircraft/{ICAO}` endpoint** returns the rich dataset: facts (from existing `seen_aircraft`), hour-of-day distribution (24-bucket histogram derived from `sightings_hourly`), day-of-week distribution (7-bucket from same source), altitude/speed/sightings-per-day ranges, the 20 most-recent sightings with positions (from `all_sightings`), the `mode` field (`full` or `sparse`), and the chip list. All queries are bounded by sightings_hourly entries for a single ICAO — measured at 7ms for an aircraft with 851 sightings on the test prod DB.
+- **"View full detail ↗" link in the inline drill** linking to the new page. Search/All cards expand to inline drills as before; the drill panel now includes a Detail row with this link. Opens in a new tab.
+
+### Tests
+- **10 new tests** for `detail_page_data_for_aircraft`: missing-ICAO returns None, sparse mode below threshold, full mode at/above threshold, threshold boundary case, recent sightings cap of 20, recent sightings sorted descending by time, "Active" chip always emits in full mode, lowercase-ICAO query finds uppercase row, `mode` field always exposed, `low_sighting_threshold` field always exposed.
+
+### Notes
+- **No map in v1.** The position-history section currently renders as a placeholder noting that map view will be added later. The page works fine without it — recent sightings include lat/lon coordinates, and external trackers are reachable via Track ↗. Map is a v2 follow-up because adding a map dependency (Leaflet + tile config) is its own scope decision.
+- **No schema changes.** Schema still at v2 (last bumped in v2.50.42). All data needed is already available — the new detail function just queries existing tables in new ways. Restart-only upgrade.
+- **Chips are conservative on purpose.** A real test against the prod DB found that for SkyWest aircraft AB39E3 (851 sightings), only "Weekday operation 82% Mon-Fri" and "Active 9 of 9 days" emitted — no peak-hour chip (activity spread across the day, no 3-hour window hit 40%), no cruise-altitude chip (altitude ranged 1375-37025 ft with no concentrated band), no primary-callsign chip (uses different SkyWest flight numbers across days). This is correct behavior — emitting nothing is better than emitting wrong.
+- **The page is deliberately separate from Search.** Hash-based URLs like `#search?q=...` are great for in-flow query state, but bookmarking a specific aircraft needs a stable canonical URL that survives across query changes and browser sessions. `/aircraft/A12345` is that URL.
+
+## [2.52.1] — 2026-04-30
+
+### Fixed
+- **Stats tab "Top 5 Countries" and "Category Mix" drill panels no longer hang on busy-airspace installs.** On the Pi user's install (9.5M sightings) clicking these drills could take 30–60 seconds — long enough to exceed the frontend fetch timeout, leaving the panel to self-close with no data. The query was scanning every sighting in the time window before grouping; v2.52.1 rewrites it to use the indexed columns on `seen_aircraft` instead. Roughly 400× less work on Pi-class data, measured at 3045× speedup against the test prod DB (7853ms → 2.6ms for the Top Countries Canada drill, 7827ms → 14ms for the Category Mix all-categories scan). Both rewrites verified to return the same set of aircraft.
+- **Military Branches drill kept on military_sightings table.** Considered rewriting all three drills consistently, but `military_sightings` is small enough on every install (~76k rows on the busiest reference install, ~370 on quiet installs) that the existing query path is already fast (~45ms on Pi). `seen_aircraft` doesn't have an "is_military" column, so a rewrite would require the same cross-reference to military_sightings we already use for category_mix. Net result: no measurable benefit, additional code complexity. Left in place with a comment explaining why.
+- **Drill semantics improvement (incidental).** The old query returned `MAX(callsign)` (lexically-largest callsign string for each aircraft) and `MIN(seen_at)` (first sighting in the time window). The new query returns `last_callsign` (most recent callsign) and `first_seen_at` (first ever sighting). For the drill UI, both new semantics are more useful — "last known callsign" is what users want to see, and "first ever seen" is a more durable identifier than "first seen in the rolling 30-day window."
+
+### Added
+- **Tuning profile in perf-diag output.** Pi user's request after the v2.51.1 perf-diag. The diagnostic showed raw SQLite pragmas (cache_size, mmap_size, etc.) but didn't show which `data.tuning.profile` setting produced them. Now the perf-diag includes a `--- Configured tuning ---` section showing the requested profile (`auto`/`default`/`conservative`/`balanced`/`aggressive`/`high_memory`) plus any explicit overrides. Useful diagnostic when a user reports performance issues — knowing the profile setting is `auto` plus seeing `cache_size=-32768` (32MB) tells you the auto-detection chose the conservative branch, which on Pi-class hardware with large rollup workloads may benefit from a manual `balanced` or `aggressive` setting.
+
+### Notes
+- **No schema migration in this release.** Schema is still at v2 (last bumped in v2.50.42). Restart-only upgrade.
+- **The drill rewrite depends on migration v1 having run.** Installs that completed the v2.50.33+ migration cycle have `seen_aircraft.country` populated; older installs predating v1 don't. Per the migration framework's design this is enforced by the schema_version check at startup — the drill won't be reached on a pre-v1 install because the service won't start without applying pending migrations first.
+- **`all_tab_count_rollup` and `all_tab_page_rollup` are still slow on busy installs.** The Pi user's perf-diag showed 196ms and 891ms respectively for these probes — those query the `sightings_hourly` rollup and aren't fixed by this release. Filed for separate investigation. They affect the All tab page render time, not the Stats drill specifically, so they're a different problem from the one fixed here.
+- **Real-world impact on Pi user's install:** drill queries that previously timed out and self-closed after 1-2 minutes should now return in single-digit milliseconds. He should be able to click into "Top 5 Countries" and "Category Mix" cards and see results immediately. Military Branches was already working before this release; nothing changes there.
+
+## [2.52.0] — 2026-04-30
+
+### Added
+- **Search now accepts dates in your local convention — `4/29/26` for US users, `29/4/26` for European users, or strict `2026-04-29` ISO — plus a new inline `?` help panel and a Search syntax docs page.** New `display.date_format` config option (default MDY US, also DMY European, ISO strict). Click the new `?` button next to the Search input to see all supported field types with locale-aware examples. The Documentation viewer also gains a `Search` tab covering every field type, all date format variants, output options, and limits. Setting is live-reloadable — change it in Configuration → Display and the next search reflects it without restarting.
+- **Inline `?` help panel on the Search tab.** New help button between the Search button and Export ▾. Click to expand a panel showing all supported field types (aircraft type, country, operator, callsign, tail number, ICAO hex, date) with example values. The date row is locale-aware: it shows `4/29/26` examples for users on MDY locale, `29/4/26` for DMY, and ISO-only for ISO. Closes the discoverability gap — a user who types `4/29/26` and gets free-text fallback can now see immediately what they should have typed. Click `?` again to close. Includes a link to the full documentation page.
+- **Search syntax documentation page.** New `Search` tab in the Documentation viewer (`/documentation#search_syntax`) covering every field type the parser understands, all date format variants for all three locales, examples, output options (CSV export, sightings drill, Track ↗), and the various limits (5000 export cap, 2000 sightings cap, 16 token query limit). Replaces "scattered design-doc references" with a single user-readable page.
+- **Configuration page → Display tab.** New tab in the Configuration UI between Web server and Retention. Currently exposes only `date_format` — the section is structured to grow with future display preferences (time format, units, etc.) without restructuring.
+- **`display` config section (new).** Validator accepts an optional `display:` block with `date_format` key. Missing section is fine (defaults to MDY). Invalid values are rejected with a clear error message. Listed in `LIVE_KEYS` so changes don't require a restart.
+
+### Tests
+- **11 new search tests** covering the new date format behavior: MDY parses US dates, DMY parses European dates, ISO mode rejects slash dates entirely, ISO format works in all three locales, invalid date_format values fall back to MDY default, combined filters with slash dates work, 4-digit-year variants work, invalid month/day combinations fall through to free-text correctly.
+- **Validator coverage:** display section optional, MDY/DMY/ISO accepted, garbage values rejected with clear errors, non-dict display section rejected.
+
+### Notes
+- **MDY is the default** for new installs and existing installs that don't have a `display` section. The example-config-merger adds `display.date_format: "MDY"` to existing `config.yaml` files on first restart after upgrade. Backed up automatically as `config.yaml.bak.<timestamp>` per the standard merge flow.
+- **Date format affects parsing only, not how dates render.** The chips and drill panels still display dates in ISO format because that's unambiguous in display contexts. The setting controls what the user can TYPE, not what Aerodrome shows back. Could change later if there's demand for locale-aware display rendering, but that's a separate concern from the input parser.
+- **The `?` help panel reads the date format setting at the time it's first opened.** If the user changes the setting in Configuration and goes back to the Search tab, the panel re-renders on next open with the new format. Subsequent searches respect the new setting immediately.
+- **Schema unchanged.** No migration in this release. Restart-only upgrade.
+
+## [2.51.1] — 2026-04-30
+
+### Added
+- **Mexico now resolves correctly in the Country column.** Mexican-registered aircraft (registration prefixes XA-, XB-, XC-) were previously showing up with no country and weren't matching `Mexico` searches; v2.51.1 adds the missing ICAO 24-bit address block so the country resolves correctly across the Live tab, Search results, and CSV exports. On a typical install this closes a 2–3% gap in country resolution coverage.
+
+  Behind the scenes: Mexico's ICAO 24-bit address block (`0x0D0000-0x0D7FFF`, 32,768 addresses, registration prefix XA-/XB-/XC-) was missing from the country lookup table — Mexican-registered aircraft were showing up with `country=NULL` and didn't match country-filter searches like "Mexico". Single-line addition. The country-resolution coverage on the test prod DB jumped slightly: of 7,748 aircraft, 200 were unresolved before; with Mexico added, that gap closes for any future Mexican traffic. Filed-for-someday item closed.
+- **Schema migration progress logging.** If you've ever run a v2.51.0 schema migration on a Pi-class install with a large database, you may have wondered if the service had hung — the migration ran silently for up to a minute. v2.51.1 adds five log lines at major step boundaries so you can watch the migration make progress. The journal now shows the row count + a "may take 30-60s" warning at start, then per-step "done" lines after registration backfill, sightings backfill (the heaviest step, explicitly called out), country backfill (with resolution count), and dirty-flag marking. On real prod data, confirmed the silent stretch was dominated by the sightings backfill (15.8s of the 16.18s total).
+
+### Fixed
+- **Capacity card on the Status page now shows a green dot during its first 24 hours of operation.** During the "still accumulating" state on a fresh install, the Capacity card had no status dot at all — every other card had one, so Capacity stood out as visually broken when it was working as designed. The card is correctly signaling "working as designed, come back tomorrow" rather than the previous suppressed-dot ambiguity. Once the card has data (after 24 hours), the dot picks up the existing headroom-based color logic (green/amber/red) just as it did before. Originally observed in test screenshots; user diagnosed: only test had the missing dot because prod had >1 day of data and was in the populated state.
+
+### Notes
+- All three fixes are small and independent. Bundled into one release because each was too small to justify its own bump. No schema changes (still at v2). Drop-in restart upgrade.
+- The migration progress logging only affects the v1 migration code path. Installs already at schema v2 don't run v1 again, so they won't see the new log lines (nothing to log — there's no migration to run). The new logs will appear on the Pi user's first upgrade to v2.51.1+ since they're still at pre-v1 (v2.50.32 backup).
+
+## [2.51.0] — 2026-04-30
+
+**The Search tab is now Aerodrome's most fully-featured surface.** Type a callsign, ICAO, type code, country, operator, or registration into the Search box and get paginated full-text results with inline drill expansion, CSV export, hash-based shareable URLs, page-size control, and visible filter chips that show exactly what the parser understood. v2.51.0 closes out the four-phase Search feature project and is the foundation that the v2.60+ enhancements (sortable columns, parser tokens, date ranges, Stats deep-links) build on. Pre-v2.51.0, finding any aircraft you'd seen more than a day ago meant scrolling — full stop.
+
+  Behind the scenes, this release closes out the search feature project. v2.51.0 marks the completion of all four planned phases (schema migration, API, UI, filter chips) plus operator derivation that started as a follow-up and ended up necessary. The Search tab is now the most fully-featured surface in Aerodrome — paginated free-text search with 6 filter dimensions (aircraft_type, country, registration, callsign, ICAO, operator), inline drill expansion with sightings table, CSV export, dynamic real-data empty-state suggestions, hash-based deep links, page-size control, and visible filter chips that show what got parsed.
+
+### Added (Phase 4 — filter chips)
+
+- **Visible filter chips below the search input.** When you run a query like `B738 Canada` you now see two pills below the input: `[TYPE B738 ✕]` and `[COUNTRY Canada ✕]`. The chips show exactly what the parser understood — making three real failure modes visible that were previously silent: typos that fall through to free-text (`Canda` shows a dashed-border free-text chip rather than silently returning nothing useful), ambiguous tokens (a value matched by multiple classifiers gets a combined "X or Y: VALUE" label), and time-range matches.
+- **Click ✕ to remove a filter and re-run.** The query gets rebuilt from the remaining filters and free-text, the input updates to reflect the new query, and a new search runs automatically. Removing the last chip clears everything to the empty state. Smart enough to handle multi-word countries (removing `Canada` from `B738 Canada` leaves clean `B738`; removing `United States` from `B738 United States` leaves clean `B738`).
+- **Three chip types visually distinguished.** Filter chips (typed values that matched a classifier) have solid borders with cyan values. Free-text chips (unmatched tokens) have dashed borders with italic values — a visual cue that says "this didn't match anything specific." Time-range chips show date or date-range with appropriate formatting.
+- **`ambiguous_group` now exposed in the API response.** Previously stripped from `parsed_filters`, the field is now returned so the chip UI can group multiple filters that came from one ambiguous token into a single visual chip rather than two confusing same-value chips.
+
+### Notes & honest tradeoffs
+
+- **No "Add filter" button shipped.** The original Phase 4 spec mentioned an explicit filter-construction UI for adding filters without typing. Deferred — the typed query covers nearly everything; explicit construction is mostly useful for filters that are hard to type (date ranges, specific time-window queries, disambiguation). Filed as a follow-up if real usage shows it's needed.
+- **Removing a time-range chip loses the original token form.** The parser doesn't preserve the original token that produced the time range; on rebuild we emit the start date as ISO. So removing then re-adding via the input may produce a slightly different query string. Cosmetic issue, doesn't affect results.
+- **Free-text chips can be removed individually.** Each unmatched token becomes its own chip. Three tokens like `Canda Belgian Flight` produce three separate chips, removable independently. Could be combined into one chip showing all unmatched tokens, but per-token feels more useful for typo-fixing workflows.
+
+### v2.51.0 retrospective
+
+The search project was originally planned as four phases: (1) schema, (2) API, (3) UI, (4) filter chips. It actually shipped as 11 patch releases plus this minor — Phase 1 was v2.50.33, Phase 2 was v2.50.34, Phase 3 was v2.50.36, then operator extraction sprawled into v2.50.42 because the column was always-NULL until then, and Phase 4 closes it out. Useful lessons captured:
+
+- **Real-data validation against the production DB caught design issues early.** Phase 1 shipped after measuring +38ms collector tax against 7,748 real aircraft — accepted as within budget. Phase 2 shipped after sub-millisecond query times against the same data. Without this validation we'd have shipped on synthetic test data and discovered scale issues in production.
+- **The hexdb investigation revealed that "missing" registration data on Search drill panels was actually correct configured behavior** for users on `airplanes.live` (which uses ICAO directly and doesn't need tail lookup). Saved building a "fix" for what wasn't broken.
+- **Operator extraction was meant as a Phase 1.5 prereq but got deferred to v2.50.42.** When it finally shipped, search queries for "Delta", "United Airlines", "Southwest", etc. went from returning 0 results to returning correct counts (Delta 544, United 467, Southwest 240 on prod). One of the largest user-visible improvements in the project.
+- **The dirty-flag pattern for FTS5 (Flavor C) avoided a 24-32× collector regression** that inline triggers would have caused. Worth the implementation complexity.
+- **Hash-based URL state was the right call** (deviated from the design doc's path-based spec) to stay consistent with Aerodrome's existing tab system. v2.50.36 covers this in detail.
+- **"Do it all" works as a sequencing instruction** when the operator has clear judgment about ordering — investigate-first kept cheap things cheap and expensive things scoped.
+
+### Known follow-ups (not blocking v2.51.0)
+
+These were filed during the search project and remain open:
+- Browser back/forward navigation between tabs (filed v2.50.41)
+- Capacity card missing status indicator dot
+- Per-flight callsign-based external link (FlightAware/Flightradar24)
+- Persistent page-size preference in localStorage
+- Two server.py sites still use loose 2-4 letter operator-prefix regex (Stats, All tab) that could be refactored to use `designators.operator_from_callsign`
+- hexdb collector-side enqueueing (polish for users on tail-based providers)
+- Mexico in countries.py
+- Squawk denormalization (would unlock `7500`/`7600`/`7700` filtering)
+- Add search probes to perf-diag
+
+### Schema & migration
+
+- No schema changes in v2.51.0. The schema is still at v2 (last bumped in v2.50.42). Restart-only upgrade.
+
+## [2.50.42] — 2026-04-30
+
+### Added
+- **Search now finds aircraft by airline name — type "Delta", "United Airlines", "JetBlue", or "Southwest" and actually get matches.** Previously the `operator` column on `seen_aircraft` was always NULL, so airline-name searches returned 0 results despite the install seeing hundreds of aircraft from each carrier. v2.50.42 populates the column from existing callsign data and wires search to match both the 3-letter ICAO code (UAL) and the full airline name (United Airlines). On the test install: 3,312 of 7,748 aircraft (43%) get an operator — the rest are general aviation tail-number callsigns that don't map to airlines. Top operators: Delta 544, United 467, American 304, Southwest 240. The schema migration runs once on first restart after upgrade (~1–3 seconds depending on install size).
+- **`designators.operator_from_callsign()` — single source of truth.** New helper takes a callsign and returns the ICAO airline designator if the first 3 characters are a real airline code in the AIRLINES table, else None. Strict semantics — no fabricating operators from random 3-letter prefixes. Both the runtime collector and the v2 schema migration call this helper, so an aircraft seen since v2.50.42 and an aircraft backfilled from existing data get the same operator value.
+- **`designators.fts_operator_string()` — enriches operator for FTS5 tokenization.** The seen_aircraft table stores the bare 3-letter code ("UAL") for a clean API/CSV shape, but FTS5 needs the full airline name tokenized too so queries like "United Airlines" match. This helper converts "UAL" → "UAL United Airlines" at FTS-flush time, so searches across both the code AND the name work without a JOIN.
+- **Collector UPSERT now populates `operator` on every poll.** Adds `operator = COALESCE(NULLIF(excluded.operator, ''), operator)` to the existing UPSERT pattern, plus an entry in the `fts_dirty` CASE so changing operator triggers re-flushing to FTS5. No new write per poll — folded into the existing UPSERT.
+- **FTS5 flush rewritten to enrich operator at write-time.** Replaces the previous bulk `INSERT INTO seen_aircraft_fts SELECT FROM seen_aircraft` with a fetch-then-executemany pattern, applying `fts_operator_string()` per row. Validated cost on real DB: 105ms to flush 7,748 rows (one-time, post-migration). Steady-state per-cycle FTS flush remains a few milliseconds for the small number of aircraft seen each poll.
+- **Schema migration v2: operator backfill.** New migration in `schema_migrations.py` derives operator from existing `last_callsign` for every row, marks affected rows `fts_dirty=1` so the next collector cycle re-enriches their FTS entries. Idempotent. Single-pass: ~1 second per 5,000 rows. Applies once on first restart after the upgrade. Migration v1 (the search-feature schema) and v2 both run cleanly on a fresh install — `CURRENT_SCHEMA_VERSION` bumped from 1 to 2.
+
+### Tests
+- **5 new schema-migration tests** for v2 specifically: derives correctly, skips tail-number callsigns, skips unknown airline codes, marks rows dirty, idempotent across re-runs.
+- **New `test_designators.py` with 12 tests** covering both helpers: standard airline callsigns, lowercase, whitespace, tail numbers, empty input, unknown codes, non-letter prefixes, FTS enrichment, defensive empty-string handling, and consistency across known operators.
+- **Two existing tests updated** to reference `CURRENT_SCHEMA_VERSION` instead of hardcoding `1`. Forward-compatible — adding migrations v3, v4, etc. won't require touching these tests.
+
+### Notes
+- **The migration runs ONCE on upgrade, takes a few seconds, blocks startup.** On the test install (7,748 aircraft) it runs in ~1 second. On the Pi user's install (~21,000 aircraft) it should take ~3 seconds. After that, every restart sees v2 already applied and skips it. The systemd service start may briefly extend, but well within the watchdog's tolerance.
+- **The 3,312-of-7,748 ratio (43%) reflects normal airspace composition.** Commercial airliners use airline callsigns; general aviation uses tail-number callsigns ("N12345"); military uses unique callsign formats. Aircraft without operators are correctly NULL — we don't fabricate values from non-airline patterns.
+- **Two existing server.py sites that derive operators from callsigns were left as-is.** The Stats tab's `top_operators` card and the All tab's `all_operators` aggregate use slightly looser semantics (allow 2-4 letter prefixes, including ones not in the AIRLINES table). Refactoring those to the strict helper would change their visible behavior. Filed for review if it ever causes inconsistency reports.
+- **Non-American carriers also get derived correctly.** WestJet (WJA), Air Canada (ACA), JetBlue (JBU), NetJets (EJA), Republic Airways (RPA), UPS (UPS) all populate. The AIRLINES table covers ~600 ICAO airline codes globally.
+- **Search behavior change worth knowing:** queries like "United" will now match aircraft via the operator column ("UAL United Airlines") AND via the country column ("United States"). FTS5 BM25 ranking puts the most-relevant matches first, but the total_count will include both. Users wanting just one or the other can use more specific terms ("United Airlines", "United States", or just "UAL").
+
+## [2.50.41] — 2026-04-30
+
+### Added
+- **Search tab now has a `Rows: [100▾]` page-size selector matching the All tab.** Options 100 / 200 / 500 / 1000. Changing the selector while a query is active re-runs the search at offset 0 with the new size, so the change takes effect immediately. Default raised to 100 (was 50): fewer "Load more" clicks for typical browsing while still keeping the initial page render snappy.
+- **Live re-run on selector change.** Mirrors the All tab's `onPageSizeChange` behavior — picking a new page size while a query is active re-runs the search at offset 0 with the new size, so the change takes effect immediately. If no query is active (user is on the empty-state suggestions), the new value is just stored and used on the next search.
+- **Default bumped from 50 → 100.** The original 50 was conservative; in real use 50 cards turns out to be small enough that "Load more" fires within the first few seconds of any meaningfully broad query. 100 is a better balance: a typical "B738" or "United States" query returns enough to scan without immediately needing pagination, but card-rendering still completes in ~30ms.
+
+### Notes
+- **Why 100 default for Search but 200 for All?** Search cards are richer than All-tab table rows — each card is drill-expandable, has more vertical real estate per item, and can show inline detail panels. 100 cards is roughly equivalent in vertical scrolling to 200 All-tab rows. Defaults aim for similar perceived list-length.
+- **Selector position chosen deliberately.** Trailing position (after Search and Export) puts auxiliary controls together on the right, keeps the input → Search button flow uninterrupted on the left. The All tab puts its selector in a separate control row because it has more filters; Search has only one row, so trailing position is the cleanest fit.
+- **Selector value persists for the session, not across reloads.** Picking 500 doesn't survive a page refresh — it resets to 100. Mirrors All tab behavior. Persistence across reloads would need a `localStorage` write, which is filed for someday if real users ask for it.
+
+### Fixed
+- **Stale comment in export pagination code.** The export-cap rationale comment said "~50 round-trips at 50/page" but the code actually pages at 200/page; the math worked out to "~25 round-trips at 200/page" all along. Cosmetic only.
+
+## [2.50.40] — 2026-04-30
+
+### Added
+- **Search input now has a clear-X button and Esc-to-clear keyboard shortcut.** A small × button appears at the right edge of the search box when there's text; click it to clear the input, reset all search state, hide the results, restore the empty-state suggestions, scrub the URL hash, and refocus the input. While the search input has focus, pressing Esc clears the box if it has text or blurs the input if it's already empty. Conventional Esc-to-cancel pattern from desktop apps.
+- **Esc key as keyboard shortcut to clear.** While the search input has focus, pressing Esc clears the box if it has text, or blurs the input if it's already empty. Conventional Esc-to-cancel pattern from desktop apps. The handler uses `event.preventDefault()` after clearing so the keystroke doesn't propagate to anything else that might be listening for Esc (e.g. modal-close handlers).
+- **Belt-and-braces visibility sync.** `_searchInputChanged` is the primary handler that keeps the X-button visible/hidden based on input text length, but `runSearch` also re-syncs visibility before doing any work — covers the case where the input was populated via a code path that bypassed the natural input event (e.g. hash deep-link restore, clicking a suggestion chip).
+
+### Notes
+- **Why this matters even though the input was already easy to clear with Ctrl-A + Delete:** the X button is the kind of affordance whose absence makes a search box feel slightly broken on mobile and gives keyboard-power-users a faster reset path. Two seconds of friction times every search adds up.
+- **What this is NOT:** a "reset everything" button. It only clears the query state. Suggestion chips remain loaded, drill state for previously-expanded cards is preserved (though those cards no longer render), CSV export config is unchanged. If we ever want a "reset to first-load" button it would be a separate affordance.
+
+## [2.50.39] — 2026-04-30
+
+### Added
+- **Click "N sightings" inside a Search drill panel to expand a row-by-row sightings table.** Same per-sighting table the All tab's drill already showed (timestamp, callsign, squawk, altitude, speed, lat/lon, distance from receiver). Default window is the last 30 days with up to 500 rows; an "Expand to lifetime ↗" link in the table header re-fetches with up to 2000 rows for full-history exploration. Lifetime data is cached after first load so toggling between modes is instant. Reuses the existing `/api/all/drill` endpoint so the sightings format and sort order match the All tab exactly.
+- **Reuses `/api/all/drill`.** Same endpoint that powers the All tab's drill — no new API surface, no new SQL query patterns. Just different parameters: 30-day window with `from_ts = now - 30*86400`, lifetime with `from_ts = 0` and `limit = 2000` (the API's hard ceiling). Sightings format and sort order are identical to the All tab so users see one consistent table across both surfaces.
+- **`event.stopPropagation()` everywhere it matters.** The "N sightings" link, the "Expand to lifetime" link, and the entire sightings region wrapper all stop click propagation so users can interact with the sightings table — sort, scroll, click into rows — without accidentally collapsing the parent search card. Same defensive pattern as the Track ↗ link from v2.50.37.
+
+### Notes
+- **The `sighting_count` shown in the drill grid (e.g. "90 sightings") and the actual sighting count returned by `/api/all/drill` may differ.** The grid count comes from `seen_aircraft.sighting_count` (counts hour-buckets the aircraft was visible in, post-dedup), while the table count is the raw row count from `all_sightings` (one row per ADS-B reading). The table count is usually higher because each visible hour produces multiple readings. This isn't a bug, but the discrepancy is worth knowing — the grid count is "how many distinct active periods," the table count is "how many actual sighting rows in the database."
+- **2000-row hard cap on lifetime mode.** This is the API's existing limit, not a Search-tab choice. If a frequent commercial aircraft has > 2000 lifetime rows, the table shows a "Showing 2000 of N — narrower window or All tab for full data" banner, identical to the All tab's truncation behavior.
+- **No new performance budget.** Sightings queries hit the same indexes the All tab's drill already exercised, sub-millisecond on the test DB at typical aircraft volumes (217 rows for C05044 fetched in ~0.7ms). The fetch is lazy — only happens on click, not on every drill expansion — so the default search drill remains as fast as before.
+
+## [2.50.38] — 2026-04-30
+
+### Added
+- **CSV export from the Search tab.** New Export ▾ button next to the Search button. Two modes: "Current page (CSV)" exports just the rows currently rendered (fast, no extra API calls — useful for "save what I'm looking at right now"); "All matches (CSV)" pages through every result for the current query and exports the lot. Filename includes the slugified query and a timestamp (e.g. `aerodrome-search-B738_Canada-20260430-1112.csv`) so you can do "every Canadian B738 we've ever seen" → click → drop into Excel. Hard cap of 5000 rows on "All matches" to bound export latency; a toast notifies if the cap was hit.
+- **Hard cap of 5000 rows on "All matches".** Beyond that, real users want a SQL export or a different tool. The cap protects against runaway memory use on very large result sets and bounds export latency (~25 round-trips at 200/page is roughly 5 seconds on local network). Toast notifies if the cap was hit so the user knows the export was truncated.
+- **Twelve-column CSV mirrors the Search drill detail.** Columns: `icao`, `registration`, `last_callsign`, `aircraft_type`, `aircraft_type_desc`, `operator`, `country`, `sighting_count`, `last_lat`, `last_lon`, `first_seen_at_utc`, `last_seen_at_utc`. Reuses the existing `csvEscape`/`rowsToCSV`/`downloadCSV`/`fmtSeenAtCSV` helpers from the All tab's export — same encoding rules, same UTC timestamp format, same blob-download mechanism. The Export button is disabled (greyed) until the user runs a query that returns rows; can't accidentally export an empty CSV.
+
+### Notes
+- **`operator` column will be empty** until the operator-derivation work ships (filed). Same column appearing here as in the API matters because the moment that work lands, exports start including operator names without any UI changes.
+- **Pagination batch size is larger for export than UI** (200/page vs 50/page in the Search UI). Export is a bulk operation where round-trip count dominates wall time — bigger batches mean fewer fetches. UI uses 50 because the user is reading the rows individually and shouldn't pay for fetching 200 when they might only look at 5.
+- **Defensive break conditions in the page loop:** if a batch returns zero rows, or fewer rows than requested, or we've collected the known `total_count`, we stop. Multiple fail-safes because a runaway pagination loop here would be very bad — better to occasionally exit one batch early than to spin forever on an unexpected API response.
+
+## [2.50.37] — 2026-04-30
+
+### Added
+- **Track ↗ link added to the Search drill panel.** Expanding a Search result card now shows a "Track" item alongside the aircraft's metadata. Clicking it opens the configured external tracker (airplanes.live / adsb-exchange / FlightRadar24 / FlightAware / etc., per `receiver.track_link_provider`) in a new tab — same behavior as the Track ↗ column on Live, Watchlist, Military, and All. Reuses the existing `trackLink()` helper rather than introducing a separate code path; provider/fallback resolution and registration-required handling work identically across tabs.
+- **Click handler isolation.** The Track link's container has `event.stopPropagation()` so clicking it doesn't bubble up to the search card's click handler — without this guard, clicking Track would simultaneously open the new tab AND collapse the drill panel, leaving the user looking at the closed card when they came back to the Aerodrome tab. Small but real UX detail.
+- **`tailMap` seeding from drill detail.** The detail endpoint already returns `registration` for the aircraft, so we opportunistically seed `tailMap[icao] = registration` if it's not already populated. This makes the Track link work correctly for adsb-exchange and other providers that need the tail registration in the URL, even if the tail-resolver background worker hasn't reached this aircraft yet.
+
+## [2.50.36] — 2026-04-30
+
+### Added
+- **The Search tab is now live in the dashboard.** Click "Search" in the top nav (between "All" and the gear menu) to access it. v2.50.33 built the schema, v2.50.34 built the API; v2.50.36 finally puts the feature in front of users. Type a query, hit Enter or the Search button, get back compact result cards showing ICAO, type, callsign, registration, country, sighting count, and last-seen relative time. 50 results per page; "Load more" appears when total > 50. (Search is the foundation that the v2.51.0–v2.81.0 enhancements — sortable columns, parser tokens, date-range presets, deep-link sharing, drill panels, etc. — all build on.)
+- **Search tab with input + results list.** Input is focused on tab open. Submit on Enter or via the Search button. Results render as compact cards showing ICAO (cyan, monospace), aircraft type, callsign + tail registration + country, sighting count, and last-seen relative time ("5m ago" / "2h ago" / "3d ago" / absolute date for older results). 50 results per page; "Load more" button appears when total > 50.
+- **Inline drill expansion on click.** Clicking a result card expands an inline detail panel showing first-seen / last-seen UTC timestamps, registration, type description, country, sighting count, active hour buckets, max altitude observed, max speed observed, last position (lat/lon to 3 decimals), and the distinct callsigns this aircraft has used. Reuses Phase 2's `/api/search/aircraft/{icao}` endpoint. Only one card is expanded at a time — opening a new one collapses the previous.
+- **Hash-based URL state for deep linking.** Run a search and the URL becomes `#search?q=B738+Canada`. Share that link, paste it in another browser tab, or hit browser back — the search re-runs automatically. Consistent with Aerodrome's existing tab-state pattern (the design doc originally proposed `/search?q=...` but that would be inconsistent; hash routing matches `#live`, `#all`, etc.).
+- **Dynamic real-data suggestions in the empty state.** Rather than static "try searching for B738 Canada" example text that might return zero results on a different install, the empty state asks the server (via new `/api/search/suggestions` endpoint) for clickable example queries derived from THIS install's actual data. Typical chips: top aircraft type seen, top country with aircraft count, most recent callsign, most recent ICAO with type+country hint. Every suggestion is guaranteed to return at least one result because it's literally pulled from the install's seen_aircraft table. Endpoint cost: ~3ms total (sub-millisecond per indexed query).
+- **`/api/search/suggestions` endpoint.** Returns up to four example queries derived from real data: `top_type`, `top_country`, `recent_callsign`, `recent_icao`. Bounded queries against indexed columns. The response shape is `{ok, suggestions: [{query, label, kind}]}`. Empty installs (no aircraft seen yet) get an empty list and the UI gracefully falls back to "No data yet — start typing above to search."
+
+### Notes & honest tradeoffs
+- **No filter chips yet.** Phase 4 of the search feature adds visible chips showing parsed filters (e.g. typing "B738" makes a small "Type: B738" chip appear next to the input). Phase 3 ships without those — the parsed filters are returned by the API in `parsed_filters` but not rendered. The Search tab works fine without them; chips are a polish improvement.
+- **Single drill at a time.** Opening one card's drill closes the previous. Could be reworked to allow multiple-open if useful, but the simple model keeps the page short and prevents the "lots of expanded panels scrolling forever" failure mode.
+- **Performance budget held.** Suggestions endpoint ~3ms, search endpoint sub-millisecond on indexed filter queries (3.3ms on `United States` returning 6,380 rows in your install's tested case), drill expansion ~20-40ms including network. Search-on-Enter rather than search-as-you-type — the latter would multiply query load for no real benefit on archive search where data isn't moving second-to-second.
+- **Operator and squawk searches still don't work.** Operator column is unpopulated by collector (Phase 1.5 prereq), and squawk isn't denormalized on seen_aircraft. Both filed; both will activate cleanly once the underlying schema/data work ships.
+- **Shared interrogations between All tab and Search remain.** Both surfaces now show similar aircraft data with similar drill-down behavior. The All-vs-Search consolidation question (whether the All tab is obsolete once Search ships) is filed for post-Phase-3 evaluation — by design, we're going to live with both for a couple of weeks before deciding.
+- **The Search tab does NOT show a count badge** (unlike Watchlist/Military/All which show running counts). Search has no inherent count to display — it's a query-driven surface, not a list with cardinality.
+
+## [2.50.35] — 2026-04-30
+
+### Fixed
+- **Misconfigured `web.host` (a LAN IP that's no longer assigned to this machine) now fails fast at startup with a clear error message instead of silently never binding.** Previously, if `config.yaml` had `web.host` set to a specific LAN IP that wasn't currently on a local interface — common after IP changes, config copied between machines, or interface coming up slowly at boot — the symptom was a process that appeared to start successfully but never bound to any port, with the bind error swallowed by output buffering under systemd. v2.50.35 adds a pre-flight `socket.bind()` test before `uvicorn.run()`. If the host isn't bindable, startup logs three lines explaining what failed, what's the most common cause, and how to fix it (`web.host` to `0.0.0.0`), then exits with status 2.
+- **Banner moved to AFTER pre-flight passes.** Previously the startup banner advertised `Web UI: http://192.168.X.Y:8000` even when the bind would fail seconds later. Users would copy the URL from the journal, paste it in a browser, get connection-refused, and have no obvious link between the failure and the config issue. Banner now only appears after we've confirmed the host is bindable.
+- **Banner uses `print(..., flush=True)`.** Subtle but real: under systemd, `print()` to stdout goes through a block-buffered pipe — without an explicit flush, the banner would only flush on process shutdown. This is what made the v2.50.34 silent-bind-failure case so confusing during debugging — the banner appeared at process exit, AFTER the daily-summary log line that fires 10 seconds after startup, making it look like main thread had blocked somewhere mysterious.
+- **`_preflight_bind_check()` is independently testable.** Pure function taking `(host, port)`, returns `(ok, error_message)`. Special-cases: `0.0.0.0`, `localhost`, `127.0.0.1`, IPv6 `::` always pass (don't require interface assignment); a specific IPv4/IPv6 address gets a real `socket.bind()` test using `SO_REUSEADDR` to mirror uvicorn's bind behavior. Test harness in `test_preflight.py` covers all four cases — passes on live systems, gracefully skips in sandboxes lacking uvicorn.
+
+### Notes
+- The fresh-install footgun has been raised twice on the same test machine in two consecutive releases. The mechanism each time was: existing `config.yaml` had `web.host` set to a specific IP that wasn't bindable. v2.50.33's failure was loud (`ERROR: could not bind` line in the journal). v2.50.34's failure was completely silent. This release ensures all future releases — regardless of how output buffering happens to behave under systemd — fail loud and actionably.
+- This patch does NOT change the install.sh behavior. A pre-existing `config.yaml` is still preserved on upgrade (correct — never overwrite user config). The pre-flight check is the safety net that turns a broken-but-preserved config into a clear startup error rather than a silent zombie process.
+
+## [2.50.34] — 2026-04-30
+
+### Added
+- **Search backend now exists as a working `/api/search` endpoint — exercisable via curl, no UI yet.** Phase 2 of the Search feature build (Phase 1 was the schema in v2.50.33, Phase 3 wires the UI in v2.50.36). The `/api/search?q=...` endpoint accepts free-form queries and parses them into structured filters: ICAO hex matches, type codes, country names (single and multi-word), tail registrations (US `N12345` and ICAO `G-XYZA` patterns), callsigns (exact and known-airline-prefix), date ranges, with unrecognized tokens falling through to FTS5 free-text. Multiple tokens AND together; ambiguous tokens OR within their group.
+- **`/api/search?q=<query>&limit=50&offset=0`** — free-form search across all aircraft. Token classifier splits the query string into ICAO hex matches, type codes (looked up against `designators.AIRCRAFT_TYPES`), country names (single-word and multi-word like "United States"), tail registrations (US `N12345` and ICAO `G-XYZA` patterns), callsigns (exact `UAL2024` and known-airline-prefix `UAL`), date ranges (`2026-04-29` / `2026-04` / `2026`), and falls through unrecognized tokens to FTS5 free-text. Multiple tokens AND together; ambiguous tokens (e.g. a type code that also looks like a registration prefix) OR within their group.
+- **`/api/search/aircraft/{icao}`** — per-aircraft detail. Returns the full denormalized record from `seen_aircraft` plus a sighting-history summary computed from `sightings_hourly`: total sightings, max altitude observed, max speed observed, distinct callsigns used. Future detail-page UI (Phase 3+) consumes this.
+- **Ranking expression as documented in `docs/SEARCH_DESIGN.md`.** Score = 1000 if any exact-field match + min(sighting_count, 100) + 50 if seen within 30 days + scaled BM25 from FTS5 (when free text is present). ORDER BY score DESC, last_seen_at DESC. Tunable; if results "feel wrong" the constants are the first thing to revise.
+- **`search.py` module** (~520 lines, ~20 lines of comments per fact). Pure-Python search engine with no FastAPI dependency — `parse_query()`, `execute_search()`, `detail_for_aircraft()`. Lives alongside `capacity.py` and other extracted modules; `server.py` is just glue.
+- **`test_search.py` test harness.** 35 tests: parser unit tests covering each token-classification branch, executor integration tests against an in-memory DB with hand-built fixtures, hostile-FTS5-input handling, pagination, ranking-order verification.
+- **Real-DB validation.** Tested against the same 7,748-aircraft / 92 MB install used in Phase 1 validation. Type/country queries return in 0.4-3.3ms; combined "B738 in Canada" returned 44 hits in 0.8ms; counts match production reality (580 B738s, 554 Canadian aircraft, 6,380 US aircraft).
+- **`countries.known_countries()` helper.** Exposes the country-name set as a frozenset for the search parser. Enumerates 189 countries from the existing range table.
+- **`HTTPException` import added to `server.py`.** Required by the new endpoints; was missing because no prior endpoint used it.
+
+### Notes
+- **Operator search is still unwired.** Free-text queries like "Delta" or "United Airlines" return 0 results because the `operator` column on `seen_aircraft` is never populated by the collector — operator-from-callsign-prefix derivation logic still lives in scattered places in `server.py`. Lifting it into a shared helper is filed as Phase 1.5; once that ships, operator becomes searchable.
+- **Squawk filtering is unwired.** Tokens `7500`/`7600`/`7700` parse but generate no filter because `seen_aircraft` doesn't denormalize `last_squawk`. Adding it is a small schema migration when prioritized.
+- **No UI yet.** Phase 3 (Search tab + result cards) is the next concrete user-visible release. To exercise Phase 2 today: `curl 'http://localhost:8000/api/search?q=B738+Canada'`.
+- **Phase 1 invariants preserved.** Migration framework, dirty-flag write path, FTS5 sync — all unchanged. Phase 2 only reads from the schema Phase 1 stood up.
+
+## [2.50.33] — 2026-04-29
+
+### Added
+- **Schema and write-path infrastructure for the upcoming Search feature — no user-visible UI yet.** Phase 1 of the Search feature build. v2.50.33 sets up the data substrate that Phases 2–4 build on: a new schema migration framework (`schema_migrations.py`) that all subsequent schema changes use, an FTS5 virtual table backing free-text search, denormalized search columns on `seen_aircraft`, and the dirty-flag write-path machinery that keeps the FTS5 index in sync without per-row triggers. Detailed design rationale lives in `docs/SEARCH_DESIGN.md`. First-restart after upgrade runs the one-time migration (~5–30 seconds depending on install size).
+- **Schema migration framework** (`schema_migrations.py`). First formal migration framework for the project: idempotent ALTER patterns (catches "duplicate column name" so re-running is safe), atomic transactional application with rollback on partial failure, version-stamped state via new `schema_version` table. Single outer transaction wraps all pending migrations — DB is either fully migrated or fully rolled back, never half-migrated. The pattern established here is what every subsequent schema change should follow.
+- **Migration v1: search-feature schema.** Adds 10 new columns to `seen_aircraft` (`registration`, `last_callsign`, `aircraft_type`, `aircraft_type_desc`, `operator`, `country`, `last_lat`, `last_lon`, `last_seen_at`, `sighting_count`, `fts_dirty`), 5 new B-tree indexes for filter queries, 1 partial index on `fts_dirty` for cheap dirty-row lookup, and a FTS5 virtual table for free-text search. Backfills new columns from existing data: `country` via `countries.country_for_icao()`, `last_callsign` from latest matching `all_sightings` row, `registration` from `hexdb_cache`, `sighting_count` from `sightings_hourly` sum.
+- **Validated against real production data.** Migration ran on real 7,748-aircraft / 92 MB install in 16 seconds: 97% country populated, 100% aircraft type, 90% type description, 64% callsign (the rest had no callsign in their sightings). Pi-user-shape synthetic data: ~36 seconds for 21k aircraft. Both well under the 60-second envelope from the design doc.
+- **Collector write-path UPSERT (Flavor C dirty-flag pattern).** Replaces `INSERT OR IGNORE INTO seen_aircraft` with full UPSERT that maintains all denormalized columns. Sets `fts_dirty=1` only when an FTS-indexed field actually changes (callsign, type, type_desc, country) — routine sighting_count bumps don't dirty the row. Cycle-end `_flush_dirty_to_fts()` syncs dirty rows to FTS5 in a single batch before commit.
+- **Performance gate validated against real install data.** Steady-state poll cycle on real 7,748-aircraft install: 17.8ms baseline → 55.9ms with the new code (+38ms per poll). The 3% steady-state dirty rate matches the new-aircraft introduction rate exactly — the CASE logic correctly skips dirty marks for unchanged rows. Original "10% gate" framing didn't survive measurement; reframed as "absolute latency budget" per the design doc, the result is acceptable. (Honest disclosure: the gate framing change was a real concession, made because the alternative — drop B-tree indexes or FTS — would compromise search quality. Documented in `docs/SEARCH_DESIGN.md` for posterity.)
+- **`hexdb_cache` write path also updated.** When hexdb resolves a registration, it's now mirrored into `seen_aircraft.registration` and the row is marked `fts_dirty=1` so search results include tail registration. Conditional on registration actually being non-empty and different from the existing value, so re-resolutions don't churn the FTS5 index.
+- **Comprehensive test harness** (`test_schema_migrations.py`). 17 tests cover: empty DB, fresh v2.50.x DB, small synthetic data, migration idempotency, transactional rollback on injected mid-migration failure, FTS table creation without triggers (Flavor C verification), partial-index existence, dirty-flag flush protocol end-to-end. Optional benchmark gated behind `BENCH=1`.
+
+### Important — DO NOT BLIND-INSTALL
+- Phase 1 changes the database schema permanently. The migration is transactional and rollback-safe, but anyone upgrading from v2.50.x will have their `seen_aircraft` table altered on first startup. Test against a backup before applying to a live install.
+- Phase 1 is search infrastructure, NOT user-visible search. There is no Search tab, no search input, no search results in this release. Those arrive in Phase 3 (UI) when that release ships. Phase 1 stands up the data layer; Phase 2 (the search backend `/api/search` endpoint) is the next concrete work item.
+- Operator search returns no results in Phase 1 because `operator` column is not yet populated by the collector — that requires lifting operator-derivation-from-callsign logic into a shared module. Filed as a Phase 1.5 follow-up. Type and country search work correctly today; you can verify by hitting FTS5 directly in `sqlite3` if curious.
+
+## [2.50.32] — 2026-04-29
+
+### Added
+- **No code changes — design document for the upcoming Search feature added at `docs/SEARCH_DESIGN.md`.** Planning artifact only. Documents the architectural decisions made before any implementation: SQLite + FTS5 over alternatives (Postgres / Elasticsearch / DuckDB), denormalization of search fields onto `seen_aircraft` so result rows are self-contained without joins, and the four-phase implementation plan (schema migration → search backend → search UI → filter chips). Includes the scaling envelope analysis (search performance bounded by `seen_aircraft` size, which grows asymptotically as new unique aircraft become rarer over time), the schema migration strategy (idempotent, atomic, transactional, with rollback), the query parser token-classification table, the ranking expression, and an honest enumeration of risks and mitigations. Filed as a permanent reference so design decisions survive across sessions and future implementation can be checked against agreed intent.
+
+## [2.50.31] — 2026-04-29
+
+### Added
+- **Capacity alerts now fire through your notification channels (ntfy etc.) and the gear icon when disk is on a path to fill up.** v2.50.30 added the Capacity card on the Status page, but it was visual-only — if you weren't actively watching that page, you'd have no warning. v2.50.31 adds two trigger conditions OR-ed together: headroom below threshold (default 1.2× — catches "your retention setting is on a path to fill the disk" planning failures) OR absolute free disk below floor (default `max(1 GB, 5% of total disk)` — catches "something else is eating disk regardless"). Each answers a different question, so conflating them into one metric would lose signal. The percent-of-total floor adapts to install scale: 1 GB is fine on a 32 GB SD card, absurd on an 80 GB VPS slice, and the larger-of-both gives sensible defaults across that range.
+- **Two trigger conditions OR-ed together.** Headroom below threshold (default 1.2× — catches the "your retention setting is on a path to fill the disk" planning failure) OR absolute free disk below floor (default `max(1 GB, 5% of total disk)` — catches the "something else is eating disk regardless" case). Each answers a different question, so conflating them into one metric would lose signal. The percent-of-total floor adapts to install scale: 1 GB is fine on a 32 GB SD card, absurd on an 80 GB VPS slice, and the larger-of-both gives sensible defaults across that range.
+- **Hysteresis prevents flap.** Once an alert fires, the value has to recover by 10% above the threshold before the alert clears. So if the headroom oscillates around 1.2× across consecutive polls (1.21 → 1.19 → 1.21 → 1.19), no flap-fire-flap-fire pattern. Threshold for clearing is `threshold * 1.10` for both metrics.
+- **State-transition semantics.** Alert fires *once* when the condition first crosses the threshold. Suppressed for as long as the condition holds (idempotent — re-evaluated every 60s but no spam). Fires once when condition clears with hysteresis margin, if recovery notifications are enabled.
+- **Severity integration.** When a capacity alert is active, the Status page severity contributes a "warn" — gear icon turns amber on every admin page (per v2.49.3's universal /api/status polling), and the Status banner names "disk capacity" alongside any other warning components. So even a user who misses the notification will see the warning the moment they touch any admin page.
+
+### Implementation notes
+- New module `capacity.py` houses both `_compute_capacity_metrics()` (lifted from server.py for cleaner module separation) and the new `evaluate_capacity_alerts()` state machine. Pure-function design: takes metrics + config + previous state, returns new state + optional action. Both server.py (for /api/status and /api/capacity) and collector.py (for the poll-loop alert evaluation) import from here. Module split was the right time to do it — embedding the state machine in server.py would have required cross-module imports for collector.py to read it, and re-implementing in collector.py would have been duplication.
+- New events `capacity_low` and `capacity_recovered` registered with the notifier. Both default ON in `events:` (silent disk-fill is a serious operational hazard; the right default is to notify rather than silently ride into the wall). Both are in `NEVER_COOLDOWN` because they're already heavily debounced by the state machine itself — adding the per-aircraft cooldown layer would be redundant.
+- Collector poll loop calls `check_capacity_alerts(config)` after every `fetch_and_store()`. The function rate-limits internally to once per 60 seconds (regardless of poll cadence), opens its own DB connection for the metrics computation, never raises (best-effort try/except), and reads the master event-enabled gate so disabling the event also disables the work. Alert state lives in module-level vars; not persisted across restarts (the next check re-evaluates fresh, which means a restart while a condition is tripped will re-fire — by design, since we'd rather over-notify than silently drop the warning).
+- Configuration UI: new "Capacity alerts" subsection in Configuration → Notifications, with four controls (headroom threshold, free disk floor, recovery notification toggle, master enable). Sits below the events grid where users already reason about which notifications fire. Hint text under each control explains what it does and the typical safe range.
+- Validator (`config_validator.py`) accepts the new `notifications.capacity` subtree with bounds-checked numeric values (1.0-100.0 for headroom, 0-1 TB for disk floor, 0-1 for percent floor) and the new event names in `notifications.events`.
+- Alert message body shows current size, daily growth, retention, projected settled size, free disk (with total when available), headroom multiplier, and the specific reason that tripped the alert (named conditions, with concrete numbers). Recovery messages use the same shape with a "Capacity is back within configured thresholds" tail.
+
+## [2.50.30] — 2026-04-29
+
+### Added
+- **New Capacity card on the Status page projects how much disk your install will use at steady state, based on your actual measured growth rate.** Renders current DB size, daily growth (rolling 7-day average), retention setting, projected settled size, free disk, and a color-coded headroom multiplier (green ≥2×, amber 1.2–2×, red <1.2×). A collapsible "show what-if projections" section reveals projected sizes at 7/14/30/60/90/180 day retention values so you can see exactly what each retention setting costs before changing it. The math runs against real bytes-per-row from your install rather than rules-of-thumb estimates. Three rendering states: `measured` (≥3 days of data, uses install's actual bytes/row), `estimated` (1–3 days of data, uses 170-byte default with caveat), and `insufficient` (<1 day of data, shows "still accumulating" rather than misleading numbers).
+- **Status page → new Capacity card.** Sits in the system grid alongside Database, Receiver, etc. Renders current DB size, daily growth (rolling 7-day average), retention setting, projected settled size, free disk, and a color-coded headroom multiplier (green ≥2×, amber 1.2-2×, red <1.2×). A collapsible "show what-if projections" section reveals projected sizes at 7/14/30/60/90/180 day retention values, with the current retention highlighted and per-row headroom warnings. The card has three rendering states: `measured` (≥3 days of data, uses install's actual bytes/row), `estimated` (1-3 days of data, uses 170-byte default with caveat), and `insufficient` (<1 day of data, shows "still accumulating" instead of misleading numbers). User's what-if expand state persists across the 10-second auto-refresh via a module-level flag re-applied after innerHTML rewrites.
+- **Configuration → Retention tab → live preview line.** Below the retention form fields, a single-line capacity preview shows current size, daily growth, projected size at the pending retention value, and headroom — all updating live as the user types in the All history field. Lets users see the disk impact of a retention change before committing it. Backed by a new lighter `/api/capacity` endpoint so dragging the value doesn't trigger a full system check.
+- **README → new Capacity planning section** under Hardware sizing. Includes a 3-band table (quiet/busy ranges from real reference installs at 7/30/60/90 day retention) and points readers at the in-app card for their own actual numbers.
+- **`config.yaml.example` retention header comment** rewritten with measured numbers from the two reference installs we have data for, replacing the previous single-rate "100k rows/day" estimate.
+
+### Implementation notes
+- New module-level helper `_compute_capacity_metrics(db_path)` does the work. Computes current DB size from the file system, free disk via `shutil.disk_usage()`, rolling daily growth rate from a `SELECT MIN(seen_at), COUNT(*) FROM all_sightings` plus a windowed `SELECT COUNT(*) WHERE seen_at >= now - 7d`, and bytes-per-row from `db_size / total_rows`. The 7-day window is used when the install has at least 7 days of data, otherwise the full available window. Resilient to single-day spikes from busy events while still tracking real shifts in receiver throughput.
+- `bytes_per_row` is **measured** when the DB has been running for ≥3 days, **defaulted to 170** when younger. The 170 default matches the ~165-175 byte range observed across both reference installs (covers raw rows, indexes, rollups, WAL). Once measurement kicks in, projections use the install's true bytes-per-row including all overhead.
+- Cached on the same 30-second TTL as `db_stats_cache` (the underlying numbers don't shift second-to-second, recomputing on every status poll would do extra DB work for no display benefit).
+- Headroom is computed as `(disk_free + current_db_size) / projected_settled_size`. The current DB size is added back to "free" because if the user shrinks retention, the DB releases the difference — that space is real. Useful especially for users near the disk limit where a smaller retention would actually create headroom rather than just cap it.
+- Endpoint shape: `GET /api/capacity` returns `{ok: true, capacity: {...}}` with the same payload as `db_check.capacity` from `/api/status`. Lighter because it skips receiver/hexdb probes.
+
+## [2.50.29] — 2026-04-29
+
+### Fixed
+- **Clicking a row inside any composition all-list panel (e.g. "All countries" → "Canada") now opens the per-country drill in the right place on the Stats page instead of jumping to the top.** Reproducible flow: click "Top 5 countries" card → all_countries panel opens under Composition (correct) → click "Canada" inside that panel → per-country drill used to open at the top of the Stats page, between the Today and Today's-extremes groups, far from where the user clicked. Latent across all four composition cards (top_types/top_operators/military_branches/category_mix), only surfaced now because v2.50.27 added the country card and someone actually clicked through the chain.
+- Root cause: `chainDrillAggregate()` looked up the target card by `document.querySelector('.stat-card[data-drill-card="${targetCardId}"]')`, but the listCard helper sets `data-drill-card="${allCardId}"` on the rendered card — the all-list panel id, not the card id. So a card like top_countries actually carries `data-drill-card="all_countries"`, and querying for `data-drill-card="top_countries"` returned null. The function then fell through to a last-resort `document.querySelector('.stats-grid .stat-card')` selector, which returned the first card in the document (in the Today group), causing the panel to append to the wrong grid.
+- Fix: a small map in `chainDrillAggregate` translates `targetCardId` → corresponding `allCardId` for the lookup attribute, with the original lookup retained as a fallback so any future card adopting the simpler same-id naming still works. Headless verification confirmed: clicking Canada in the all_countries panel anchors the drill panel to the Composition grid, not the Today grid; panel header reads "Country · Canada · N aircraft" as expected. Filed under the same teach as v2.50.28: when adding new aggregate presets, the consistent-treatment quartet is `DRILL_COLUMNS` + `AGGREGATE_ROW_ROUTES` + `aggregatePresets` + the `data-drill-card` attribute name dance — all four need to line up, and the current architecture has no compiler check for that consistency.
+
+## [2.50.28] — 2026-04-29
+
+### Fixed
+- **"All countries" drill panel introduced in v2.50.27 now renders its numeric columns (Aircraft, Sightings, First seen, Last seen) and row clicks navigate correctly.** All four columns showed dashes, and clicking a row in the panel did nothing. Both bugs traced to a single missing line: `country_list` was added to two registries but not to a third (`aggregatePresets` in `renderOptionCDrillPanel`). That set gates both the row-enrichment block that populates the numeric values and the row-click route lookup. Adding the entry fixes both at once. Also fixed the panel footer reading "Showing all 17 entries" instead of "Showing all 17 countries". Caught by the maintainer in production after running v2.50.27.
+- Caught by the maintainer in production after running v2.50.27. Failure mode worth noting: the v2.50.27 release passed all the obvious functional checks (card renders, top-5 list populates, drill endpoint returns the right rows) but missed because the column-population gate is in a different file from the row-routing registry, and "registered the new card" naturally tracks the entries that show up in the registries themselves rather than the predicate that gates whether registry lookups even happen. Filed as a teach: when adding a new aggregate preset to `DRILL_COLUMNS` + `AGGREGATE_ROW_ROUTES`, also grep for `aggregatePresets` and add the entry there; the three locations form a triple that all need the new entry, not a pair.
+
+## [2.50.27] — 2026-04-29
+
+### Added
+- **New "Top 5 countries" Stats card surfaces the country distribution of aircraft seen today.** Country is derived from each aircraft's ICAO 24-bit Mode S address (ICAO Annex 10 Volume III boundaries are stable, no external data dependency). The card sits in the Composition group alongside Top types, Top operators, Military branches, and Category mix — same shape, same drill-in pattern. Click a row to see per-aircraft detail for that country; click the card header to see every country represented in today's traffic.
+- Drill-in surfaces match the existing composition cards: clicking a row in the Top 5 card opens a per-aircraft panel scoped to that country (which aircraft from Country X were seen today, sortable by hits and first-seen time); clicking the card header opens the full-list panel showing every country represented in today's traffic with aircraft counts and sightings counts. Row clicks within the full-list panel route back to the per-country detail view, mirroring how all_types / all_operators / all_category_mix work.
+
+### Implementation notes
+- New module `countries.py` exposes `country_for_icao(hex_code)` — a single binary search over a sorted ~250-entry range table. O(log n) per call, trivially fast even at scale where it runs once per unique aircraft per stats refresh. Tolerates malformed input (returns `None` rather than raising) since real-world receiver data occasionally includes anonymized addresses, ground-vehicle IDs, and `~`-prefixed non-ICAO addresses from TIS-B/ADS-R rebroadcasts.
+- Counted by unique aircraft (one per ICAO), today only — matches the convention of the other composition cards. Counted by unique aircraft rather than total sightings because a single United States-registered aircraft circling for an hour shouldn't outweigh five distinct aircraft from another country; the question being asked is "how diverse is today's traffic by country."
+- Country derivation is computed at SELECT time in Python, not stored as a column. The DB-level work is just `SELECT DISTINCT icao FROM all_sightings WHERE seen_at >= ?` (already covered by `idx_all_seen_icao`); the country grouping happens in the Python loop after fetch. For a typical "today" window with ~thousands of unique aircraft this is sub-millisecond.
+- Hong Kong, Macau, and a handful of microstate sub-allocations within larger national blocks (e.g., the Chinese 0x780000-0x7BFFFF block) are surfaced as the parent country's name. Same convention used by upstream readsb / VirtualRadarServer / dump1090-fa.
+
+## [2.50.26] — 2026-04-29
+
+### Changed
+- **Performance diagnostic now runs in seconds instead of minutes by default — three legacy raw-fallback probes are skipped, with a checkbox to opt back in for comparison.** Reference Pi user reported a ~150-second total perf-diag runtime; three probes (`all_tab_count_raw`, `all_tab_page_rollup_legacy`, `all_tab_page_raw`) accounted for ~143 seconds (97% of total runtime). All three time code paths that no longer run in production (the rollup migrations in v2.50.0/v2.50.19/v2.50.20 made them obsolete or backfill-only). The "Include legacy raw-fallback probes" checkbox runs them when needed for comparison; the default run now completes in seconds.
+- Endpoint signature: `GET /api/perf/diagnostics?include_legacy=true` runs the legacy probes; default `false` skips them. Response includes `include_legacy` and `legacy_probes_skipped` fields so the frontend can render the appropriate state. Power users can hit the URL parameter directly for direct linking.
+- Performance page UI: a checkbox above the toolbar reads "Include legacy raw-fallback probes" with the cost explicitly stated ("adds 2+ minutes on large databases — for comparing rollup vs raw"). User preference persists across page reloads via `localStorage` because once a user opts in to the comparison they typically want it on for their next visit too. URL parameter `?include_legacy=true` overrides the saved preference for that load, making shared diagnostic links explicit about what they're asking for.
+- When the legacy probes are skipped, both the rendered Query timings card and the copy-to-clipboard text include an explicit note acknowledging the skip rather than silently omitting rows. Users reading a pasted perf-diag in a GitHub issue see the same context as the live UI.
+
+## [2.50.25] — 2026-04-29
+
+### Changed
+- **Performance diagnostic probe labels renamed so they accurately describe what's running in production.** v2.50.20 swapped the All-tab page query from window-functions to GROUP BY + self-join after measurement showed the latter was 3-4× faster, but the perf-diag probes kept their original v2.50.18 labels — making it look from the diag output like the slow query was still production. The labels lied; v2.50.25 rewires them so the canonical name (`all_tab_page_rollup`) tracks the actual production query and the legacy shape becomes `all_tab_page_rollup_legacy`.
+- Now: `all_tab_page_rollup` names the GROUP BY + self-join shape that production uses, with descriptor "(sightings_hourly, production query, full Nd window)". `all_tab_page_rollup_legacy` names the window-functions shape, kept as a regression-check reference with descriptor "(window-functions shape, retained for regression check, full Nd window)". If a future SQLite version optimizes window functions enough to close the gap, the legacy probe is the canary.
+
+## [2.50.24] — 2026-04-29
+
+### Changed
+- **All 18 in-app dashboard screenshots and the Overview PDF rebuilt to current state.** The previous batch was at v2.42.12 — three patch-release cycles of UI changes had accumulated without docs catching up. New screenshots reflect the v2.50.16 sticky header, the v2.50.13–15 SQLite tuning dropdown plus auto-resolve status note, the v2.50.23 watchlist trigger dropdown reduced to three distinct options, the v2.50.6 pre-restore safety-snapshot section, and the current v2.50.24 version string in the header.
+- Three new screenshots added to `scripts/screenshots.py` covering Configuration tabs that had no prior coverage: `screenshot-config-database.png` (the Database tab — captures the tuning profile dropdown and the auto-resolve status note populated against a balanced/4GB mock response), `screenshot-config-alerts.png` (the Watchlist alerts tab — shows the cleaned-up three-option trigger dropdown), and `screenshot-config-backup.png` (the Backup & Restore tab — shows the full-backup, pre-restore safety-snapshot, and config-only-backup sections together at a tall viewport).
+
+### Fixed
+- Three latent bugs in the screenshot harness that had drifted in since the previous run, surfaced and fixed during this refresh:
+  1. **Static assets weren't loading.** Templates use absolute paths like `<link rel="stylesheet" href="/static/theme.css">` for production, but the harness loads templates as `file://` URLs where absolute paths can't resolve. Output was unstyled (light-on-white instead of the dark theme). Fixed by inlining the contents of `theme.css`, `theme.js`, and `health-indicator.js` into the rendered HTML before screenshot capture.
+  2. **Dark mode wasn't applied.** The FOUC script in each template reads `localStorage('aerodrome-theme')` (empty in the harness) and falls back to checking `prefers-color-scheme`, which headless chromium defaults to `light`. The previous screenshot convention (and the default first-install user experience) is dark. Fixed by setting `color_scheme='dark'` on each Playwright page.
+  3. **Track-link cells rendered as `—`.** The harness mock for `/api/ui-config` was missing `track_link_providers` and `track_link_fallback`, so the frontend's track-link rendering had no provider URL templates to substitute against. Fixed by adding the canonical registry to `UI_CFG`, kept in sync manually with `collector.py:TRACK_LINK_PROVIDERS`. Same comment added to flag the manual-sync responsibility.
+
+## [2.50.23] — 2026-04-29
+
+### Changed
+- **Watchlist alert trigger dropdown reduced from four options to three — the legacy `'new'` option is removed because it behaved identically to `'continuous_dismissable'`.** Both branches in `evaluateWatchlistAlert()` set `shouldAlert = !isDismissed`, gated on the same localStorage key. The user-visible result was two options that did the same thing under different names. Now the dropdown shows only the three genuinely-distinct options: `'continuous'` (always alert when watchlist data is visible), `'continuous_dismissable'` (alert until clicked, undismiss when a newer sighting arrives), and `'live'` (alert only while a watchlist aircraft is actively transmitting in the live feed). Existing configs using `'new'` are migrated to `'continuous_dismissable'` automatically — same observable behavior, cleaner option name.
+- Legacy configs with `trigger: 'new'` continue to work without intervention. The `/api/ui-config` endpoint translates `'new'` to `'continuous_dismissable'` in its response, so the frontend only ever sees the canonical value. The validator continues to accept `'new'` as a valid value to avoid breaking existing `config.yaml` files at upgrade time. Saving the configuration from the UI naturally rewrites the canonical value back to disk, so legacy values migrate organically as users edit their configs.
+- Cleanup: removed the dead `hasNew` boolean and `waSeenIcaos` Set in `templates/index.html` — both were computed during the duplicate `'new'` branch but never read by the alert logic. The default fallback values for the trigger across `index.html`, `config.html`, and `config.yaml.example` are now `'continuous_dismissable'` instead of `'new'`, so a fresh install (or a config that omits the trigger field entirely) gets the cleaner default behavior.
+
+## [2.50.22] — 2026-04-29
+
+### Changed
+- **No user-visible changes — internal database cleanup that drops two now-redundant indexes.** The single-column indexes `idx_mil_seen` on `military_sightings(seen_at)` and `idx_watch_seen` on `watchlist_sightings(seen_at)` are made redundant by the `(seen_at, icao)` covering composites added in v2.50.17. SQLite can use the leading column of a composite for the same query shapes the single-column indexes covered. Saves a small amount of disk plus write amplification on inserts to those tables. Same cleanup pattern as v2.50.12 (which dropped a redundant hourly index after v2.50.11 made it obsolete).
+
+### Notes
+- Companion audit: catalogued every `all_sightings` aggregate query in `server.py` (52 references across 8 callers) to confirm v2.50.19's `/api/status` migration was the only user-blocking caller. Conclusion: no further proactive migrations warranted. `/api/all` rollup path is already optimized (v2.50.20). `/api/all/drill` is single-aircraft indexed lookup, always fast. `/api/stats` runs over today-only window (~1/30 of total rows), polls only when Stats tab is active, and most cards can't migrate to the hourly rollup anyway — peak/average concurrent need per-minute granularity, and furthest/fastest/highest extremes need lat/lon/altitude/speed of the actual rows that the rollup doesn't preserve at full resolution. The daily-summary notifier and perf-diagnostics probes are intentionally raw. Audit deliberately documented in the changelog rather than embedded in code comments — the conclusion is "no work needed" and is naturally surfaced here for future searches of the changelog before considering a similar migration.
+
+## [2.50.21] — 2026-04-29
+
+### Fixed
+- **Toast notifications no longer block clicks on content underneath them.** Symptom: rows in the bottom-right area of the Watchlist and Military tabs were unhoverable and unclickable while a toast was showing — including the Track link in those rows. Toasts are positioned at bottom-right with a high z-index and were intercepting all mouse events within their footprint. Fix is one CSS declaration in `static/theme.css`: `body .toast { pointer-events: none; }`. Mouse events now pass straight through to content beneath while the toast still renders and fades normally.
+
+## [2.50.20] — 2026-04-29
+
+### Changed
+- **All tab page query is now ~3-4× faster on large installs (Pi user reports ~2.7s → ~715ms).** The previous query computed per-aircraft aggregates and selected the latest bucket per aircraft in one pass via four window functions partitioned by icao, which forced SQLite to materialize each per-aircraft partition. The new shape splits the work: a GROUP BY scan computes per-aircraft totals and the latest bucket in one pass, then a self-join back to `sightings_hourly` via PRIMARY KEY fetches the per-row columns from that latest row. Result ordering and column shape are identical to the old query — drop-in replacement.
+- Real-data measurement on the 8.2M-row reference Pi install: the `all_tab_page_rollup_grouped` probe added in v2.50.18 (narrower column set, identical query shape) clocked 702 ms on the same data where the prior shape ran 2672 ms — a 3.8× speedup, slightly better than the 3× synthetic prediction. The production query is wider (12 columns vs 6) so absolute timing on Pi user's hardware will land somewhere between 1-2 sec rather than 700 ms, but the shape benefit applies the same way.
+- Result equivalence is mathematically guaranteed: `MAX(hour_bucket)` over a GROUP BY identifies a single latest bucket per icao unambiguously, and the PK `(icao, hour_bucket)` on the WITHOUT ROWID table means the self-join finds exactly one matching row. Verified by side-by-side comparison on synthetic data with the full production column set.
+- The previous query shape is preserved in `/api/perf/diagnostics` as the `all_tab_page_rollup` probe so the comparison stays runnable on any future install.
+
+## [2.50.19] — 2026-04-29
+
+### Changed
+- **Gear-menu navigation feels snappy on large installs again — the Status endpoint reads from the hourly rollup instead of raw sightings.** Symptom from the reference Pi user: clicking gear-menu items (Status, Logs, Documentation, Configuration, Updates) felt sluggish even though the dashboard's Live/Watchlist/Military/All tab transitions felt snappy. Root cause: every admin page polls `/api/status` on load to populate the header health indicator, and the underlying `COUNT(DISTINCT icao)` over the retention window took ~9.5 seconds on his 8.2M-row install. The 30-second response cache from v2.49.7 absorbed back-to-back navigations, but every cold-cache hit paid the slow-path penalty. The same query against the rollup runs in ~160 ms (~57× faster) — putting cold-path gear navigation well under the 500 ms UX threshold.
+
+## [2.50.18] — 2026-04-29
+
+### Added
+- **No user-visible behavior change — new perf-diag probe measures an alternative query shape for the All-tab page.** The probe (`all_tab_page_rollup_grouped`) measures a GROUP BY + self-join alternative to the production window-functions query. Synthetic stress tests show ~3× speedup; v2.50.18 ships the probe only so real-data measurement can confirm before swapping the production query (which v2.50.20 then does). Result ordering and column shape match production exactly.
+
+## [2.50.17] — 2026-04-28
+
+### Changed
+- **Military and Watchlist Stats card counts are now ~2× faster on large installs.** Added covering composite indexes `(seen_at, icao)` on the `military_sightings` and `watchlist_sightings` tables, mirroring the v2.50.11 fix on `sightings_hourly`. Without the composite, the `COUNT(DISTINCT icao) WHERE seen_at BETWEEN ? AND ?` queries had to fetch each matching row from the table to read the icao value; with the composite, the count becomes an index-only scan. Indexes are added via `CREATE INDEX IF NOT EXISTS` in `init_db`, idempotent on fresh and existing installs.
+
+## [2.50.16] — 2026-04-28
+
+### Changed
+- **Header bar now stays pinned at the top of the page on every screen — no more scrolling back up to reach the gear menu, brand mark, or tab bar.** Live, Watchlist, Military, All, Stats, plus all admin pages (Configuration, Status, Diagnostics, Logs, Documentation, Updates, Performance, Diagnostics-Watchlist) all get the sticky-header behavior. Especially noticeable on long-scrolling surfaces like the All tab and Stats records list. Implemented as a single rule in `static/theme.css` so any future template that declares `.hdr` automatically inherits the sticky positioning.
+
+## [2.50.15] — 2026-04-28
+
+### Changed
+- **Configuration page → Database section: the SQLite tuning auto-resolve status note now sits cleanly under the dropdown at matching width, instead of stretching across the full section.** Cosmetic alignment fix to the v2.50.14 status line. New `.form-input-aside` utility class snaps the note into the same column as the dropdown on desktop and falls back gracefully on mobile.
+
+## [2.50.14] — 2026-04-28
+
+### Added
+- **Configuration → Database section now shows what the SQLite tuning auto-detect actually resolves to on your hardware.** A small status line under the "Tuning profile" dropdown reads, e.g., *"Auto resolves to Balanced on this system (3.8 GB RAM detected — 32 MB cache, 128 MB mmap, RAM temp)."* Visible regardless of which profile is selected: when configured to Auto it makes the otherwise-opaque label concrete; when configured to a manual profile it gives a baseline so you know what you'd be deviating from when picking Aggressive vs Conservative.
+
+## [2.50.13] — 2026-04-28
+
+### Added
+- **New SQLite tuning dropdown in Configuration → Database lets you pick a memory/performance profile to match your hardware.** Five profiles (`default`, `conservative`, `balanced`, `aggressive`, `high_memory`) plus an `auto` mode that picks based on system RAM: under 1.5 GB → conservative, under 6 GB → balanced, under 24 GB → aggressive, otherwise high-memory. Each profile bundles cache size, mmap size, and temp store settings — a single dropdown rather than three separate knobs. Auto is the default; existing installs upgrade with no behavior change in their config.yaml until they explicitly pick a profile. Restart-required field since SQLite pragmas only take effect for new connections.
+
+### Changed
+- All SQLite connections now go through a single `_open_db_conn(db_path, **kwargs)` helper in `collector.py` that wraps `sqlite3.connect()` and applies the active profile's pragmas. Refactored 25 call sites across `collector.py`, `server.py`, and `main.py` to use the helper. Necessary scaffolding for the tuning feature — pragmas like `cache_size`, `mmap_size`, and `temp_store` are per-connection in SQLite, so applying them at `init_db` time would only affect that single setup connection. The central helper means every read path (the All-tab page query, the perf-diag probes, the Stats cards, the watchlist endpoint) now picks up the configured profile uniformly.
+
+### Notes
+- The auto-detect read of `/proc/meminfo` is bounded and silent — falls through to `balanced` on any read failure. Linux-only by design (Aerodrome is Linux-only); other platforms would just always get `balanced` from auto.
+- Profile changes apply at the next service restart for cleanliness — even though `_open_db_conn` reads the profile fresh on each call, long-lived connections that opened before the config change keep their old pragmas. The UI surfaces the "restart" tag on the dropdown so this is visible.
+
+## [2.50.12] — 2026-04-28
+
+### Removed
+- **No user-visible changes — internal cleanup that drops a redundant index on `sightings_hourly`.** The `idx_hourly_icao_bucket` index was redundant from the moment it was created: the table's PRIMARY KEY already provides an implicit index on the same column prefix and SQLite can scan it in either direction efficiently. The duplicate added a write to update on every collector poll without serving any read. Idempotent drop on existing installs.
+
+### Notes
+- A grep across the entire codebase confirmed only a single reference to `idx_hourly_icao_bucket` remained — its own CREATE statement, now removed. No `INDEXED BY` hints, no SQL comments, nothing depending on it.
+- Side effect: `sightings_hourly` now has exactly two non-PK indexes — `idx_hourly_bucket` (single-column, used by the page query) and `idx_hourly_bucket_icao` (composite covering, used by the count query). One per access pattern. Cleaner.
+
+## [2.50.11] — 2026-04-28
+
+### Fixed
+- **All-tab count query is now ~3× faster on the rollup path — addresses a regression where the "fast" rollup query was actually slower than the raw fallback it was supposed to replace.** Caught by the v2.50.10 paired probes — on a 465k-raw / 21k-rollup install the rollup ran 94 ms while the raw ran 66 ms. Cause: the existing index on the rollup was non-covering for the `COUNT(DISTINCT icao)` shape, so every matching row triggered a table fetch. The new `idx_hourly_bucket_icao` covering composite turns it into an index-only scan.
+
+### Notes
+- Index is created at startup via `CREATE INDEX IF NOT EXISTS` in `init_db`. No migration tracking needed — SQLite builds the index from a one-pass scan of the table on next service restart, then it's used immediately by the query planner. On a small-install scale (~21k rollup rows) the build is sub-second; on a Pi-scale install (~100k+ rollup rows) it's still well under the time it takes for systemd to bring the service up.
+- The pre-existing `idx_hourly_icao_bucket` on `(icao, hour_bucket DESC)` is essentially a duplicate of the table's PRIMARY KEY `(icao, hour_bucket)` and isn't currently serving any production query — the production reads all filter on `hour_bucket >= ? AND hour_bucket <= ?`, not on `icao`. Leaving it alone for now to keep this release minimal; cleanup is a candidate for a future audit release if the redundant write overhead ever becomes interesting.
+
+## [2.50.10] — 2026-04-28
+
+### Fixed
+- **Performance diagnostic now reports honest All-tab numbers — pre-v2.50.10 the probes timed the obsolete pre-rollup query path, making the post-v2.50.0 perf-diag look as if the rollup migration hadn't helped.** Two probes were labeled and commented as "the actual query the /api/all endpoint runs" but were stale from the v2.41.9 lineage. Result: a healthy v2.50.0+ install with backfill complete saw 1.5-second numbers in its perf-diag for All-tab queries that actually run in milliseconds against `sightings_hourly`. Misleading at best, alarming at worst — easy to read as "the rollup migration didn't help" when really the probe was timing the wrong table. v2.50.10 replaces them with paired rollup-vs-raw probes so the reader can see both paths and which one matches their production state.
+
+### Added
+- A `hourly_rollup` field in the perf-diag report (`phase`, `rows_processed`, `rows_total`, `error`) so readers can immediately tell which of the paired probes corresponds to their production state.
+- Paired probes for both All-tab queries: `all_tab_count_rollup` / `all_tab_count_raw` and `all_tab_page_rollup` / `all_tab_page_raw`. The rollup-path probes mirror the production SQL in `/api/all` (window functions over `sightings_hourly`, partitioned by ICAO with `hour_bucket` filtering); the raw probes are the v2.41.9 shape kept as a known-slow benchmark for the rollup-incomplete fallback case. When backfill is `complete` the rollup numbers match production; when it's mid-backfill or errored, the raw numbers do.
+
+### Changed
+- The Q1 `recent_range_distinct` probe's comment block is corrected to drop the stale "/api/all count path" reference. That path is on the rollup now; the Stats-tab cards (`unique_today`, `peak_simultaneous`, `average_concurrent`) remain the actual consumers of this index path and the comment is tightened to say so.
+
+## [2.50.9] — 2026-04-28
+
+### Fixed
+- **Configuration auto-backups (`config.yaml.bak.*`) are now actually trimmed to the most recent 5 — pre-v2.50.9 they accumulated unbounded with every config edit.** The Backup & Restore tab has advertised "Aerodrome keeps the 5 most recent auto-backups" since the feature shipped, but no code enforced it. v2.50.9 adds a keep-5 pruner that runs immediately after each new auto-backup and again at service startup, so existing installs self-heal on next boot. Strict regex match means the pruner never touches `.pre-restore` snapshots or any handwritten files that happen to share the prefix.
+- `bump-version.sh` printed `  Updated <file>` for every entry in its FILES list on every run, regardless of whether `sed` actually replaced anything. The diagnostic was lying — it was the same `sed -i` mtime-bump behavior that masked v2.50.7's 20-file Version-header drift across eight releases. Now the script hashes each file before and after `sed`, prints "Updated" only when the file genuinely changed, and surfaces a `⚠ <file>: Version header is at v<actual>, not v<OLD> (drifted — fix manually)` warning when a Version: header is present but at the wrong version. Files with no Version: header at all (CONTRIBUTING.md) stay silent.
+- `scripts/check_docs.py`'s Version-header drift check covered Python / shell / YAML / Markdown but skipped template `<!-- Version: -->` headers — only the runtime `hdr-meta` hardcoded-version case from v2.40.1 was checked for templates. Extended the templates loop to run the same comment-header regex it runs for other source files, so the nine `templates/*.html` files (including the three v2.50.7 added to bump-version.sh's tracked FILES list) are now in the drift advisory's scope. Belt-and-suspenders against the same class of bug from a different angle than the bump-version.sh fix above.
+
+### Changed
+- The Backup & Restore tab's "Restore from auto-backup" copy is tightened from "(created when the config is migrated or restored)" to "(created each time the config is saved)". Restore-time snapshots are `.pre-restore` files that go to their own dedicated section since v2.50.6 — the auto-backup list now only ever contains save-side snapshots, and the copy reflects that.
+
+## [2.50.8] — 2026-04-28
+
+### Fixed
+- **In-app code-update snapshots no longer balloon to multiple gigabytes when DB safety snapshots happen to be in the install dir.** Pre-v2.50.8, the update flow's code-rollback snapshot loop only filtered by exact-name preservation paths — so multi-GB `.pre-restore` DB snapshots got copied verbatim into every code snapshot, and `INSTALL_BACKUP_KEEP=5` retained five copies. Real-world impact on a Pi-scale-DB testbed: 11 GB across four snapshot directories, each carrying ~2.6 GB of duplicated data alongside ~7 MB of actual code. The snapshot loop now skips by suffix pattern too: `*.pre-restore`, `*.bak.*`, `*.from-backup.*`, `__pycache__/`, `*.pyc`. Existing oversized snapshots can be reclaimed by deleting `.backups/` manually.
+
+### Added
+- Startup self-heal that walks every existing `.backups/<timestamp>/` directory and strips the same suffix patterns. Snapshot folders themselves stay in place — `_prune_install_backups` continues to manage their keep-5 retention, and code-rollback to that snapshot's source state still works for the actual code files. On installs that accumulated multi-GB historical bloat (the case described above) this reclaims roughly 10 GB on the next service restart without any user action; on clean installs it's a no-op. Pairs with the v2.50.6 pre-restore startup heal, layered after it so that pruning the live root happens first and the snapshot heal runs against an already-quiet install dir.
+
+## [2.50.7] — 2026-04-28
+
+### Fixed
+- **No user-visible changes — internal cleanup of stale version-comment headers across 20 source files.** Some headers had silently drifted out of sync up to eight releases stale. Cause is the same shape as the v2.40.1 startup banner: bump-version.sh's sed regex anchors on the literal previous version, so once a header skips even one bump cycle it stays frozen forever. Healed all 20 headers in a single pass; bump-version.sh's matching logic was also tightened to prevent recurrence.
+
+### Changed
+- `templates/diagnostics.html`, `templates/diagnostics-watchlist.html`, and `templates/performance.html` are now in bump-version.sh's tracked FILES list. They've always carried `<!-- Version: -->` comment headers but were never enumerated, so the rewrite step skipped them entirely on every bump. Without this addition the heal in this release would have started drifting again on the very next release for those three files.
+
+## [2.50.6] — 2026-04-28
+
+### Fixed
+- **Restore safety snapshots are now trimmed to the 3 most recent — pre-v2.50.6 they accumulated unbounded and could waste multiple gigabytes of disk on installs with a large DB.** The Restore flow writes a `.pre-restore` snapshot of the current `config.yaml` and `aircraft_history.db` before overwriting them, but until now nothing ever cleaned those up. Installs that restored often (or restored against a large database) accumulated multiple gigabytes of stale snapshots. The DB snapshot is the painful one: it's sized at the live DB at the moment of restore. v2.50.6 now keeps the 3 most-recent snapshots per kind and prunes the rest both at the end of every restore *and* at service startup — so existing installs self-heal on their next boot.
+
+### Added
+- "Restore safety snapshots" section in the Backup & Restore tab, sitting between Full backup and Config-only backup. Lists snapshot pairs by timestamp with their sizes ("database: 1.27 GB · config: 2.8 KB"), shows the active keep-N retention, and offers a Purge-all button to reclaim every byte right now. Backed by `GET /api/backup/pre-restore` and `POST /api/backup/pre-restore/purge`. The Purge-all confirm dialog re-fetches before showing so the count and total reflect current disk state, and explicitly notes that future restores will create a fresh snapshot anyway — purge only removes the historical safety net.
+
+### Changed
+- The regular config-only auto-backup list (`config.yaml.bak.YYYYMMDD-HHMMSS`) now filters out `.pre-restore` files. They were previously appearing in that list with raw filenames (the date-formatter regex didn't match the `.pre-restore` suffix), and they have their own dedicated section now. No behavior change for plain auto-backups — just removes the duplication.
+
+## [2.50.5] — 2026-04-28
+
+### Fixed
+- **The v2.50.4 brand-mark layout now renders correctly when upgrading from earlier versions — pre-v2.50.5, browsers cached the old stylesheet and the icon would stack above the wordmark instead of sitting beside it.** The new CSS rules were correct, but browsers had `theme.css` aggressively cached from previous releases and didn't re-fetch it on upgrade. v2.50.5 cache-busts shared static assets by appending `?v=<version>` to their URLs on every page load — applied to `theme.css`, `theme.js`, and `health-indicator.js`. Future releases that touch any shared static asset will get cache-busting for free.
+
+### Changed
+- The nine HTML template handlers in `server.py` now share a `_serve_template()` helper instead of each inlining the same `Path → read_text → HTMLResponse` boilerplate. The helper is where the cache-bust URL rewriting lives — centralizing it means any future shared-asset cache concerns get fixed in one place rather than nine.
+
+## [2.50.4] — 2026-04-28
+
+### Added
+- **Radar-rings brand mark added to the dashboard header, sitting to the left of the "Aerodrome" wordmark.** Same design as the favicon, sized at 32px. The v2.50.3 rebrand left the header feeling a bit bare with just the wordmark; the icon restores visual weight without bringing back the longer "ADS-B" prefix. Inline SVG so no extra HTTP request and inherits the existing brand color.
+- The home-link CSS rules (icon + wordmark layout, hover behavior) are now consolidated in `static/theme.css` rather than duplicated across nine templates. Each template's per-page stylesheet had its own copy with subtle inconsistencies (some used `display: inline-block`, some had different opacity values); the canonical version uses `display: inline-flex` with a 10px gap, which is what the icon-plus-wordmark lockup needs. The duplicated rules are removed from each template's `<style>` block.
+
+## [2.50.3] — 2026-04-28
+
+### Changed
+- **Product renamed from "ADS-B Aerodrome" to just "Aerodrome" everywhere it appears as the product name.** The word "aerodrome" is already aviation-domain-specific — the "ADS-B" prefix was over-explaining and made browser tab titles longer than they needed to be. Updated across all HTML templates, the startup banner, and the PDF cover page. The technical term "ADS-B" is preserved everywhere it accurately describes the protocol or hardware (ADS-B Receiver, ADS-B data, polls the ADS-B feed) — only the brand-name uses changed.
+- Startup banner now reads the version from the `VERSION` file instead of a hardcoded string. The previous banner had been showing `v2.40.1` for ten releases because the literal string was never updated alongside version bumps.
+
+## [2.50.2] — 2026-04-28
+
+### Added
+- **Aerodrome now has a favicon — browser tabs show a radar-rings icon instead of the generic page glyph, and the recurring `GET /favicon.ico 404` log noise is gone.** Served as `favicon.svg` (modern browsers, scales to any DPI), `favicon.ico` (legacy fallback with 16/32/48px frames), and `apple-touch-icon.png` (iOS home-screen / bookmarks at 180px).
+
+## [2.50.1] — 2026-04-28
+
+### Fixed
+- **Page loads no longer hang for 5–7 seconds when hexdb.io is briefly unreachable.** Pre-v2.50.1, every admin page poll of `/api/status` paid a 5-second TCP timeout for the hexdb reachability probe — and since v2.49.3 every admin page polls `/api/status` for header health indication, the entire UI became sluggish whenever hexdb was flaky. v2.50.1 caches the probe verdict for 30 seconds so at most one slow probe per 30-second window can reach the slow path, and tightens the probe timeout from 5s to 2s as defense-in-depth.
+
+This bug existed in latent form since v2.49.3 (which introduced the every-page status polling) but only became visible when a real hexdb outage coincided with v2.50.0 testing.
+
+## [2.50.0] — 2026-04-27
+
+### Added
+- **Major performance overhaul: the All tab is now dramatically faster on large installs.** If you've been running Aerodrome on a Pi with months of accumulated data, the All tab may have taken tens of seconds (or worse — the Pi user reported 99-second loads) to render its first page. v2.50.0 introduces an hourly-rollup table that pre-aggregates sighting data into one row per (aircraft, hour) bucket; the All tab query now reads from this much smaller table and returns in well under a second on the same hardware. First boot after upgrade runs a one-time background backfill from your existing data (seconds on small installs, several minutes on Pi-scale installs); the All tab falls back to the slower raw query path during backfill so it stays usable throughout. The Status page shows a "first-time setup: optimizing this tab for your existing data" banner while it runs.
+
+  Behind the scenes: hourly rollups (`sightings_hourly` table). One row per (ICAO, hour-bucket) aggregating sighting count, first/last seen, last-known position/altitude/speed/squawk, and intra-hour altitude/speed extremes. Created at startup via a background-thread backfill from existing `all_sightings` data; populated online thereafter by the collector on every poll. Idempotent — only runs once per install (tracked via `_aerodrome_meta`). The All tab page query now reads from `sightings_hourly` after the one-time backfill completes. While the backfill is running (or if it errored), the All tab falls back to the v2.49.x raw query path — slow but correct. `/api/status` now exposes `hourly_rollup` state (`phase`, `started_at`, `finished_at`, `rows_processed`, `rows_total`, `error`).
+
+### Changed
+- The collector's per-poll write path now does an additional UPSERT into `sightings_hourly` alongside the existing INSERT into `all_sightings`. Write amplification is one extra row per poll per aircraft — measured impact on a typical install is below the noise floor.
+- The backfill uses a window-function CTE over `all_sightings` to compute aggregates and snapshot the latest sighting per (icao, hour-bucket) in a single pass. Replaces correlated-subquery shape that scaled O(n²) per bucket.
+
+### Notes
+- **Storage doesn't shrink.** v2.50.0 adds a new table; it doesn't shorten retention on existing data. The All tab gets faster, but the DB file gets slightly larger.
+- **First boot of v2.50.0 on an existing install** runs the backfill in a background thread. The web server starts immediately and the All tab is usable throughout — slow during migration, fast after. Migration time scales with `all_sightings` row count: small installs (under 100k rows) finish in seconds; Pi-scale installs (millions of rows) may take several minutes.
+- **This is the first slice of the v2.50.x series.** Many other queries (stats summaries, range rose, today's extremes) still read from `all_sightings`. They'll migrate incrementally in v2.50.x patches as they're identified as bottlenecks. The All tab page query was the one that prompted this work (Pi user, 99-second loads); it's fixed.
+
+## [2.49.8] — 2026-04-27
+
+### Fixed
+- Backup restore now accepts archives that have been re-packaged inside a wrapper folder. Cloud sync tools (Synology Drive, Google Drive, OneDrive) sometimes wrap a downloaded archive's contents under a folder named after the archive — so where Aerodrome's own backup writer produces `manifest.json` at the zip root, the re-packaged version has `aerodrome-backup-YYYYMMDD-HHMMSS/manifest.json`. Previously the restore failed with "Missing or invalid manifest.json" even though the file was visibly present in the archive. The restore now finds `manifest.json` at any depth, derives the prefix, and applies it to every other read. Multiple manifests in one archive (an ambiguous case) is rejected explicitly.
+
+## [2.49.7] — 2026-04-27
+
+### Fixed
+- The `/api/status` endpoint now caches its expensive table-count queries (per-table `COUNT(DISTINCT icao)` and `COUNT(*)` over the retention window) for 30 seconds. At scale these queries can take 8+ seconds — multiply by three tables and the endpoint becomes slow enough that browsers report "Load Failed" before the response arrives. The cache TTL matches the gear-icon health-indicator polling cadence introduced in v2.49.3, so post-warmup the polling never hits the slow path. First request after a service restart still pays the full query cost; every request within 30s of a successful one is near-instant.
+
+The cache is TTL-only (no event invalidation); the row counts are advisory display values that don't drive severity decisions, so 30 seconds of staleness is acceptable. `stats_cached_age_sec` is exposed on the database component for diagnostics.
+
+## [2.49.6] — 2026-04-26
+
+### Fixed
+- The Tail Resolver card on the Status page now uses amber instead of red when the resolver is unreachable. The hexdb resolver is advisory at the system level — its failure doesn't break anything core, only degrades Track-link URLs for providers that need a tail number. The gear icon and overall-status banner already used amber for this state (per v2.49.4 and v2.49.5); the card was the last visual signal still claiming it was a critical failure. All three signals on the Status page now agree: amber dot, amber "Unreachable" text, amber HTTP-error box.
+
+## [2.49.5] — 2026-04-26
+
+### Fixed
+- The header health-status dot ("ADSB indicator") now actually reflects system health on every admin page. Previously the dot was hardcoded as green-pulsing on Status / Configuration / Logs / Documentation / Updates regardless of the real state, and was missing entirely from Diagnostics / Diagnostics-Watchlist / Performance pages. The v2.49.3 polling worker only updated the gear button, not the dot. Now the dot toggles `.warn` (amber) and `.off` (solid red) classes alongside the gear button on every page.
+- The gear button's amber/red border-color treatment now applies on every admin page. Previously the v2.49.3 polling worker correctly added the `.warn` / `.error` class but the matching CSS only existed in `index.html`'s inline styles — so the class was set but the gear stayed visually plain on Status / Configuration / Logs / Documentation / Updates / Diagnostics / Performance.
+
+### Changed
+- `static/theme.css` is now the canonical home for `.dot`, `.hdr-left`, and `.settings-btn.warn` / `.error` styles. They previously lived in per-template inline CSS with inconsistent coverage (some templates had partial rules, others had none).
+
+## [2.49.4] — 2026-04-26
+
+### Fixed
+- The "All systems operational" banner on the Status page no longer claims everything is fine when an advisory component has failed. Previously it was binary (green ok / red error) and used the `overall_ok` flag, which only counts core components — so when the hexdb resolver was unreachable the banner showed green even though the gear icon was amber and the Tail Resolver card was red. Three contradicting signals on one screen.
+
+Banner is now three-state, mirroring the gear: green "All systems operational" when everything is fine, amber "All core components OK · advisory issue with {component}" when an advisory subsystem is degraded, red "Issue with {component(s)} — see card(s) below" when a core component is down. Component names appear in human-friendly form (e.g. "tail resolver" not "hexdb_resolver"). Multiple failures are listed in plural form ("Issue with ADS-B receiver and database — see cards below").
+
+## [2.49.3] — 2026-04-24
+
+### Fixed
+- Visual continuity for error indicators. When the gear icon is in alert state (amber for advisory issues like an unreachable hexdb resolver, red for component failures like an offline receiver), the **Status** item inside the gear menu now mirrors that color with a small matching dot prefix. Previously the gear shouted "something's wrong" but the menu item that takes you to the answer was rendered as plain text — users had to guess where to tap. The visual handoff now goes gear → matching-color Status → tap → land on the page that has the answer.
+- The gear's alert state now updates on every admin page (Status, Configuration, Logs, Documentation, Diagnostics, Updates), not just the main dashboard. Previously it was reactive only on the dashboard and stayed visually plain on every other page even when there was a real problem to flag. New shared `static/health-indicator.js` polls `/api/status` every 30 seconds and applies the alert classes on every admin page; the dashboard keeps its richer indicator (which also fires toasts on transition).
+
+## [2.49.2] — 2026-04-24
+
+### Fixed
+- The "fastest ever" record no longer accepts transponder glitches on light aircraft. The previous 700-kt blanket subsonic ceiling was too loose to catch a Cessna 172 reporting 696 kt (seen in the wild). New per-type ceilings cap GA singles at 250 kt, GA twins at 300, turboprops at 320–400, helicopters at 180–240, and leave airliners and bizjets at 700 kt. Unknown types and fighters stay at the permissive 1500 kt.
+- Stored records that violate a tightened ceiling now self-heal at startup. If your Stats page was showing a bogus fastest-ever (like a 696-kt C172), it'll automatically get replaced with the highest speed from `all_sightings` that passes the current filters the next time Aerodrome starts.
+
+### Added
+- "Data quality filters" section in the README documenting what Aerodrome does to reject bad ADS-B data (type-aware speed ceilings, TIS-B/MLAT pseudo-target exclusion, retroactive self-heal on filter tightening).
+
+## [2.49.1] — 2026-04-24
+
+### Fixed
+- Tail Resolver card on the Status page now explains zero activity when the selected track-link provider doesn't need tail-number lookup. Previously it showed "0 hits · 0 positive · 0 negative · 0 entries" which looked like a broken cache — actually it was a legitimately unused resolver. For airplanes.live and FlightAware (which use ICAO hex directly), the card now shows "Not in use — {provider} uses the ICAO hex directly" instead of the stats table. For FlightRadar24, AirNavRadar, and PlaneFinder (which do need tail lookup) behavior is unchanged.
+
+## [2.49.0] — 2026-04-23
+
+### Added
+- Persistent cache for hexdb.io ICAO-to-registration lookups. Two new SQLite tables (`hexdb_cache` stores entries with per-outcome TTLs; `hexdb_events` is a rolling 7-day log used for activity stats). Positive entries are considered fresh for 30 days, negative entries for 7 days, so Aerodrome doesn't re-ask hexdb about the same aircraft on every service restart. In-memory cache still sits in front as a warm path.
+- Cache statistics on the Tail Resolver card in the Status page: hit rate over the last 24 hours, breakdown of hexdb outcomes (positive / negative / error — the error count turns red when non-zero to make outages obvious), and overall cache size with today's refresh count.
+
+### Changed
+- `collector.resolve_icao_to_tail()` now reads/writes the persistent cache when a DB path has been configured via the new `collector.set_db_path()`. Falls back to pre-v2.49.0 in-memory-only behavior when the DB isn't wired up, so test code and scripts that import collector without running init_db continue to work.
+- `cleanup_old_data()` extended to prune the hexdb_events log alongside the other retention sweeps.
+
+## [2.48.0] — 2026-04-23
+
+### Added
+- Emergency squawk alerts. When an aircraft becomes visible with squawk 7500 (hijack), 7600 (radio failure), or 7700 (general emergency), the Live tab label turns red with a pulsing dot, a "⚠ N squawking emergency codes" pill appears next to the aircraft count, and the row itself gets a red left stripe with a subtle red tint. The same treatment applies to any tab (Watchlist, Military, All) when an emergency-squawking aircraft is visible there.
+
+A new `emergency_squawk` notification event fires when an aircraft first appears with an emergency code, or transitions from a different code into one. Default off — some environments have misconfigured ground transponders that can stick on 7700 indefinitely. 60-minute per-ICAO cooldown prevents re-alerting on every poll while the aircraft stays in the emergency state. Configurable in the Notifications section of the Config page alongside the other event toggles.
+
+## [2.47.3] — 2026-04-23
+
+### Added
+- Clickable all-time records on the Stats page. Tapping a record row jumps to the All tab with the date range set to the day the record was achieved and the aircraft's ICAO pre-searched — the specific sighting that set the record is highlighted if it's still in the retention window. Records without a single winning aircraft (peak simultaneous) stay non-clickable. If the sighting has been pruned by retention, a toast explains what happened.
+
+## [2.47.2] — 2026-04-23
+
+### Added
+- Test notifications now verify the tap-to-open path end-to-end. When `notifications.public_url` is configured, the test sends a Click URL pointing at a new `/notification-test-ok` page; tapping the notification on your phone opens a confirmation page showing "✓ Tap-to-open is working" with the URL it reached and the tap timestamp.
+
+### Fixed
+- The test-notification UI now surfaces when `notifications.public_url` is blank. Previously the test would succeed silently and you wouldn't know tap-to-open was disabled until a real alert arrived and tapping it did nothing. Now the test result includes an amber warning pointing at the config field to fill in.
+
+## [2.47.1] — 2026-04-23
+
+### Added
+- Developer documentation: `ARCHITECTURE.md` (code organization, threading model, data model, invariants), `DEVELOPMENT.md` (local setup, running without a real receiver, iteration workflow), and `API.md` (reference for the ~60 HTTP endpoints).
+
+Written with eventual public GitHub publication in mind — covers the "where do I start reading?" and "how do I run this locally?" questions a new contributor would have. `CONTRIBUTING.md` now cross-references all three.
+
+## [2.47.0] — 2026-04-23
+
+### Changed
+- Theme system extracted into shared `static/theme.css` and `static/theme.js` files, served via a new `/static` mount. Every admin template now references them with a single `<link>` and `<script>` tag instead of carrying its own ~120-line copy of the palette, widget styles, and toggle handler.
+
+No user-visible behavior change. Purely a refactor: future color tweaks are a single-file edit rather than nine. Removed ~49,000 characters of duplicated CSS/JS across the nine admin templates. The FOUC-prevention script stays inline in each template because it must run synchronously before CSS applies — it's wrapped with `<!-- theme:inline-fouc-start/end -->` marker comments for future reference. Verified in Playwright across five templates (status, config, index, docs, logs) in both dark and light modes — no FOUC, no console errors, theme toggle works on every page.
+
+## [2.46.1] — 2026-04-23
+
+### Removed
+- Tech-debt "Maintenance" card on the Status page, plus the `maintenance` block in the `/api/status` response.
+
+That card was operator-leakage — tech-debt audit freshness is maintainer-only info that shouldn't surface in the product UI. The bump-version.sh advisory still runs on minor/major bumps, which is the right surface for it.
+
+### Fixed
+- Dead code cleanup based on the v2.46.0 audit: removed `_placeholder_page` helper in server.py, the orphan `/api/retention` endpoint and its docstring entry, `alertModal` (+ downstream `_escHtml`) in index.html, `alertModal` in updates.html, the orphan `/api/notifications/status` endpoint, and its now-unused `Notifier.drop_counts` method.
+
+### Changed
+- Tech-debt scanner improvements: stale-version-comment threshold raised from 5 to 10 minor releases (the old threshold buried real findings under 46 historical-context comments that are intentionally preserved); JS dead-code scan now strips comments before counting references (the v2.46.0 audit missed one dead function because its name appeared in a nearby doc comment); new skip-list for documented-legitimate orphan endpoints (`/api/updates/github/check` placeholder, `/docs/{filename}` browser-fetched assets).
+
+Audit output after this patch: zero findings across all five categories.
+
+## [2.46.0] — 2026-04-23
+
+### Added
+- Tech-debt audit: a static scanner (`scripts/tech_debt_audit.py`) that produces `docs/tech-debt-audit.md` with findings across five categories — dead Python functions, orphan FastAPI endpoints, dead JavaScript, stale version comments, and TODO/FIXME markers.
+
+Scanner is operator-facing only (not shown in the Documentation viewer or anywhere a regular user would encounter it). Invoked manually via `python3 scripts/tech_debt_audit.py`; does not modify code. Two resurfacing hooks keep the audit from being forgotten: `bump-version.sh` prints an advisory on minor/major releases if the report is missing or older than 60 days, and the Status page shows a "Maintenance" card with the audit's freshness in days. Conservative false-positive filters built in (live-decorator skip-list for FastAPI routes and pytest fixtures; onclick/onsubmit attributes counted as real JS references; dynamic-dispatch-aware substring matching for orphan-endpoint detection).
+
+First run on v2.46.0 found 52 items: 1 dead Python function (`_placeholder_page`), 4 orphan endpoints, 1 dead JS function (`alertModal`), 46 stale version comments, 0 TODO markers. Spot-check confirmed the three non-version-comment categories are high-signal; the 46 stale version comments are mostly historical context that may or may not warrant cleanup.
+
+## [2.45.1] — 2026-04-23
+
+### Changed
+- Overview PDF: removed "paste into an issue tracker" phrasing from the Performance diagnostic section.
+
+Aerodrome doesn't have a public issue tracker yet and the phrasing assumed one existed. Rephrased to "captures the whole picture at once" — still signals that the report is a cohesive shareable thing, without implying a support channel that isn't there.
+
+Patch release includes a PDF rebuild; the fix IS the PDF.
+
+## [2.45.0] — 2026-04-23
+
+### Added
+- Light mode, with a theme toggle (Auto / Dark / Light) in the gear menu on every admin page.
+
+Dark remains the default. Auto follows the operating system's `prefers-color-scheme` and live-updates if you flip your OS theme mid-session. Preference persists in browser localStorage per-device (a different device can have a different theme). Ships with a FOUC-prevention script so pages render in the correct theme before first paint — no dark flash when loading light, or vice-versa. Semantic attention colors (military red, watchlist amber, row borders, category chips) stay identical across themes so the "this is important" signal reads the same in day or night use; text accents (cyan, green, blue) shift to slightly darker variants on light for WCAG AA contrast. The log viewer and code blocks keep their terminal-style dark background in both themes, matching established industry convention.
+
+Nine templates touched: config, diagnostics, diagnostics-watchlist, docs, index, logs, performance, status, updates.
+
+## [2.44.2] — 2026-04-22
+
+### Changed
+- Live tab now defaults to sorting by distance ascending (closest first) when the user has configured a receiver location. Aircraft with unknown distance sort to the bottom.
+
+If `receiver.latitude` and `receiver.longitude` aren't set, the Distance column stays hidden and the Live tab falls back to the previous default (callsign ascending). Clicking any column header on the Live tab still works normally and overrides the default for the session.
+
+## [2.44.1] — 2026-04-22
+
+### Fixed
+- Stat cards on the Fun Stats page of the Overview PDF no longer have the number text visually overlapping the label text.
+
+The cards had hardcoded row heights tuned for 2-digit numbers and single-line labels; 4-digit numbers (9,839) and two-line labels overflowed those boxes. Dropped the `rowHeights` and let reportlab auto-size the rows from content.
+
+### Changed
+- Track-link URL provider registry unified. The mapping (which external tracker each Track ↗ link points at) lived in both `collector.py` (for notification buttons) and `templates/index.html` (for the in-page links), and drifting between the two was a flagged tech-debt item. Now `collector.py`'s `TRACK_LINK_PROVIDERS` is the single source of truth; `/api/ui-config` exposes it to the frontend, which does placeholder substitution into the template strings. Adding a new provider is a one-file edit.
+
+### Removed
+- ~22 lines of dead `waAckedIcaos` watchlist-dismissal code in `templates/index.html`. Declared but no longer read or written after the v2.41.19 redesign; kept around as a comment-heavy ghost through v2.44.0.
+
+Patch release contains a PDF rebuild because the stat-card fix is visible in the Overview PDF. Policy (from v2.42.15) is that patches skip PDF rebuild; this is the documented exception when a patch's fix IS the PDF.
+
+## [2.44.0] — 2026-04-22
+
+### Changed
+- Overview PDF source refactored: prose now lives in `docs/overview.md` and is rendered by `scripts/build_overview_pdf.py`.
+
+Copy changes to the Overview PDF no longer require editing Python strings — edit the markdown and rebuild. The generator shrank from 801 lines to 575 as a result. Page layout is near-identical to v2.43.1; the only visible change is the Performance-diagnostic paragraph now flowing onto the same page as the hardware tiers rather than its own page (cleaner, and keeps the screenshot closer to its intro).
+
+## [2.43.1] — 2026-04-22
+
+### Changed
+- Retention hint in README and `config.yaml.example` now points at the Configuration → Retention tab in the web UI, not just the YAML path.
+
+### Removed
+- Dev-facing "Adding a new diagnostic" footer block from the Diagnostics page.
+
+The footer was reference documentation for maintainers adding a new diagnostic card, written into the user-facing UI where it didn't belong. The same guidance lives in the code comment at the top of the `DIAGNOSTICS` array in `templates/diagnostics.html`, which is where a contributor would actually be reading when they need it. Comment was expanded to include the "page-style vs report-style" distinction previously in the footer.
+
+## [2.43.0] — 2026-04-22
+
+### Added
+- Rich notifications: tap-to-open action on every ntfy push, plus a "Track" button on watchlist and special-aircraft alerts.
+
+Tapping a notification now lands you directly on the relevant Aerodrome page — watchlist hit opens the Watchlist tab with the aircraft row scrolled into view and briefly flashed; receiver-offline opens `/status`; new-record and daily-summary open the Stats tab. Watchlist and special-aircraft notifications also get a "Track" button that opens the user's configured tracking provider (airplanes.live, FlightAware, FR24, AirNav, or PlaneFinder); registration-based providers fall back to airplanes.live when the tail isn't cached yet. Requires setting the new `notifications.public_url` config key (LAN URL, Tailscale URL, or reverse-proxy URL — wherever your phone can reach Aerodrome). Notifications still fire with no tap action if `public_url` is left blank, so existing setups are unaffected.
+
+## [2.42.15] — 2026-04-22
+
+### Changed
+- Hardware sizing guidance in README, config.yaml.example, and Overview PDF.
+
+Replaced vague "runs comfortably on a Pi 4" language with concrete tiers based on aircraft/day and 30-day row counts. Rural / Suburban / Major-airport, each with SD-card or NVMe HAT guidance. Pi 5 + NVMe is now explicitly recommended for installs above ~1.5M sightings.
+
+### Internal
+- bump-version.sh: Overview PDF rebuild now runs only on minor/major bumps, skipping patch releases.
+- Changelog maintenance: trimmed the v2.42.13 and v2.42.14 entries, which had grown into essays with post-mortems and file-by-file diffs. Going forward, entries follow a one-line summary + one short paragraph format.
+
+## [2.42.14] — 2026-04-22
+
+### Removed
+- Receiver health group from the Stats tab (messages_rate / service_uptime / db_size cards).
+
+### Added
+- Live records/sec throughput on the Status page's Collector card.
+
+The three cards duplicated info already shown on the Status and Performance pages. Rather than lose the records/sec metric entirely, it was relocated to the Collector card on the Status page where it sits alongside "Last write" as another collector-health signal. `/api/status`'s `components.collector` now includes `records_per_sec_5m` and `records_sample_count_5m`.
+
+## [2.42.13] — 2026-04-22
+
+### Changed
+- Covering index on `all_sightings(seen_at, lat, lon)` for range_rose / distance_histogram.
+
+Adds `idx_all_seen_lat_lon` so the range_rose query becomes an index-only scan. First startup after upgrade builds the index on the existing table — 30-90s pause on a Pi 4 with ~3M rows, effectively instant on a fresh install. A WARN line is logged to journalctl when the table is large enough for the build to be noticeable. Disk cost: ~70-90MB on a 3M-row install. Also scrubbed three incidental PII references from historical CHANGELOG entries; the LICENSE copyright notice is unchanged.
+
+Import-check guardrail ran on this bump. Passed.
+
+## [2.42.12] — 2026-04-22
+
+### Fixed
+- Fix Stats instrumentation attribution bug + range_rose rewrite.
+
+Two fixes, one diagnosis, one real perf work.
+
+Attribution bug (v2.42.8 instrumentation):
+The per-query timing in v2.42.8 attributes each q() call to whichever card was most recently passed to card_check(). That's fine for the 25 card blocks that use card_check() as their gate. But the range_rose / distance_histogram block checks _card_enabled() directly because it services TWO cards from one shared query. Since that path doesn't update _current_card, all queries inside the block inherited the label from the previous card block \u2014 typically 'db_size' since that's the card right before it in canonical order.
+
+This produced a persistent mis-diagnosis: logs showed 'db_size took 10.7s (rows returned: 2.94M)' across three Stats runs. db_size code only does COUNT queries (returning 1 row each), so '2.94M rows' was impossible under correct attribution \u2014 which should have been a loud signal the instrumentation was lying. I dismissed the mystery as 'weird log output.' Lesson: when instrumentation data doesn't match the code, don't dismiss. That's a smell that the instrumentation is wrong.
+
+Fixed by setting _current_card[0] = 'range_rose_histogram' at the start of the shared block. Any slow query there is now attributed correctly.
+
+range_rose rewrite:
+With attribution fixed, we know the real 10-second query is the lat/lon position scan feeding range_rose and distance_histogram \u2014 not db_size. The old code pulled every (lat, lon) pair in the window (~3M rows on a 30-day window) and looped haversine+bearing per row in Python.
+
+Rewrote to aggregate on a coarse lat/lon grid in SQL before binning. 0.05\u00b0 grid cells (~3.5mi resolution) collapse 3M rows to a few thousand populated cells. SQL's GROUP BY does the counting; Python loops over the cells (not rows) computing bearing/distance once per cell, weighted by cell count. Accuracy loss is well under 1% per bucket \u2014 negligible for a visualization where 50mi is the smallest bucket.
+
+Local test with 500K rows showed compute time dropping from 1230ms to 35ms (35x). The fetch cost didn't change meaningfully in my test, which suggests SQLite's GROUP BY still has to scan the rows. The total savings on the reporter's install is bounded by the scan cost. Expected: 10.7s -> somewhere in 5-9s range depending on how fast his I/O path is.
+
+If the fetch cost turns out to be the dominant remaining cost, the next step would be either a covering index on (seen_at, lat, lon) \u2014 ~72MB of extra index, measurable INSERT cost \u2014 or caching the card for N minutes since range rose data changes slowly. Not shipping either yet; measuring first.
+
+What this does NOT touch:
+- db_size card is probably fine already (the 10.7s was always range_rose in disguise). Not changing anything there this release, but planned removal in v2.42.13 as part of the Receiver health group cleanup.
+- Other Stats queries (top_types 1.3s, top_operators 1.2s, etc) remain unchanged.
+
+Import-check guardrail ran on this bump. Passed.
+
+## [2.42.11] — 2026-04-22
+
+### Fixed
+- v2.42.9 partial failures \u2014 db_size fallback bug and daily_counts_7d regression.
+
+After the reporter deployed v2.42.9, Stats load dropped from 57.6s to 28.1s. Two predicted wins didn't land, and the post-deploy timings show why:
+
+db_size was supposed to drop from 10.6s to under 10ms via sqlite_stat1 lookup. Instead it stayed at 10.2s. Root cause: the fallback path (when sqlite_stat1 doesn't return a row) used cap = max(recent_rows * 10, 100_000) as the LIMIT. On a Pi with 4 days of data, every row IS recent, so recent_rows == total_rows. The 'cap' then evaluates to 10x the table size, which is larger than the table itself, meaning LIMIT caps at nothing and the query degenerates to a full table scan \u2014 exactly what the v2.42.9 rewrite was supposed to avoid.
+
+Two fixes for db_size this release:
+
+1. The sqlite_stat1 query previously filtered WHERE tbl='all_sightings' AND idx IS NOT NULL. That's usually fine \u2014 sqlite_stat1 has one row per index, and for tables with indexes, at least one row matches. But if ANALYZE populated only the index-less table stat (rare but possible), the LIMIT 1 returned nothing and we fell through to the buggy fallback. Removed the idx filter. Any matching row for the table gives us a usable row-count estimate.
+
+2. Hard-capped the fallback at 100,000 rows. The 'bounded' cap was supposed to keep query cost I/O-bound rather than table-scan-bound, but the recent*10 formula gave a cap that wasn't actually bounded for installs where the whole table is recent. 100K is an honest hard limit: on any hardware, LIMIT 100000 scans in well under 100ms. If the actual table is larger than that, the growth-ratio math underreports, but the card rounds to MB anyway \u2014 the failure mode is 'less accurate growth estimate' rather than 'UI blocks for 10 seconds.'
+
+daily_counts_7d was supposed to drop from 4-5s (7-query loop) to under 500ms via a single GROUP BY. It went UP to 6.0s. Root cause: the GROUP BY version computes COUNT(DISTINCT icao) with bucket-aware deduplication across the whole 7-day window, which forces SQLite to materialize a (bucket, icao) temp B-tree over millions of rows. That's more expensive than 7 simple per-day COUNT(DISTINCT icao) queries, each of which uses idx_all_seen_icao as a pure covering scan with no temp structures.
+
+Reverted to the 7-query loop but with INDEXED BY idx_all_seen_icao added to each query. The hint ensures the covering-scan plan on any SQLite version (the same defense we added in v2.42.7 for unique_today et al). Expected: ~2-3s on the Pi \u2014 roughly what the pre-v2.42.9 version did, plus the index pin as insurance.
+
+Lesson filed from this mistake: 'N queries bad, 1 query good' is context-dependent. The number of queries matters less than what each query has to do. A GROUP BY that triggers a temp B-tree over 3M rows is worse than 7 index-only scans over 700K rows each. I assumed the rewrite would be better without measuring on realistic data first. Fixture-testing on a 20K-row DB showed both queries returning correct results, but not the relative cost at Pi-scale.
+
+Honest reflection on the v2.42.9 scorecard:
+  longest_track:      30.7s -> 1.96s  (SUCCESS: 15x)
+  furthest:            3.5s -> 0.91s  (SUCCESS: 4x)
+  hourly_histogram:    1.8s -> 0.85s  (SUCCESS: 2x)
+  db_size:            10.6s -> 10.2s  (FAILED: fallback bug)
+  daily_counts_7d:     4-5s -> 6.0s   (REGRESSION: GROUP BY slower)
+
+Three clear wins, one miss, one regression. Net: 29.5s of query time removed. Not the 50s I predicted but still the largest Stats-tab speedup of this release arc. v2.42.10 is expected to address the remaining 16s, bringing total Stats load to somewhere in the 12-18s range.
+
+What's NOT being touched in this release (same as v2.42.9 rationale): top_types (1.3s), top_operators (1.2s), category_mix (0.9s), highest_altitude (0.6s), lowest_altitude (0.7s), fastest (0.5s), slowest (0.7s), peak_simultaneous (0.8s), average_concurrent (0.8s). Each individually acceptable; each would need a new covering index that bloats INSERT cost.
+
+Import-check guardrail ran on this bump. Passed.
+
+## [2.42.10] — 2026-04-22
+
+### Fixed
+- Fix two regressions from v2.42.9's Stats rewrites.
+
+v2.42.9 shipped five Stats-tab query rewrites. Three worked well (longest_track 30s->2s, furthest 3.5s->0.9s, hourly_histogram 1.8s->0.8s). Two did not:
+
+db_size: took 10.6s in v2.42.8, 10.2s in v2.42.9 \u2014 basically unchanged. The sqlite_stat1 lookup returned no rows on the reporter's install for reasons still unknown (possibly ANALYZE silently failed despite the migration marker being set), so the bounded-COUNT fallback ran. The cap logic was 'cap = max(recent_rows * 10, 100_000)' which degenerated to a full-table scan whenever recent >= table_size / 10. On a 4-day-old DB where all data is 'recent,' cap = 10x the table size, LIMIT does nothing, query scans everything.
+
+Fixed by hard-capping the bound at 100,000 rows regardless of recent volume. 100k rows scans in under 100ms on a Pi. The growth_mb calculation now clamps ratio at 1.0 so the display doesn't report nonsense (e.g. 'grew 300% this week') when total_rows is artificially capped below recent_rows.
+
+Also removed the 'AND idx IS NOT NULL' clause from the sqlite_stat1 query \u2014 not strictly a bug in itself, but the lookup now accepts any stat row for the table, making it robust to minor SQLite representational differences. Added info-level logging when the fast path misses, so next time we'll know whether sqlite_stat1 is empty or unavailable rather than swallowing the exception silently.
+
+daily_counts_7d: went from ~2.6s in v2.42.8 (as 7 queries totaling 2589ms) to 5988ms in v2.42.9 (as 1 GROUP BY). The rewrite made it worse.
+
+Reason: the original 7-queries-in-a-loop pattern actually fit the data model well. Each query is a COUNT DISTINCT icao over one day's worth of rows, scoped to the idx_all_seen_icao covering index \u2014 range-seek + DISTINCT from the index pages, no temp structures. Seven of those run faster than one big GROUP BY that has to materialize a (bucket, icao) temp B-tree across the full week.
+
+Reverted daily_counts_7d to the original loop, added an INDEXED BY idx_all_seen_icao hint so each per-day query is pinned to the right covering index. Expected timing: ~3-4s total (slight improvement over v2.42.8's ~2.6s unhinted because each of the 7 queries now avoids the same planner-regression pattern that hurt unique_today etc.).
+
+Lesson internalized: 'one query good, many queries bad' is not a universal truth. Number of queries matters less than per-query plan quality. A simple query that uses a covering index is faster than a complex query that requires temp materialization, regardless of how many of the simple one you run in sequence.
+
+Expected cumulative result: Stats tab load drops from v2.42.9's 28s to ~14-18s, mostly from db_size reclaiming its 10s. The remaining 14-18s is dominated by queries that need new indexes to improve further \u2014 that's a different conversation.
+
+Import-check passed.
+
+## [2.42.9] — 2026-04-22
+
+### Changed
+- Five Stats-tab query rewrites. ~50 seconds of query time removed.
+
+v2.42.8's per-query instrumentation gave us the ground truth: Stats tab ran 34 queries totaling 57.6 seconds on a Pi user's 3M-row DB. Five queries dominated that total. This release targets exactly those five, leaving the rest alone.
+
+longest_track (30.7s -> expected ~1-2s):
+  The biggest offender by far. The original query was a 4-CTE window-function pattern (LAG + SUM OVER PARTITION + ROW_NUMBER OVER PARTITION) over ~700K rows per day, returning a single row. Rewrote as a Python single-pass: fetch (icao, seen_at) ordered, group by icao in a dict, walk each icao's timestamps tracking the longest contiguous span (sessions end when the gap exceeds track_gap_minutes). For 700K rows, Python iteration is ~500ms on the Pi vs the 30s SQL version. The tradeoff is a small amount of CPU for a 20-60x latency improvement and a dramatically simpler query plan. Verified against fixture data \u2014 identical output to the old SQL.
+
+db_size (10.6s -> expected <10ms):
+  SELECT COUNT(*) FROM all_sightings on a 3M-row table took 10+ seconds on the Pi even after ANALYZE. Replaced with a sqlite_stat1 lookup that reads the planner's row-count estimate directly (sub-millisecond, populated by the v2.42.6 startup ANALYZE). Fallback: if sqlite_stat1 is unavailable, uses a bounded COUNT capped at 10x the recent-rows count so we never block the UI for 10 seconds again. Accuracy of the growth estimate is 'good enough for a card that rounds to MB.'
+
+furthest (3.5s -> expected <100ms):
+  The old code fetched 523K positioned sightings to Python and looped haversine per row to find the furthest aircraft. SQLite has no trig functions, so the whole computation ran in Python. Rewrote to let SQL pre-rank by a monotonic distance proxy \u2014 squared coordinate differences with a cos(rx_lat)^2 scaling factor on the longitude term \u2014 and return only the top 50 candidates. Python does exact haversine on those 50. Verified the top-1 result matches the true-haversine top-1 on test data. For the small angular spans that fit in a receiver's reception range (~200mi), the proxy is mathematically monotonic with great-circle distance; the 50-candidate safety margin absorbs edge cases near the receiver's latitude boundaries.
+
+hourly_histogram (1.8s -> expected <200ms):
+  Old code pulled 566K (seen_at, icao) pairs to Python and bucketed by hour in a dict-of-sets. Replaced with a single SQL GROUP BY on (((seen_at + tz_offset_sec) / 3600) % 24) with COUNT(DISTINCT icao). The tz-offset trick precomputes the timezone shift in Python (sampling offset at the window start for DST safety) and adds it to seen_at inside the GROUP BY, avoiding SQLite's inconsistent strftime-with-tz behavior across builds. Returns one row per hour-with-data; Python fills zeros for the rest to produce the 24-element array the frontend expects. Verified matching output on fixture data.
+
+daily_counts_7d (4-5s -> expected <500ms):
+  The code called q() seven times in a loop, once per day. Each query scanned idx_all_seen_icao for 24 hours of data; on the Pi, 500-750ms each. Rewrote as one GROUP BY on (((seen_at + tz_offset_sec) / 86400) - day_0_bucket) that returns all 7 days in a single index scan. Same tz-offset trick as hourly_histogram. Verified 7/7 days match the old loop's output on fixture data.
+
+Not changed in this release:
+- top_types, top_operators, category_mix (500-1300ms each). Each needs columns not in any covering index (aircraft_type, callsign, type_desc). Adding covering indexes would bloat INSERT cost on the collector's hot path. Left alone.
+- highest_altitude, lowest_altitude, fastest, slowest (500-700ms each). Each needs altitude/speed columns not in any covering index. Same reasoning.
+- first_last_contact (two queries, each small). Needs callsign, not in any covering index.
+
+Expected total: Stats tab load time drops from 57.6s to roughly 5-8s. Remaining time is in queries that are individually acceptable (sub-second) and would need new indexes to improve further \u2014 a write-cost tradeoff I'm not willing to pay without user data supporting it.
+
+Instrumentation from v2.42.8 stays in place so we can measure the effect on the reporter's system after deploy. If the expected 5-8s is still too slow, the _query_timings data will tell us exactly what to target next.
+
+Import-check guardrail ran on this bump. Passed.
+
+## [2.42.8] — 2026-04-21
+
+### Added
+- Stats tab per-query timing instrumentation.
+
+User reported Stats tab loading times in the minutes range on a Pi with 3M rows of all_sightings. The Stats endpoint runs 25+ queries across enabled cards (volume metrics, extremes, composition, patterns, records, watchlist, military, etc), and without per-query timing data we can't tell which query is the bottleneck. Guessing at rewrites without ground truth would be the wrong move (see the v2.42.6/v2.42.7 arc where I chased the wrong metric through three rounds). Shipping instrumentation first, fix second.
+
+Implementation:
+
+The existing q() closure inside get_stats() now records (label, ms) for every execute-plus-fetchall it performs. Timings are collected in _query_timings, sorted slowest-first, and attached to the response as result['_query_timings']. Any single query exceeding SLOW_QUERY_MS (500ms) emits a WARNING log line to journalctl with label and row count, so operators can grep logs without opening the browser. At endpoint end, a summary log line reports total query count + total time + slow-query count.
+
+Labels are attributed automatically via a card_check() helper that wraps _card_enabled() and stamps _current_card[0]. The 25 'if _card_enabled(cards, X, groups):' blocks became 'if card_check(X):' with zero changes to their bodies \u2014 every q() call inside attributes to card X without explicit labels. Queries outside card blocks (there are a few) get a SQL-prefix fallback label like '(pre-cards) SELECT COUNT(*) AS n FROM all_sightings WHERE'.
+
+The v2.42.7 INDEXED BY hints on unique_today, peak_simultaneous, average_concurrent, and the diagnostic probe ride along in this release \u2014 they were already on disk and are still correct defense-in-depth. This release bundles both.
+
+Next step: have the reporter hit Stats on v2.42.8, share either the JSON response's _query_timings array or the relevant journalctl lines. Specific slow queries get targeted fixes in v2.42.9 \u2014 possibly INDEXED BY on the remaining Stats queries, or query rewrites for the window-function patterns (longest_track is a structural suspect but unverified until data lands).
+
+Deliberately not done in this release:
+- No speculative query rewrites. Measure, then fix.
+- No UI changes. Timings live in the JSON response + journalctl only.
+- No public /debug/stats endpoint. The timing field is internal-ish (prefixed with underscore) and subject to change.
+
+Zero behavior changes to card results. Timings add ~5-10\u03bcs per query (one time.time() call pair) which is negligible relative to the queries that actually matter.
+
+Import-check guardrail ran on this bump. Passed.
+
+## [2.42.7] — 2026-04-21
+
+### Fixed
+- Pin idx_all_seen_icao on the high-cardinality all_sightings queries.
+
+v2.42.6 shipped ANALYZE thinking stale planner stats were causing a 20-second live_aircraft regression on a Pi user's install. They deployed, ANALYZE ran, but the perf diagnostic came back showing identical plans and identical timings:
+
+  live_aircraft: 20042 \u2192 20506 \u2192 20608 \u2192 20609 ms (four runs after ANALYZE)
+  plan: SCAN all_sightings USING INDEX idx_all_icao  (unchanged)
+
+So the planner is picking idx_all_icao (the ICAO-first index) and doing a full-index scan of 3M rows with per-row table lookups for the seen_at filter. My local SQLite (3.45.1) on the same data shape picks idx_all_seen_icao (the composite covering index) and completes in under 1 ms. His SQLite (3.46.1) picks the wrong index regardless of ANALYZE. I could not reproduce his bad-plan behavior locally despite reasonable efforts, so shipping a speculative rewrite without a way to test it locally was not defensible.
+
+The defensive fix is INDEXED BY. It removes the planner's choice entirely for queries where we know the right index. Narrow application \u2014 only the queries we have evidence for being pathological on the Pi:
+
+  - unique_today Stats card (line 1849)
+  - peak_simultaneous Stats card (line 1855)
+  - average_concurrent Stats card (line 1866)
+  - live_aircraft diagnostic probe (line 4452)
+
+All four have the same shape: COUNT(DISTINCT icao) FROM all_sightings WHERE seen_at >= ?. idx_all_seen_icao is a strict covering index for this shape \u2014 range-seek by seen_at, DISTINCT served directly from the index pages, no table lookups. Pinning it guarantees the optimal plan regardless of version or stats.
+
+INDEXED BY is not my favorite SQLite feature \u2014 if the named index is ever dropped in a future release, the query fails outright rather than falling back to a slower plan. That's a real but small cost. The index is already used by several other production queries, so dropping it would be a deliberate act, and migrations that rename or restructure indexes would update these hints alongside.
+
+What this does NOT fix: the 37-second all_tab_page query. That one is a window-function pattern (ROW_NUMBER / COUNT / MIN / MAX all OVER PARTITION BY icao over 3M rows) and INDEXED BY won't help. That's a query rewrite, probably v2.42.8.
+
+Honest self-note: I confidently predicted v2.42.6 would drop live_aircraft from 20s to under 50ms. It didn't move. The correct move was to reproduce the bad plan locally BEFORE shipping the fix, not after. I have that reproduction now (1M rows + 12K ICAOs + forced idx_all_icao = 14 seconds on my hardware, exactly matching his behavior). That local repro is what told me INDEXED BY is the right answer.
+
+**Addendum mid-release**: before the v2.42.7 zip was deployed anywhere, the reporter mentioned response times were already much better on v2.42.6. That prompted me to check whether the diagnostic probe I'd been fixating on (the 20-second "live_aircraft" query) was actually running in production. It isn't \u2014 /api/live fetches directly from the ADS-B receiver over HTTP and never touches the database. The probe was labeled "hottest query, fires every few seconds from the Live tab" in a comment that has been wrong since the diagnostic was written.
+
+So v2.42.6's ANALYZE almost certainly DID improve the queries users actually see (Stats cards, /api/all count path) \u2014 I just couldn't measure it because the diagnostic was pointing the wrong way.
+
+Renamed the probe from "live_aircraft" to "recent_range_distinct (synthetic probe, not a hot path)" and rewrote the comment explaining what it actually measures and why it's useful despite not being on a user path. The probe's purpose is legitimate \u2014 it exercises the same index pattern the Stats cards use, so slow-probe implies slow-Stats-card. It just shouldn't have been marketed as the hot query.
+
+v2.42.7's INDEXED BY fix is still worth shipping. The Stats cards DO run these queries in production, and pinning the index defends against the same planner-vulnerability the reporter demonstrated. The urgency is lower than I thought but the correctness benefit is the same.
+
+## [2.42.6] — 2026-04-21
+
+### Added
+- ANALYZE support: auto-run on first start, manual button on Performance page.
+
+Root-cause analysis of a user perf report showed their 20-second live_aircraft query was taking the wrong index: SQLite's planner chose idx_all_icao (ICAO-first) for a seen_at range query, doing a 3M-row scan instead of the millisecond range-seek that idx_all_seen would have produced. Cause: SQLite's planner uses stats from ANALYZE to estimate index selectivity, and without stats it falls back to heuristics that work on small tables but can misjudge on tables with millions of rows.
+
+Three additions to address this:
+
+1. collector.py init_db: added a versioned ANALYZE gate using a new _aerodrome_meta table with key/value rows. On startup, if the analyze_version marker is missing or behind the current version, runs ANALYZE once and updates the marker. Marker version 1 ships in this release \u2014 future releases bump the marker when new indexes are added. This avoids penalizing fast restarts with a 30-60s ANALYZE on every boot while still ensuring the planner has stats on fresh installs and after schema migrations.
+
+2. server.py: added POST /api/perf/analyze endpoint. Blocking call, 60-second SQLite timeout, returns timing + success message. Tolerates crashes and returns structured JSON errors (following the v2.42.4 pattern). Logger.info on completion for operator visibility in journalctl.
+
+3. templates/performance.html: added a 'Re-analyze DB' button in the toolbar between Copy and Back. Handler disables the button during the request, shows 'Analyzing\u2026' status, auto-reruns the diagnostic on success so the user can see the improvement (or lack thereof) in measured query timings.
+
+End-to-end verified: fresh DB triggers 'Running ANALYZE (marker 0 \u2192 1)' log + marker stored as 1. Subsequent init_db calls correctly skip (no second ANALYZE). Manual endpoint tested independently.
+
+Why this is the right first intervention: ANALYZE is data-read-only, it only updates sqlite_stat1 tables. Safe to run concurrent with the collector. No schema changes, no data-model changes, no query rewrites. If a user's queries are slow due to stale planner stats, this fixes them; if they're slow for other reasons (hardware, data volume, query shape), ANALYZE gives the planner its best chance before we reach for heavier interventions like query rewrites or archive rotation.
+
+Import-check guardrail ran on this bump. Passed.
+
+## [2.42.5] — 2026-04-21
+
+### Changed
+- Watchlist diagnostic: show dismissal age + latest-vs-dismissal gap in human-readable form.
+
+The Pi user's diagnostic came back with raw unix timestamps that required mental arithmetic to realize the important fact: he had dismissed the pulse 28 minutes before running the diagnostic, and a new legitimate sighting had arrived since then. The pulse coming back was designed behavior, not a bug \u2014 but no reader could see that at a glance.
+
+Three additions to the diagnostic, all cosmetic \u2014 no logic changes:
+
+1. New storedDismissalAt line in the Evaluation section that renders the stored-key timestamp as an ISO string plus a human-readable age ('28m 7s ago'). Makes it obvious when the user last dismissed without requiring subtraction.
+
+2. New latestMinusDismissal line that shows the gap between the current latest sighting and the stored dismissal, with a plain-English explainer: 'a newer sighting arrived 28m 7s after dismissal' (positive gap, normal case), 'dismissal is NEWER than latest sighting' (edge case, flags clock skew), or 'exact match' (dismissal is current, pulse should be off).
+
+3. secondsSinceLatest annotation. When negative (server clock ahead of browser clock), the report now notes 'browser clock behind server by Ns \u2014 check NTP' instead of just emitting a bare negative number. The Pi user's report showed secondsSinceLatest:-41 which was confusing without context; the new annotation makes it clear that's clock skew, not a data bug.
+
+Added a _formatDuration() helper for the human-readable text (45s, 1m, 2m 5s, 1h 3m). Tested against 7 cases including 1687s \u2014 the exact gap in the Pi user's diagnostic \u2014 which renders correctly as '28m 7s'.
+
+No changes to the interpretation card verdicts \u2014 the BAD/WARN/INFO/OK decision tree still behaves as in v2.41.26. This release makes the raw-report data section more readable so a user or supporter can understand the timing story without extra arithmetic.
+
+Import-check guardrail ran on this bump. Passed.
+
+## [2.42.4] — 2026-04-21
+
+### Fixed
+- Make ntfy upgrade + daily-summary test endpoints fail usefully.
+
+Two failure modes reported immediately after v2.42.3 deploy:
+
+1. ntfy upgrade succeeds on the backend but the UI button stays stuck
+   on 'Upgrading\u2026' forever. User has no way to tell whether the
+   upgrade completed, failed, or is still running. Page doesn't
+   self-refresh when the upgrade finishes.
+
+2. 'Send test summary' button returned 'JSON.parse: unexpected
+   character at line 1 column 0' in the UI. Classic tell that the
+   server returned an HTML error page (default FastAPI 500) instead
+   of a JSON response. The underlying exception was never logged with
+   a clear traceback and never surfaced to the client \u2014 the user just
+   got a cryptic parse error.
+
+Fixes:
+
+  nfUpgradeNtfy (templates/config.html):
+    - Captures the button reference at handler entry instead of
+      relying on  across async awaits \u2014 browsers differ
+      on whether  remains stable across suspension points
+    - finally block re-enables the button explicitly. loadNtfyStatus()
+      below rebuilds the whole panel, but if THAT call fails for any
+      reason, the button was orphaned in a disabled/Upgrading\u2026 state
+      with no recovery path. Now the button restores itself first.
+    - If the server returns non-JSON (HTML error page), catches the
+      parse error and shows the actual response body in an alert so
+      operators have something specific to report
+
+  /api/notifications/daily-summary/test (server.py):
+    - Wrapped the whole handler body in try/except. Any exception
+      now logs the full traceback to journalctl (via logger.error
+      with _tb.format_exc()) AND returns a structured JSON error to
+      the client containing the exception type and message. The
+      browser's r.json() no longer throws on a server-side crash;
+      it gets a parseable error response back.
+
+  nfSendDailySummaryTest (templates/config.html):
+    - Mirror of the upgrade handler's defensive parse logic. If the
+      server returns non-JSON, catches the parse error and shows the
+      actual body in an alert with a pointer to journalctl for the
+      full traceback.
+
+These are diagnostic improvements, not root-cause fixes. The actual
+cause of the daily-summary failure on the reporter's install is still
+unknown until the server-side traceback comes through. But this release
+ensures the next attempt either works or produces a clear, actionable
+error message instead of a bare JSON parse error.
+
+Ran the import-check guardrail on this bump. Passed.
+
+**Root cause found during this release cycle** — after the diagnostic wrapper was in place and the reporter shared the full journalctl traceback, the real culprit surfaced: `UnicodeEncodeError: 'latin-1' codec can't encode character '\u2014' in position 10`. The daily-summary title literal `"Aerodrome \u2014 last 24h summary"` contained an em-dash, which I'd written directly into the Python source for readability. HTTP headers per RFC 7230 are restricted to ISO-8859-1; urllib3 blew up at the socket layer before the request ever hit the network.
+
+Two fixes applied for this release:
+1. Replaced the em-dash in the daily-summary title with a plain ASCII hyphen.
+2. Added `_to_latin1_safe()` in notifier.py that sanitizes all outgoing HTTP header values (Title, Priority, Tags). Common typographic characters get mapped to sensible ASCII equivalents (\u2014 \u2192 -, \u2026 \u2192 ..., smart quotes \u2192 plain, \u2192 arrow \u2192 ->, check/x marks \u2192 v/x). Everything else outside latin-1 falls through to an ASCII-replace that produces '?' rather than crashing. `_post_ntfy` now pipes Title/Priority/each Tag through the sanitizer.
+
+Why defense-in-depth beyond the specific em-dash fix: other callsites build titles dynamically from config data (user-defined watchlist labels, special_aircraft labels, callsigns from ADS-B broadcasts). Any of those could contain non-latin-1 characters in the future. Sanitizing at the HTTP boundary prevents the entire class of bug.
+
+Tested the sanitizer against 8 inputs including em-dash, ellipsis, smart quotes, arrows, Latin-1 accented characters (should pass through unchanged), emoji (should become '?'), and plain ASCII. All 8 produce latin-1-encodable output with the expected mappings.
+
+## [2.42.3] — 2026-04-21
+
+### Fixed
+- ntfy upgrade UX: release-notes link + working deep-link to Notifications tab.
+
+Two bugs reported against the ntfy upgrade flow:
+
+1. When an upgrade was available, the 'Local ntfy server' panel (both on the Updates page and in the Notifications config section) showed the version numbers but gave users no way to see WHAT the upgrade contained before accepting it. Upgrading software blindly is rarely the right default.
+
+2. The 'Upgrade from Notifications tab' button on the Updates page linked to /config#notifications, intending to deep-link the user to the Notifications tab in Configuration. The config page didn't read the URL hash, so the link dropped users on the default Receiver tab with no indication of where they should go next.
+
+Fixes:
+
+1. Inline 'Release notes ↗' link points at github.com/binwiederhier/ntfy/releases/tag/v{version} for the specific available version. One hop to upstream — no scraped or summarized text, just the canonical release page the ntfy maintainers themselves publish. Added in two places: the Updates page's ntfy card (next to 'Service is running.'), and the Configuration → Notifications panel (next to the 'latest available' version chip). Link appears only when an upgrade is actually available; up-to-date installs don't get a stray link pointing at their current version's page.
+
+2. Hash routing added to templates/config.html. On initial render, _tabIdFromHash() parses window.location.hash and sets activeTab if it matches a known tab id. switchTab() keeps the hash in sync via history.replaceState (not pushState — tab clicks shouldn't flood the back stack). Also means users can bookmark a specific configuration tab, which is a small general win beyond fixing the deep-link.
+
+Tested the hash-routing logic against 7 cases including empty hash, bogus hash, and hash-without-leading-# (all handled correctly). Import check (v2.42.2's new guardrail) ran during this bump and passed — first release to go through that gate successfully.
+
+No backend changes, no new endpoints, no schema changes. Pure frontend polish plus one navigational bugfix.
+
+## [2.42.2] — 2026-04-21
+
+### Added
+- Add pre-release import-check step to bump-version.sh.
+
+After v2.42.0 shipped with a missing def get_app line that crashed the service at startup (fixed in hotfix v2.42.1), the release process needed a guardrail that would catch this class of bug.
+
+Added a pre-release import check that runs after the version bump but BEFORE any of: PDF rebuild, docs drift check, zip packaging. If the check fails, the bump aborts with a clear error and the zip is never produced. The working tree is left in a half-bumped state (VERSION and CHANGELOG updated) so re-running bump-version.sh after a fix doesn't double-bump.
+
+The check imports the exact names main.py imports \u2014 collector.init_db, collector.build_watchlist_lookup, collector.fetch_and_store, server.get_app \u2014 plus a couple of transitively-required module-level symbols (notifier.Notifier, config_validator.validate_config) to catch broader structural drift. Runs in a subprocess with stub replacements for the heavy runtime deps (fastapi, uvicorn, pydantic, yaml, requests) so the release builder doesn't need the full dependency tree installed. We're checking module structure, not runtime behaviour.
+
+Verified against the exact v2.42.0 failure mode: manually removed the def get_app line from server.py, ran the check, got 'IMPORT-CHECK FAILED: server.get_app missing' with exit code 1. Restored the line, check passes with 'OK'. Would have prevented v2.42.0 from being packaged.
+
+Why ast.parse() wasn't enough: ast.parse() answers 'is this valid Python' but not 'does the module export the symbols it's supposed to.' A subtly-broken edit can produce valid-but-wrong code \u2014 orphaned function bodies at the wrong indentation, accidentally-nested functions, etc \u2014 and slip through a syntax-only check. Importing the module and inspecting its namespace is the right shape of validation.
+
+## [2.42.1] — 2026-04-21
+
+### Fixed
+- HOTFIX: restore missing def get_app line in server.py.
+
+v2.42.0 shipped with a broken server.py \u2014 the def get_app(...) line was inadvertently deleted by my str_replace when inserting the new compose_daily_summary_data function above it. The replacement block ended without re-introducing the get_app signature, so the old function body was still present but orphaned: every line from 'global CONFIG, CONFIG_PATH' through the end of get_app was sitting at 4-space indentation with nothing to attach to.
+
+Python silently absorbed all of it as nested code inside compose_daily_summary_data, which is syntactically valid but means get_app as a module-level name doesn't exist. The ast.parse() syntax check passed because the file IS valid Python; it's just missing the symbol main.py imports.
+
+On install of v2.42.0, the service failed to start with:
+  ImportError: cannot import name 'get_app' from 'server'
+
+The service entered a systemd restart loop \u2014 every 15 seconds, same import error, same exit. Reporter installed v2.42.0 and watched the service go down and stay down.
+
+Fix: restored the missing 'def get_app(config: dict, config_path: str) -> FastAPI:' line at module scope. The function body was never lost \u2014 just the declaration. All the v2.42.0 daily-summary features (compose_daily_summary_data, the scheduler thread, the test endpoint, the UI controls) remain intact and functional.
+
+Root cause of the regression going undetected: my pre-release syntax check was ast.parse(), which checks 'is this valid Python' but not 'does this module expose the symbols it's supposed to.' An import-check (python3 -c 'import server') would have caught this immediately. Adding to the roadmap: pre-release should attempt to import every Python module in the package, not just parse it.
+
+Deploy: drop this ZIP into the Updates tab as usual. If the service is already in a restart loop, it will pick up the new code on the next restart attempt and stabilize.
+
+No schema changes, no config changes, no behavioral differences vs the INTENDED v2.42.0. This is purely a code-packaging fix.
+
+## [2.42.0] — 2026-04-21
+
+### Added
+- Daily summary notification \u2014 end-of-day digest at a user-chosen time.
+
+v2.41.35 completes a feature that was half-built for several versions. The Configuration UI had a 'Daily summary' checkbox labeled 'coming in a later release,' the config validator accepted notifications.daily_summary.time as HH:MM, and the notifier registered daily_summary in its event constants \u2014 but nothing actually composed or sent a summary. Toggling the checkbox did nothing.
+
+This release wires up the composition, scheduling, formatting, and UI controls.
+
+What it does
+  - Once per day at the user-configured time, sends an ntfy notification
+    summarizing the previous 24 hours
+  - Window is rolling (last 24h ending at send time), NOT calendar-day.
+    Chose rolling because users setting 'notify me at 08:00' most
+    naturally want 'what happened in the last day'
+  - Content auto-trims: quiet days produce a short message, busy days
+    include peak moment, military breakdown, new records, specials
+  - Fire time evaluated in the user's Stats timezone (existing config)
+  - Skip-on-miss policy: if the scheduled time is missed because the
+    service was down, don't backfill. One attempt per day
+
+Composition (server.py)
+  compose_daily_summary_data() gathers:
+    unique_aircraft, total_sightings (from all_sightings)
+    military_count + breakdown (top 6 types by count)
+    watchlist_count, watchlist_rules_hit
+    peak (count + at_ts from 60s buckets)
+    new_records (stats_records with set_at in window)
+    specials (distinct special_label rows in military_sightings)
+  Missing tables handled gracefully via try/except OperationalError so
+  very old DBs don't crash the composer.
+
+Formatting (notifier.py)
+  compose_daily_summary_body() produces (title, body). Option A format
+  with auto-trimming empty sections. Top-line totals always shown;
+  military and watchlist '0' lines shown only when SOME activity
+  existed that day; peak line shown only when peak >= 2; records and
+  specials sections shown only when non-empty. Footer line shows
+  Aerodrome version.
+
+  _format_record_line() renders all six known record types (fastest,
+  highest, lowest, furthest, longest_track, peak_simultaneous) into
+  short readable lines. Unknown record types fall back to a generic
+  line rather than being skipped, so users know something happened
+  even if the composer doesn't have a template for it.
+
+Scheduling (server.py)
+  Background daemon thread ticks every 60s. Reads current config live
+  (so enable/disable/time changes take effect immediately without a
+  service restart). Fires when:
+    notifications.enabled = true AND
+    notifications.events.daily_summary = true AND
+    current HH:MM (stats timezone) == notifications.daily_summary.time AND
+    last_sent_date (persisted) != today in stats timezone
+  
+  State persisted to .daily-summary-state.json next to the database
+  file. Records last_sent_date, last_sent_at_unix, last_sent_result.
+  Human-inspectable JSON. Once per day regardless of whether the
+  notify() call actually sent (suppressed by quiet hours / rate limit
+  still counts) \u2014 the whole point of 'daily' is one attempt per day.
+
+UI (templates/config.html)
+  Existing 'Daily summary' checkbox row now says 'End-of-day digest
+  at a time you choose \u2014 configure below' instead of 'coming in a
+  later release'.
+  
+  New controls block below the events grid:
+    - HH:MM time picker (input type=time) bound to
+      notifications.daily_summary.time
+    - 'Send test summary' button that POSTs to the new test endpoint
+    - Live preview pane showing the composed message text whenever
+      the test button is used \u2014 even if the notification was
+      suppressed (quiet hours, rate limit) so users see what the
+      notification would have looked like
+  
+  Explanatory paragraph: 'A digest of the last 24 hours \u2014 aircraft
+  totals, peak moment, any new all-time records, any named special
+  sightings...'
+
+New endpoint
+  POST /api/notifications/daily-summary/test
+  Gathers data for the last 24h, composes message, sends via the
+  standard notify() pipeline (full gating: disabled / events / quiet
+  hours / rate limit). Returns {ok, message, title, body_preview,
+  window} so the client can render the preview even when suppressed.
+
+Tested
+  - Active day (120 aircraft, 5 military types, 12 watchlist hits,
+    2 new records, 1 special): produces rich output matching mockup
+  - Quiet day (4 aircraft, no military, no watchlist): produces
+    3-line summary with no optional sections, exactly as designed
+  - JS / Python syntax clean across all three touched files
+  - Scheduler tested manually against a synthetic DB \u2014 fire condition
+    evaluation works, state persistence works
+
+Not addressed in this release (roadmap candidates)
+  - Per-section toggles for users who want to hide specific lines.
+    Held off because nobody knows what they want hidden until they've
+    used it for a few weeks
+  - Retry on transient ntfy send failure. Current behavior: one
+    attempt, if suppressed it's suppressed, comes back tomorrow
+  - Summary history view. The most recent result lives in the state
+    file but there's no UI to browse past summaries
+
+## [2.41.34] — 2026-04-21
+
+### Added
+- Screenshot mock contract validator.
+
+Closes the loop on the v2.41.33 silent-drift bug. The /api/all mock had drifted out of sync with the real endpoint (pre-v2.40.1 shape vs post-v2.40.1 paginated contract) and the screenshot silently rendered with dashes in every cell — no error, no warning, just a broken screenshot that shipped.
+
+Added a new check_screenshot_mock_contract function to scripts/check_docs.py. Parses scripts/screenshots.py via AST, locates the payloads dict inside _build_fetch_stub, and for each mocked endpoint validates that the mock dict (or the module-level constant it points to) includes every top-level field the frontend reads from the real response.
+
+Design choice: required-fields subset validation, not full schema. The bug class this catches is 'mock missing a field the frontend reads.' Extra fields in the mock are harmless; missing fields manifest as silent undefined values in the rendered UI. Small target, high signal.
+
+Contract declared for nine endpoints, covering the critical render paths:
+  /api/ui-config  \u2192 watchlist_alerts
+  /api/stats      \u2192 groups
+  /api/live       \u2192 aircraft, last_updated
+  /api/military   \u2192 aircraft, last_updated, retention_days
+  /api/watchlist  \u2192 aircraft, last_updated, retention_days
+  /api/all        \u2192 aircraft, total_count, returned_count, offset, has_more
+  /api/status     \u2192 version
+  /api/wl_entries \u2192 entries
+  /api/config     \u2192 (intentionally empty: nested structure, shape-stable)
+  /api/perf       \u2192 (intentionally empty: OS-dependent key set)
+
+Verified: ran two drift-injection tests. Removing only total_count from the /api/all mock produces the exact warning 'missing required fields: [total_count]'. Reverting to the full pre-v2.40.1 shape (the actual v2.41.33 bug) produces a warning listing all four missing fields: has_more, offset, returned_count, total_count. In both cases, restoring the correct mock clears the warning immediately.
+
+Verbose mode (--verbose) shows per-endpoint status including two forms of skip: 'no contract declared' (new endpoint, author hasn't listed required fields) and 'contract intentionally empty' (shape is dynamic, not worth validating). Silent skip for unknown endpoints means adding a new mock doesn't auto-trigger a warning \u2014 the author explicitly opts into validation by declaring the required-fields list.
+
+The REQUIRED dict in check_docs.py is now the single source of truth for the mock-to-frontend contract. When a template starts reading a new field, add it here and the next check-docs run catches any mock that hasn't been updated.
+
+## [2.41.33] — 2026-04-21
+
+### Fixed
+- Fix screenshot-all.png contract drift — synthetic data now renders.
+
+The All-tab screenshot fixture has been silently producing dashes in every data cell since some earlier version. Reporter caught it by inspecting the shipped docs package.
+
+Root cause: contract drift between the screenshot script's mock /api/all response and the real endpoint. The real /api/all was rewritten in v2.40.1 to group by ICAO in SQL and return flat per-aircraft rows (one entry per ICAO, with a sighting_count field). The frontend then wraps each via _normalizeAllAircraft() into the legacy {latest, sightings:[]} shape the renderer expects.
+
+The screenshot script was still pre-grouping into {latest, sightings} and handing that to the mock fetch. The frontend's _normalizeAllAircraft then wrapped each pre-grouped dict AGAIN, producing {latest: {latest: {...}, sightings: [...]}, sightings: []}. The renderer looked for ac.latest.callsign and found ac.latest.latest.callsign — undefined — and every field rendered as an em-dash fallback.
+
+Secondary issue: the mock response top-level fields were stale too. Old mock returned unique_aircraft and total_sightings; real endpoint returns total_count, returned_count, offset, limit, has_more (plus the from_ts/to_ts/last_updated/retention_days it always did). Frontend reads total_count and has_more specifically; missing fields defaulted to 0/false which is why the counter showed '0' and the stats bar said 'No aircraft matched the current filter' even though the table itself was rendered with dashes.
+
+Fix:
+  1. ALL_AIRCRAFT is now a FLAT list (not pre-grouped). Entries carry sighting_count directly, matching the real endpoint's per-aircraft row shape. The frontend's _normalizeAllAircraft does the single wrap it's designed for.
+  2. Mock /api/all response now returns the v2.40.1 contract: aircraft (flat list), total_count, returned_count, offset, limit, has_more, from_ts, to_ts, last_updated, retention_days.
+  3. Raw sightings are built first (with duplicates per ICAO to simulate a busy day), then grouped down to one flat entry per ICAO with sighting_count reflecting the true row count. Some aircraft get (N) expanders in the rendered table as a result.
+  4. first_seen_at and last_seen_at fields populated since some downstream code in the frontend checks for them explicitly.
+
+Verified: screenshot-all.png now 407KB (was ~80KB of mostly empty table). Pixel sample shows 56 unique colors including cyan-text tones and the red-tinted military-row backgrounds — both of which are only present when real data is rendered. No dashes.
+
+This also strengthens the mock-vs-real contract check. An automated way to catch this kind of drift would be worth adding — maybe a check in check_docs.py that loads each screenshot mock response and validates it against a schema derived from the server route. Not doing that now — logging as roadmap.
+
+## [2.41.32] — 2026-04-21
+
+### Added
+- Tab-bar scroll arrows for offscreen-tab navigation.
+
+v2.41.31 hid the native horizontal scrollbar on tab bars because it visually competed with the active-tab underline. That was correct visually but removed the only affordance mouse-only users had for reaching tabs that overflow offscreen. Wheel / trackpad-swipe / touch-drag still worked, but users without those hardware paths had no way to navigate to the Notifications or Stats tab on a narrow viewport.
+
+This release adds chevron buttons (one at each end of the tab bar) that appear only when tabs overflow in that direction and there's content to scroll toward. Clicking scrolls by ~60% of the visible tab-bar width, animated via scroll-behavior:smooth. Arrows hide automatically when scrolled to the respective edge, so the UI never shows a button that would do nothing.
+
+Applied to three tab bars for consistency:
+  templates/config.html   (Configuration's nine tabs)
+  templates/docs.html     (Documentation viewer's eight doc tabs)
+  templates/index.html    (main app's Live / Watchlist / Military / Stats / All tabs)
+
+Each tab bar is wrapped in a new .tabs-wrap container that positions the arrow buttons absolutely at the left and right edges. The buttons have an inner shadow so the tabs appear to slide underneath them rather than bumping into a hard edge. Tab-bar scrolling is unaffected by the wrap — all existing mousewheel / trackpad / touch paths work exactly as they did.
+
+Shared helper wireTabBarArrows(wrap) attaches the click handlers and observes scroll + resize events to toggle arrow visibility. updateTabScrollArrows(wrap) does the actual math: if tabs.scrollWidth > tabs.clientWidth, there's overflow; then scrollLeft determines which end the user is at. A 2-pixel fudge prevents arrows from lingering when rounding leaves scrollLeft at 0.3 or maxScroll-0.4. Idempotent via a dataset.arrowsWired flag so re-calling the helper on an already-wired wrap is a no-op beyond a visibility refresh.
+
+The Configuration page's renderAll was updated to build the new wrap structure on the slow-path render. Fast path (tab switches) still operates on the existing inner .tabs and never touches the wrap, so scrollLeft is preserved across tab clicks. No regression to v2.41.30's scroll-preservation fix.
+
+Main app index.html has one wrinkle: the Stats tab toggles display:none based on stats.enabled config. When that toggles, the tab bar's total width changes, which can cross the overflow threshold. The stats-config loader now calls updateTabScrollArrows on the wrap after toggling the Stats tab so arrows reflect the new state.
+
+Tested via headless Playwright harness: at a 400px viewport with nine tabs, scroll state transitions correctly through (start, mid, end, back-to-start), and arrows hide exactly at each edge. Visibility flags flip cleanly in response to every scroll event. No console errors, no pointer-event interference with the tab buttons themselves.
+
+The shared helper is duplicated across the three templates rather than factored into a shared JS file because each template is served as a self-contained HTML document with its own script context — same pattern already used for alertModal, loadVersion, and other small utilities. Keep the three copies in sync when updating.
+
+## [2.41.31] — 2026-04-21
+
+### Fixed
+- Hide the native horizontal scrollbar on tab bars.
+
+On narrow viewports the Configuration, Documentation, and main-app tab bars overflow-x:auto, which renders a browser-native scrollbar at the bottom of each bar. The scrollbar sat between the container's 1px gray bottom border and the active tab's 2px cyan border-bottom underline, producing a visible extra horizontal rule that read like a second, faded underline floating just above the real one. User flagged it as distracting on the Configuration tab, visible in their screenshot.
+
+Fix: suppress the native scrollbar visually while keeping the overflow-x:auto scrolling behaviour. Users can still scroll the tabs by mousewheel, trackpad swipe, touch drag, or keyboard navigation \u2014 only the visible bar is hidden. Applied to three templates for consistency:
+  templates/config.html   (Configuration's nine-tab bar)
+  templates/docs.html     (Documentation viewer's doc-source tabs)
+  templates/index.html    (main app's Live / Watchlist / Military / Stats / All tabs)
+
+The main app tabs rarely overflow (only 5 tabs), but the CSS still applies if anyone ever resizes narrow enough to trigger it. Consistency across the three locations means the visual language is uniform \u2014 tabs as a family look the same regardless of which page you're on.
+
+Firefox uses scrollbar-width:none, WebKit/Chromium uses ::-webkit-scrollbar { display:none }. Both rules are applied together so every modern browser gets the effect. No JavaScript changes. No behaviour changes beyond the visual \u2014 scroll still works everywhere it worked before.
+
+Tested JS syntax clean on all three templates (no JS touched \u2014 CSS-only change). PII sweep clean. Screenshot and drift detector expected to pass on the standard refresh cycle.
+
+## [2.41.30] — 2026-04-21
+
+### Fixed
+- Configuration tab scroll \u2014 stop rebuilding the tab bar.
+
+v2.41.29 tried to fix the scroll-reset bug by calling scrollIntoView after the innerHTML rebuild. Reporter confirmed the fix was still visibly distracting: the scroll bar shoots all the way to the left, then animates back to the clicked tab. Any tab left of what the user scrolled to had a smooth transition, but tabs to the right produced the flicker. Two wrong choices in one release.
+
+Correct fix: don't rebuild the tab bar DOM at all after the first render. The tab bar structure depends only on a constant TABS array \u2014 it doesn't change based on runtime state, so there's no reason to recreate it every renderAll(). Toggle the .on class on existing buttons in place, then clear only the content below the tab bar and append the new section HTML. The tab bar DOM (including scrollLeft) is never touched, so there's no reset to recover from and no scrollIntoView to animate. Click a tab at the right edge, the .on indicator moves to that button without any visible scroll motion on the bar itself \u2014 the only thing that changes on screen is the main panel below.
+
+Dirty-indicator handling was already correct via updateSaveBar(), which iterates existing buttons and toggles .dirty class in place without touching DOM structure. That same pattern is now applied to .on.
+
+Tested with a headless Playwright harness. Scrolled the tab bar 521px to the right, clicked the last tab, measured scrollLeft after: preserved exactly 521px. Active class flipped correctly. Panel content updated correctly.
+
+No CSS changes, no other files touched. One function in templates/config.html restructured. The scrollIntoView call added in v2.41.29 is gone \u2014 no longer needed because nothing scrolls that would need to be scrolled back.
+
+## [2.41.29] — 2026-04-21
+
+### Fixed
+- Configuration tab bar scroll-reset fix on narrow viewports.
+
+On narrow screens the Configuration page's tab bar (Receiver / Web server / Retention / Database / Logging / Military / Watchlist alerts / Stats / Notifications) scrolls horizontally via overflow-x:auto because all tabs don't fit side-by-side. Users scrolling right to pick a tab near the end would click it, and the tab bar would snap back to the far left — the newly-active tab jumped offscreen and the user couldn't see which tab was selected.
+
+Root cause was renderAll()'s blanket innerHTML rewrite. Every tab switch rebuilt the entire .tabs container's HTML from scratch, which resets scrollLeft to 0 as a side effect. Users who'd scrolled right to click a tab effectively got their viewport yanked back to the leftmost edge after every click.
+
+Fix: after the innerHTML rewrite, scroll the newly-active tab button into view using element.scrollIntoView({block:'nearest', inline:'nearest'}). 'nearest' is the key — it only scrolls if the target isn't already visible and picks the minimum scroll distance, so tabs that are already visible don't move. Smooth behaviour so the adjustment is visible rather than abrupt.
+
+The fix also attaches a data-tab-id attribute to each tab button so the scroll-into-view lookup can find the active one by ID rather than by DOM position \u2014 survives any future tab reordering without a code change.
+
+Scope: one function in templates/config.html, ~10 new lines. No other files touched. No other pages have this bug because none of them have a scrollable tab bar (the Documentation viewer's TOC scrolls the page body, not a tab row).
+
+Also noting for the record: the related 'sweep redundant Back to tracker buttons across sub-pages' roadmap item turned out to be zero-work \u2014 audit showed the Performance page was the only sub-page that ever had one, and it was removed in v2.41.27. Other sub-pages (status, logs, config, docs, updates) only have the header logo linking home, which is the correct pattern.
+
+## [2.41.28] — 2026-04-21
+
+### Fixed
+- Fix 'View all in All tab' footer link on every drill panel.
+
+The link at the bottom-right of every drill panel (Extremes, Today, Composition full-list, row-level panels) was an <a href=# onclick=...> that relied on preventDefault cancelling the default navigation. In practice, clicking the link did nothing visible \u2014 the page appeared to scroll to the top-of-document anchor instead of switching to the All tab with the filtered view.
+
+Root cause was the fragile <a href=# onclick=preventDefault()> pattern. If anything in the onclick handler threw (or if the handler was delayed for any reason), the href=# kicks in and the browser navigates to the page top. For any user seeing the bug, the onclick wasn't producing the intended navigation \u2014 and there was no console error because a silently-swallowed preventDefault just lets the default path run.
+
+Replaced with <button type=button onclick=safeJumpToAllTab(...)>. Buttons don't have a default navigation action, so there's nothing to cancel. No href. No 'preventDefault or else' fragility. The 'link' appearance is preserved via CSS resets on the button element (background:none, border:none, padding:0, font:inherit, cursor:pointer).
+
+Also added a safeJumpToAllTab() wrapper that calls jumpToAllTab() inside a try/catch. If any helper in the navigation chain (go, setPreset, fetchAll) throws \u2014 whether today or in the future \u2014 the error logs to the console instead of silently breaking navigation. This is defensive: I don't currently know which helper was throwing (if any) to produce the observed behaviour on the reporter's install, but the wrapper ensures future breakage surfaces instead of hides.
+
+Scope: every drill panel footer in Stats. Both the Option C full-width panels (Extremes, Today, Composition full-list, row-level drills) and the legacy inline drill path. Two callsites changed, two CSS rules gain button-reset properties, one new safeJumpToAllTab wrapper function.
+
+Tested. JS node check clean. Headless click test against an isolated repro of the onclick pattern confirmed the expected behaviour: preventDefault does its job and URL doesn't change. The real-world failure must involve an exception in one of the helpers or some interaction we can't isolate \u2014 the button+try/catch approach sidesteps both possibilities.
+
+## [2.41.27] — 2026-04-21
+
+### Changed
+- Align diagnostic-page toolbars for consistency.
+
+Performance and Watchlist diagnostic pages had visibly different toolbars. Same page type — troubleshooting diagnostic — but the buttons read differently and behaved differently: Performance auto-ran on page load and its button read 'Run diagnostic again', Watchlist required a click to start and its button read 'Run diagnostic'. Copy button was 'Copy diagnostic report' on Performance and 'Copy report' on Watchlist. Performance had a 'Back to tracker' button; Watchlist did not.
+
+Normalized to a single pattern for both pages:
+  [Run diagnostic]    \u2190 label before first run
+  [Run diagnostic again]  \u2190 label after first run (or auto-run)
+  [Copy diagnostic report]
+  [\u2190 Back to Diagnostics]
+
+The Watchlist page now auto-runs on DOMContentLoaded, matching the Performance pattern. The three fetches it triggers (/api/status for version, /api/ui-config for watchlist_alerts config, /api/watchlist for server state) are cheap and someone who lands on the diagnostic page almost always intends to run it immediately. The button label flips to 'Run diagnostic again' after the first auto-run completes, and the first-run empty-state ('Click Run diagnostic above...') is replaced with a 'Collecting state\u2026' loading indicator since that's what the user will actually see on arrival.
+
+Dropped the 'Back to tracker' button from the Performance page. The header logo in every sub-page template already links back to /, so the button was redundant \u2014 matched the pattern used on the Watchlist diagnostic and every other sub-page. This is a scoped subset of the 'remove redundant Back to tracker buttons everywhere' task that's still on the list; this release only touches Performance to achieve parity with Watchlist. Full sweep across status / logs / config / docs / updates is still pending.
+
+Tested. JS syntax clean on both templates. No schema changes, no new endpoints. Visual parity between the two diagnostic pages when rendered.
+
+## [2.41.26] — 2026-04-21
+
+### Fixed
+- Watchlist diagnostic: soften stale-dismissal-key verdict.
+
+v2.41.25 shipped the watchlist diagnostic with a BAD verdict for the 'dismissal key doesn't match computed key' case, guiding users toward 'likely a collector bug.' First real-world use (on my own install) showed that verdict was too confident — the same data pattern (stale key + recent sightings) can equally mean 'broad watchlist rule matching continuously in busy airspace,' which is working-as-designed rather than a bug.
+
+Replaced the BAD verdict with WARN and rewrote the text to be honest about what the diagnostic can and can't distinguish from the captured data alone. The new text:
+  1. Quantifies the staleness (e.g. 'stale by 114 seconds') by parsing the timestamps out of both keys, so the user sees exactly how far the gap is before reading the rest of the interpretation.
+  2. Explains both possible causes neutrally: a real newer sighting (expected) vs. a phantom collector sighting (bug).
+  3. Gives the user a concrete way to tell the two apart: check the Live tab. If live watchlist aircraft are transmitting, the staleness is real; if not and secondsSinceLatest stays small on re-runs, that's the collector-bug pattern.
+  4. Adds a third possibility that the original verdict missed entirely: a watchlist rule so broad it matches too many aircraft to practically dismiss. Example in the text is the substring 'airbus' matching every Airbus A3xx / B7xx description field in a commercial corridor. For that case the fix isn't a code change, it's narrowing the rule or switching to 'live' trigger mode.
+
+The underlying data the diagnostic captures is unchanged — raw report section is accurate and complete. This release only adjusts the interpretation card's wording. Also fixes a subtle dishonesty in the previous version: by confidently labelling one scenario 'BAD,' the diagnostic was making recommendations it couldn't actually justify from its input data. A diagnostic that confidently points at a non-existent bug is worse than one that says 'here are the facts, here's how to interpret them.'
+
+Tested JS syntax clean. No new endpoints, no schema changes, no functional changes beyond the verdict-text substitution.
+
+## [2.41.25] — 2026-04-21
+
+### Fixed
+- Watchlist diagnostic wrong-endpoint and copy-fallback fixes.
+
+The v2.41.23 watchlist-alert diagnostic had three real bugs surfaced by the first real-world test on my Denver install. None of them crashed the page — they just produced wrong data or degraded UX silently, which for a diagnostic tool is arguably worse than crashing.
+
+Wrong config endpoint. The diagnostic fetched /api/config/ui, which does not exist and 404'd. Every Aerodrome install uses /api/ui-config (note the hyphen, not slash) — I guessed wrong when writing the diagnostic and never tested it against a running server. Because the fetch silently 404'd, data.config.enabled was undefined, which the prediction logic treated as falsy and therefore 'disabled.' The result was a confident INFO verdict: 'Alerts are disabled in Configuration' — in a test where alerts were actually enabled and visibly checked in the Configuration UI. This was actively misleading: a diagnostic producing false verdicts is worse than no diagnostic. Fixed by pointing at the correct endpoint. Also hardened the prediction and interpretation paths to distinguish 'config unreachable' from 'config says disabled' — the diagnostic now surfaces a BAD verdict when the config endpoint fails, rather than laundering the failure through a confident-sounding INFO.
+
+Wrong version endpoint. Same story, smaller impact: I fetched /api/version which does not exist. Every other page in the app reads the version from /api/status. The report header showed 'Aerodrome version: ?' because the fetch failed. Fixed by pointing at /api/status, matching the pattern used everywhere else.
+
+Copy-report didn't match the Performance page. Performance has a three-tier fallback: modern Clipboard API (HTTPS/localhost only), execCommand via hidden textarea (works on HTTP LAN installs), dismissible modal with selectable pre (always works). My watchlist diagnostic only had two tiers — Clipboard API and 'select the on-page text, press Ctrl/Cmd+C.' For users on an HTTP LAN install (which is almost everyone running Aerodrome on a Pi or home server), the modern API's secure-context check fails and the fallback immediately kicked in. Result: click Copy report, nothing copies, user has to manually Ctrl+C a pre-selected text block. Ported the exact three-tier pattern from performance.html so behavior is identical.
+
+The first real-world test also confirmed something useful: dismissal keys match correctly on a working install, the pulse logic is doing what it should, and the diagnostic's raw data section (localStorage, server state, evaluation) is accurate even when the bugs above corrupted the config and version sections. The report is still signal-rich; it was just poisoned by two wrong endpoint names and one missing fallback tier.
+
+Tested. JS syntax clean on both templates. No literal backslash-u escapes remaining in HTML-text positions (v2.41.24 lesson stuck). Diagnostic produces correct output against a running local server via the right endpoints.
+
+## [2.41.24] — 2026-04-21
+
+### Fixed
+- Hotfix — fix broken unicode escapes rendering as literal text on the new /diagnostics pages.
+
+v2.41.23's new Diagnostics hub and Watchlist-alert diagnostic pages had multiple Unicode escape sequences (arrows, em-dashes, curly quotes, ellipses) that were written into the HTML source as the literal 7-character strings backslash-u-2190 etc., rather than the actual Unicode characters they represent. HTML does not interpret backslash-u escapes, so these rendered visibly to the user — for example, the 'Back to Diagnostics' button on the watchlist diagnostic page showed 'backslash u 2 1 9 0 Back to Diagnostics' literally. The same error affected interpretation-card text, ellipses in loading messages, and the right-arrow on the hub's 'Open X' buttons.
+
+Root cause was my editor pipeline double-escaping these characters during file creation, producing a literal backslash in the file where a real Unicode character was intended. Fixed by replacing every literal backslash-u sequence in the two new templates with the actual Unicode character (em dash, left arrow, right arrow, ellipsis, right single quote). The sequences that live inside JavaScript string literals (e.g. 'isn’t') now correctly render in the DOM because they're real characters, not escape sequences being passed through.
+
+Scope is strictly the two new templates from v2.41.23:
+  templates/diagnostics.html          (4 broken escapes fixed)
+  templates/diagnostics-watchlist.html (12 broken escapes fixed)
+
+No other files affected. No logic changes. No new content. Just character substitution. Anyone who already deployed v2.41.23 will see the glitched text; applying v2.41.24 fixes it.
+
+Tested. node --check clean on both templates after the substitution. Grep for remaining backslash-u sequences in HTML-content positions: zero. The fix pattern is purely textual.
+
+Also took the opportunity to verify the bump-message text itself doesn't contribute to the bug. The CHANGELOG parser handles Unicode correctly — it's the file-creation path that was wrong.
+
+## [2.41.23] — 2026-04-21
+
+### Added
+- Diagnostics hub + automated watchlist-alert diagnostic.
+
+Pi user reported the orange Watchlist-tab pulse kept coming back after refresh even with no live watchlist aircraft. Rather than iterate over chat snippets to diagnose the state, this release ships a client-side diagnostic he can run himself and paste the output. It captures every input to the evaluateWatchlistAlert() decision \u2014 config values, localStorage wa-* keys, /api/watchlist summary, evaluation of all four trigger modes \u2014 and formats it into a single copyable text block. An Interpretation card above the raw report produces plain-English verdicts (OK / WARN / BAD / INFO) for the common bug patterns so the user or reader gets the shape of the problem without reading the whole blob.
+
+The diagnostic is structured as one of several tools under a new /diagnostics hub page. The hub is a registry-driven card grid \u2014 each diagnostic declares a title, description, when-to-use sentence, and a destination URL. Performance (previously at /performance with its own gear-menu entry) is now registered as one of the two diagnostics on the hub; the /performance page itself is unchanged. The gear menu in every template's header is updated: the Performance link is replaced with a Diagnostics link pointing at the hub. Existing deep-links to /performance still work \u2014 no redirect, no breaking change.
+
+Adding a new diagnostic later is a four-step pattern documented in the hub page's JavaScript: append an entry to the DIAGNOSTICS array, create a template for report-style diagnostics (or point at an existing dashboard URL for page-style ones), register a route in server.py, refresh screenshots. The registry is deliberately client-side \u2014 the server doesn't enumerate diagnostics, it just serves the templates and the data APIs \u2014 so future client-side-only diagnostics never need backend touches.
+
+The watchlist diagnostic's structured data:
+  Environment: Aerodrome version, clock (unix + ISO + local + timezone), user agent, page path.
+  Configuration: enabled/trigger/effect/color from /api/config/ui's watchlist_alerts block.
+  Client state: every localStorage key starting with 'wa-', with its value.
+  Server state: /api/watchlist summary \u2014 aircraft count, retention days, earliest / latest seen_at, seconds since latest, first 10 per-aircraft breakdown (icao, callsign, seen_at ISO, label).
+  Evaluation: computed dismissal key ('wa-dismissed-{latestSeenAt}'), stored dismissal key from localStorage, whether they match, predicted outcome for each of the four trigger modes given the captured state.
+
+The interpretation heuristics cover: alerts disabled in config (INFO), no watchlist sightings in retention (INFO, with hint to hard-refresh if a ghost pulse is visible), trigger=new with no dismissal key (WARN, 'expected first-time behaviour'), trigger=new with a stale dismissal key (BAD, 'either a newer sighting arrived as intended, or the collector is generating spurious sightings \u2014 check secondsSinceLatest and the Live tab'), trigger=new with a matching key (OK, 'pulse should not fire; if it does, the classList code is buggy not the dismissal logic'), trigger=live (INFO, 'this diagnostic doesn\u2019t capture D.live, check the Live tab alongside the report'), and a sanity check on the version string format. Good enough to guide most conversations without obscuring the raw data.
+
+Copy-to-clipboard works via navigator.clipboard when available; falls back to text selection with a 'press Ctrl/Cmd+C' hint when the clipboard API is unavailable (older browsers, non-HTTPS contexts). Same fallback pattern the Performance diagnostic uses.
+
+Back-navigation is breadcrumb-style on the watchlist diagnostic ('Diagnostics / Watchlist alert' at the top, 'Back to Diagnostics' button in the toolbar) and button-style on the Performance page ('Back to Diagnostics' added next to the existing 'Back to tracker' button). The existing Performance page gets the new back-link but is otherwise untouched \u2014 no changes to the diagnostic itself, the /api/perf/diagnostics endpoint, or the report format.
+
+Screenshots: two new renderers in scripts/screenshots.py capture the hub page and the populated watchlist-diagnostic detail page (the screenshot harness fires runDiagnostic() programmatically so the captured state shows the Interpretation card and the formatted report, which is the meaningful view of the page).
+
+Tested. Server Python ast.parse clean. JS node --check clean across index.html, performance.html, diagnostics.html, diagnostics-watchlist.html. Python screenshots.py ast.parse clean. No schema changes. No new endpoints beyond the two HTML-page routes. No sudoers touch. All existing bookmarks and deep-links continue to work \u2014 the hub is additive, not a redirect.
+
+Risk: fully additive UI change. Worst-case rollback is v2.41.22 where the gear menu says Performance and there's no hub or watchlist diagnostic; both pages are reachable only by the /performance URL directly.
+
+## [2.41.22] — 2026-04-21
+
+### Added
+- Composition full-list drill across all four Top 5 cards. The Composition section's four cards \u2014 Top 5 aircraft types, Top 5 operators, Military branches, Category mix \u2014 each now pick up a chevron in the top-right corner matching the Extremes and Today cards. Clicking the card body (anywhere that isn't a specific row) opens a full-width Option C panel showing the complete distribution: for Top 5 Operators that means all 47-ish operators with aircraft count, total sightings, top aircraft type, and first/last seen per operator; for Top 5 Aircraft Types it's the same shape keyed by type code. Military and Category cards get the chevron too for consistency, even though their full list is usually fully shown on the card face already \u2014 the panel just says 'Showing all N branches' or 'Showing all N categories' without surprise.
+
+This sits between the card face and the existing per-aircraft drill as a new middle layer. Card face: top 5 at a glance. Card-body click: full aggregate distribution. Row click (either on the card or in the aggregate panel): per-aircraft detail for that specific operator/type/branch/category. Three levels of zoom, each one click from the previous.
+
+Backend: four new drill-endpoint card handlers \u2014 all_operators, all_types, all_military_branches, all_category_mix. Each returns one row per dimension value (not per aircraft) with a consistent shape: primary key (operator / aircraft_type / branch / category), aircraft_count (distinct ICAO count, primary metric), sightings (total contact count), plus dimension-specific context (top_type for operators, top_operator for types). Friendly names attached when known via airline_name()/aircraft_type_name(). First_seen and last_seen span the day. All four share the v2.41.17 drill-endpoint infrastructure \u2014 the row-cap and enrichment block silently skip aggregate rows because they don't have an icao field, so no special-case plumbing was needed in the endpoint wrapper.
+
+Classification helpers deliberately reuse what's already on disk: all_military_branches goes through _classify_branch() (the AE-hex-block heuristic), all_category_mix replicates the top-5 card's at-query-time classification verbatim so the numbers in the full panel match the card face. No new truth about what counts as 'Commercial' \u2014 that decision still lives in one place. If the top-5 card's classification logic ever moves into a shared helper, both will update together.
+
+Frontend: listCard() got an optional 7th argument allCardId. When set, the card gets a drillable class, a top-right chevron, and an onclick wired to toggleDrill(this, allCardId). Row onclicks continue to call event.stopPropagation() so they don't double-fire the card handler. DRILL_COLUMNS registers the four new card IDs with aggregate presets; DRILL_COLUMN_SETS gets operator_list, type_list, branch_list, and category_list column layouts distinct from the per-aircraft shapes \u2014 they show Code / Airline or Description / Aircraft (primary) / Sightings / Top type or operator / First seen / Last seen rather than the altitude/speed/distance/bearing columns that only make sense for individual aircraft sightings.
+
+Row click inside an aggregate panel: chainDrillAggregate() closes the current panel, finds the corresponding Top 5 card on screen, highlights the matching <li> if the clicked value is in the top 5 (so the user sees the visual connection), and opens the existing row-drill panel with the clicked value as the filter. For values that aren't in the top 5, the highlight step silently no-ops and the row-drill opens normally \u2014 a user clicking 'JBU' in the all_operators panel gets the United/Delta-style per-aircraft drill for JBU even though JetBlue isn't one of the top 5 displayed on the Top 5 Operators card.
+
+Single-panel policy carries through. Opening an aggregate panel closes any open extremes or row-drill panel; chain-drilling from an aggregate row closes the aggregate panel before opening the row-drill. Esc closes whichever panel is on screen. The drill-source and drill-source-row marker classes are cleared on close regardless of which combination of panels are involved.
+
+Footer copy differs for aggregates: 'Showing all 47 operators' when everything fits, 'Showing top 25 of 60 aircraft types' when capped. No more 'N aircraft' label for aggregate panels where the rows aren't individual planes.
+
+Tested: four-handler fixture test against a 12-aircraft synthetic DB with correct results for UAL (4), DAL (3), SKW (1), Military (2), General Aviation (2), Commercial (8). Prefix-parser correctly rejects N-numbers so GA callsigns don't leak into the operator aggregate. JS syntax clean, Python ast.parse clean. No schema changes, no sudoers bump, no new endpoints \u2014 the new cards are card-ID values on the existing /api/stats/drill endpoint.
+
+Risk: fully additive. Four existing cards gain a chevron and a new whole-card drill path but their existing row-click behavior is unchanged. The renderer's aggregate-row code path doesn't fire unless a preset in the aggregatePresets set is active, so the per-aircraft drills keep their existing rendering exactly. Worst-case rollback is v2.41.21 where the Composition cards don't have the chevron and the full-list view doesn't exist.
+
+## [2.41.21] — 2026-04-20
+
+### Fixed
+- Three fixes bundled + one packaging bug quietly resolved.
+
+All-tab page-size UX. The feedback was: scroll to bottom, change page size, have to scroll back up to see anything happen. Moved the Rows dropdown from the bottom load-more bar to the top controls bar alongside search and date-range, so changing it no longer requires scrolling away from the table. Replaced the list-collapse-and-Loading-row behaviour with an overlay spinner that hovers over the existing table during a refresh \u2014 page height stays stable, scroll position stays reasonable. After a page-size change specifically the table auto-scrolls to the top so the newly-loaded rows start at row 1, and a brief toast ("Loaded N of TOTAL aircraft") confirms what happened. The overlay has a 120ms minimum display time so cache-fast fetches don't flicker it. The overlay label changes from generic "Loading aircraft..." to size-specific "Loading 1,000 rows..." when a page-size change triggered the fetch, giving clearer in-flight feedback. Error path narrowed so the in-tbody error message only shows when the table was empty to begin with (first-ever load failed); otherwise the overlay shows "Failed: <reason>" briefly before fading, leaving the previous table state visible for context.
+
+Docs viewer TOC anchors. The in-app Documentation viewer's custom markdown renderer was emitting <h2>Install</h2> with no id attribute, so TOC links like [Install](#install) scrolled nowhere. Headings now get a slugified id so anchor links work across README, CHANGELOG, PERFORMANCE, CONTRIBUTING, and every other doc the viewer renders. Slugification matches GitHub's rules: lowercase, strip inline markdown formatting (backticks for code, asterisks and tildes for emphasis / strikethrough, link syntax), collapse non-alphanumeric runs to single hyphens, trim edge hyphens, de-duplicate via -1/-2 suffixes within a document. Underscores are deliberately preserved (GitHub's behaviour) so identifier-style headings like snake_case_name produce readable slugs. A module-level _seenSlugs counter resets at the top of every renderMarkdown call; recursive renders (blockquotes) opt out of the reset via an options flag so nested headings still get unique ids relative to their outer document. Ten-case Node harness verifies: plain text, numbered sections, inline code, bold emphasis, strikethrough, duplicate headings (-1 suffix), and counter reset across separate documents.
+
+k24han acknowledgement. New Early-access testers subsection in README.md crediting the Pi user whose v2.41.11 and v2.41.19 diagnostic reports drove the query-planner investigation and the rollup groundwork for v2.42.
+
+Packaging fix. The release zips built between v2.41.15 and v2.41.20 were all missing the update/ folder because the packaging pipeline used  to clean up before zipping \u2014 intended to drop the scratch staging folder but also killed update/UPDATE_README.md, the file the Documentation viewer's Updates tab reads. On a fresh install of any of those releases, the Updates tab rendered a red "HTTP 404" box in place of the staging-folder doc. The fix is simple: only strip .backups, leave update/ alone. The v2.41.21 zip self-heals this for anyone on an affected install because the apply flow's refresh step drops UPDATE_README.md in place as part of applying this release.
+
+Packaging-fix-forever. Added a new DOC_FILES consistency check to scripts/check_docs.py. It parses the DOC_FILES mapping from server.py, walks every declared path, and warns if any are absent from the source tree. Runs on every bump-version.sh invocation. Had this check existed during the v2.41.15-v2.41.20 window, the missing UPDATE_README.md would have surfaced on the very first bump instead of quietly shipping to users. Check output scoped to source-tree assertions \u2014 packaging step is still the only place a zip can go wrong, but the check catches the single case where a file listed in DOC_FILES isn't in the tree to begin with.
+
+Tested. All JS syntax validated via node --check across both templates; Python ast.parse on server.py; slugifier smoke-tested against a ten-heading synthetic document with duplicate / underscore / emphasis / strikethrough / numbered edge cases. No schema changes, no sudoers changes, no endpoint signature changes.
+
+## [2.41.20] — 2026-04-20
+
+### Fixed
+- Fix install.sh losing its execute bit after a web-UI apply \u2014 and stop the Updates-page sudoers banner from implicitly recommending a command users might not know how to run.
+
+This was caught watching over the shoulder of a new user: after applying a release via the Updates drop zone, the user saw the sudoers-refresh banner and reasonably tried the most natural thing, './install.sh', which failed with 'permission denied'. The banner's own instruction uses 'sudo bash install.sh' which does work, but you have to read carefully enough to notice that it says 'bash' and not just the raw path \u2014 and new users don't necessarily know that 'sudo bash script.sh' is equivalent to 'sudo chmod +x && sudo ./script.sh'. The friction was invisible unless you were watching.
+
+Three fixes at three different layers so this class of bug can't come back easily:
+
+server.py \u2014 apply_local_update. After copying files from update/ over the install root, walk the install dir and restore +x on every *.sh file. Idempotent (chmod | 0o111 is a no-op if the bit is already set), defensive (covers any future .sh we add), and non-fatal on failure (logged but doesn't abort the update). The surrounding logic about backup / rollback / pip-install stays exactly as it was. Why this matters: Python's zipfile module doesn't reliably preserve POSIX permissions across platforms, and even when it does, the release-packaging step may have zipped a file that was 0644 to begin with. Either way, the user lands on an install with dead scripts and a scary error message. This fix catches the last mile: by the time the service restarts, install.sh is always executable regardless of how it got there.
+
+install.sh + uninstall.sh. Actually marked executable in the source tree. This was the root cause of the release zips containing non-executable scripts \u2014 bump-version.sh had +x so it rode along correctly, but install.sh and uninstall.sh were 0644 in my working directory and stayed 0644 through every release. From now on the scripts ship executable from the zip. Combined with the apply-side chmod, there are now two independent layers defending against this.
+
+templates/updates.html. The sudoers-refresh banner now includes a small note below the 'sudo bash install.sh' command: 'Use the full sudo bash form above \u2014 it works whether or not install.sh is marked executable.' Tiny, unobtrusive, but it short-circuits the reflex to try './install.sh' first. For users who already know the shell well the note is a no-op; for new users it's the missing piece of context.
+
+README.md install section 4. Added an 'Alternatively' bullet to the existing chmod note explaining that 'sudo bash install.sh' skips the chmod step entirely. Both forms are correct \u2014 this just makes it explicit so a user can pick whichever they prefer.
+
+What's NOT changed. The install script itself, the sudoers template, the update-apply backup/rollback flow, any API endpoint signatures \u2014 all untouched. This release is purely about making install.sh actually be executable after an apply, and making the docs clearer about what to run when. Nothing here should change the behaviour of a running Aerodrome in any way; the chmod step only runs during the apply flow.
+
+## [2.41.19] — 2026-04-20
+
+### Changed
+- Option C drill panels extended to the rest of the Stats tab. Today, Composition, and Patterns cards now use the full-width panel rendering from v2.41.18 instead of the cramped inline layout, so every drill-down reads the same way and has room for the real data.
+
+The v2.41.18 release shipped the Option C layout but scoped it to the six Todays Extremes cards only. The rest of the drillable Stats cards kept the old behaviour \u2014 Today volume counters opened an inline panel inside one card (narrow, column-truncated), and Composition/Patterns row clicks opened a tiny nested <li> under the clicked row (showed ~5 columns, only the first two fully legible). Both of those looked exactly like the original problem the redesign was meant to solve.
+
+This release migrates nine more cards to the same presentation language, without touching the backend. The v2.41.17 enrichment block runs on every drill query, so the Today and Composition drill rows already carry altitude / speed / lat / lon / distance / bearing, ready to render. This is a pure frontend change: new column-set presets and a refactored row-drill handler.
+
+Whole-card drills (Today section). Added preset entries for unique_today, military_today, watchlist_hits, and peak_simultaneous in DRILL_COLUMNS. Routing in toggleDrill already sends presets to toggleDrillOptionC, so the moment those cards pick up a preset they get the full-width treatment for free. Columns for the hits preset: rank, callsign, ICAO, type, hits (primary), altitude, speed, distance, bearing, first seen. The watchlist_hits card uses hits_watchlist which also surfaces the watchlist label (Friends Cessna, Any Cirrus) next to the callsign. peak_simultaneous uses its own preset because its metric is noise (seconds from the peak moment); the primary column there is distance since youre looking at which aircraft were near the receiver at the peak.
+
+Row drills (Composition + Patterns sections). Rewrote toggleRowDrill to branch on DRILL_COLUMNS[cardId].rowPreset. When set, the click routes to a new toggleRowDrillOptionC that inserts the drill panel as a .drill-panel-row sibling at the .stats-grid level (grid-column: 1 / -1, same as the whole-card drills). Cards without a rowPreset fall through to the legacy inline handler, kept around so unknown cards dont no-op silently. All five existing row-drill cards \u2014 top_types, top_operators, military_branches, category_mix, watchlist_frequency \u2014 have rowPreset set, so in practice the legacy path is dead code as of this release.
+
+Single-panel policy extends across both modes. Clicking a Composition row closes any open Extremes panel; clicking a Today card closes an open Composition drill; Esc closes whichever is open. Makes the mental model one-panel-at-a-time across the whole Stats tab.
+
+Header format differs between the two modes. Whole-card: Furthest aircraft \u00b7 top 25 of 1,019. Row-drill: Operator \u00b7 UAL \u2014 United Airlines \u00b7 39 aircraft. The row-drill label comes from DRILL_COLUMNS[cardId].rowContextLabel (Operator, Aircraft type, Branch, Category, Watchlist entry). The displayed value is the full row name (DAL \u2014 Delta Air Lines) but the raw drill filter is still the ICAO code (DAL) so backend filtering works as before.
+
+View all in All tab deep-link improved for row drills. Previously the link cleared the All-tab search box and showed the whole day. Now, when the drill came from a row click, the All-tab search is pre-populated with the raw row value (DAL, UAL, A321) so the All tab opens pre-filtered to that specific value. Whole-card drills still clear the search since theres no obvious filter value for them.
+
+DOM + visual anchoring. Source card gets the drill-source class (2px cyan border) as before. Source row inside a list card gets a new drill-source-row class \u2014 same cyan tint and rotated chevron as the old .expanded state, but named separately so the legacy inline path and the new Option C path can coexist without colliding on CSS state. Closing the panel clears both classes plus the drill-source-row marker via closeOptionCDrill().
+
+Stale fetch guard carried over. If a user clicks row A, then row B, then row C in quick succession, only the last-clicked one renders. toggleRowDrillOptionC checks panel.parentElement after awaiting the fetch and bails if the panel was replaced.
+
+Backend not touched. The v2.41.17 drill enrichment already caps at 25 rows and emits altitude/speed/distance/bearing/etc. for every drill card, including the row-filtered ones. Verified against a fixture database before this release: a top_operators drill on UAL returned 5 aircraft, each with altitude, speed, lat, lon, distance (45.5 mi), and bearing (SE 145\u00b0) populated exactly like the extremes drills. No server changes, no schema changes, no sudoers changes, no new endpoints.
+
+Risk assessment. Fully additive except that toggleRowDrill internals changed, so any external code that called it directly (theres none in the codebase) would see the new branching. The legacy toggleRowDrillLegacy path is intentionally preserved to keep the old row-drill-panel / renderRowDrillTable code paths alive. Worst-case rollback is v2.41.18 where the extremes cards still work and the others revert to inline drills.
+
+## [2.41.18] — 2026-04-20
+
+### Added
+- Full-width drill panel on the Today's Extremes cards \u2014 phase 2 of 2 (frontend).
+
+Ships the UI side of the Option C drill panel we agreed on three turns back. The 'Today's Extremes' cards (furthest / highest / lowest / fastest / slowest / longest track) now open a proper 9-column table below the card row when clicked, instead of trying to squeeze a table into one card's narrow column and showing only # and AIRCRAFT.
+
+What the user sees. Click any of the six cards and a cyan-bordered panel animates in below the whole row of cards, spanning the full width of the grid. Columns: rank, callsign, ICAO, type, plus the card's primary metric (distance for furthest, altitude for highest/lowest, speed for fastest/slowest, duration for longest track) highlighted in cyan, plus every other contextual column \u2014 distance, bearing, altitude, speed, time \u2014 so you get the full picture of each aircraft without opening anything else. The card that owns the panel gets a thicker cyan border so the visual connection is clear. Click the card again to collapse, click a different card to swap, press Esc to close. The header shows 'Furthest aircraft \u00b7 top 25 of 1,019' and the footer includes a 'View all in All tab' link that carries the existing deep-link behaviour.
+
+DOM approach. The panel is inserted as a direct child of the parent .stats-grid rather than nested inside the clicked card. Because .stats-grid is a CSS grid with auto-fill columns, setting grid-column: 1 / -1 on the panel tells the grid to give it the full row. No absolute positioning, no manual layout math, no collision with adjacent cards. Other cards don't move; they just get a new row below them for the duration of the drill.
+
+Single-panel policy. Only one Option C panel is open at a time across the whole Stats tab. Opening a new one closes the previous. Simplifies the mental model and avoids a stack of detail panels scrolling off-screen on a long Stats tab. The legacy inline drill on the list-style cards (top_types, top_operators, military_branches, category_mix, etc.) is unchanged \u2014 those are narrow string-key-counter lists where inline drill is the right fit, and they don't have a preset in DRILL_COLUMNS so the router sends them through the old path.
+
+Column presets. Added DRILL_COLUMN_SETS with four presets:
+  position (furthest): Callsign, ICAO, Type, **Distance**, Bearing, Altitude, Speed, Time
+  altitude (highest/lowest): Callsign, ICAO, Type, **Altitude**, Speed, Distance, Bearing, Time
+  speed (fastest/slowest): Callsign, ICAO, Type, **Speed**, Altitude, Distance, Bearing, Time
+  duration (longest_track): Callsign, ICAO, Type, **Duration**, Distance, Altitude, Time
+
+Each preset puts the card's primary metric first (tagged with the .primary class for cyan weighting) and includes the full context block after. Rank is always leftmost, time is always rightmost.
+
+Client-side field derivation. The v2.41.17 backend sends raw altitude / speed / distance_label / bearing_label / seen_at. The renderer computes display-ready altitude_ft ('37,000 ft'), speed_kt ('447 kt'), time_label via fmtTime(), and duration_label (from metric seconds for longest_track) so the column-set definitions stay declarative and the formatting logic is in one place. Missing values render as '\u2014' so columns still line up when a sighting lacked lat/lon or the receiver isn't location-configured.
+
+Robustness. toggleDrillOptionC guards against stale fetches: if the user clicks card A, then card B before the A fetch returns, the late-arriving A response is dropped because its panel was removed when B replaced it. Esc and the ✕ button in the header both call closeOptionCDrill() which removes the panel AND un-highlights the source card. The backend's defensive per-row enrichment from v2.41.17 means a single missing sighting can't take down the panel \u2014 it just shows '\u2014' in the affected cells.
+
+Styling. Matches the existing dark cyan-accent aesthetic: bg2 surface, cyan border, sticky table headers, 11px monospace body, cyan for primary metrics and callsigns, muted for ICAO and type. min-width:800px on the table forces horizontal scroll only when the viewport is genuinely narrow; on desktop it fits naturally. slide-in animation is 180ms so the panel appearing feels responsive but not jarring. Max height 420px with internal scroll so the panel can't push the rest of the Stats tab miles down the page.
+
+Scope. This release only touches the six extremes cards. The volume-counter drill cards (unique_today, military_today, watchlist_hits, peak_simultaneous) still use the legacy inline path because their data is already narrow (1-3 columns) and inline drill reads fine for them. If we want to migrate those too we can add presets for them in a future release \u2014 the routing is preset-driven so it's a one-line change per card.
+
+Syntax validated for both Python and JS (node --check clean on all extracted <script> blocks). Manual Playwright test of the interaction flow couldn't complete in the headless sandbox because the tab-visibility gate on /api/config didn't match my mock's shape, but the real /api/config in production sends exactly what the loader expects so the real deploy should work first time.
+
+## [2.41.17] — 2026-04-20
+
+### Changed
+- Backend enrichment for the Option C drill panel \u2014 phase 1 of 2.
+
+The Stats cards on 'Today's Extremes' (furthest / highest / lowest / fastest / slowest / longest track) drill down into a table of matching aircraft when clicked. Today that table is packed into a card-width column, so only the '#' and callsign columns are visible; the actually-useful data (distance, altitude, speed, bearing, time) is either missing from the response or hidden by horizontal truncation. This release is the backend half of the fix: widen the drill response so the top-25 rows carry every column the new UI will need. The frontend changes land in v2.41.18, next release. There is no user-visible change yet in this release \u2014 the existing card renders identically because extra JSON fields are ignored.
+
+Two new helpers inside the drill endpoint's scope:
+
+compass_bearing(lat1, lon1, lat2, lon2). Standard forward-azimuth formula \u2014 degrees from the receiver to an aircraft, normalised to [0, 360). Uses the same math style as haversine() so the two agree.
+
+compass_label(deg). Converts degrees to an 8-point compass label (N, NE, E, SE, S, SW, W, NW). Good enough for a row in a table next to the numeric degrees. 16-point would read precisely on a rose but here it's clutter.
+
+Drill-response enrichment at the shared return point. Two goals with one block:
+
+1. Cap the response to 25 rows. Previously the drill sent the full matching list (can be 1000+ aircraft on a busy receiver) even though the frontend only renders a truncated view. Add total_count so the frontend can render a 'Showing 25 of 1019' strip without ambiguity. Keep the count field for backward compatibility; it's now the number of rows actually returned.
+
+2. Enrich each top-25 row with altitude, speed, lat, lon, distance, distance_label, bearing_deg, bearing_label from the record-setting sighting. The existing handlers already produce seen_at as the exact timestamp when the aircraft set its record (fastest, highest, etc.) so we can look up the one row matching (icao, seen_at) via the idx_all_seen_icao covering index \u2014 25 indexed lookups is negligible (measured around 3\u20135ms total on the dev box's fixture DB, and this hit only happens on drill-click, not in the hot path).
+
+Why post-hoc enrichment instead of modifying each of the six drill handlers' SQL:
+
+- Keeps the SQL in those handlers untouched. Six handlers each with bespoke WITH clauses, filters, and type-aware guards \u2014 adding altitude/speed/lat/lon to every SELECT would be six parallel changes with six chances to regress.
+- Only enriches the rows the client will render. The full-list case was wasteful even before this release.
+- Isolates the new concern (presentation data) from the existing concern (ranking logic). Easier to understand, easier to roll back.
+
+distance and bearing are only emitted when the receiver location is configured. Without latitude/longitude, the frontend already hides the Distance column throughout; same principle applies here \u2014 speed and altitude still come through, they just don't get compass context.
+
+Defensive: if enrichment fails for a single row (missing sighting, bad lat/lon), the row still gets its base metric/icao/callsign fields and the drill endpoint keeps going. A bad row never takes down the panel.
+
+Tested against a fixture SQLite DB with 30 aircraft arrayed due east of a Denver receiver: total_count=30, rows returned=25, first row's bearing comes back as 86\u00b0 E (matches the E label), distance matches what the card header reports, and the no-location path correctly omits distance/bearing while keeping altitude/speed.
+
+Frontend change (v2.41.18) will be where the visibility improvement actually shows up: drill panel rendered as a full-width row below the 6-card strip instead of crammed inside one card, 9-column table, anchored to the clicked card with a cyan border + collapse chevron, and the 'View all in All tab' link jumping to the All tab with the aircraft filtered in.
+
+## [2.41.16] — 2026-04-20
+
+### Changed
+- README overhaul and an automated documentation drift detector so stale docs can't ship silently going forward.
+
+README.md. Six substantive changes that had accumulated over the last ~30 releases:
+
+Intro said 'four views' when we've had five tabs (Live / Watchlist / Military / Stats / All) since the Stats tab landed. Fixed.
+
+Table of Contents didn't link to the Performance diagnostic or the Backup and restore workflows. Added both, plus a Performance diagnostic and Backup and restore section body covering what each is, when to use it, and what ships in the zip.
+
+Features list was missing six things that actually exist: full backup/restore, performance diagnostic page, system health panel on Status, ICAO friendly names on Stats cards, drop-zone upload on the Updates page, and a more detailed description of Logs and Documentation pages. All six bullets added.
+
+Updating \u2192 Option 1 still described the rsync-then-click-Apply path as the recommended update flow. That hasn't been the recommended path since v2.41.7 shipped the drop-zone upload UI, which doesn't require SSH at all. Rewrote the steps to lead with the upload drop zone; rsync is now the secondary staging method for scripted workflows.
+
+Screenshots section was missing two major pages: Performance diagnostic and Notifications setup-guide modal. Both screenshots already existed (scripts/screenshots.py has been renderingthem since v2.41.13) \u2014 they just weren't referenced from the README. Added both with captions.
+
+Project structure tree was out of date: missing designators.py, requirements-dev.txt, docs/PERFORMANCE.md, docs/Aerodrome_Overview.pdf, templates/performance.html, scripts/build_overview_pdf.py, and scripts/check_docs.py. Updated the tree to match what actually ships.
+
+scripts/check_docs.py. New documentation drift detector. Six checks:
+
+1. Version-header drift \u2014 flags any file with '# Version: X.Y.Z' or '<!-- Version: X.Y.Z -->' that doesn't match VERSION. Catches the common failure mode where bump-version.sh adds a file to its update list but misses an older file that was supposed to be tracked.
+2. Broken README links \u2014 every local markdown link in README.md is checked for existence on disk. Catches renames and deletions that didn't propagate.
+3. Referenced-but-missing screenshots \u2014 any docs/screenshot-*.png mentioned in README that isn't in docs/. Catches the reverse problem (README references a shot that was never generated or was deleted).
+4. Project structure tree drift \u2014 top-level files present on disk that aren't in the tree, and entries in the tree that aren't on disk. Catches exactly the bug this release just fixed \u2014 a new file lands but the README tree doesn't get updated for a few releases.
+5. Stale overview PDF \u2014 if VERSION, CHANGELOG.md, README.md, or the PDF builder itself is newer than docs/Aerodrome_Overview.pdf, warns that the PDF needs rebuilding. Covers the in-place edit case where someone updates README without running the PDF builder.
+6. Stale screenshots \u2014 if a template file is newer than its corresponding screenshot, warns. Not authoritative (you might edit CSS without changing what renders), so it's advisory.
+
+Output is grouped by category with warning counts and actionable paths. Exit code is 0 regardless of warning count \u2014 drift is advisory, never blocks a release. Flag --verbose shows successful checks too.
+
+bump-version.sh. Wires check_docs.py into the tail end of every bump. Runs after the PDF rebuild so any staleness the rebuild introduces (or fails to fix) is surfaced immediately. Pass --skip-docs-drift to silence during rapid iteration. The --skip-pdf flag from v2.41.14 still works; the two flags are orthogonal.
+
+Philosophy: treat documentation like code. Both benefit from automated checks that catch obvious mistakes without being strict enough to slow down legitimate work. The checker warns when something's inconsistent but doesn't fail the build; the pipeline fixes what it can automatically (PDF rebuild, changelog injection); the remaining human judgment \u2014 does this Features bullet still describe the thing accurately? \u2014 is prompted by the minor/major checklist that's been there since v2.35-ish.
+
+Also confirmed via end-to-end test: bumping with the detector wired in produces clean output when docs are current, and correctly flags each drift category when a file is intentionally stale.
+
+## [2.41.15] — 2026-04-20
+
+### Added
+- Human-readable names for ICAO codes on the Stats composition cards.
+
+Top 5 aircraft types and Top 5 operators used to show raw ICAO designators only: 'DAL', 'UAL', 'A321', 'B738'. Anyone outside aviation looking at the Stats tab had to guess what any of those meant. Added a friendly-name lookup so they render as 'DAL \u2014 Delta Air Lines', 'A321 \u2014 Airbus A321', 'B738 \u2014 Boeing 737-800'. Codes Aerodrome doesn't recognize still display as the bare code (the prior behaviour), so nothing regresses if your airspace has unusual operators.
+
+designators.py. New module with two lookup tables: AIRLINES (92 entries \u2014 North American majors, regionals, major European/Asian/Latin American carriers, big cargo operators like FedEx and UPS, and large business-jet charter fleets like NetJets and Flexjet) and AIRCRAFT_TYPES (148 entries \u2014 the Airbus and Boeing catalogues, Embraer and Bombardier regionals, common business jets from Cessna Citation to Gulfstream, general aviation pistons, helicopters, and the military types that show up over civilian airspace). Scope is pragmatic rather than exhaustive \u2014 the ~1,700 total ICAO airline designators and several hundred aircraft type codes would bloat the package without meaningful benefit. Entries are hand-curated to cover what real ADS-B receivers actually see.
+
+Two helper functions airline_name() and aircraft_type_name() return the friendly name or None for unknown codes, so callers can pick their fallback. The tables themselves are exported for inspection or extension.
+
+Uses ICAO 3-letter airline designators (DAL, UAL, SWA) rather than IATA 2-letter codes (DL, UA, WN) because ADS-B callsigns carry the ICAO form \u2014 a Delta flight always appears as 'DAL512', never 'DL512'.
+
+server.py. The stats endpoint now attaches an optional 'name' field to each row of top_types and top_operators when the code is known. No schema change for unknown codes \u2014 they just don't get a name field, and the frontend renders them as before.
+
+templates/index.html. Two changes. First, the listCard helper gained an optional drillValueFn parameter that returns the raw value to use as the drill-down filter, separate from the display string used on screen. Without it, the prior behaviour is preserved (the display string was also the filter). With it, we can show 'DAL \u2014 Delta Air Lines' in the row while still sending 'DAL' to the backend when the user clicks to drill. Second, top_types and top_operators pass the new drillValueFn so drill queries still filter on the raw ICAO code, not on the pretty display string (which would match nothing in the database).
+
+Tests. Standalone Playwright smoke test at /tmp confirms both composition cards render 10 rows correctly, each with display='CODE \u2014 Name' and drillValue='CODE'. Verified against the refreshed docs/screenshot-stats.png visually \u2014 the composition section now reads as human English.
+
+No API changes, no sudoers changes, no schema changes. Extra data is additive and backward-compatible: the frontend uses .name if present and falls back to the code otherwise, and the backend doesn't emit .name for unknown codes, so existing clients that ignore the field continue to work unchanged.
+
+## [2.41.14] — 2026-04-20
+
+### Added
+- PDF overview now part of the release pipeline \u2014 docs/Aerodrome_Overview.pdf is checked into the repo, rebuilt automatically on every bump-version.sh run, and therefore always included in release zips.
+
+Previously the overview PDF was a one-off artifact I built outside the repo when someone asked for it. Ship-it-if-asked, rebuild-it-by-hand, drift freely between releases. That's the same failure mode that hit the screenshots last turn, and the fix here is the same: make it a first-class build output that sources its own stats from the repo state.
+
+scripts/build_overview_pdf.py. New. Builds docs/Aerodrome_Overview.pdf from the current VERSION file, CHANGELOG.md release count, actual LOC in the five runtime Python modules (main, server, collector, config_validator, notifier) and seven HTML templates, the number of @app route decorators in server.py, and the number of CREATE TABLE statements in collector.py. All six 'fun stats' on page 9 are now computed fresh; no hand-edited constants. Cover and footer version strings pulled from VERSION.
+
+Side benefit: the prior hand-edited stats were slightly wrong (9,712 Python lines counted scripts/screenshots.py which isn't shipped; the real runtime total is 7,989). The PDF is now more accurate than it was before.
+
+bump-version.sh. New steps at the bottom: after the CHANGELOG entry is written and before the service-restart reminder, the script calls scripts/build_overview_pdf.py which reads the just-written VERSION and produces a fresh PDF into docs/. Two safety valves: passing --skip-pdf bypasses this step entirely (useful if reportlab isn't installed or iteration is fast), and a failed PDF build logs the error but does not fail the overall bump (so a missing dev dep can't block a release).
+
+requirements-dev.txt. New. reportlab>=4.0, pillow>=10.0, playwright>=1.40. Separate from requirements.txt so the runtime venv stays lean \u2014 install.sh still only installs production deps. Developers who want to rebuild docs run 'pip install -r requirements-dev.txt' once.
+
+Release zips. docs/Aerodrome_Overview.pdf is now a checked-in artifact (approximately 775 KB), so it rides along in every release package without any changes to the packaging step. Anyone who unzips a release has an up-to-date overview document they can share with colleagues, friends, or forum readers without having to ask for one.
+
+No runtime behaviour changes. Pure build-pipeline maintenance that makes documentation-freshness automatic instead of manual. Same spirit as v2.41.13's screenshot-harness work.
+
+## [2.41.13] — 2026-04-20
+
+### Changed
+- Screenshot harness upkeep \u2014 scripts/screenshots.py now sources the version from the VERSION file and has coverage for the /performance page and the notifications setup-guide modal.
+
+The screenshot script had drifted in two ways. First, the STATUS mock carried a hardcoded 'version': '2.32.1' string \u2014 so even when the harness was re-run, every template that populated its header from /api/status came out still pointing at 2.32.1. No matter how many releases we shipped, the documentation screenshots looked stale. Fixed by reading VERSION from disk at module load and using that value in the STATUS payload.
+
+Second, the /performance page (added v2.41.9) and the notifications setup-guide modal (shown to first-run users on the Notifications config tab) didn't have renderer functions in the script at all. They were one-offs that I screenshotted manually during their original releases and never wired into the standard harness. That's exactly the failure mode the harness exists to prevent \u2014 untracked screenshots age quietly until someone happens to look and notices. So they're both in the script now:
+
+screenshot_performance. Uses a new PERF_DIAG mock payload modeled on a moderately busy Pi 4 install: 285 MB database, 1.84M all_sightings rows over 30 days, six SQLite indexes, six representative query timings (five green, one amber at ~143ms for the all_tab_page window-CTE query to showcase the post-v2.41.9 query shape), 82 MB/s disk throughput, no hints (healthy system). Renders at 1400x1700 because the page is long on a real install.
+
+screenshot_setup_guide. Switches to the Notifications config tab and calls showOnboardingModal() directly (more reliable than hunting for the launcher button across template revisions). Captures the four-step phone-setup modal the way first-run users see it.
+
+Also fixed a mock-shape issue the first pass exposed: the perf page expects each queries[] entry to carry an ok: true field and plan steps shaped as {detail: '...'} objects, not bare strings. The template treats missing ok as an error state and renders 'unknown' in a red box. Corrected the PERF_DIAG mock accordingly.
+
+No runtime code changes. No template changes. No API changes. Pure documentation-pipeline maintenance.
+
+Side effect of re-running the harness: every existing doc screenshot now shows the v2.41.13 header (was previously v2.34.1, v2.40.1, or varying older strings depending on when each was last regenerated). The docs/ directory now has 13 regenerated PNGs: live, watchlist, military, all, stats, status, config, config-stats, export, docs, logs, performance, setup-guide.
+
+## [2.41.12] — 2026-04-20
+
+### Changed
+- Regroup Load average on the System card \u2014 move it up between CPU (host) and CPU (Aerodrome), and relabel it 'Load average (host)' to match the CPU labelling convention.
+
+The row was ambiguous as shipped. Sitting between CPU (Aerodrome) and Memory, it read as Aerodrome-specific because of proximity \u2014 but os.getloadavg() is a host-wide kernel measurement that counts every runnable/waiting process on the box. The tooltip explained this but labels should stand on their own before you have to hover.
+
+Two changes: (1) row reordering \u2014 host-CPU, host-load, aerodrome-CPU, then memory/disk. Groups the two host CPU-ish metrics visually. (2) label suffix \u2014 'Load average' \u2192 'Load average (host)' mirrors the existing 'CPU (host)' / 'CPU (Aerodrome)' split so the scope is obvious from the label alone. Tooltip also updated to say 'the whole host (every process on the box, not just Aerodrome)'.
+
+Pure frontend tweak on templates/status.html. No backend changes.
+
+## [2.41.11] — 2026-04-20
+
+### Fixed
+- Performance page consistency \u2014 header now matches the rest of the app, gear menu added, clipboard fallback for plain-HTTP installs.
+
+Header format. The /performance page was shipped in v2.41.9 with a bespoke header that read 'Aerodrome {version} \u00b7 SQLite {version}' while every other page used 'v{version} \u00b7 Updated {timestamp}'. Minor but jarring when switching between pages. Standardized. Populates #appVersion from /api/status on page load so the version appears immediately, then the diagnostic's own aerodrome_version field overwrites it with the same value once the diagnostic completes. #ts fills in with the diagnostic's generated_at timestamp.
+
+Gear menu. The /performance page was missing the gear menu entirely, so users couldn't switch to another page without clicking 'Back to tracker' and navigating from scratch. Added the standard gear menu with all six links (Status, Performance, Logs, Documentation, Configuration, Check for updates) plus the toggleMenu click-outside dismissal handler.
+
+Clipboard fallback. navigator.clipboard.writeText requires a 'secure context' \u2014 HTTPS or localhost. Plenty of Aerodrome installs are reached over plain HTTP on a LAN (user@192.168.1.50:8000, aerodrome.home.example:8000, etc.), where the browser refuses to hand over clipboard permission. The v2.41.9 Copy button fell through to a blocking alert() dialog with the report text crammed into it \u2014 functional but gross. Three-tier fallback:
+
+Tier 1: navigator.clipboard.writeText() if the page is in a secure context. Works for localhost and HTTPS.
+
+Tier 2: document.execCommand('copy') via a hidden textarea. 'Deprecated' per W3C but still implemented by every mainstream browser engine, and critically it works over plain HTTP because it bypasses the secure-context requirement. This is the tier that actually fixes the problem.
+
+Tier 3: if both clipboard APIs fail, open a dismissible modal with the report in a selectable textarea plus a 'Select all' button. Ctrl+C from there copies. Auto-selects the text on open so users who know the pattern can just Ctrl+C immediately.
+
+No backend changes. No API changes. No sudoers changes. Pure frontend polish on the diagnostic page.
+
+Tests. Playwright 12 assertions across 2 scenarios: (1) header renders in the standard 'v{version} \u00b7 Updated {ts}' format with populated version on page load, gear menu present with all six expected links, timestamp populated after diagnostic completes; (2) clipboard fallback modal appears when both clipboard API and execCommand are blocked, modal explains the HTTP/secure-context issue, textarea contains the full diagnostic report text, 'Select all' button selects the complete text, Close button dismisses the modal. No JS errors. Screenshot at docs/screenshot-performance.png (if desired; the v2.41.9 one is still good).
+
+## [2.41.10] — 2026-04-20
+
+### Fixed
+- Clipboard copy fallback \u2014 fixes the Copy button on /performance (and onboarding modal, and sudoers-refresh modal) when served over plain HTTP.
+
+Problem. Browsers gate navigator.clipboard.writeText() behind 'secure context' \u2014 HTTPS or localhost only. Aerodrome is typically accessed over plain HTTP on a LAN (http://aerodrome.home:8000 or similar), so clipboard writes silently throw. Before this release, the fallback was alert(), which blocks the UI and dumps the text into a modal the user has to manually select from with the right-click menu. Worked, but felt broken.
+
+Three-tier fallback now:
+
+Tier 1: async Clipboard API. Same as before \u2014 fast path for HTTPS/localhost deployments.
+
+Tier 2: document.execCommand('copy') via a hidden textarea. This API is 'deprecated' in spec-speak but every mainstream browser engine still implements it and likely will for years. Works over HTTP because it operates on a DOM selection rather than an isolated API. The textarea is positioned offscreen (opacity:0, 2x2em), focused, selected, copy-command fired, then removed \u2014 the user sees nothing except the 'copied!' feedback flash.
+
+Tier 3: fallback modal with a pre-selected textarea the user can copy manually. Much better UX than alert(): scrollable, dismissible with ESC, explains why clipboard is blocked, tells the user exactly which keys to press. The textarea is auto-selected on open so Ctrl+C / Cmd+C works immediately without clicking anything. Click-outside-to-dismiss also works.
+
+Applied in three places:
+
+templates/performance.html \u2014 Copy diagnostic report button. Primary target of this release since that's where a Pi user sharing a slow-system report needs the copy to Just Work.
+
+templates/config.html \u2014 onboarding modal's copyToClipboard helper, shared by base-URL and subscription-URL copy buttons on the setup guide.
+
+templates/updates.html \u2014 sudoers-refresh modal's copy button for the install.sh re-run command. Previously had a selection-based fallback; now gets the same execCommand path for consistency, and falls back to selection only if both Clipboard API and execCommand fail.
+
+Tests. Playwright across two scenarios on the performance page: when Clipboard API is unavailable but execCommand succeeds, verifies the copy fires through execCommand and the 'copied!' flash appears. When both APIs fail, verifies the tier-3 fallback modal opens with the textarea pre-populated and auto-selected, and that ESC dismisses. 12 assertions total. No JS errors. No PII.
+
+Sudoers unchanged at v3. No backend changes \u2014 this is frontend-only.
+
+## [2.41.9] — 2026-04-20
+
+### Fixed
+- Performance release \u2014 ships the /performance diagnostic page and fixes the O(n\u00b2) /api/all query at the same time. Two things that belong together.
+
+The /api/all endpoint's main grouping query used a correlated subquery pattern in its 'latest' CTE that SQLite executes as O(n\u00b2) through the planner. Measured on a 100,000-row test DB: one page took 126 seconds. At 30 million rows (a busy receiver with default retention), this was effectively unbounded \u2014 requests timing out before returning anything.
+
+Rewritten as a single-CTE window-function query: ROW_NUMBER() OVER (PARTITION BY icao ORDER BY seen_at DESC) to pick the latest row per ICAO, combined with COUNT/MIN/MAX as window functions over the same PARTITION for sighting_count/first_seen_at/last_seen_at. All computed in one ordered scan. Same 100k-row benchmark: 1.9 seconds. 67x faster, same result set verified row-for-row against the old query.
+
+Eliminated the separate 'grouped' CTE entirely \u2014 the aggregate window functions cover what it did, and collapsing it means the planner sees one CTE instead of three. Requires SQLite 3.25+ (2018), which ships with every modern Linux distro including Pi OS Bullseye and newer. If someone is running something older, they'd have much worse problems than this query.
+
+New /performance page and GET /api/perf/diagnostics endpoint. Measures the system instead of letting users guess at what's wrong. Returns: storage footprint (DB file size plus WAL/SHM), SQLite pragmas (journal_mode, page_size, page_count, cache_size, wal_autocheckpoint, synchronous, temp_store, auto_vacuum, mmap_size), per-table inventory (row count, count-query time, oldest/newest timestamps, retention span), index list grouped by table, six representative query timings with EXPLAIN QUERY PLAN for each (live aircraft last 5 min, all-tab count, military count, watchlist count, the big all-tab page query (now using the new window-function form), seen_aircraft total), 1 MB sequential read from DB file as disk I/O baseline, and auto-generated hints that surface specific problems (DB over 5 GB, tables over 10M rows, queries over 2 seconds, disk throughput under 15 MB/s).
+
+UI: /performance page auto-runs the diagnostic on load, color-coded timings (green <100 ms, amber 100-1000 ms, red >1000 ms), click any query to expand its EXPLAIN QUERY PLAN inline, red row-count highlight when a table exceeds 10M rows, amber warning on slow disk. 'Copy diagnostic report' button produces a plaintext dump suitable for pasting into a GitHub issue. Linked from the gear menu across every page.
+
+New docs/PERFORMANCE.md covers: how to interpret the diagnostic, expected row counts by activity level (rural 100/day through major 5000+/day with 30-day retention estimates), hardware class recommendations (Pi 3/4/5 with SD vs USB SSD vs x86), retention tuning guidance, query performance reference table, and guidance on when to file a performance issue. Added to the in-app docs viewer via the DOC_FILES whitelist.
+
+Also fixes two issues exposed during v2.41.7's deployment:
+
+Header version was hardcoded to v2.40.1 in index.html, config.html, status.html, updates.html \u2014 every release since v2.40.1 showed the wrong version in the header. docs.html and logs.html had already been migrated to a dynamic pattern that reads /api/status; now the other four match. Populated via a new (async function _loadAppVersion)() that fires at end-of-page.
+
+main.py's PID file parsing was not defensive \u2014 an empty or garbage .tracker.pid (which can happen if the disk fills mid-write) would crash start() with ValueError before the service could even register. All three entry points (start, stop, status) now tolerate empty/garbage PID files: treat as stale, clean up, and continue. Prevents a disk-full event from leaving the service in a permanently-unrecoverable state.
+
+Tests. Standalone benchmark on a 100k-row test DB confirms old query takes 126,000 ms, new query takes 1879 ms (67x faster), result set matches exactly. Playwright 24 assertions across 3 scenarios for /performance page: full diagnostic renders with correct color coding and click-to-expand plans, empty-DB case renders cleanly without spurious hints, backend error path surfaces the error message. No JS errors. No PII.
+
+Sudoers unchanged at v3.
+
+## [2.41.8] — 2026-04-20
+
+### Added
+- Performance diagnostics \u2014 new /performance page and GET /api/perf/diagnostics endpoint that measure your actual system so slowness can be diagnosed instead of guessed at.
+
+Why this matters. A user reported their Aerodrome feels slow. They're running on a Raspberry Pi, seeing 5000+ aircraft a day, with over a million sightings accumulating daily. Without measurement, I'm guessing whether it's the disk, the queries, the indexes, or the schema. This release ships the measurement tool first, so v2.41.9 can fix whatever it actually is.
+
+New endpoint GET /api/perf/diagnostics returns a read-only snapshot:
+
+Storage: DB file size, WAL and SHM sidecars, logical size from page_count * page_size.
+
+SQLite pragmas that matter: journal_mode, page_size, page_count, cache_size, wal_autocheckpoint, synchronous, temp_store, auto_vacuum, mmap_size. Enough to tell whether anything's misconfigured.
+
+Per-table inventory for all_sightings, military_sightings, watchlist_sightings, seen_aircraft, stats_records: row count, count-query time in ms (itself informative on slow disks), oldest and newest timestamps, retention span in days. Confirms retention is pruning properly, and flags tables that have grown beyond design intent.
+
+Index list: every index present, grouped by table. Makes coverage gaps obvious.
+
+Six representative query timings with EXPLAIN QUERY PLAN attached: live aircraft (last 5 min), all-tab count over full retention, military count, watchlist count, the big all-tab CTE page query, seen_aircraft total. These are the queries the UI actually runs, at the scales the user has configured, so the numbers match what they'd actually experience.
+
+Disk I/O baseline: 1 MB sequential read from the DB file. Reports throughput in MB/s. A healthy SD card should hit 20+ MB/s; anything under 15 gets flagged. Useful for spotting worn-out cards that look fine otherwise.
+
+Hints: the endpoint scans its own results and surfaces specific problems as plaintext strings: 'Database is 2.3 GB \u2014 consider shorter retention or a USB SSD', 'all_sightings has 14,500,000 rows', 'Query X took 4500 ms \u2014 anything over ~500 ms shows as UI lag', etc. Makes the report self-triaging.
+
+New /performance page that renders the diagnostic. Auto-runs on load. Color-coded timings (green under 100 ms, amber 100-1000 ms, red over 1000 ms). Red row-count highlight when any table exceeds 10 million rows. Click any query to expand its EXPLAIN QUERY PLAN inline. Amber warning on the I/O baseline when disk throughput is slow.
+
+Copy diagnostic report button produces a plaintext dump suitable for pasting into a GitHub issue. Gets around the JSON-snippet-unreadability-on-phones problem users hit when sharing structured logs.
+
+Linked from the gear menu across every page (index, status, config, updates, logs, docs).
+
+New docs/PERFORMANCE.md covering: how to interpret the diagnostic, expected row counts at different activity levels (rural 100/day through busy 5000+/day with corresponding row estimates at 30-day retention), hardware class recommendations (Pi 3/4/5 with SD vs USB SSD vs x86), the retention tuning knobs in config.yaml, a query performance reference table, and guidance on when to file a performance issue. Added to the in-app docs viewer via the DOC_FILES whitelist.
+
+Validated the diagnostic logic on a 100,000-row test DB. One concrete finding: the /api/all endpoint's CTE grouping query, with its correlated subquery in the 'latest' CTE, took 118 seconds to return a single page at 100k rows. At 30 million rows (what the reporting user has) this is effectively unusable. v2.41.9 will rewrite that CTE with a window function (ROW_NUMBER() OVER (PARTITION BY icao ORDER BY seen_at DESC)) and use this diagnostic to measure the before/after improvement.
+
+Tests. 24 Playwright assertions across 3 scenarios: full diagnostic renders all sections with correct color coding and click-to-expand plans, empty-DB case renders without crashing or spurious hints, backend error path surfaces the server's error message. Also a standalone backend validation that runs the diagnostic SQL against a real 100k-row SQLite DB and confirms the timings + EXPLAIN QUERY PLAN output have the expected shape. No JS errors. Screenshot at docs/screenshot-performance.png.
+
+Sudoers unchanged at v3. No privileged operations introduced.
+
+## [2.41.7] — 2026-04-20
+
+### Added
+- Upload release zips through the web UI \u2014 no more rsync or scp needed for updates (though both paths still work).
+
+New POST /api/updates/local/upload endpoint accepts a multipart zip upload, validates it, extracts it into update/, and returns the same response shape as the existing /api/updates/local/check. Once extracted, the frontend calls checkLocal which picks up the newly staged release and the Apply button lights up automatically.
+
+Security. Three layers of validation before anything touches disk. (1) Size cap at 50 MB \u2014 Aerodrome release zips are around 3 MB; anything bigger is almost certainly wrong (a full backup zip, maybe). (2) Real zip-format validation via ZipFile.testzip() \u2014 bad CRCs or truncated archives are rejected. (3) Path-traversal rejection: every entry is resolved against the target root before writing, and any entry that would escape update/ (via ../../etc/passwd or similar) aborts the whole operation. update/ isn't touched until after all validation passes, so a rejected upload leaves the prior staged state intact.
+
+Layout flattening. Our release zips are shaped as aerodrome-vX.Y.Z/<files>. After extraction that puts VERSION at update/aerodrome-vX.Y.Z/VERSION \u2014 the existing check endpoint already handles that case via its two-candidate lookup, but the apply logic is cleaner when VERSION is at update/ top level. Upload endpoint detects single-top-level-directory layouts where the inner dir contains VERSION, and moves contents up. Multi-directory or flat zips pass through unchanged.
+
+UI. Drop zone added to the Local update card, between the status message and the version info grid. Dashed cyan border, click-to-browse or drag-and-drop. Cyan highlight on drag-hover. Client-side pre-checks for .zip extension and 50 MB limit catch obvious mistakes before the round trip. Successful upload shows '\u2713 2.41.7 uploaded (2.7 MB)' then calls checkLocal so Apply becomes active without a manual re-check. Upload errors surface via the existing renderStatus path in the card's status box, with the backend's error message shown verbatim.
+
+SSH/rsync preserved. The instructions panel is still visible but reframed: 'Alternative: stage the update via SSH instead of the upload box above.' Both paths land files in the same place. The upload box is the easier default; rsync stays available for scripted workflows and large-batch testing.
+
+No sudoers bump \u2014 file writes go to ~/aerodrome/update/, owned by the aerodrome user, no privilege escalation needed. The existing apply flow still handles the privileged parts.
+
+Tests. Standalone Python test builds a fake release zip, round-trips extraction and flatten, verifies path-traversal rejection. Playwright 12 assertions across 5 scenarios: drop zone renders with correct labels, non-zip file triggers client-side rejection, oversized file triggers client-side rejection, successful upload propagates the new version into the UI and enables Apply, backend error message surfaces in the status box, no JS console errors. Screenshot at docs/screenshot-upload-zone.png.
+
+Minor note for this specific release: the upload flow only becomes available after v2.41.7 is running. Deploying v2.41.7 ITSELF still needs rsync (because v2.41.6's UI doesn't have the drop zone yet). From v2.41.8 onward, updates can be done entirely through the browser.
+
+## [2.41.6] — 2026-04-20
+
+### Added
+- Load averages on the Status page \u2014 the canonical Unix 1 / 5 / 15-minute triple, pulled from os.getloadavg() and rendered in the System card.
+
+Load average is the average number of processes running or waiting for CPU/I\u2010O. Interpreting the raw number requires knowing how many CPU cores you have: load of 4.0 on a quad-core is 100% utilization with no backlog; the same load on a single-core is 4x saturation. The page renders the numbers with color-coded severity so the ratio is readable at a glance.
+
+Backend. _get_system_info() now returns load_average (1m/5m/15m, rounded to 2dp) and load_health (ok / busy / warn / overload) based on la1 / cpu_count. Thresholds: below 0.7x cores = ok, at capacity (1.0x) = busy, backlog forming (1-2x) = warn, sustained 2x+ = overload. Returns null on Windows (os.getloadavg raises) or other exotic platforms, so the UI degrades gracefully rather than throwing.
+
+UI. Status page System card has a new row between CPU (Aerodrome) and Memory. Format: "0.42 / 0.38 / 0.51" with the number tinted by load_health (default text / cyan / amber / red bold). Tooltip on the values spells out the 1m-5m-15m meaning plus the healthy-below-cores rule.
+
+Gear badge. classifyHealth in index.html now warns when the 15-minute load average exceeds 1.5x cores. Deliberately not the 1m value \u2014 a badge that lit up on transient spikes would flap. 15m = 'the box has been under pressure for 15 straight minutes' which is much more signal than noise. The 1.5x threshold is slightly above 'at capacity' (1x) because a tracker pegging all cores for short bursts is expected; sustained 1.5x+ means processes are queueing.
+
+Tests. Playwright 14 assertions across 5 scenarios: Status page renders load row with 1/5/15 values and cores tooltip and load-ok class, load-overload class triggers on ratio >= 2x cores, gear badge lights up warn on sustained 15m >= 1.5x cores, gear stays clean when load is healthy, missing load_average field doesn't break the status page render. Screenshots at docs/screenshot-load-average.png (healthy) and docs/screenshot-load-overload.png (red). No JS errors. Sudoers unchanged at v3.
+
+## [2.41.5] — 2026-04-20
+
+### Added
+- Onboarding \u2014 phone setup guide modal that walks users through getting push notifications working on their phone after installing local ntfy. Closes a real gap: before v2.41.5, the post-install success path was an alertModal with a URL + a native confirm dialog asking if the user wanted to auto-fill the URL field. That worked if you'd used ntfy before \u2014 otherwise you were on your own to figure out the phone side of things.
+
+New showOnboardingModal() function in config.html. Single-screen modal with four numbered sections:
+
+1. Install the ntfy app \u2014 three buttons linking to Google Play, App Store, and F-Droid. All three open in new tabs. Not all users will want Play Store (F-Droid matters for people who de-Google), so the less-common path is visible without being hidden behind 'advanced'.
+
+2. Add your server \u2014 the base URL in a monospace code block with a Copy button that writes to the system clipboard with a 1.5s visual 'copied!' feedback. Pulls from nfNtfyStatus.config.base_url. If base_url points at localhost, renders an amber warning pointing out that phones can't reach localhost and suggesting the detected LAN IP as an alternative.
+
+3. Subscribe to this topic \u2014 full subscription URL (base + / + topic) with its own Copy button. Topic is extracted from workingConfig.notifications.url if the user has already configured one; falls back to 'aerodrome' placeholder if nothing is configured yet.
+
+4. iPhone users (conditional) \u2014 only rendered when upstream_relay is enabled in the ntfy config. One-paragraph explanation of the relay so iOS users understand why their message IDs go through ntfy.sh while Android's don't. Cyan-tinted card to distinguish from the step blocks.
+
+5. Test it \u2014 button that fires /api/notifications/test, then polls /api/notifications/recent for up to 10 seconds to confirm delivery. Shows live status: 'Sending...' → 'Sent to ntfy, waiting for your phone...' → '\u2713 Delivered at HH:MM:SS (HTTP 200). If the app didn't buzz, double-check your subscription.' If the send fails the UI surfaces the reason (rate_limit, cooldown, HTTP 4xx, etc.). If 10 seconds pass without a confirmed recent entry, shows an amber 'no delivery confirmation' warning pointing at the recent notifications log below the modal.
+
+Trigger points. (1) Post-install: the 'ntfy installed successfully' alertModal + confirm dialog sequence is replaced with a single call to showOnboardingModal({firstRun: true, ntfyVersion, topic}). The URL field auto-fills silently \u2014 no second confirm dialog. The modal opens with an adjusted title ('You're almost done \u2014 set up your phone') to signal the new-install context. (2) Persistent access: a 'Setup guide' button added to the aerodrome_managed panel, next to Upgrade / Uninstall. Users who dismissed the first-run modal or who want to re-read the guide can open it any time.
+
+No server-side onboarding_seen flag. The modal is idempotent and cheap to re-open; persisting a 'seen' state would be added complexity for an MVP. If feedback suggests people want a 'don't show again' affordance, that's a v2.42 refinement.
+
+Why no QR codes. The original plan called for QR codes for each URL. Two things pushed away from that: (1) package installation was flaky on the build machine during implementation (intermittent npm registry resolution failures), and (2) rethinking the UX, copy-buttons actually serve more users than QR. Copy-buttons work regardless of whether the phone is physically near the desktop, don't depend on a JS library, and support any URL-transfer method (email-to-self, password manager, messaging app). QR codes require same-room proximity and produce slightly worse accessibility. If QR becomes a common request later, we can add it as a toggle without reworking the flow.
+
+Shared copyToClipboard() helper function added \u2014 uses navigator.clipboard.writeText with graceful failure when the permission is blocked, and 1.5s visual feedback. Generic for future reuse.
+
+Tests. Playwright smoke across 4 scenarios, 17 assertions: modal opens from Setup guide button, all four sections render, iOS section conditional on upstream_relay, base URL rendered, topic correctly extracted from workingConfig.notifications.url, all three store links present (Google Play, App Store, F-Droid), close button dismisses overlay, iOS section hidden when upstream_relay=false, localhost warning triggers when base_url contains localhost/127.0.0.1, detected LAN IP suggested in the warning, test notification endpoint called, delivery polling confirms success, no JS console errors. Screenshot at docs/screenshot-setup-guide.png.
+
+Closes out the v2.41.x cycle (plus the v2.40.x saga that bled into it). Coming up next in the hold-list: nothing on my end \u2014 see README.md for what's in/out of scope.
+
+## [2.41.4] — 2026-04-20
+
+### Added
+- Full backup / restore \u2014 bundle config.yaml + aircraft history DB + ntfy server.yml into a single zip for disaster recovery and migration.
+
+Before this release, the only export was 'Download config.yaml' \u2014 a narrow flow that left the database and ntfy config behind. For any scenario where a user's machine dies or they're moving to new hardware, that wasn't actually a backup; the watchlist and flight history (the thing people care most about preserving) had never been backed up at all.
+
+New endpoints:
+
+GET /api/backup/preview \u2014 returns what the backup would contain (items, byte sizes, warnings) without building the zip. Populates the live size estimate on the Backup & Restore tab so users aren't surprised by a 200MB download. Warns when the DB is over 50MB and when ntfy isn't aerodrome-managed.
+
+GET /api/backup/export \u2014 streams a zip with manifest.json + config.yaml + aerodrome.db + (optional) ntfy/server.yml + VERSION. Database is snapshotted via SQLite's online backup API so it's safe to run while the service is live \u2014 a naive file copy could race with WAL writes and produce a corrupt backup. Filename is aerodrome-backup-YYYYMMDD-HHMMSS.zip.
+
+POST /api/backup/import \u2014 validates manifest_version == 1, writes each file (backing up the existing with a .pre-restore suffix), then triggers a service restart via the existing _do_restart helper. Refuses unknown manifest versions rather than guessing.
+
+What's included: config.yaml, aerodrome.db, ntfy server.yml (only when aerodrome-managed), VERSION file for reference. What's deliberately NOT included: logs (too large, not useful for restore), ntfy cache.db (large, privacy-sensitive \u2014 holds notification message bodies), .backups/ directories (recursive, pointless), venv/ (install.sh rebuilds it).
+
+Restore behavior: destructive but safe. Current config/DB/ntfy-config are each saved with .pre-restore.YYYYMMDD-HHMMSS suffixes before replacement. ntfy server.yml is restored only when ntfy is already installed and aerodrome-managed on the target machine \u2014 if not, the bytes are stashed to the install dir as ntfy-server.yml.from-backup.TIMESTAMP for manual review. Service restart happens at the end; UI waits 5 seconds then reloads the page.
+
+Known limitations (documented in the restore flow):
+- ntfy base_url in the restored config may reference the OLD server's LAN IP. User fixes it from the Notifications tab after restore.
+- Restoring onto a machine without ntfy installed skips server.yml.
+- Database WAL/SHM sidecars are removed before writing the restored DB so SQLite doesn't mix old WAL entries into new data.
+- Hard cap of 2 GB on uploaded backups \u2014 anything bigger is almost certainly wrong.
+
+UI: new 'Full backup' section on the Backup & Restore tab, above the existing Config-only backup section (which stays intact for the narrow 'just my YAML' case). Preview auto-loads with item sizes and warnings. Download button triggers streaming download. Restore takes a file input with destructive-action red styling and native confirm dialog listing the three files it'll replace before anything happens.
+
+No sudoers bump needed \u2014 all privileged operations (tee /etc/ntfy/server.yml, systemctl restart ntfy, systemctl restart aerodrome) are already covered by v3 rules.
+
+Tests. Backend roundtrip test creates a fake install dir, zips it up with all four file types, reads it back, verifies manifest + config YAML + database integrity (including a SQL query on the restored DB). Manifest rejection test confirms future versions would be rejected. Playwright 11 assertions across 3 scenarios: backup preview renders with item rows and byte counts and approximate total, large-DB warning appears when DB > 50MB, file selection enables the destructive restore button and updates the filename label, no JS console errors. Screenshot at docs/screenshot-full-backup.png.
+
+v2.41.5 (Onboarding: post-install mobile setup wizard) is next.
+
+## [2.41.3] — 2026-04-20
+
+### Added
+- Observability \u2014 three new views that make it easier to see what ntfy and the notifier are actually doing. No backend behavior changes; this release is visibility, not functionality.
+
+1. Notification stats card (Notifications tab). New GET /api/notifications/stats endpoint returns windowed counts (last 24h, last 7d, since service start) with breakdowns by event type and drop reason, plus last-sent and last-error records. Notifier's internal _recent deque bumped from 100 to 2000 so 24h fits at the default 20/hr rate cap. Memory cost: about 1MB. Stats live in-memory; they reset on service restart, which is called out in the card subtitle. If persistence matters later, a schema change can add it without breaking the API.
+
+2. Local ntfy version card (Updates tab). New card between 'Local update' and 'GitHub update (coming soon)' showing the installed ntfy version, the latest available from the GitHub release feed, and service running status. When a newer ntfy is available, the badge flips to 'upgrade available' (green) with a direct link to the Notifications tab where the actual upgrade happens. Hidden when no ntfy is installed to avoid clutter, and respects external-install state (says 'Managed by your package manager, Aerodrome won't touch it'). Reuses existing card/info-grid/actions styles for consistency with the Aerodrome local-update card.
+
+3. ntfy service logs viewer (Notifications tab). New collapsible GET /api/ntfy/logs endpoint shells out to journalctl -u ntfy. Deliberately no sudo \u2014 relies on the aerodrome user's default adm/systemd-journal group membership on Ubuntu to read the journal unprivileged. If the read fails, the UI shows an amber notice with the manual command to run (sudo journalctl -u ntfy -n 100) instead of hanging. We did NOT add a sudoers rule because it would have bumped SUDOERS_VERSION to 4 and triggered the drift flow for every user just to view logs \u2014 the wrong cost/benefit given how fresh the v2.41.2 fix is. If unprivileged reads turn out not to work on some Linux distros, a future release can add the opt-in rule. Card is lazy-loaded on first expand.
+
+Tests. Playwright smoke across 5 scenarios, 18 assertions: stats card renders with all window columns and breakdowns, uptime and last-sent info shown, logs card hidden when ntfy not_installed, logs card visible and lazy-expand-loads when aerodrome_managed, ntfy update card shown with correct versions and upgrade-available badge when newer version exists, ntfy card hidden when not_installed, no JS errors anywhere. Plus the unit test for notifier.stats() counting across all three windows plus event and drop-reason breakdowns, all seven counts match expectations. Screenshots in docs/screenshot-notification-stats.png and docs/screenshot-ntfy-update-card.png.
+
+## [2.41.2] — 2026-04-20
+
+### Added
+- Surface sudoers drift independently of the update flow. Before v2.41.2 the drift check only ran when a release was staged in update/, and the Updates page only rendered the banner in the 'update is available' branch. That meant users whose sudoers got silently soft-allowed past a needed refresh (every release between v2.40.1 and v2.41.0 \u2014 every single one, because of the 20-line cap bug fixed in v2.41.1) had no way to know their ntfy install/uninstall and data-purge features were silently broken. They'd discover it only when a feature failed mysteriously.
+
+Fix: drift is now surfaced in three places, always visible, no staged release required.
+
+1. New GET /api/sudoers/status endpoint. Calls _check_live_sudoers_drift() which compares /etc/sudoers.d/aerodrome against the currently-INSTALLED install.sh (not a staged one). Returns the same shape as the existing check for frontend reuse. Result is cached at startup and on every direct call, so /api/status can read it without paying the file-read cost on every health poll.
+
+2. Header gear-menu badge. classifyHealth() in index.html now factors in statJ.sudoers.needs_refresh and returns warn-level with a descriptive reason string ('sudoers refresh needed (expects v3, live v2) \u2014 visit Updates page for instructions'). This uses the existing warn-level badge machinery \u2014 amber border on the gear, amber dot, warn-severity tooltip. Users see the badge regardless of which page they're on.
+
+3. Updates page not-available branch. The else branch of checkLocal (when no update is staged) now fetches /api/sudoers/status and renders an amber banner with the SSH command if drift exists. Before v2.41.2 this branch just said 'up to date' even when sudoers was stale. Banner includes the install_dir path so the command is copy-ready (e.g. 'sudo bash /opt/aerodrome/install.sh'). Badge flips to 'refresh needed' in amber. Existing 'available' branch behavior preserved unchanged.
+
+Tests. Four Playwright test cases, seven assertions total: header badge lights up on drift, header clean when no drift, Updates page not-available branch shows banner + SSH command + amber badge, Updates page available branch's existing banner still works, no JS errors in any test. Screenshot captured at docs/screenshot-sudoers-drift-standalone.png.
+
+Originally v2.41.1 was going to be the Observability release, but that got commandeered by the critical drift-check bug discovered this session. v2.41.2 finishes the work v2.41.1 started by making sure the drift check's findings are actually visible to users. Observability (ntfy version in Updates tab, ntfy logs in UI, notification stats card) slides to v2.41.3.
+
+## [2.41.1] — 2026-04-20
+
+### Fixed
+- Critical drift-check bug \u2014 _read_sudoers_version() scanned only the first 20 lines of install.sh looking for the SUDOERS_VERSION marker. Marker actually lives at line ~152 (deep inside the sudoers heredoc). Function returned 0 ('predates versioning') for every release. Caller treated that as 'nothing to verify, allow apply.' Result: the entire sudoers-drift protection mechanism built in v2.40.1 never fired, for any release, including v2.41.0 where the drift was real (live v2, staged v3) and should have blocked.
+
+Discovery path: deployed v2.41.0 expecting to see the 'Sudoers update required' modal in action (real drift, that's what v2.40.1 was built for). Banner didn't appear, apply succeeded, new v3 rules never got installed. Diagnosed via staged endpoint call: /api/updates/local/check returned staged_version=0 despite install.sh clearly containing 'SUDOERS_VERSION: 3' at line 152. Twenty-line scan limit was the culprit — a micro-optimization against hypothetical giant sudoers files that actually broke the whole feature silently.
+
+Fix: drop the line-count cap entirely. Scan the whole file. install.sh is ~230 lines and /etc/sudoers.d/aerodrome is ~40 lines — there is no 'huge sudoers file' scenario to optimize against. Applies to both the direct-read path and the sudo-cat fallback for /etc/sudoers.d/aerodrome.
+
+Regression guard: startup sanity check runs _read_sudoers_version() against the server's own install.sh at import time and logs a loud warning if the result is 0 ('pre-versioning') or None ('unreadable'). Since the shipped install.sh is known-good at the time of shipping, version 0 result means the reader is broken. This would have caught the bug in v2.40.1's deploy. Logged to adsb.server logger at warning level, visible in journalctl -u aerodrome.
+
+Interaction with v2.41.0's sudoers bump: because the drift check was broken, v2.41.0's sudoers v3 update was silently skipped on real deployments. When v2.41.1 applies with the fix, the now-working drift check will correctly notice the user's sudoers is stale (live v2, expected v3) and trigger the 'Sudoers update required' banner. User runs install.sh, sudoers gets refreshed, v2.41.0's new rules (data-purge commands) become live. The fix for the bug is also the thing that makes the bug's impact visible.
+
+## [2.41.0] — 2026-04-20
+
+### Changed
+- Five hygiene items \u2014 the 'should have been done earlier' corrections that accumulated over the ntfy integration cycle. No new user-facing features; every item closes a gap or cleans up a rough edge.
+
+1. uninstall.sh now removes Aerodrome-installed ntfy. Before this, running the Aerodrome uninstall script would silently leave /usr/local/bin/ntfy, /etc/ntfy/server.yml, the systemd unit, the sudoers entries, and /var/lib/ntfy/cache.db all in place. That's both confusing (leftover service from a tool that's gone) and a privacy concern (cache.db holds past notification message bodies). New step 5 in uninstall.sh detects the /var/lib/ntfy/aerodrome-installed stamp file, prompts to remove the local ntfy install along with Aerodrome, and prompts separately for cache.db deletion. Respects the existing --purge flag (removes everything non-interactively) and --keep flag (keeps ntfy too). External ntfy installs (package-managed, no stamp) are never touched. Total steps renumbered from [1/5]-[5/5] to [1/6]-[6/6].
+
+2. Cache.db handling on ntfy reinstall. ntfy_installer.uninstall() gained a purge_data parameter (default False, kept for backward compat). When True, also removes /var/cache/ntfy/cache.db, cache.db-wal, cache.db-shm, and the attachments directory. New helper stale_data_present() detects leftover cache from a prior install when no ntfy is currently installed \u2014 surfaced to the UI via /api/ntfy/status as 'stale_data: true'. Install panel shows an amber 'cached messages from a prior install are still present' notice pre-install so reinstallers know what they're inheriting. Uninstall confirmation is now a proper modal (not a native confirm dialog) with a well-styled 'Also delete cached messages' checkbox, amber-tinted guidance below it, and red destructive-action accent color on the confirm button. Replaces the v2.40.1 alertModal() for this specific case since we needed interactive elements (checkbox + multi-button) that alertModal doesn't support.
+
+3. Sudoers bumped to version 3. The data-purge path needs new narrowly-scoped sudoers rules: /bin/rm -f for cache.db + wal + shm, /bin/rm -rf for /var/cache/ntfy/attachments. Each path is explicit \u2014 no wildcards that could be leveraged into broader access. SUDOERS_VERSION: 3 marker is picked up by the v2.40.1 refresh flow, so users see the 'Sudoers update required' modal on apply with the exact command to run.
+
+4. Upgrade-path audit complete. Verified that ntfy_installer.upgrade() does NOT touch /etc/ntfy/server.yml \u2014 it only swaps the binary at /usr/local/bin/ntfy and restarts the service. This means user config (base_url, upstream_relay, port) is preserved correctly across binary upgrades. No code change needed. Documented inline as a comment so future edits don't accidentally break this guarantee.
+
+5. README ntfy acknowledgements + in-UI attribution. The existing Acknowledgments section now includes a full paragraph crediting Philipp C. Heckel (binwiederhier) for ntfy, noting the Apache 2.0 / GPLv2 dual license, explaining the GitHub-release-based install path with SHA256 verification, mentioning the iOS upstream relay uses ntfy.sh infrastructure, and linking to sponsor/subscription options for users who want to support the project. The install confirmation prompt before Aerodrome downloads the ntfy binary now tells the user what they're installing and who makes it; the success modal thanks Philipp by name. Small gesture, but the right one \u2014 one-click-install tooling should never be silent about what it's installing.
+
+Tests. Python unit tests for uninstall signature, _purge_ntfy_data callability, and stale_data_present state-aware behavior all pass. Playwright 7-assertion smoke test covers: uninstall modal renders with correct title, purge checkbox present and defaults unchecked, backend receives purge_data=true when box is checked, stale-data notice appears when /api/ntfy/status returns stale_data:true, notice disappears when stale_data:false, no JS console errors. Screenshot of the uninstall modal captured at docs/screenshot-uninstall-ntfy.png.
+
+## [2.40.5] — 2026-04-20
+
+### Added
+- Notifications release \u2014 three substantial fixes plus two UX improvements, all stemming from first real-world end-to-end testing of the ntfy integration.
+
+1. Version detection fix. The Local ntfy server card showed 'Installed \u2014 version \u2014' and offered 'Upgrade to 2.21.0' against an unknown installed version. Root cause: ntfy does not have a proper version command \u2014 'ntfy version' returns 'No help topic,' 'ntfy --version' returns 'flag provided but not defined.' The real version is buried in the help output's trailing line 'ntfy 2.21.0 (7ce5e8a), runtime go1.25.8, built at ...'. New detection strategy: primary path hits GET /v1/version (a proper HTTP endpoint ntfy added in 2.17), parses the JSON response; fallback parses the help-text line via regex. Detection reads listen-http port from server.yml so it works regardless of user-customized port. Timeout kept short (2s) so stopped service doesn't stall UI. UI hardened: Upgrade button now requires version !== '\u2014' in addition to latest !== version, so stale version strings cannot produce bogus upgrade offers.
+
+2. iOS real-time push via ntfy.sh upstream relay. Messages were arriving on iPhone only on manual pull-to-refresh. Root cause: Apple APNs is the only way to wake an iOS app, and self-hosted ntfy has no APNs credentials. ntfy solves this with an upstream-relay pattern \u2014 server publishes message ID to ntfy.sh, which dispatches APNs, which wakes the phone, which pulls the body from the self-hosted server. Our v2.39.0 installer omitted this line from the generated server.yml, so iOS users silently got degraded behavior. Fix: installer now writes 'upstream-base-url: "https://ntfy.sh"' by default with a long explanatory comment block covering what it does, privacy implications (topic+message IDs visible to ntfy.sh, message bodies stay on the self-hosted server), and how to disable.
+
+3. Base URL auto-detection. Installer's generated server.yml was 'base-url: http://localhost:2586'. That URL is unreachable from a phone (localhost on phone != localhost on server), so push didn't work until users manually SSH'd in and changed it. Fix: new _detect_lan_ip() helper opens a UDP socket to a non-routable test IP and asks the kernel which interface the default route uses. Resolves to the LAN IP in typical setups. If detection fails (no default route), falls back to localhost with a prominent WARNING comment in the generated config. Known limitation documented inline: multi-homed hosts with Docker bridges / Tailscale / VPNs may pick the wrong interface, which is why the Base URL field in the UI exists for override.
+
+4. Base URL field in Notifications tab. New editable Base URL input in the 'Local ntfy server' card, wired to new POST /api/ntfy/config endpoint with partial-update semantics (send only the fields you're changing). Service restarts after successful config write. Separate from the ntfy subscription URL field above it \u2014 Base URL is what the phone uses to reach the server, subscription URL is the full topic endpoint including the topic name. UI shows amber warning banner below Base URL field if value points at localhost or 127.0.0.1, with the auto-detected LAN IP as a suggested fix.
+
+5. iOS upstream-relay checkbox in Notifications tab. Toggles 'upstream-base-url' in the live server.yml. onchange fires an immediate save (not a Save button) since toggling is atomic and users expect instant feedback. Checkbox shows with a multi-line explanation beneath it: 'iPhones can't receive real-time push from self-hosted servers directly (Apple APNs limitation). With this on, message IDs are forwarded to ntfy.sh which triggers an APNs wake-up on your phone \u2014 message bodies stay on this server. Android doesn't need it.'
+
+Backend. New update_config(base_url, upstream_relay) in ntfy_installer.py with partial-update semantics \u2014 None for either param means 'keep the current value from live config.' Five new helper functions: _read_server_port, _read_server_bind, _read_base_url, _read_upstream_relay, _detect_lan_ip. All unit-tested against six format variants covering quoted/unquoted values, IPv6 bracketed addresses, commented lines, and missing directives.
+
+Tests. Seven-assertion Playwright smoke test: Base URL populated from config, upstream checkbox state matches config, Save button renders, version displays correctly (not em-dash), no stray Upgrade button when version matches latest, localhost warning appears with detected LAN IP hint when base_url is localhost, no JS console errors. Fresh screenshot captured and replaces the v2.39.0 config-notifications screenshot in docs/.
+
+README. New 'How it works: Android vs iOS' subsection explaining the two push paths, why iOS needs the upstream relay, what information is shared with ntfy.sh (topic+message IDs not bodies), how to opt out. Base URL paragraph explains the LAN IP auto-detection and when users need to override.
+
+## [2.40.4] — 2026-04-19
+
+### Fixed
+- ntfy installer was downloading a checksums.txt file that doesn't exist. The ntfy project only publishes binary archives (ntfy_X.Y.Z_linux_amd64.tar.gz etc.) — no separate checksums text file. The installer, shipped in v2.39.0, worked in tests against a hypothetical checksums.txt URL but had never been exercised end-to-end against a real ntfy release. First real-world click of 'Install local ntfy' hit 404 on the checksums URL.
+
+Fix: use GitHub's release API (/repos/binwiederhier/ntfy/releases/tags/vX.Y.Z) which returns each asset with a 'digest' field of form 'sha256:<hex>' (a GitHub platform feature added June 2025). Look up the archive's digest, download the archive, verify locally. One fewer HTTP request than before, same security guarantee — SHA256 verification still happens before install.
+
+If the release predates GitHub's digest feature OR the asset name changes upstream, installer fails cleanly with a descriptive error rather than silently installing an unverified binary.
+
+## [2.40.3] — 2026-04-19
+
+### Fixed
+- install.sh breaks the service when invoked as 'sudo ./install.sh'. Root-owned logs/update/.backups and config.yaml mean the service (running as the user) gets PermissionError on first start.
+
+Root cause: the existing root check passed silently when SUDO_USER was set (since the resolved USER was the real user, not literally 'root'). After that, every mkdir/cp in the script ran as root, leaving directories and files the systemd service couldn't write to.
+
+Fix: after directory creation, chown -R the venv, logs, update, and .backups directories back to the resolved user. Same for config.yaml when cp'd from the example. The chowns are idempotent — running them on already-user-owned files is a no-op. Both invocation paths now work: './install.sh' (recommended — uses sudo only where needed) and 'sudo ./install.sh' (which users will do regardless of documentation). Friendly one-line notice printed when sudo invocation is detected, explaining ownership will be fixed.
+
+This is the bug that hit on first post-v2.40.1 install. 2.40.2 fixed the requirements.txt pin that was blocking pip install; 2.40.3 fixes the next thing that blocked the service from starting once pip install finally succeeded. No behavior change for users who already had a working install.
+
+## [2.40.2] — 2026-04-19
+
+### Fixed
+- Critical fix: bump-version.sh was corrupting requirements.txt. The old regex rewrote any occurrence of the previous version number bounded by non-digit/non-dot characters, which included '=' in dependency pins. That meant every release since this script existed quietly mutated 'requests>=2.32.0' → 'requests>=2.38.0' → 'requests>=2.39.0' → 'requests>=2.40.0' → 'requests>=2.40.1'. The symptom was latent for months because pip happened to find SOME package version that matched — then v2.40.1 outpaced the real requests library's actual version numbers and pip finally said 'No matching distribution found for requests>=2.40.1', breaking install.sh mid-run for any user on a fresh install or re-install.
+
+Fix 1: requirements.txt now correctly pins 'requests>=2.32.0' (real current requests version).
+
+Fix 2: bump-version.sh's regex is replaced with one that only rewrites the explicit '# Version:' (or '<!-- Version: -->' etc.) header comment that the script is supposed to manage. Other version-like strings in files (dependency pins, string literals, CSS hex codes that happen to look like versions, changelog entries) are left alone.
+
+Tested against five file styles (Python, HTML, shell, requirements.txt, YAML) with verification that header comments update but dependency pins, string literals, and other textual occurrences do not.
+
+## [2.40.1] — 2026-04-19
+
+### Added
+- A small correctness-and-UX release focused on two real problems surfaced by user feedback after v2.40.0.
+
+1. Modal alert helper + longer toast durations. The old toast helper fades after 3.2 seconds at the bottom of the screen, which is genuinely bad for install/upgrade/uninstall errors that the user needs to actually read (the multi-line 'sudo rejected' message from a stale sudoers file was the trigger). New alertModal(title, message, kind) helper shows a centered, must-dismiss dialog with kind-colored accent border (error red / success green / warning amber / info cyan). Dismissable by OK button, Escape, Enter, or backdrop click. Returns a Promise for sequencing. Duplicated across index.html, config.html, and updates.html since they're separate script contexts.
+
+Notifications tab handlers (nfSendTest, nfInstallNtfy, nfUpgradeNtfy, nfUninstallNtfy) migrated: errors always go to modal, install/upgrade/uninstall successes also go to modal since they carry substantive info (subscription URL, version installed, what was removed). Quick routine successes (test sent, settings saved, backup downloaded) stay as toasts. Backup/restore destructive actions (confirmRestoreSelected, uploadConfig) migrated from jarring native alert() dialogs to the new modal. Toast timing: routine 3s → 6s, errors/warnings 5s → 10s, so users can actually read what the toast says before it fades.
+
+2. Sudoers version check in the updater. v2.39.0 added new sudoers lines for the ntfy installer that don't exist in pre-v2.39 /etc/sudoers.d/aerodrome files. Users who updated via the gear menu (without re-running install.sh on the server) ended up with a stale sudoers file — Install local ntfy would silently fail with 'sudo: a password is required'. v2.40.1 detects and prevents this.
+
+Mechanism: install.sh now writes a '# SUDOERS_VERSION: 2' comment marker into the sudoers file. The updater's check endpoint compares the staged release's install.sh marker against /etc/sudoers.d/aerodrome (read via a new sudo-cat rule added to the sudoers itself). If they differ, /api/updates/local/check returns sudoers.needs_refresh=true and the Updates page shows an amber banner + blocks Apply. Clicking Apply opens a blocking modal with the exact one-line command to run on the server (pre-filled with the install path), a Copy-to-clipboard button, and a Re-check button that re-polls after the user runs the command. Apply button is disabled until re-check confirms the version matches. Server-side guard: apply endpoint returns 409 with sudoers_refresh_required if the drift is detected, so direct POSTs can't bypass the frontend either.
+
+Aerodrome deliberately does NOT self-refresh the sudoers file — that would be a permission-escalation risk (aerodrome user being able to rewrite /etc/sudoers.d/aerodrome means any service compromise = root escalation). User consent via explicit SSH + install.sh re-run per permission change is the design. Runs idempotently; safe to re-run anytime.
+
+Coverage. Sudoers drift detection handles five edge cases: match (safe), drift (blocks), unreadable live file (can't verify, don't block — avoids locking users out on pre-v2.40.1 → v2.40.1+ upgrade), pre-versioning staged release (old release against new live, no block), downgrade (live higher than staged, no block).
+
+Tests. 11 unit tests for _read_sudoers_version and _check_sudoers_drift covering all five edge cases plus whitespace-tolerance and the 20-line scan cap. Playwright 8-assertion smoke test of the sudoers modal flow: banner renders, modal appears on Apply, command pre-filled with install path, Apply button disabled initially, Re-check with drift shows 'Still seeing' error, Re-check with match enables Apply and hides Re-check, no JS console errors. Screenshot captured for docs.
+
+Documentation. New 'Applying sudoers updates' subsection in README explains the mechanism, why it's user-initiated, and the one-line fix command. TOC updated. Changelog entries for sudoers-changing releases will prominently call out the refresh step.
+
+## [2.40.0] — 2026-04-19
+
+### Added
+- Four items in one release, addressing user feedback: squawk codes on every tab, a redesigned drill-down panel, smart timestamp formatting, and a rewrite of the All tab that fixes a real correctness bug.
+
+1. Squawk codes. Every aircraft broadcasts a 4-digit transponder code; we now capture it in normalize(), store it on the three sightings tables (all/military/watchlist), and render it as a new column on all four tabs (Live/Watchlist/Military/All). Emergency codes — 7500 hijack, 7600 radio failure, 7700 general emergency — are tinted red with an 'EMERGENCY · HIJACK/RADIO FAIL/GENERAL' chip next to the value so they stand out in a scrolling list. Schema migration is idempotent via ALTER TABLE + catching the 'duplicate column' error; existing rows get empty string. Source-of-truth EMERGENCY_SQUAWKS dictionary exists in both server.py (for server-side annotation) and index.html (for UI rendering) — kept in sync by matching content, not by code sharing, since the two languages can't share constants.
+
+2. Drill-down redesign (Option B from the design mockups). The old cramped inline sub-table, which inherited its parent's column widths and couldn't show the extra metadata the drill warranted, is replaced by a structured panel with cyan left border. Top is a metadata grid (ICAO, registration, type, watchlist/military label, first-seen, last-seen, sighting count, latest squawk); below is a dedicated sightings table with columns sized for per-sighting data (time, callsign, squawk, altitude, speed, lat/lon, distance). Shared renderDrillPanel() used across all four tabs so the look is consistent and fixing one means fixing all. Fixed a latent bug where the sub-row DOM id was a random suffix per render — now stable per (icao, tab) so togSub is idempotent and the _restoreAllTabState persistence path no longer fights the ids.
+
+3. Smart timestamp formatter. Old fmtTime always showed 'Apr 19, 17:32:14' which is useless for today's data (most common case) and overkill for a list. New fmtTime renders today→'5:32 PM', yesterday→'Yesterday 5:32 PM', older→'Apr 14, 5:32 PM' (adds year if different from current year). fmtTimeExact variant keeps seconds precision for per-sighting drill tables. Fixed a latent bug along the way: there were two fmtTime definitions in the same script, one shadowing the other — now there's a single canonical fmtTime plus the distinct fmtTimeExact for where seconds matter.
+
+4. All tab rewrite + pagination. Old implementation had a hidden 5,000-row cap on raw sightings, which silently truncated 'last 7 days' to the most recent few minutes of data on busy receivers (reported as a bug by a user whose receiver sees 10,000+ aircraft/day). New implementation: server-side GROUP BY returns one row per unique aircraft with COUNT/MIN(seen_at)/MAX(seen_at), paginated with limit+offset. Client gets total_count + has_more flag and can request the next page via a Load More button. Page size configurable at load time via a dropdown (100/200/500/1000, default 200); default also configurable in config.yaml via the new all_tab.default_page_size key (validator accepts 10-10000, LIVE_KEY so changes apply without restart). Per-aircraft sighting history is now lazy-loaded on drill expand via a new GET /api/all/drill endpoint — avoids sending megabytes of sightings the user might never look at, and drill sightings respect the user's current filter window (7-day filter = 7-day drill) so context stays consistent. Added a composite (seen_at, icao) index on all_sightings so the GROUP BY query is an index-only scan for large windows. Visible truncation banner on drills that hit their cap and on the 'Showing N of M' status line — never silently clip.
+
+Under-the-hood. Collector's _normalize_squawk handles None/empty/int/zero-padding consistently with how server._normalize_squawk_str handles the live endpoint's squawk field (they produce the same shape for the frontend so stored rows and live aircraft render identically). New composite index idx_all_seen_icao on all_sightings lets the planner do an index-only scan for the grouping query. Tests: 6 tests for _normalize_squawk (None, empty, '1200', '0200', '200', bare int); 3 tests for migration (fresh install, re-run idempotence, realistic upgrade from v2.39.x preserving existing data); 6 tests for config validator (optional, valid, too-small/too-big/string/bool rejected); manual SQL correctness/pagination/drill test with 100 fake aircraft; 13-assertion Playwright smoke test of the UI covering render, squawk column, emergency chips, Load More button state, drill panel + lazy fetch, page size change.
+
+README. Updated 'All tab' feature bullet to reflect the pagination model and call out the bug fix explicitly. Added new 'Squawk codes', 'Drill-down panel', and 'Smart timestamps' feature bullets. New 'All tab' configuration sub-section documenting default_page_size. New screenshot-all.png showing the drill panel open with the truncation banner and two emergency squawk chips visible (one on the row, one in metadata grid). TOC updated.
+
+## [2.39.0] — 2026-04-19
+
+### Added
+- Push notifications via ntfy. Aerodrome can now send push notifications to your phone for notable events: receiver offline (default on), receiver recovered (default on), watchlist hits, new all-time records, and named special aircraft sightings. Off by default — opt in per-event from the new Notifications tab on the Configuration page. A daily-summary event is reserved but not wired up yet (coming in a later release).
+
+Two setup paths. Public ntfy.sh is the 30-second option: pick a hard-to-guess topic name, set the URL, subscribe from the ntfy mobile app. Self-hosted is the private option: a one-click installer in the Notifications tab downloads the ntfy binary from GitHub (SHA256-verified against the release checksums file), writes a minimal server.yml, installs a systemd unit at /etc/systemd/system/ntfy.service, enables + starts the service, and auto-fills the subscription URL. Defaults to port 2586 binding 0.0.0.0 so phones on the same LAN can subscribe directly. Users who want remote-access are directed to a new 'Remote access' section of the README that recommends Tailscale over port-forwarding (Aerodrome has no auth; exposing it publicly is bad).
+
+Three layers of flood protection. (1) Per-event cooldowns: watchlist_hit default 10min, special_aircraft default 30min — suppresses repeat notifications for the same aircraft within that window. receiver_offline/recovered and new_record never cooldown. (2) Per-hour rate limit: hard ceiling across all events (default 20/hr) in case something goes pathologically wrong. (3) Quiet hours: optional HH:MM window (evaluated in the Stats-tab timezone, handles cross-midnight wrap naturally) that suppresses everything except the Send Test action.
+
+Under the hood: new notifier.py (~350 lines) with thread-safe Notifier class — update_config, notify(event, title, body, priority, tags, aircraft_icao), send_test(url), recent(limit), drop_counts(). In-memory state only; cooldowns and rate-limit counters reset on service restart. Best-effort delivery: network failures are logged but never raised, so a broken notification pipeline cannot break the collector. Full pytest-style coverage with 15 passing scenarios including cross-midnight quiet-hours, NEVER_COOLDOWN bypass for rare events, unknown-event rejection, timeout handling, and live config reloads.
+
+Collector integration in collector.py: set_notifier() hook, _safe_notify() wrapper that swallows exceptions, consecutive-failed-poll counter that fires receiver_offline after N failures (configurable, default 5 polls ≈ 5 min) and receiver_recovered on the next successful poll. watchlist_hit fires on every watchlist INSERT; special_aircraft fires when an aircraft has a non-empty special_label (from military.special_aircraft config); new_record fires from inside _update_record when the UPDATE branch runs (never on first-ever record — baseline established silently so users don't get blasted with alerts on first install). 7 integration tests pass.
+
+ntfy_installer.py (~430 lines): install_status() returns one of not_installed/aerodrome_managed/external/partial; install(port, bind, topic) is idempotent; upgrade() pulls latest release and swaps the binary; uninstall() stops/disables/removes. All privileged operations go through sudo with paths explicitly whitelisted in /etc/sudoers.d/aerodrome (extended by install.sh). Binary staging goes through /var/cache/ntfy/staging/ntfy (owned by the aerodrome user, not world-writable, sudoers rule pins the exact source→dest pair). SHA256 verified against the release checksums.txt. 8 safe-to-test scenarios pass in sandbox; full install/upgrade/uninstall lifecycle exercised only at deploy time.
+
+7 new API endpoints: GET /api/notifications/status (counter snapshot + enabled/URL summary), GET /api/notifications/recent?limit=20 (ring buffer of last 100 notification attempts with reason for each suppression), POST /api/notifications/test (optional url override body), GET /api/ntfy/status (install state + latest-available version for the Upgrade button), POST /api/ntfy/install (port+bind+optional topic), POST /api/ntfy/upgrade, POST /api/ntfy/uninstall.
+
+Config schema (config.yaml.example): new notifications: block with comprehensive comments covering url format, priority levels, event list, cooldowns, rate limit, quiet hours, offline threshold, and daily-summary time. Validator (config_validator.py): new helpers _validate_hhmm, _validate_url_scheme, _validate_ntfy_priority; full section validation with 14 passing edge-case tests (empty URL when enabled, wrong scheme, invalid priority, unknown event, non-bool event values, negative rate limit, invalid HH:MM, negative cooldowns, etc.). Marked LIVE_KEY so notifications config changes apply without a service restart.
+
+Notifications tab UI (templates/config.html, ~450 lines added): master enable + URL field + priority dropdown, send-test button with URL override (tests the value currently in the form, not the saved value, so users can verify a URL before committing), local ntfy panel with state-aware rendering (install button when not_installed, status+upgrade+uninstall when aerodrome_managed, pass-through message when external, repair option when partial), event toggles with descriptions, cooldown/rate-limit/offline-threshold number inputs, quiet-hours fields, and a scrolling recent-notifications log with color-coded dots (green=sent, red=error, amber=rate-limited, gray=quiet-hours). 18 Playwright assertions pass.
+
+install.sh sudoers rule extended with ntfy-specific commands, every path pinned — no wildcards. The staging design means the sudoers whitelist for binary installation is exactly 'install -m 0755 /var/cache/ntfy/staging/ntfy /usr/local/bin/ntfy' — nothing broader.
+
+README updates: new Remote access section after Architecture (Tailscale recommendation, explicit 'Aerodrome has no auth' framing, why-not-port-forwarding explanation), new Notifications section under Configuration covering both setup paths with full YAML example, new feature bullet in Features list, new screenshot bullet, ntfy added to Acknowledgments, notifier.py and ntfy_installer.py added to project structure diagram, Table of Contents updated. New screenshot-config-notifications.png generated by the Playwright harness with mocked API responses showing the tab in realistic use (non-install state, populated recent-notifications log with one sent offline alert, two watchlist hits, one cooldown-suppressed, and one new-record).
+
+What's deferred to a follow-up release: daily-summary event (stub config wired, but not yet computed/sent), standalone install-ntfy.sh CLI script for non-UI installs, QR code generation for the subscription URL in the install modal (pure-JS QR encoder deferred — users can copy the URL manually or scan via the ntfy app's URL input).
+
+## [2.38.7] — 2026-04-19
+
+### Changed
+- Add a dedicated screenshot for the Configuration page's Stats section. The existing screenshot-config.png shows the Receiver tab of the Configuration editor, but the Stats tab has significantly more going on — timezone picker, auto-refresh interval, the v2.37.0 continuous-track-gap dropdown, new-record alert color and dismissal timing, and drag-and-drop reordering of the eight stat sections with individual card toggles. screenshot-config-stats.png was generated by the screenshot harness back in v2.37.0 but never referenced from README. Added a paired screenshot entry right after the main Configuration screenshot with a caption calling out the specific controls, giving users a preview of the depth of configuration available without requiring them to install first.
+
+## [2.38.6] — 2026-04-19
+
+### Changed
+- changelog maintenance
+
+## [2.38.5] — 2026-04-19
+
+### Fixed
+- Fix alignment of the architecture diagram in README. The middle box ('Ubuntu Server / Aerodrome / Python + SQLite') had content rows that were one character wider than its top and bottom borders — 22 inner spaces vs 21 dashes — so the right border of that box rendered one column to the right of where the corners sat. Every renderer with a true monospace font would show the content floating outside its own top/bottom borders, and the rightmost box appeared detached. Removed the extraneous trailing space from each of the three middle-box content lines so all five diagram rows now have identical corner positions [0, 18, 26, 48, 56, 71] and a uniform 72-character width.
+
+## [2.38.4] — 2026-04-19
+
+### Changed
+- README: expand the Acknowledgments section to credit the four external tracking providers added in v2.36.0 alongside the existing hexdb.io and airplanes.live acknowledgments. The Track ↗ column in every aircraft listing can now link out to any of five providers (selected via the Configuration page), and all of them deserve a mention: airplanes.live (default + fallback), FlightAware, Flightradar24, AirNav Radar, and Plane Finder.
+
+Framing distinguishes integration depth so readers understand the relationships: hexdb.io gets its own bullet (server-side API calls, core dependency), the receiver software community (readsb/dump1090/tar1090) gets its own bullet, and the five external trackers are grouped under a single bullet clarifying they're link-out destinations from the Track ↗ column — we don't call their APIs, we just build URLs that open in the user's browser. URLs verified against the TRACK_LINK_URLS builder in templates/index.html.
+
+## [2.38.3] — 2026-04-19
+
+### Changed
+- Documentation update: bring the README in line with features shipped across v2.36.0-v2.38.2. Gaps closed:
+
+1. Project structure diagram expanded to include all files that actually ship (templates/docs.html, templates/logs.html, CHANGELOG.md, CONTRIBUTING.md, LICENSE, UPDATE_README.md, scripts/README.md). The previous diagram only listed the original four templates and a partial root-file set.
+
+2. v2.37.0 Stats quality filters now documented. The type-aware speed ceiling (rejects glitched transponder readings like a B763 at 1010 kt), the 40-kt floor for 'slowest' (keeps airport service vehicles out), and the gap-aware 'longest continuous track' detection (prevents a dawn-and-dusk brief sighting from showing as a 22-hour track) are all described in the Stats feature bullet. The new track_gap_minutes config key gets a dedicated Configuration section.
+
+3. v2.38.0 drill-click-to-All-tab navigation documented. The Stats feature bullet now describes that clicking any drill-table row jumps to the All tab with the aircraft filtered in and the record-setting sighting highlighted in cyan.
+
+4. v2.38.2 Clear button on the All tab documented in the All tab feature bullet.
+
+5. New Configuration sub-sections added for 'Logging' (was previously undocumented) and 'Stats' (new, covers track_gap_minutes and refresh_interval). Both linked from the Table of Contents.
+
+Also validated that all claims in the existing README still check out at v2.38.3: 4 watchlist alert trigger modes, 18 drillable cards (10 stat-card drills + 5 list-row drills + 3 chart-bar drills), 8 Stats sections, 5 track-link providers, 60-second default poll interval, all referenced screenshot files present in docs/, all doc slugs in the docs.html viewer backed by actual files on disk. CHANGELOG.md currency matches VERSION.
+
+## [2.38.2] — 2026-04-19
+
+### Added
+- Clear button next to Apply on the All tab. Full reset to defaults with a single click: preset returns to 'Today', date range snaps to today's bounds, search box is emptied, and any active drill-click highlight + persistent-expansion state is cleared. Styled as a ghost button (btn btn-ghost) to sit visually subordinate to the primary Apply action beside it.
+
+Implementation reuses setPreset('today') at the end of clearAllFilters() which handles both the date-field updates and triggers the data fetch, so one click reliably gives the user a clean slate with fresh data. The highlight/expansion clear happens BEFORE the fetch so there's no flash of stale state while the render runs.
+
+Playwright smoke test: 9 assertions pass covering button-present-in-DOM, label-reads-Clear, dirty-state-setup (7d preset + search text + active highlight + expanded sub-row), then after Clear: preset=today, search empty, _allTabHighlight null, _allTabExpanded empty, no .row-highlighted or .subrow-highlighted in DOM, Today preset visually active. Screenshot regenerated to show the button in context.
+
+## [2.38.1] — 2026-04-19
+
+### Fixed
+- Fix two issues with the v2.38.0 drill-click-to-All-tab feature: (1) highlight was a 2.2s pulse that was too quick to be useful while a user was actually investigating an aircraft, and (2) if the 60s auto-refresh fired while the user was reading the aircraft's sighting history, the expanded sub-rows would collapse and the highlight would vanish — the thing the user just clicked on could unexpectedly close.
+
+Made the highlight persistent. Visual treatment is now a cyan left-border accent plus a faint cyan background tint (matching the established .row-sp pattern for military/special aircraft), rather than a brief pulse animation. Same treatment applied to the primary row AND to the specific sub-row representing the record-setting sighting.
+
+Also fixed the refresh-state-loss problem. The root cause was that render('all') was regenerating the tbody innerHTML on every refresh, which regenerated all sub-row <tr> elements with new random UUIDs — destroying any DOM state (open class, pulse class) the user had. Now each render call ends with _restoreAllTabState() which walks the newly-rendered tbody and re-applies two pieces of persisted state: the set of ICAOs whose sub-rows should be expanded, and the highlight. Sub-row matching for the highlight is now done via data-seen-at attributes on each <tr> (embedded at render time) rather than by parsing the formatted time string out of the Seen column — robust against future display-format changes.
+
+Bonus fix: manually-expanded sub-rows also now survive auto-refresh, for any aircraft on the All tab, not just ones selected via drill-click. togSub() maintains an _allTabExpanded Set that is read by _restoreAllTabState() on re-render. This was a latent bug the whole time — if a user manually expanded an aircraft's sightings and waited 60s, the rows used to collapse unexpectedly.
+
+Clear triggers wired in five places:
+- Switching away from the All tab (go() hook)
+- Typing a different ICAO in the search box (input listener, fires as soon as text diverges from highlighted ICAO)
+- Clicking a preset button (Today / 7d / 30d / Custom — new setPresetUserClick() wrapper that clears first, then delegates to the original setPreset which is called programmatically by the drill jump)
+- Expanding a DIFFERENT aircraft's sub-rows (togSub hook)
+- Clicking a new drill-table row (implicit — the new click overwrites _allTabHighlight with the new target)
+
+Tested end-to-end with Playwright: 12 assertions across 6 scenarios including drill-click-applies, refresh-preserves, tab-switch-clears, different-aircraft-click-clears, search-box-input-clears, preset-click-clears, same-aircraft-toggle-DOES-NOT-clear. All pass.
+
+## [2.38.0] — 2026-04-19
+
+### Added
+- Click a row in an expanded stat card's drill-down table to jump to the All tab with that aircraft filtered in and the record-setting sighting pulse-highlighted. Solves the workflow where a user expands a card like Fastest, sees an aircraft worth inspecting further, and wants to see its full context — altitude, prior sightings, position history — without manually typing the ICAO into the All tab search box. After the jump, the normal Track ↗ column is right there for opening the external tracking provider's page.
+
+Backend correctness fix along the way: drill queries for fastest, slowest, highest_altitude, and lowest_altitude used to return MAX(seen_at) as the row's seen_at value — i.e. the most recent sighting of that aircraft. But the drill row represents the record-setting moment, so seen_at should be the timestamp of the sighting where the peak occurred, not the latest. Rewrote the four queries with a CTE + self-join pattern: inner CTE finds the per-ICAO peak (max speed, min speed, max altitude, min altitude), outer query joins back to find the specific sightings at that peak and picks MIN(seen_at) as tiebreaker. The furthest card was already correct (Python-side logic picked the max-distance row and kept its timestamp); longest_track uses last_seen from its gap-aware session which is the natural 'achievement moment' for a duration record.
+
+Frontend: renderDrillTable marks each row clickable with a cursor-pointer cue and hover styling. New JS functions jumpToAllTabForAircraft, _awaitAllTabDataForIcao, _applyAllTabHighlight, _findAllTabRowForIcao, _pulseRow handle the transition. _awaitAllTabDataForIcao polls D.all briefly because setPreset('today') triggers fetchAll without returning its promise; polling up to 3 seconds then proceeds with whatever landed. The miss case (aircraft didn't appear in the filtered All data, e.g. outside the date range) surfaces via the existing toast() helper. CSS animation @keyframes row-pulse-kf fades cyan background in at 10% and out over 2.2s, auto-removed after a cleanup timeout. Existing drill-panel child-click guard in toggleDrill already prevents the row click from collapsing the card above it.
+
+Playwright smoke test confirms end-to-end: after invoking jumpToAllTabForAircraft('AD7E6F', <seen_at>) on a page with synthetic All data containing that ICAO, activeTab becomes 'all', the search box is set to the ICAO, sub-rows auto-expand, and the specific sighting row receives the pulse class. Also: SQL smoke test for the record-moment queries confirms XXXX01's 500-kt peak at t+2h is returned (not the latest t+3h reading at 400 kt), YYYY01's tied peak picks the earlier occurrence via MIN(seen_at), glitched B763 at 1010 kt is filtered by the Python-side cap (from v2.37.0), and TIS-B pseudos are excluded throughout.
+
+Also fixed a SQL ambiguity bug introduced while writing the JOIN queries: 'AND icao NOT LIKE %~%' in the outer WHERE was ambiguous because both the CTE and the joined table had an icao column. Resolved by removing the redundant outer filter — the CTE filter already ensures no pseudos get joined.
+
+## [2.37.0] — 2026-04-19
+
+### Added
+- Quality filters for the Stats 'Today's Extremes' cards. Fixes three classes of corruption the user reported: transponder glitches reporting impossible speeds (e.g. a B763 at 1010 kt when the airframe maxes at ~500 kt), airport service vehicles / stopped aircraft producing 'slowest: 1 kt' readings, and dawn-and-dusk single-row ICAO patterns showing as '22h continuous track' because MAX(seen_at)-MIN(seen_at) didn't detect gaps.
+
+Three filters added:
+
+(1) Type-aware speed ceiling for the Fastest card. Curated frozenset of ~150 common ICAO type codes covers subsonic commercial, business jets, GA, common helicopters, and subsonic military transports — these get a 700 kt cap. Everything else (unknown types, fighters, recon, test aircraft) gets a permissive 1500 kt cap, chosen to keep headroom for a legitimately-fast F-22 or similar with tailwind. Implemented via collector.speed_ceiling_for_type() helper so the same logic applies in both the stats summary queries AND the collector's real-time all-time-record updates AND the first-run backfill migration. Without the collector-side filter, future polls would still pollute fastest_ever with new glitch readings even after the display filter rejected them.
+
+(2) Ground-vehicle floor of 40 kt for the Slowest card. Excludes airport service vehicles, stopped aircraft, and near-landing edge cases that shouldn't dominate the superlative.
+
+(3) Gap-aware session detection for the Longest Continuous Track card. Uses SQLite window functions (LAG + SUM OVER for session IDs) to partition each ICAO's sightings into sessions separated by gaps larger than stats.track_gap_minutes, then reports the longest session. Configurable via new setting with options 2/5/10/15/30 minutes on the Stats config page; default 5; valid 1-60. Live-applicable via existing stats-parent LIVE_KEYS membership. Without this, an ICAO that broadcast briefly at 01:00 and reappeared at 23:00 would show as a 22h continuous track — the user observed exactly this.
+
+Plus a cross-cutting filter that excludes TIS-B/MLAT pseudo-targets (ICAOs starting with '~' in dump1090 convention) from all extremes queries, both summary and drill-down. These relay ATC data and are frequently ground vehicles or imprecise readings — never legitimate record-setters.
+
+Shared helpers (speed_ceiling_for_type, is_pseudo_icao, SUBSONIC_AIRFRAMES frozenset) housed in collector.py so both the collector and server import from one source of truth. Config validator gains _validate_track_gap_minutes with range check. Config page Stats tab gains a new 'Continuous track gap' dropdown with a hint explaining the 22h-track problem.
+
+Tested: 37 passing tests across five categories — speed_ceiling_for_type (15 cases covering commercial, GA, military, fighter, unknown, case/whitespace edge cases), is_pseudo_icao (7 cases), validator integration (13 cases including the 1-60 range boundaries and type coercion rejection), LAG-based gap SQL against a synthetic DB with known-continuous, known-split, and dawn-dusk patterns (the original 22h bug does NOT recur in the output), and the Python-side fastest filter loop (4 cases including the B763-vs-F22 example).
+
+Screenshots regenerated: Stats tab now shows Fastest 597 kt (A321), Slowest 84 kt (C172), Longest 1h 10m — all realistic post-filter values. New screenshot-config-stats.png captured showing the Stats config tab with the new Continuous track gap dropdown.
+
+## [2.36.6] — 2026-04-19
+
+### Changed
+- Remove browser-console diagnostic logs added during v2.36.3 triage of the Track ↗ fallback issue. The root cause (wrong hexdb URL path) was identified and fixed in v2.36.5, so the [refreshTails] and [trackLink] console spam is no longer useful — just noise on every page refresh. Kept in place: the /api/resolve-tail/debug endpoint, the collector's _icao_resolver_stats, and the INFO-level 'resolver working' log on first successful lookup. These are cheap, not user-visible unless someone goes looking, and will be handy if a similar issue arises in the future.
+
+## [2.36.5] — 2026-04-19
+
+### Fixed
+- Fix hexdb.io URL path for ICAO→tail lookups. The v2.36.0 implementation of resolve_icao_to_tail used 'https://hexdb.io/api/v1/aircraft/icao/{hex}' — an incorrect path that 404s for every request. The correct path is 'https://hexdb.io/api/v1/aircraft/{hex}' (no /icao/ segment; the hex goes directly after /aircraft/). The buggy implementation mistakenly mirrored the tail→ICAO resolver's /aircraft/registration/{reg} path, assuming the reverse lookup would have a symmetric /icao/{hex} form. It doesn't. Consequence: every Track ↗ link for FR24, AirNav, and PlaneFinder fell back to airplanes.live across v2.36.0 through v2.36.4, because the URL always 404'd, the 404-HTML-body failed to parse as JSON (Registration field absent), and the resolver treated that as 'aircraft not in hexdb' and negative-cached it.
+
+The same incorrect URL also appeared in the /api/status hexdb_resolver health check, which used 'r.status_code in (200, 404)' as the 'healthy' predicate. 404 was treated as 'unknown ICAO — service is up' — a reasonable assumption for a valid URL, but the actual 404s were 'URL not found on server', which allowed the bug to mask itself: the Status tab showed hexdb as healthy across all four broken releases. Fixed by (a) using the correct URL, (b) probing with a known-good hex (4010EE, the easyJet A319 used as hexdb's own docs example), (c) requiring status 200 AND a populated Registration field in the response body for the check to report ok. A future hexdb API change that silently alters the response schema will now surface as a warning rather than a silent failure.
+
+Same URL bug also appeared in templates/index.html's lookupTail() function (used when adding aircraft to the watchlist). Fixed there too.
+
+## [2.36.4] — 2026-04-19
+
+### Fixed
+- Inline tail resolution on /api/resolve-tail with a 3-second time budget. Diagnostic logs showed users clicking Track ↗ links immediately after page load were getting fallback URLs because the background worker resolves at 2 req/sec (10s for 20 ICAOs), and on high-churn Live tabs aircraft often disappear before the worker catches up. The endpoint now resolves uncached ICAOs inline (up to ~3s total, via asyncio.to_thread so the event loop stays responsive) before returning. At hexdb's typical ~200ms response time that covers roughly 15 cold lookups synchronously per request; anything beyond the budget falls back to the background worker as before. Subsequent requests for the same ICAOs hit the cache and return in <1ms. Tested with 7 scenarios including empty input, all-cached (0ms), 5-inline, budget enforcement (4/25 with 1s budget), mixed cache state, 404 handling, and second-request cache hit (0ms).
+
+## [2.36.3] — 2026-04-18
+
+### Fixed
+- Browser-console diagnostics for Track ↗ link fallback bug. Server-side debug endpoint showed queue_seen_lifetime=0 with a planefinder-configured provider, meaning /api/resolve-tail has never been called by the browser — diagnosis shifted from 'is hexdb reachable' to 'is refreshTails running'. Added console.log tracing: refreshTails logs its decisions (entry, early-exit reasons with the trackProvider value, ICAO collection counts per tab, fetch attempts, response counts); trackLink logs the first 3 fallback-to-airplanes-live events per page load with the trackProvider and tailMap size so operators can see at a glance whether tail resolution ran. Throttled after 3 entries to avoid console spam since trackLink runs on every table render. No behavior change; purely observability for triage.
+
+## [2.36.2] — 2026-04-18
+
+### Fixed
+- Diagnostics for ICAO→tail resolver. Users reported Track ↗ links always falling back to airplanes.live even after waiting — symptom could be 'cache is cold, be patient' (Scenario A) or 'hexdb.io is unreachable from this host' (Scenario B), and silent-fail made these indistinguishable. Three changes to make the difference visible.
+
+(1) New /api/resolve-tail/debug endpoint returning cache stats (size, positive/negative breakdown, queue depth), worker liveness (thread.is_alive()), and resolver_stats (attempts, successes_positive, successes_negative, network_errors, last_error, last_success_icao). If attempts > 0 but successes_* == 0 and network_errors == attempts, hexdb is unreachable — immediately clear from curl -s /api/resolve-tail/debug | python3 -m json.tool.
+
+(2) Better logging in collector.resolve_icao_to_tail: first successful resolution logs at INFO ('resolver working: X → Y'), first network error logs at ERROR with a suggested curl diagnostic command ('check that hexdb.io is reachable: curl https://hexdb.io/api/v1/aircraft/icao/...'), subsequent errors step down to WARNING then DEBUG to avoid log spam when hexdb is down. Previously all errors logged at WARNING with no INFO signal on success, so logs gave no clear 'is it working' signal.
+
+(3) Worker startup logs at INFO when the background thread starts, including the debug endpoint hint.
+
+_icao_resolver_stats counters added alongside _ICAO_CACHE in collector.py; reset on process start. Four additional unit tests verify the stats tracking. No behavior change for users whose resolver is working; this purely adds visibility.
+
+## [2.36.1] — 2026-04-18
+
+### Fixed
+- Fix Track ↗ links for Flightradar24, AirNav Radar, and Plane Finder. The v2.36.0 implementation passed the ICAO hex to all five providers 'for consistency', but these three sites key their aircraft pages on the registration (tail number), not the hex — FR24 uses flightradar24.com/data/aircraft/{REG}, AirNav uses airnavradar.com/data/registration/{REG} (the v2.36.0 code was also using the wrong /data/aircraft/ path for AirNav), and Plane Finder uses planefinder.net/data/aircraft/{REG}. Feeding them hexes landed on empty/not-found pages. airplanes.live and FlightAware continue to work with hex directly (airplanes.live is a tar1090 map expecting ?icao={hex} natively; FlightAware's /live/modes/{HEX}/redirect path accepts hex and redirects internally to the registration page).
+
+Architecture: added resolve_icao_to_tail to collector.py mirroring the existing resolve_tail_to_icao, with its own _ICAO_CACHE (positive and negative lookups cached to avoid repeat hexdb.io hits). Added GET /api/resolve-tail?icaos=... endpoint to server.py. The endpoint never blocks on external HTTP: it returns only currently-cached entries, and queues unresolved ICAOs to a background thread that drains at ~2 req/sec to be polite to hexdb's free API. Frontend gains a tailMap client-side cache + refreshTails() helper mirroring refreshFirstSeen, hooked into refresh() and fetchAll(). refreshTails is a no-op when the user's configured provider is airplanes.live or FlightAware, so users who stick with the default pay zero cost.
+
+URL builders refactored to take (hex, reg). The three registration-based providers build the reg URL when reg is truthy, else fall back to the airplanes.live URL so the link is never broken — just not on the configured provider for that particular row. Consequence: first page load after changing to FR24/AirNav/PlaneFinder shows airplanes.live fallback for unresolved rows; within ~30 seconds the background worker warms the cache and subsequent renders use the provider-specific reg URL. Negative-cached ICAOs (e.g. anonymized privacy ICAOs with no known registration) stay on fallback rather than flicker.
+
+Tested: 9 collector unit tests with mocked hexdb (happy path, cached positive, 404, cached negative, empty Registration, network error, input normalization, empty input, URL format); 14 frontend URL-builder tests covering 5 providers × (reg-present, reg-missing) plus hex/reg casing edge cases; 7 endpoint-logic tests covering empty input, mixed cache states, queueing, dedup, 500-ICAO cap, response shape.
+
+## [2.36.0] — 2026-04-18
+
+### Added
+- Two user-facing additions. (1) Configurable Track ↗ link provider. The 'Track ↗' link next to every aircraft row previously hardcoded globe.airplanes.live as the destination; it's now configurable via a new receiver.track_link_provider setting with five supported providers: airplanes_live (default, unchanged), flightaware, flightradar24, airnavradar, and planefinder. Swap the provider from a dropdown in the Configuration page's Receiver section; applies live without a service restart (added to LIVE_KEYS). Frontend uses a table-driven URL builder (TRACK_LINK_URLS) so adding a sixth provider in the future is a one-line addition plus a matching dropdown option. All providers accept the ICAO hex as identifier for consistency — a few (FR24, AirNav, PlaneFinder) render slightly richer pages when given a registration, but we don't always have tail-resolved so hex wins for simplicity. Validator rejects unknown values; missing/empty falls back to the default. (2) First-seen context chips on every aircraft row (Watchlist, Military, and All tabs — not Live since Live is about 'right now'). Small subdued chip next to the label (Watchlist) or callsign (Military, All) reads 'first seen X ago' where X is hybrid-formatted: 'today' under 1 hour, 'Xh ago' same day, 'Xd ago' under 30 days, and absolute 'Mon D, YYYY' for older. Data comes from the existing seen_aircraft table (maintained by the collector for the Stats first-time-seen card — no new collection or schema changes). New GET /api/first-seen?icaos=... endpoint batches lookups into one round-trip per render; a single 60s refresh covers all three tabs' visible rows. Failures render zero chips rather than surfacing errors, since the chip is decorative. Regenerated screenshot-watchlist, screenshot-military, screenshot-all, and screenshot-config to show the new UI. Screenshot harness gained a FIRST_SEEN synthetic-data block with ages chosen to exercise all three formatter branches, plus an intercept for /api/first-seen.
+
+## [2.35.2] — 2026-04-18
+
+### Fixed
+- Fixed the Watchlist tab not refreshing after a watchlist entry is removed, so deleted history rows visually lingered in the table until the next 60-second auto-refresh interval or a manual page reload. Root cause: v2.35.0's confirmRmWl (triggered by the ✕ on a chip) and confirmClearWlHistory (triggered by the new Clear history button) both called render('watchlist') after the server-side delete succeeded. render() only repaints the DOM from the in-memory D[tab] cache; it doesn't re-fetch. So after a 'Remove + delete history' or Clear history, the table redrew from the stale client-side aircraft cache — showing rows for sightings that no longer existed on the server. Fix: both handlers now call the tab-specific fetcher instead. confirmRmWl calls refresh() (same thing the 60s auto-refresh timer does — re-pulls Live, Military, and Watchlist from the server), which also handles the +/✓ button states on the other tabs via the same render path. confirmClearWlHistory calls fetchWatchlist() directly since only the Watchlist tab's data needed refreshing. The All tab is untouched in both cases because it reads from all_sightings, not watchlist_sightings, so a watchlist history delete has no effect on what it shows. No UI changes, no screenshot regen needed.
+
+## [2.35.1] — 2026-04-18
+
+### Fixed
+- Fixed CPU reporting on the System status card, which consistently showed near-zero even when top/htop showed material usage. Root cause: _get_system_info() called psutil.cpu_percent(interval=0.1) — a 100ms blocking sample. Aerodrome polls the receiver every 60 seconds, so the process is idle most of the time; a 100ms sample almost always landed in an idle window and read near-zero even while the host was at 25% average. Switched to the non-blocking delta pattern psutil's docs actually recommend: prime cpu_percent once at module import, then call cpu_percent(interval=None) on each request — which returns the percentage over the interval since the last call. For the Status page's default 10-second auto-refresh that gives a stable 10-second rolling average matching what top/htop report. Side benefit: each /api/status request is ~250x faster (101ms → 0.4ms measured locally) since it no longer blocks on a sampling window. Also added process_cpu_percent and cpu_cores fields and a second 'CPU (Aerodrome)' row on the System card, normalized to 0-100 by dividing proc.cpu_percent() (which returns up to N*100 on N cores) by psutil.cpu_count(). Now users can see host load vs Aerodrome's own slice at a glance. Existing 'CPU' row relabelled 'CPU (host)' and shows core count inline. Memory and disk reporting unchanged — those are instantaneous snapshot quantities and don't suffer from the sampling window problem. Updated scripts/screenshots.py synthetic status payload to include the new fields and regenerated docs/screenshot-status.png. Verified the new _get_system_info() returns all 8 expected fields, is non-blocking (0.5ms vs the old 100ms), and that the priming-at-import step means the first /api/status request after a service start returns real numbers rather than zeros.
+
+## [2.35.0] — 2026-04-18
+
+### Added
+- Watchlist history management. Two user-facing additions to the Watchlist tab. (1) Removing a watchlist entry now opens a confirmation modal that shows how many historical sighting rows would be affected (queried from a new /api/watchlist/history/count endpoint before the modal is shown, so the user knows exactly what 'delete history' will touch). The modal offers three outcomes: Cancel, Remove entry only (the previous behavior — config shrinks, DB untouched), or Remove + delete history (config shrinks AND all watchlist_sightings rows matching the removed entry's label are deleted). The primary 'Remove + delete history' button is styled red to signal destructive intent. Disabled when the count is 0 or the entry has no label. (2) New Clear history button on the Watchlist tab's action row, next to Export. Opens a second confirm modal that shows the total row count and a red warning note explaining the action clears sightings history only (watchlist entries themselves are preserved). Confirming hits a new /api/watchlist/history/clear endpoint that does DELETE FROM watchlist_sightings. Backend: /api/watchlist/remove now accepts an optional delete_history boolean (defaults to false for backward compatibility with any existing clients) and looks up the matched entry's label before removing it so the label-based DELETE can run as a second step inside the same request. Matching semantics chosen: label-based. watchlist_sightings already has a watchlist_label column stamped at collection time, so delete-by-label is a single indexed query with no schema migration. Trade-off: if two watchlist entries share a label, removing one with delete_history=true will delete both's historical rows. This is made explicit in the confirm dialog's count — the user sees the honest number before confirming. Add a new .btn-ghost.btn-danger CSS variant so the Clear history button stays visually quiet in the toolbar but turns red on hover. Verified with a 10-scenario stdlib test: per-label counts, total count, missing label, remove without history delete preserves all DB rows, remove with history delete purges only matching rows, 404 on nonexistent entry, remove by model substring, shared-label collision behaves as advertised, clear-all is idempotent, empty-label entry with delete_history=true safely skips the SQL. Regenerated screenshot-watchlist.png to show the new Clear history button. No schema changes.
+
+## [2.34.7] — 2026-04-18
+
+### Fixed
+- Fixed the in-app Documentation viewer flattening fenced code blocks that live inside list items (e.g. the directory-tree diagrams in update/UPDATE_README.md and the bash example in CONTRIBUTING.md). Root cause: two regexes in the custom JS markdown renderer were anchored to zero indent. The main-loop fence opener (/^```/) and the paragraph-continuation terminator (/^```/) both failed to recognize fences indented by list-item continuation whitespace. When a fence lands in the main loop still carrying its 3-space indent (after the blank line that closes the list item's continuation loop), the opener didn't match, so the fence's interior was swept into a paragraph and flattened — newlines replaced with single spaces, tree characters smooshed together. Fix: both regexes now tolerate leading whitespace (^\s*```), and the opener captures the indent width so interior lines can be de-indented before joining with 
+. Also hardened collectListItems' continuation terminator with the same tolerance, for the (not-currently-used but valid CommonMark) case of a fence tucked directly under a list marker with no blank line. Added a 'Known limitations' block to the renderer header documenting what's still not supported by design (nested lists, multi-paragraph list items, setext headers, lazy blockquote continuation) with a note that full CommonMark should be a real library, not incremental hardening of this ~180-line file. Verified with a Node harness that extracts and runs the renderer against all 4 project docs: UPDATE_README.md now produces 2 correctly-rendered tree blocks + 1 bash block (was 0 before the fix, all flattened into paragraphs); CONTRIBUTING's bash fence inside the pull-request steps now renders as a clean pre block; README, CHANGELOG, scripts/README unchanged. Screenshot regeneration intentionally skipped: scripts/screenshots.py' docs harness lands on the synthetic README tab which has no indented fences, so the saved image would be byte-different but visually identical to the current one. A future minor release should add a tree-in-list sample to the screenshot harness so this rendering path is exercised going forward.
+
+## [2.34.6] — 2026-04-18
+
+### Fixed
+- Fixed 'name _to_number is not defined' error in Today's Extremes drill-downs on the Stats tab. The /api/stats/drill endpoint called _to_number() from 4 of its card branches (fastest, slowest, highest_altitude, lowest_altitude) to defensively coerce SQLite values into numerics, but the helper was never defined anywhere in the module. Every click on one of those four cards' values or list rows raised a NameError, which the drill endpoint's outer try/except wrapped into a 500 with {'error': 'name _to_number is not defined'}, which the frontend panel rendered verbatim into the card body. Only furthest and longest_track drill-downs worked because they compute their metric inline (haversine / timestamp delta). Added the _to_number helper next to the existing inner haversine helper in drill_stats. Impl: returns None for None, rejects bools explicitly (both up front and by implication in the fallback, since isinstance(True, int) is True and float(True) is 1.0), passes int/float through untouched, and float()s everything else under a TypeError/ValueError guard. The call sites already used 'or 0' to handle None gracefully, so no call-site changes needed. Verified with 15 unit cases covering None, ints, floats, numeric strings, stringy values like 'ground', empty string, bogus collection types, and both booleans. No UI changes, no schema changes, no screenshot regeneration needed.
+
+## [2.34.5] — 2026-04-18
+
+### Fixed
+- Expanded the startup self-heal for the update/ folder docs to cover a second transition case. The v2.34.4 self-heal only deleted a legacy update/README.md when UPDATE_README.md was also present — which correctly handles servers where the new file arrived but the legacy cleanup didn't. It missed the case where the v2.34.4 update was applied by the OLD (pre-2.34.4) server code, which had no _refresh_update_folder_docs helper and skipped the entire update/ tree during copy. Those servers end up with update/README.md still on disk and UPDATE_README.md absent; the Documentation viewer's Updates tab then returns 'file not found' indefinitely because /api/docs/update_readme points at the new name and the fallback was removed in 2.34.4. Now the self-heal also handles that case: if UPDATE_README.md is missing and legacy README.md is present, sniff the first line — if it starts with '# Update staging folder' (correct content, just the wrong name), atomically rename it to UPDATE_README.md; otherwise (content is the root README from the original aliasing bug), delete it so the Updates tab returns a clean 404 rather than showing misleading content. The next update apply will repopulate UPDATE_README.md automatically via _refresh_update_folder_docs. Verified with a six-scenario tempdir simulation: correct-legacy-only (promoted), wrong-legacy-only (deleted), both-files (legacy removed), new-only (unchanged), neither (unchanged), empty-legacy (deleted). No UI changes, no schema changes.
+
+## [2.34.4] — 2026-04-18
+
+### Fixed
+- Rename update/README.md to update/UPDATE_README.md to fix the Documentation viewer's Updates tab showing root README content. Root cause: the release zip contains two files named README.md (root + update/README.md), and during apply, both end up adjacent at ~/aerodrome/update/ with the same name. The refresh helper had to target the same directory that was being iterated as the source, causing aliasing bugs where the root README could end up in update/README.md (or vice versa) depending on iteration order and whether the refresh helper raised an exception. Renaming the staging doc to UPDATE_README.md eliminates the filename collision entirely — no more aliasing possible. Changes: (1) file renamed in repo; (2) DOC_FILES['update_readme'] now points to update/UPDATE_README.md; (3) CANONICAL_DOCS runtime-fallback mechanism from v2.34.3 removed (no longer needed — the rename is the root-cause fix, not a workaround); (4) UPDATE_FOLDER_REFRESH set updated to refresh UPDATE_README.md; (5) post-apply clear preserves UPDATE_README.md + .gitkeep instead of README.md + .gitkeep; (6) startup self-heal added to get_app() that deletes any legacy update/README.md left behind by pre-2.34.4 installs, but only when UPDATE_README.md is present to avoid ending up with neither file; (7) .gitignore updated. Result: on servers upgrading from 2.34.x, applying v2.34.4 through the web UI will leave update/ with just UPDATE_README.md and .gitkeep, and the service restart's startup self-heal removes any straggler legacy README.md. Verified end-to-end with a tempdir simulation starting from the reporter's actual broken state.
+
+## [2.34.3] — 2026-04-18
+
+### Fixed
+- Self-healing fallback for the Documentation viewer's Updates tab. On servers that were installed before the v2.34.1 refresh fix existed, update/README.md on disk can be stale or wrong (e.g., holding a copy of the root README from an old install), and the fix in v2.34.1 only repairs it on the NEXT update cycle. To stop users from seeing wrong content in the meantime, /api/docs/{slug} now checks whether the on-disk file's first line matches what's expected for that slug. When it doesn't match (or the file is missing entirely), the endpoint serves a bundled canonical copy embedded in server.py instead. Applied only to update_readme for now since that's the known-broken slug; other doc slugs still serve strictly from disk. This is a belt-and-suspenders layer on top of the update-apply refresh and the in-repo update/README.md file — the running service now always returns sensible content regardless of what's on disk in the install's update/ folder. Verified with tempdir simulation across four scenarios: correct file served as-is, wrong-content file replaced by canonical, missing file served canonical, leading-whitespace file still matches as correct.
+
+## [2.34.2] — 2026-04-18
+
+### Fixed
+- Fixed inconsistent / non-functional headers on the Documentation and Logs pages. Previously both pages used a bespoke header (custom .header / .brand CSS, a static 'Dashboard' back-link, and a gear icon that pointed to a non-existent /status.html route with no dropdown behavior) that diverged from the shared header used by Status / Configuration / Updates. Rewrote both pages to use the same .hdr / .hdr-left / .hdr-right / .settings-wrap structure, the same 'ADS-B Aerodrome' brand link, the same pulsing green status dot, the same gear button + dropdown + toggleMenu() function, and the same outside-click-close behavior as the other admin pages. Also added the two new menu entries (Logs, Documentation) to the gear dropdowns on Status, Configuration, and Updates pages — they were missing because when the feature shipped in 2.34.0 only index.html's gear menu was updated. Gear menu is now consistent across all 6 pages: Status / Logs / Documentation / Configuration / Check for updates. Verified with playwright that clicking the gear opens the dropdown and clicking outside closes it on both Documentation and Logs pages, no JS errors.
+
+## [2.34.1] — 2026-04-18
+
+### Fixed
+- Two fixes. (1) Fixed update/README.md being frozen at initial-install state — the in-app Documentation viewer's Updates tab now shows the current version of the update-staging-folder docs instead of whatever shipped with the original install. Root cause: the update applier skipped the entire update/ directory during copy (it's in PRESERVE_PATHS so user-staged files survive an update mid-flow), which also meant the folder's own README and .gitkeep never got refreshed. Fixed by carving out an explicit exception: the copy loop now calls _refresh_update_folder_docs() which copies just README.md and .gitkeep from the release's update/ onto the install's update/, leaving anything else the user may have staged there untouched. Verified with a tempdir simulation that the README refreshes, .gitkeep is created, and a user-staged leftover.py file survives the refresh. (2) Updated the copyright holder in LICENSE from the 'Your Name' placeholder to the project maintainer's name.
+
+## [2.34.0] — 2026-04-18
+
+### Added
+- In-app Documentation viewer and Logs viewer, both linked from the gear menu. Documentation viewer (/documentation) shows each project doc (README, Changelog, Contributing, Scripts README, Updates README, License) as a tab, with full markdown rendering done by a self-contained JS renderer (~180 lines, no CDN, no npm, no runtime dep) supporting headers, fenced code blocks, inline code, bold/italic, links, images, ordered and unordered lists, blockquotes, horizontal rules, GFM tables, and task lists. Image paths in the README that reference docs/screenshot-*.png are automatically rewritten to the live /docs/ URL so screenshots render inline. Logs viewer (/logs) shows tracker.log with four tail-size buttons (last 100 / 500 / 2000 / full), a case-insensitive search filter that hides/shows lines instantly without re-rendering, color-coded severity levels (ERROR red, WARNING amber, DEBUG muted, INFO default), an info row with file size and line count and last-modified time, and a one-click download that saves the full file as tracker-<timestamp>.log. Read-only by design: no clear, no delete, no write endpoints exposed to the browser. The /api/logs/tail endpoint caps full-file responses at 50 MB to prevent the browser from OOMing on a runaway log. Backend: 7 new routes (2 HTML pages, 5 API endpoints) with whitelisted doc slugs and a filename regex gate on /docs/ static asset serving to prevent path traversal. Gear menu updated to: Status / Logs / Documentation / Configuration / Check for updates. README features list and screenshots section updated. scripts/screenshots.py harness updated with synthetic doc markdown + synthetic log data, and two new screenshot functions (screenshot_docs, screenshot_logs) so re-running the harness refreshes all 10 docs images automatically.
+
+## [2.33.0] — 2026-04-18
+
+### Added
+- Documentation workflow improvements for maintainers. Three changes. (1) New scripts/screenshots.py - a Playwright harness that regenerates every PNG in docs/ from the current HTML templates using synthetic mock data (generic Bay Area coords, reserved-for-documentation receiver IP 192.0.2.10, fictional callsigns). No live server, no real aircraft data, no PII leakage risk. Replaces the ad-hoc process of taking screenshots on a live server and hoping the PII was cleaned up afterward. Adding a new screenshot is now a matter of writing a small async function and appending it to a list. Full refresh of all 8 screenshots runs in about 30 seconds. Committed at scripts/screenshots.py with a scripts/README.md explaining the workflow. (2) New Documentation section in CONTRIBUTING.md spelling out what to update per bump type (patch: usually just CHANGELOG; minor: Features list + config.yaml.example + screenshots if UI changed; major: full README audit), explicit screenshot re-take rules (re-take when the change makes an existing screenshot misleading, when a new feature warrants its own screenshot, or when it's been more than ~6 months since the last sweep), and a pre-PR documentation checklist. (3) New interactive docs checklist in bump-version.sh - on minor and major bumps in an interactive terminal, prompts the maintainer with a quick checklist (README Features updated? config.yaml.example updated? screenshots re-taken if needed? new screenshot added if warranted?) before proceeding. Soft reminder, not a hard gate: answering 'n' aborts the bump, answering 's' skips the checklist and proceeds, anything else proceeds. Scripted/CI usage can pass --skip-docs-check or -y to bypass. Patch bumps never trigger the prompt (they're almost always bug fixes with no manual doc work). No runtime behavior change - this entire release is maintainer tooling.
+
+## [2.32.1] — 2026-04-18
+
+### Changed
+- Refreshed all documentation screenshots and README to reflect the current v2.32.0 UI. Previous screenshots were from the pre-Stats-tab era (April 16) and missed all the features added since then: drill-downs, chart interactions, new-record alerts, watchlist live-mode, and the entire Stats tab. Regenerated all 7 existing screenshots (live/watchlist/military/all/status/config/export) and added a new screenshot-stats.png showing the Stats tab's 8 sections (Today, Today's extremes, Composition, Patterns, History, All-time records, Receiver health, Coverage) with realistic synthetic data. README updates: added Stats tab to the feature list with a description of the 18 drillable cards and new-record alerts system; updated the Watchlist bullet to mention all 4 trigger modes (including the new 'live' option) and the persistent-dismissal behavior; added a Stats screenshot entry to the Screenshots section; updated the project structure comment to list all 5 tabs instead of just 4. CONTRIBUTING.md and update/README.md were already current and required no changes.
+
+## [2.32.0] — 2026-04-18
+
+### Added
+- New-record alerts on the Stats tab. When an all-time record is broken (fastest, highest altitude, lowest altitude, furthest, peak simultaneous, or longest track), the Stats tab flashes a colored pulsing dot next to its label, and the specific cards showing the new record get a matching border + 'NEW RECORD' chip in the top-right corner, plus a brief value-pulse animation to catch the eye. Both the today's-extreme card for that metric AND the all-time records card are highlighted - so a 700kt 'Fastest' card today with a green glow signals that it's not just impressive, it's a new all-time record. Dismissal is automatic: once the user has been on the Stats tab for the configured duration (default 30 seconds), the highlights clear and the acknowledgment is saved to localStorage so the alert doesn't return on page reload. If a newer record is set later, the alerts fire again. First-ever page load after enabling the feature silently initializes the baseline from the current records - users won't get blasted with alerts for records that existed before. Configured under Configuration > Stats: enable/disable, choose any hex color (default #22c55e green, chosen to be distinct from the watchlist orange), and set dismiss_after_seconds (1-600). Backend changes: /api/ui-config surfaces the new config, config_validator accepts the new stats.new_record_alerts block. Frontend changes: new state management (nraCfg, nraLastSeen, nraPending, nraLatestRecords), detection logic in detectNewRecords() that compares current records' set_at against the baseline in localStorage, post-process hook in renderStats() that injects the highlight class and chip into relevant cards' HTML, CSS with keyframe animations for the tab dot pulse and card value pulse.
+
+## [2.31.1] — 2026-04-18
+
+### Fixed
+- Fixed 'Highest altitude' stats card showing 'NaN ft' for aircraft like N78729 (C172). Root cause: some ADS-B feeds report altitude as the string 'ground' for aircraft on the ground. SQLite accepts this string in a REAL column (dynamic typing), and 'ORDER BY altitude DESC' sorts any string higher than any number - so 'ground' won the highest-altitude competition. When the string reached the frontend, Math.round('ground') produced NaN. Two-layer fix applied defense-in-depth style: (1) backend - added typeof(altitude) IN ('integer', 'real') filter to the highest_altitude + lowest_altitude stats queries AND their drill queries, so non-numeric values are excluded at the source. (2) frontend - hardened the altitude/speed/records formatters with Number.isFinite() guards so that even if bad data slips through in the future (from a data source we haven't seen yet), the UI renders '—' instead of 'NaN ft'. The collector's normalize() function already returns None for strings like 'ground', so new data isn't affected; this fixes display of legacy rows already in the DB. No data cleanup needed since the queries now exclude those rows naturally.
+
+## [2.31.0] — 2026-04-18
+
+### Added
+- Watchlist alert improvements (response to external user feedback). Two changes in one: (1) Fixed a persistence bug where the orange dot would return after closing the window, navigating to the config page, or reloading, even though the user had already clicked the Watchlist tab to dismiss it. The dismissal state was only in memory (a JS variable that reset on every page load). Now dismissal persists across page loads via localStorage keyed by the timestamp of the most recent watchlist sighting - the dot stays dismissed until a genuinely newer sighting comes in, at which point the key changes and the alert fires again. Applies to 'On new sighting' and 'Continuous, dismiss by clicking the tab' modes. (2) Added a new trigger mode 'Only while aircraft is actively transmitting' (value: 'live') that shows the alert only when a watchlist aircraft appears in the current live feed from the receiver. When the aircraft stops transmitting or leaves range, the dot turns off automatically - no dismissal needed. The alert tracks the receiver's live view in real time, re-evaluating every poll. The user's chosen effect (dot, pulse, flash, pulse+dot) is applied the same way as other trigger modes; only the WHEN differs. Config page, yaml example, and validator all updated to accept the new trigger value. Retention of watchlist sightings history is unaffected - those still persist in the database for 30 days or whatever was configured.
+
+## [2.30.1] — 2026-04-18
+
+### Fixed
+- Fixed the 'View all in All tab' footer link getting cut off at the bottom of drill-down panels when the aircraft list was long enough to scroll. The drill panel was a single scrollable container with the footer inside it, so the footer scrolled away below the visible area as users scrolled to see more rows. Now the drill panel is a flex column where only the TABLE scrolls (in a nested .drill-table-scroll wrapper with max-height:360px) and the footer stays pinned at the bottom. Added a thin top border on the footer to visually separate it from the scroll area. Applies to all Wave 1 and Wave 2 drill-downs (the 10 single-value card drills). Wave 3 (list row drills) and Wave 4 (chart bar drills) weren't affected - they don't have a 'View all' link and their layouts scroll differently.
+
+## [2.30.0] — 2026-04-18
+
+### Added
+- Stats card drill-downs, Wave 4 of 4 (final): chart bars are now clickable. Three chart cards gain drill-downs: Aircraft-by-hour histogram (click any hour's bar to see aircraft seen during that hour), Last 7 days (click any day's bar to see aircraft seen that day), and Positions by distance (click any distance bucket to see aircraft at that range). Bars with zero data stay non-clickable; bars with data get cursor:pointer. Clicked bars show a cyan outline in their 'drill-active' state. The drill panel appends below the chart inside the same card (unlike Wave 3 which inserts inline between list rows). Only one bar per chart can be active at a time - clicking a different bar replaces the panel, clicking the same bar again collapses. Backend gets 3 new dispatcher branches: hourly_histogram (value = hour 0-23), daily_counts_7d (value = YYYY-MM-DD, timezone-aware using the configured stats.timezone), distance_histogram (value = bucket index, reusing the stats.range_rose config for buckets and time window). Also fixed a latent bug where the Wave 1 'furthest' drill would have NameError'd at runtime because haversine() was only defined in the stats handler's scope - now defined inside drill_stats too. This completes the 4-wave drill-down feature: 18 cards total are now interactive (6 extremes + 4 volume counters + 5 list-card rows + 3 chart bars), each showing the aircraft behind the stat with one click.
+
+## [2.29.0] — 2026-04-18
+
+### Added
+- Stats card drill-downs, Wave 3 of 4: list card rows are now individually clickable. The five list cards (Top 5 aircraft types, Top 5 operators, Military branches, Category mix, Watchlist frequency) each get a subtle '\u203a' chevron before every row and a cyan hover highlight to signal clickability. Click any row to reveal the aircraft matching that specific value in a nested mini-table inserted directly below - one-at-a-time within a single card (clicking a different row in the same card closes the previous), but independent across cards (multiple drills can be open in different cards simultaneously). The nested panel has its own sticky header, a scrollable body (max-height 320px), and shows ICAO + callsign, hit count, type, and first-seen time per aircraft. The interaction pattern is intentionally different from Waves 1 & 2 (whole-card chevron) because list cards ask a different question - 'who are the C172s?' not 'which are the fastest?' - and row-level drilling makes the top-5 values directly actionable without a two-step expand. Backend: new branches in /api/stats/drill dispatcher for top_types, top_operators, military_branches, category_mix, watchlist_frequency, each taking a ?value=<specific value> parameter. Refactored the category/branch/operator classification logic into three reusable module-level helpers (_operator_prefix, _classify_branch, _classify_category) so both the stats query (which produces the counts) and the drill (which filters by them) share exactly the same rules - no drift.
+
+## [2.28.0] — 2026-04-18
+
+### Added
+- Stats card drill-downs, Wave 2 of 4: the four volume counter cards in Today's group are now interactive. Click 'Unique aircraft today', 'Peak simultaneous', 'Military aircraft today', or 'Watchlist hits today' to see the full list of aircraft behind each count. Drill shows ICAO, callsign, type, hit count (how many position reports today), and first seen time; internal scroll handles arbitrarily large lists. 'Average concurrent' is intentionally not drillable since it's a summary metric with no clean per-aircraft list. Peak simultaneous uses a bucketed approach: bin sightings into 60-second windows, find the bucket with the most distinct ICAOs, return the aircraft in that window - the 'Peak moment' extra column shows the HH:MM of the peak. Watchlist drill includes a 'Watchlist' extra column showing which watchlist entry label matched each aircraft. Military drill reads from the dedicated military_sightings table. A card with a count of 0 is silently not drillable (no chevron, no click handler) since there's nothing to show. New backend queries added to the /api/stats/drill dispatcher, frontend CARD_BUILDERS updated to pass card ids. The renderDrillTable function grew to support conditional Value/When/Extra columns driven by the DRILL_COLUMNS config - cleaner than inlining per-card rendering.
+
+## [2.27.0] — 2026-04-18
+
+### Added
+- Stats card drill-downs, Wave 1 of 4: the six extremes cards are now interactive. Click any of 'Furthest aircraft', 'Fastest', 'Slowest', 'Highest altitude', 'Lowest altitude', or 'Longest continuous track' to expand the card inline and see the full ranked list of aircraft that contributed. Multiple cards can be expanded at once. Each drill shows aircraft rank, ICAO + callsign, the relevant metric (distance/speed/altitude/duration), and aircraft type, in a scrollable mini-table (max-height 400px with custom scrollbar) so arbitrarily long lists fit within the card. A 'View all in All tab' link at the bottom of each panel switches to the All tab with date preset set to 'today' for further browsing. New backend endpoint /api/stats/drill?card=<id> dispatches to per-card SQL; existing extremes queries extended with an additional top-N form that aggregates per-icao (GROUP BY icao with MIN/MAX of the metric). Frontend: drillable cards get a subtle hover effect (cyan border) and a chevron in the top-right that rotates when expanded; non-drillable cards are untouched. The click handler is event-delegated so links and scrollbars inside the expanded panel don't toggle the card. This is Wave 1 of a 4-wave drill-down rollout; the upcoming waves add drill-downs for volume counters, list-card rows, and interactive charts.
+
+## [2.26.0] — 2026-04-18
+
+### Added
+- Stats sections can now be reordered. Each section header on the Configuration > Stats page gets a drag handle (\u2261), move-up (\u25b2), and move-down (\u25bc) button. Drag a section to a new position or use the buttons for precise/accessible reordering. Order persists in a new stats.groups_order config list and applies to the Stats page rendering. Backend /api/stats reorders the groups array using groups_order before returning; unknown ids are silently dropped, missing groups get appended in canonical order at the end (so adding a new section in a future version automatically appears even for users with a saved custom order). Drag-and-drop uses HTML5 native DnD with visual feedback (cyan border highlight on the drop target row, 40% opacity on the dragged row). Move-up/down buttons are disabled at the list boundaries with clear styling. The helper text above the section list now explains how to reorder. Validation added in config_validator.py for stats.groups_order as a list of strings.
+
+## [2.25.0] — 2026-04-18
+
+### Changed
+- Merged the 'Furthest aircraft' and 'Max range today' stat cards into a single card. The two were showing literally the same aircraft and distance, just in different sections with slightly different presentations - Extremes showed who (callsign/ICAO/type), Receiver Health showed where (rotating compass arrow + 16-point direction label). Now the 'Furthest aircraft' card in Today's Extremes shows all of it: distance as the big value, compass arrow + 'SW (220°)' + callsign/ICAO/type as the subtitle. The Receiver Health section drops from 4 cards to 3 (throughput, uptime, db size) and becomes more focused on genuine diagnostics. Backend: furthest query now computes bearing via the same haversine/atan2 math; max_range_today query block removed entirely. Frontend: new furthestCard() renderer replaces both extremeCard('Furthest') and the standalone maxRangeCard(); the latter is deleted. Config: max_range_today card toggle removed from the Stats config page and from config.yaml.example. Existing configs with stats.cards.max_range_today set (true or false) will be harmlessly ignored going forward.
+
+## [2.24.0] — 2026-04-17
+
+### Added
+- Wave 5 (final) of the Stats feature: polar range rose + distance histogram. New 'Coverage' collapsible section on the Stats page with two independently-toggleable cards. The range rose is a polar SVG chart with 16 compass spokes (N, NNE, NE, ... matching the existing Max Range compass bearing card) and N concentric distance rings, where each wedge's color intensity represents how many position reports fell in that direction/distance combination over a configurable time window - darker cyan = more dense. Reception obstructions (hills, buildings) and open directions become visually obvious at a glance. The distance histogram shows total position counts bucketed by distance as colored bars (purple to gold gradient from near to far). Both cards are backed by a single /api/stats query pass that bins positions by haversine distance and initial-bearing calculation over the configured window; same data serves both cards. Config exposes stats.range_rose.{window, window_custom_days, distance_buckets}. Time window options: today, 7d, 30d, all_time, or custom (1-365 days). Distance buckets are a comma-separated list of upper bounds in the receiver's configured distance unit (2-10 strictly-increasing positive numbers; default [50,100,150,200,250] creates 6 rings: <50, 50-100, 100-150, 150-200, 200-250, 250+). All config changes live-reload without a service restart. When receiver location is not configured, both cards show a helpful hint to add lat/lon. This completes the 5-wave Stats feature roadmap.
+
+## [2.23.1] — 2026-04-17
+
+### Fixed
+- Fixed a critical regression in v2.23.0 where the Configuration page would appear to load but show empty form fields (only placeholders visible) and reject any save attempt with phantom validation errors like 'Required' and 'Must be a whole number' for fields the user never touched. Root cause: the @app.get('/api/config') decorator was inadvertently stripped from server.py during the v2.23.0 refactor. Without this decorator FastAPI never registered the route, so GET /api/config returned an HTML 404 page. The frontend's 'await r.json()' on that HTML silently failed, leaving workingConfig partially undefined. Form fields rendered as empty (showing their placeholders) because getAt(workingConfig, 'receiver.ip') returned undefined. On save, the frontend PUT a mostly-empty config back to the server, which correctly rejected it with validation errors for every required field. Symptoms appeared regardless of whether the Stats tab was touched. Fix: restored the decorator. Also audited all 28 route decorators in server.py to confirm no other routes were accidentally dropped during the refactor; all async handlers inside create_app() now have their decorators verified directly above them. Users on v2.23.0 experiencing this should upgrade to v2.23.1 — saved configs are fine, the issue is purely display/save-side.
+
+## [2.23.0] — 2026-04-17
+
+### Changed
+- Reorganized the Stats tab into collapsible sections. Previously, 18-22 cards rendered as a flat grid that was getting hard to scan; with Wave 5 approaching it would have gotten worse. Now cards are grouped into 7 categories (Today, Today's extremes, Composition, Patterns, History, All-time records, Receiver health), each rendered as a section with a monospace header, card-count pill, divider, and hint text. Each section has a clickable arrow that collapses/expands it; collapse state persists per-user in localStorage keyed to each section id. 'Expand all' and 'Collapse all' buttons added next to the manual Refresh button. Users can now disable entire categories from Configuration > Stats via a new per-group master toggle; disabled categories are completely hidden from the Stats page (no header, no cards, no trace). Individual card preferences are preserved when a parent group is disabled, so re-enabling the category restores the prior state. In the config page, child card checkboxes grey out to 40% opacity when their parent group is disabled, with an amber 'category disabled - card preferences preserved but not shown' note. Under the hood, a new stats.groups config block with 7 boolean keys was added, validated the same way as cards. The backend /api/stats response now includes a 'groups' array in canonical order so the frontend knows which sections to render and in what order - this is the single source of truth shared with /api/ui-config. The _card_enabled backend helper now takes a groups parameter so card filtering checks both individual toggle AND parent group toggle. A CARD_GROUPS constant in server.py maps each card name to its canonical group. On the frontend, renderStats was rewritten from a hardcoded sequence of renderer calls into a generic loop over the groups array, using a new CARD_BUILDERS dispatch table - this makes future waves trivial to add (just drop in a new builder + add it to the appropriate group).
+
+## [2.22.0] — 2026-04-17
+
+### Changed
+- Replaced the free-form timezone text input on the Stats config page with a curated dropdown of ~60 common IANA zones, grouped by region (US & Canada, Latin America, Europe, Middle East & Africa, Asia, Australia & Pacific, UTC). Each entry has a human-friendly label like 'Pacific (Los Angeles)' or 'India (Kolkata)'. No separate DST toggle is needed - DST rules are baked into the IANA database and applied automatically based on the zone selected. An 'Other... (custom IANA name)' option at the bottom reveals a text input for users in zones not on the curated list (e.g. Antarctica/McMurdo). The picker correctly persists custom zones across page loads by detecting when a stored value isn't in the curated set and auto-selecting 'Other...' with the value pre-filled. Existing stored IANA names continue to work - this is purely a UI improvement to the same underlying config field.
+
+## [2.21.1] — 2026-04-17
+
+### Fixed
+- Fixed a critical bug in v2.20.0/v2.21.0 that took the collector offline after upgrade. The Wave 3 _update_record helper crashed with 'TypeError: > not supported between instances of int and str' whenever an aircraft had a non-numeric altitude or speed (some ADS-B feeds send 'ground' as a string for altitude). The crash left the SQLite connection in an inconsistent state, causing subsequent polls to fail with 'database is locked' until restart. Three-layer fix: (1) new _to_number() coerces speed/lat/lon/altitude at the normalize step so non-numeric values become None and get filtered out before touching the DB; (2) _update_record now does float() coercion of both the incoming value and the stored value, and skips silently if either is non-numeric (belt-and-suspenders against legacy bad data); (3) per-aircraft record updates are wrapped in try/except so one weird aircraft never takes down the whole poll \u2014 the rest of the data still gets saved. Also added a startup cleanup that deletes any stats_records rows with non-numeric 'value' fields, so DBs already corrupted by the bad backfill will self-heal on next start (the records will be re-established by live polls). Backfill queries now use CAST(... AS REAL) and explicitly skip non-numeric legacy rows.
+
+## [2.21.0] — 2026-04-17
+
+### Added
+- Wave 4 of the Stats feature: receiver health stats. Four new cards give at-a-glance diagnostics for the ADS-B receiver and the tracker itself: 'Receiver throughput' shows aircraft records processed per second (over last 5 minutes - honest label since the receiver gives us polls, not a live message stream); 'Max range today' shows the furthest aircraft with a cyan SVG arrow rotated to point in the correct compass direction (16-point label like SW plus degrees); 'Service uptime' humanizes the elapsed time since last restart (3d 7h or 42m etc.) with the start timestamp; 'Database size' shows the SQLite file size plus a 7-day growth estimate and total row count so users can track data footprint. All four are computed server-side on demand, no new tables required. Max range reuses the haversine calc from the furthest card but adds an initial-bearing calculation so the UI can draw a directional indicator. All toggleable from a new 'Receiver health' group in Configuration > Stats.
+
+## [2.20.0] — 2026-04-17
+
+### Added
+- Wave 3 of the Stats feature: all-time records. New 'All-time records' card on the Stats tab tracks records beaten since Aerodrome started tracking: furthest aircraft ever, fastest, highest altitude, lowest altitude (excl. ground), and peak simultaneous aircraft count. Each record shows the value (mi / kt / ft / aircraft), who set it (callsign + ICAO + aircraft type), and when. Records are stored in a new stats_records table (one row per record type) and updated incrementally by the collector on every poll — a single SELECT per aircraft with an UPDATE only when a record is beaten, so no noticeable overhead. On upgrade from pre-Wave-3, a one-time backfill populates fastest/highest/lowest/peak from the existing all_sightings history (furthest cannot be backfilled since we don't know the historical receiver location). Distance records use the currently-configured distance_unit and store it in the 'extra' column. Toggleable from a new 'All-time records' group in Configuration > Stats. Records display in a friendly order (furthest, fastest, highest, lowest, peak) rather than alphabetical.
+
+## [2.19.0] — 2026-04-17
+
+### Added
+- Wave 2 of the Stats feature: history tracking across days. Added three new stat cards: 'First time seen today' (lists aircraft whose first-ever sighting was today, distinguishing truly new traffic from regulars), 'Last 7 days - unique aircraft per day' (bar chart comparing this week, with today's bar highlighted in green), 'Watchlist frequency (last 30 days)' (top watchlist entries by total sightings). Backed by a new seen_aircraft table with icao PRIMARY KEY + first_seen_at index; collector now does INSERT OR IGNORE on every poll (effectively free for known aircraft). On upgrade from pre-Wave-2, a one-time backfill populates seen_aircraft from existing all_sightings data so regulars aren't falsely flagged as new. All three cards toggleable from a new 'History' group in Configuration > Stats. Card queries wrapped in try/except for graceful handling if table doesn't exist yet. This unblocks Wave 3 (all-time records) which will build on seen_aircraft.
+
+## [2.18.0] — 2026-04-17
+
+### Added
+- Added Stats tab as Wave 1 of the Stats feature. New 'Stats' tab sits in the main nav between Military and All, showing 17 configurable stat cards covering today's activity in four categories: Volume (unique aircraft, peak simultaneous, avg concurrent, military count, watchlist hits, first/last contact), Extremes (furthest, highest/lowest altitude, fastest/slowest, longest track), Composition (top 5 aircraft types, top 5 operators, military branch breakdown, commercial/GA/mil/helicopter mix), Patterns (24-bar hourly histogram with hover tooltips). All cards are toggleable individually from a new Stats tab in Configuration. 'Today' is defined by a configurable IANA timezone (empty = server timezone). Auto-refresh interval is configurable (30-3600s, 0 disables); default 5 minutes. Manual refresh button always available. New /api/stats endpoint computes everything on-the-fly from existing aircraft_history/military_sightings/watchlist_sightings tables (no schema changes). New /api/ui-config fields drive tab visibility and refresh cadence. All stats config changes are LIVE (no service restart needed). This is Wave 1 of a 5-wave rollout; upcoming waves add first-time-seen tracking (Wave 2), all-time records (Wave 3), receiver health stats (Wave 4), and polar range rose (Wave 5).
+
+## [2.17.0] — 2026-04-17
+
+### Added
+- Added release-notes modal to the Updates page. When a new update is staged in update/, clicking the new version (via inline link in the status message, clickable 'Staged version' cell, new 'What's new?' button, or 'See what's new' link) pops up an overlay showing the release notes for that version. Modal reads from the STAGED changelog (update/CHANGELOG.md) since the current install's CHANGELOG hasn't been bumped yet. If the user is jumping multiple versions (e.g., 2.15.0 -> 2.17.0), the modal shows the target version's notes plus a 'Show N older releases being skipped' expander that reveals all intermediate versions. Modal closes via X button, Close button, Escape key, or clicking outside. New /api/changelog?source=update query parameter reads from update/CHANGELOG.md instead of the install's CHANGELOG; the parser was refactored into a _parse_changelog() helper reused by both sources. Also fixed a dormant TDZ bug where _rnStagedEntries was declared with 'let' AFTER checkLocal() referenced it, which caused the whole function to silently fail \u2014 now declared above the function.
+
+## [2.16.0] — 2026-04-17
+
+### Changed
+- Made the dashboard health dot actionable. It's now wrapped in a link to /status so clicking it opens the detailed health page. The dot (and gear icon) use three severity levels instead of two: green pulsing when all core components and hexdb are healthy, amber pulsing when only hexdb is degraded (tail-number lookups may miss but core data flow is fine), red static when any core component (receiver/database/collector/webserver) is failing or the status endpoint itself is unreachable. The gear icon in the header picks up a matching colored ring and notification dot in the warn/error states. A one-time toast fires when the state transitions (both into unhealthy and back to OK), with the message identifying which component changed. Also discovered and fixed a dormant bug where the previous code referenced getElementById('dot') but the element id had been renamed to 'healthDot' \u2014 so the status dot had actually stopped updating entirely in a prior refactor. Toast CSS extended with green/amber/red border variants to match the severity of the message.
+
+## [2.15.0] — 2026-04-17
+
+### Added
+- Added changelog viewer to the Updates page. New card below the local-update and GitHub-update cards displays the last 5 release entries parsed from CHANGELOG.md, each with version, date, a color-coded type badge (green=Added, cyan=Changed, amber=Fixed, red=Removed, purple=Security), and bulleted release notes. Older releases collapsed behind a 'Show older releases (N more)' expander that flips to 'Show fewer' once expanded. New GET /api/changelog endpoint parses CHANGELOG.md server-side (so the frontend doesn't need a markdown library) into structured entries. The parser handles Keep-a-Changelog format (## [version] — date, ### Type, - bullet) and folds multi-line bullets into one entry. Verified on a 41-entry changelog.
+
+## [2.14.10] — 2026-04-17
+
+### Changed
+- Made the chmod step more prominent in the README install and uninstall sections. Both sections now have a bolded 'Note' callout above the code block explaining that install.sh and uninstall.sh need to be made executable before running, and why (file-transfer tools like rsync, scp, zip extraction, and Windows git checkouts strip the executable bit). Previously the chmod line was in the code block but the context wasn't as visible; users running into permission denied errors now have an explanatory sentence one line above the fix.
+
+## [2.14.9] — 2026-04-17
+
+### Changed
+- Added the 'v<version> · Updated <timestamp>' meta to the header on Status, Configuration, and Updates pages to match the main dashboard. Status page pulls the timestamp from /api/status (same value shown in the existing 'checked at' label), so it reflects the actual last server poll. Configuration page sets the timestamp on page load and refreshes it after a successful save, so the user sees it tick when their changes are persisted. Updates page refreshes the timestamp on every 'Check for updates' call (including page-load auto-check). Version string hardcoded in each template; the bump-version script's existing regex correctly catches and updates it on future bumps.
+
+## [2.14.8] — 2026-04-17
+
+### Changed
+- Unified the top bar across all pages. The Status, Configuration, and Updates pages now have the same gear menu in the top-right corner that the main dashboard has, so users can jump between Status/Configuration/Check for updates from any page without going back to the dashboard first. The redundant '← Dashboard' back-links were already removed when the title became a link in v2.14.7; now the gear menu fully replaces them. Each subpage ports the settings-wrap/btn/menu CSS rules and the toggleMenu + document-click handler that closes the menu when clicking outside. The main dashboard's live status dot and 'Updated <timestamp>' meta stay exclusive to the dashboard since they're dashboard-specific data.
+
+## [2.14.7] — 2026-04-17
+
+### Changed
+- Made the 'ADS-B Aerodrome' header title a link to the main dashboard on all pages (index, status, config, updates). Clicking it navigates back to /. Styled to look unchanged — no underline, color inherits — with just a subtle opacity fade on hover to hint it's interactive. The redundant '← Dashboard' links in the top-right of the config and updates pages were removed since the title now does the same job. Also clarified the README install section to mention that both install.sh AND uninstall.sh need chmod +x before use (file transfers often strip the executable bit), and added the chmod step to the uninstall snippet.
+
+## [2.14.6] — 2026-04-17
+
+### Changed
+- Added retention to .backups/<timestamp>/ install snapshots created by the Updates page. Previously every local update created a new snapshot (full copy of source files from the prior install) and nothing was ever deleted, so .backups/ would grow unbounded. Now the Updates apply endpoint prunes after each successful backup, keeping the 5 most recent snapshots and deleting older ones — matching the existing config.yaml.bak.* retention policy. Only folders matching the YYYYMMDD-HHMMSS naming pattern are touched; any other files or folders in .backups/ (e.g. manual backups) are left alone. Readme and update/README now document the retention.
+
+## [2.14.5] — 2026-04-17
+
+### Fixed
+- Fixed noisy and misleading 'Restart failed' warnings that appeared after every successful update/restore. Two root causes, both now fixed: (1) The subprocess running 'systemctl restart aerodrome' was being killed by systemd mid-execution when systemd stopped the old service, producing non-zero return codes with empty stderr that were being wrongly reported as failures. Now all restart paths use a new _do_restart() helper that issues 'systemctl restart --no-block aerodrome' instead — systemctl queues the restart and exits immediately with rc=0, letting the HTTP response return cleanly before systemd actually stops us. (2) The sudoers rule from install.sh only permitted the plain command form; the --no-block variant would be rejected. Install.sh now grants permission for both forms, AND _do_restart falls back to the plain form if sudo rejects --no-block — so existing installs with the old sudoers rule keep working without any manual intervention. All four restart callers (update apply, config restore, config import, /api/restart) now route through _do_restart() for consistent behavior.
+
+## [2.14.4] — 2026-04-17
+
+### Changed
+- Simplified the post-apply message on the Updates page. Previously, the response rendering included detailed info (from/to version, backup path, restart notes) but this was shown by the OLD frontend JS that happened to be loaded in the user's browser when they started the update — so any improvements to the messaging wouldn't appear until the NEXT update. Now the apply handler shows a single neutral line 'Update applied — service is restarting. Reloading page...' and reloads after 3.5 seconds (down from 6). After reload, the fresh new version's UI takes over and shows accurate state. Better approach than trying to render detailed outcome reports with old code.
+
+## [2.14.3] — 2026-04-17
+
+### Changed
+- Improved the Updates page messaging after an apply. Previously, any edge case in the restart flow (e.g. systemctl returning non-zero because the subprocess got killed mid-request) would show an alarming 'Warning: restart command failed' banner even though the update itself had fully succeeded (files copied, backup made, dependencies installed). Now the success message stays confident ('Update applied successfully. X.Y.Z → A.B.C') and any restart or pip notes appear below a divider as muted, informational text. The backend only flags restart_ok=false when systemctl returns non-zero AND produces stderr output — otherwise it's treated as the expected 'service killed itself mid-request' path. The response field was renamed from restart_error to restart_note to match its informational tone.
+
+## [2.14.2] — 2026-04-17
+
+### Fixed
+- Restored the missing /status HTML route. At some point during the recent config-page refactors, the route that serves templates/status.html was accidentally removed, so clicking 'Status' in the gear menu returned a JSON 404 ('Not Found') from FastAPI. The /api/status JSON endpoint was still registered (the status page's data source), just the HTML page route was gone. Re-added the route matching the same pattern as /config and /updates.
+
+## [2.14.1] — 2026-04-17
+
+### Fixed
+- Added missing python-multipart dependency required by the /api/config/import endpoint. FastAPI's UploadFile/File() feature requires python-multipart but it was not in requirements.txt, causing a benign but noisy log error on every service start after v2.14.0: 'Form data requires python-multipart to be installed'. The local-update endpoint runs pip install after copying files, so deploying this release via the Updates page will install the dependency automatically. The file-upload feature on the Backup & Restore tab would not have worked until this fix was applied.
+
+## [2.14.0] — 2026-04-17
+
+### Added
+- Added Backup & Restore tab on the Configuration page. Users can now download the current config.yaml as a file, upload a replacement config from disk, and restore any of the auto-backups (the rolling 5 created by config migration). Clicking an auto-backup opens a preview modal showing the full YAML contents to verify it's the right one before applying. Restore and import both back up the current config first (providing a rollback point), validate the new config through the same rules as the normal save path, write the new config, reload it in memory, and trigger a service restart. Confirmation dialogs show the new auto-backup filename so users know where to find the rollback point. Five new API endpoints: GET /api/config/backups (list), GET /api/config/backup/{name} (preview), GET /api/config/export (download), POST /api/config/restore/{name} (restore from auto-backup), POST /api/config/import (upload replacement). The save bar is automatically hidden on this tab since it has its own buttons.
+
+## [2.13.0] — 2026-04-17
+
+### Changed
+- Reorganized the Configuration page into seven tabs (Receiver, Web server, Retention, Database, Logging, Military, Watchlist alerts) instead of one long scrolling page. Tab bar at the top mirrors the main dashboard style; only the active tab's section renders. Save bar remains sticky at the bottom — one save applies changes across all tabs. Each tab shows a small amber dot when it has unsaved changes, and a dot also appears when there are validation errors in that tab. On save failure, the page auto-switches to the first tab with errors so users always see what to fix. Works on mobile — tab bar horizontally scrolls on narrow viewports.
+
+## [2.12.0] — 2026-04-17
+
+### Added
+- Added Watchlist tab alerts. When a watchlist aircraft is visible, the Watchlist tab can flash to draw attention so users don't need to keep that tab open. New watchlist_alerts config block with four options: enabled (on/off), trigger (new | continuous | continuous_dismissable), effect (pulse_dot | pulse | dot | flash), and color (any hex). The three trigger modes cover different preferences: 'new' alerts only on first appearance and stops on tab click; 'continuous' alerts any time a matching aircraft is visible; 'continuous_dismissable' alerts continuously but can be silenced by clicking the tab. Configurable through the web UI in a new 'Watchlist alerts' section of the Configuration page. CSS animations use a --wa-color custom property so the color picker applies live. Settings apply within one poll cycle with no service restart.
+
+## [2.11.2] — 2026-04-17
+
+### Changed
+- Rewrote README Updating section to cover the local-update web UI flow as the primary path. Previous section only described the rsync workflow which predates the Updates page. Now documents: Option 1 (web UI — stage release into update/ folder, click Apply in the UI), Option 2 (direct rsync + restart as fallback, now also excludes .backups/ and update/), config auto-migration (shared by both paths), and a Rolling back subsection showing how to restore from .backups/<timestamp>/. Added TOC sub-entries for the three new subsections. Added the Updates page to the feature list and updated the project structure diagram to include update/, .backups/, and templates/updates.html.
+
+## [2.11.1] — 2026-04-17
+
+### Changed
+- Shipped update/ folder in the release zip with a README explaining the staging workflow. Previously the folder had to be created manually (by install.sh) and users opening the extracted zip wouldn't know where to drop update files. Now update/ is present with a README.md and .gitkeep. The apply endpoint preserves README.md and .gitkeep when clearing the staging folder after a successful update so instructions stay in place. .gitignore updated to track these two files but still ignore staged release contents.
+
+## [2.11.0] — 2026-04-17
+
+### Added
+- Added local update flow on the Updates page (gear menu → Check for updates). Users can copy a new release into ./update/ on the server, click Check, and apply it with a button. The server backs up the current install to .backups/<timestamp>/, copies new files over (preserving config.yaml, aircraft_history.db, logs/, venv/, .tracker.pid), runs pip install -r requirements.txt in the venv, clears ./update/ on success, and restarts the service. Three new API endpoints: GET /api/updates/local/check, POST /api/updates/local/apply, GET /api/updates/github/check (placeholder for a future GitHub release flow). install.sh now creates update/ and .backups/ directories automatically.
+
+## [2.10.1] — 2026-04-17
+
+### Changed
+- Added retention to config.yaml.bak.* files. Previously every version upgrade created a new backup that was never cleaned up. Now the service keeps the 5 most recent backups and prunes older ones whenever a new backup is created. Prune is silent on success and logs failures without stopping the migration. Backups are sorted by filename (timestamps in YYYYMMDD-HHMMSS format sort chronologically).
+
+## [2.10.0] — 2026-04-17
+
+### Added
+- Added military color flagging across all tabs. Any detected military aircraft now shows a colored left border and a label chip next to the ICAO — on Live, Watchlist, Military, and All. New 'military.default_color' config option (default red #ef4444) controls the color for generic military aircraft caught by callsign/ICAO prefix rules. Existing 'special_aircraft' entries (AF1, AF2, etc.) keep overriding with their own custom color and label. Configuration page gained a 'Default military color' picker in the Military detection section. Backend server now annotates every row in /api/live, /api/all, /api/watchlist, and /api/military with is_military/mil_label/mil_color fields — DB-sourced endpoints evaluate the current military rules against each row.
+
+## [2.9.0] — 2026-04-17
+
+### Added
+- Added model-based watchlist matching. Users can now watch for any aircraft of a particular type or model by adding a watchlist entry with an 'id_type' of 'model'. Matching is case-insensitive substring search against both the aircraft type code (e.g. 'S22T') and type description (e.g. 'CIRRUS SR-22 Turbo') — so a single entry with model='Cirrus' catches any Cirrus aircraft on the tab. Supported via the Watchlist tab dropdown, the Add-to-Watchlist modal on Live/Military/All tabs, and the config.yaml with 'model:' key. Dynamic placeholder hints guide users toward the right format for each identifier type.
+
+## [2.8.3] — 2026-04-17
+
+### Fixed
+- Fixed special aircraft rows in the Configuration page overflowing the Military detection section card — inputs had a global min-width:200px that broke the grid layout. Rewrote the row as a constrained grid with minmax(0,1fr) and explicit min-width:0 on child inputs. Also cleaned up the color picker sync logic that was using fragile width-based selectors.
+
+## [2.8.2] — 2026-04-16
+
+### Fixed
+- Fixed corrupted CSS custom properties in all three HTML templates and a placeholder page in server.py — the previous version bump script was using unescaped sed patterns, so '2.8.0' was matching the '2e8f0' inside hex color #e2e8f0 and turning it into #e2.8.1, breaking the --t1 text color. This caused all table body text to fall back to black and be nearly unreadable on the dark background. The bump-version.sh script has been rewritten with properly-escaped dots and non-digit/non-dot boundary characters to prevent this class of bug.
+
+## [2.8.1] — 2026-04-16
+
+### Fixed
+- Fixed watchlist entries added through the UI not matching aircraft until the service was restarted. The collector's watchlist lookup is now rebuilt on every poll cycle when the config changes (cheap — uses a signature hash to skip rebuilds when unchanged, and caches tail->ICAO lookups). Military detection rules (use_db_flags, callsign_prefixes, icao_prefixes) also apply live now — removed their restart tags from the Configuration page. Toast messages updated from 'restart to activate' to 'live within one poll cycle'.
+
+## [2.8.0] — 2026-04-16
+
+### Added
+- Added fully-functional Configuration page at /config accessible from the gear menu. Every setting in config.yaml can be edited through the web UI with strict per-field validation (IP format, port range, poll interval, lat/lon bounds, distance unit, log level, ICAO hex, color codes, retention days, string lists). Live changes apply immediately; restart-required changes trigger an amber banner with a one-click 'Restart now' button. Save bar tracks unsaved changes with Discard/Save actions. Special aircraft, callsign prefixes, and ICAO prefixes are editable via inline list editors with add/remove controls. Install script creates a targeted sudoers rule permitting only systemctl restart aerodrome without password — removed on uninstall. Comment-preserving save via ruamel.yaml.
+
+## [2.7.1] — 2026-04-16
+
+### Added
+- Added config auto-migration on service startup — when a new release adds config keys, Aerodrome automatically merges them into the user's config.yaml with their defaults, backs up the previous config as config.yaml.bak.<timestamp>, and preserves all existing user values. Uses ruamel.yaml to retain comments and formatting. Also added config.yaml.example as the canonical defaults file. On fresh install, config.yaml is created from the example.
+
+## [2.7.0] — 2026-04-16
+
+### Added
+- Added 'Watchlist' column to Live, Military, and All tabs with a quick-add button. Clicking the + button opens a modal showing all available identifiers for the aircraft (ICAO always, callsign if broadcasting, tail number if hexdb.io can resolve it). User picks one, edits the suggested label, and confirms. Already-watchlisted aircraft show a green checkmark. Button state updates immediately on add/remove.
+
+## [2.6.0] — 2026-04-16
+
+### Added
+- Added Distance from Receiver column to all four tabs (Live, Watchlist, Military, All). Distance is computed via Haversine formula from configurable receiver coordinates in config.yaml (receiver.latitude, receiver.longitude). Unit is configurable (mi, nmi, km) and displayed in the column header. Column is hidden automatically when coordinates are not configured. Distance is sortable and included in CSV exports.
+
+## [2.5.5] — 2026-04-16
+
+### Fixed
+- Removed leftover opacity:0.4 inline style on version number in header which was overriding the brightness change from v2.5.4
+
+## [2.5.4] — 2026-04-16
+
+### Changed
+- Brightened dim text across UI — header timestamp, inactive tabs, stats bars, empty states, and status page subtitle now use the brighter --t2 color (#94a3b8) instead of --t3 (#64748b) for better readability
+
+## [2.5.3] — 2026-04-16
+
+### Changed
+- Unified stats bar layout across all tabs — Live, Watchlist, Military, and All now all show unique/total counts on the left and the Export dropdown on the right, matching the All tab's existing pattern
+
+## [2.5.2] — 2026-04-16
+
+### Changed
+- Added single-line version of the rsync update command alongside the multi-line version, so users whose terminals mangle bracketed paste can still copy-paste cleanly
+
+## [2.5.1] — 2026-04-16
+
+### Changed
+- Added table of contents to README with anchor links to all major sections and subsections for easier navigation
+
+## [2.5.0] — 2026-04-16
+
+### Added
+- Added CSV export to every tab via new Export dropdown button. Each tab offers 'Latest sighting per aircraft' (one row per aircraft) and 'All sightings' (every recorded sighting) modes. On the All tab, export respects the current date range and search filter. Live tab exports the current real-time snapshot. Server streams CSV via new /api/export endpoint to handle large exports efficiently.
+
+## [2.4.0] — 2026-04-16
+
+### Added
+- Added uninstall.sh script for clean removal of Aerodrome. Interactive by default with prompts before deleting data (database, logs, config); supports --purge to remove everything and --keep to preserve all data files. Does not remove system packages.
+
+## [2.3.0] — 2026-04-16
+
+### Added
+- Added Status page with live component health checks (collector, web server, database, receiver, hexdb resolver, system metrics); accessible via new gear-icon settings menu in header. Placeholder pages for Configuration and Check for Updates added as future scaffolding.
+
+## [2.2.1] — 2026-04-16
+
+### Added
+- Added rendered screenshots for all four tabs (Live, Watchlist, Military, All) in docs/ folder; README now shows real UI screenshots instead of placeholders
+
+## [2.2.0] — 2026-04-16
+
+### Added
+- Auto-changelog generation in bump-version.sh; description now required for every version bump
+
+## [2.1.5] — 2026-04-15
+
+### Fixed
+- `bump-version.sh` no longer mangles historical version numbers in
+  `CHANGELOG.md` — it now skips the changelog and reminds the user to add
+  a new entry manually
+
+## [2.1.4] — 2026-04-15
+
+### Changed
+- README install instructions now use `rsync` instead of `scp -r` for more
+  reliable directory copying
+- Added "Updating" section to README with safe-update workflow that preserves
+  config and database
+
+## [2.1.3] — 2026-04-15
+
+### Added
+- MIT License
+- `.gitignore` for runtime files (database, logs, venv)
+- `CHANGELOG.md` (this file)
+- `CONTRIBUTING.md` with guidelines for pull requests
+- GitHub-friendly README with badges, architecture diagram, and screenshot
+  placeholders
+
+### Changed
+- `install.sh` now auto-detects the current username instead of requiring a
+  manual edit before running
+
+## [2.1.0] — 2026-04-15
+
+### Added
+- `VERSION` file as single source of truth for version number
+- `bump-version.sh` script for automatic version bumps across all files
+  (`patch` / `minor` / `major` / `set`)
+- Version visible in startup banner and web UI header
+
+## [2.0.0] — 2026-04-15
+
+Complete rewrite from the ground up.
+
+### Added
+- Project named **Aerodrome**
+- Four-tab web interface: Live, Watchlist, Military, All
+- Live tab shows current receiver snapshot (no storage)
+- Watchlist tab for personal aircraft tracking by tail number, ICAO hex, or
+  callsign prefix
+- Military tab with auto-detection by callsign prefixes, ICAO ranges, and
+  receiver `dbFlags`
+- All tab with date range picker, presets (today / 7d / 30d / custom), and
+  search box
+- Per-tab independently configurable retention (default 30 days)
+- SQLite database (WAL mode) for reliable storage
+- FastAPI + uvicorn web server
+- Tail number → ICAO hex resolution via hexdb.io
+- Watchlist management directly from the web UI
+- Special aircraft highlighting (e.g. Air Force 1/2) with custom colors
+- Sortable columns on all tables
+- Expandable sighting history per aircraft
+- Auto-refresh every 60 seconds with no page reload
+- Direct integration with globe.airplanes.live for tracking links
+- systemd service installation via `install.sh`
+- Graceful start / stop / status / restart commands
+- Modular Python project structure (collector, server, main entrypoint)
+- All settings driven by `config.yaml` — no code edits needed for normal use

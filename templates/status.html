@@ -1,0 +1,775 @@
+<!-- Version: 2.98.2 -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <!-- theme:inline-fouc-start -->
+    <script>
+// v2.45.0: theme FOUC prevention — applies saved theme pre-paint.
+// Keep this inline and synchronous at the TOP of <head>. Moving it to a
+// deferred module or the body would reintroduce the dark-flash on first
+// load for users with light-mode saved.
+(function(){
+    try {
+        var saved = localStorage.getItem('aerodrome-theme') || 'auto';
+        var applied = saved;
+        if (saved === 'auto') {
+            applied = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+        }
+        document.documentElement.setAttribute('data-theme', applied);
+    } catch (e) { /* localStorage blocked? default-dark is fine */ }
+})();
+</script>
+    <!-- theme:inline-fouc-end -->
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Status — Aerodrome</title>
+<!-- v2.50.2: favicon. SVG for modern browsers (scales perfectly,
+     respects light/dark via the cyan accent), ICO fallback for older
+     browsers, apple-touch-icon for iOS home-screen / bookmarks. -->
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+    <!-- v2.47.0: theme system extracted to /static/theme.css + theme.js.
+         Palette variables and the gear-menu widget styles both live there. -->
+    <link rel="stylesheet" href="/static/theme.css">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-height:100vh; }
+
+/* Header */
+.hdr { background:var(--bg1); border-bottom:1px solid var(--bdr); padding:12px 24px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; }
+.hdr-left { display:flex; align-items:center; gap:8px; }
+.hdr h1 { font-size:18px; font-weight:600; letter-spacing:-0.02em; }
+.hdr h1 span { color:var(--cyan); }
+.dot { width:8px; height:8px; border-radius:50%; background:var(--green); animation:pulse 2s infinite; }
+.dot.warn { background:var(--amber); animation:pulse 2s infinite; }
+.dot.off { background:var(--red); animation:none; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+.settings-btn.warn { border-color:var(--amber) !important; color:var(--amber) !important; }
+.settings-btn.error { border-color:var(--red) !important; color:var(--red) !important; }
+.settings-btn.warn::after, .settings-btn.error::after {
+    content:''; position:absolute; top:-2px; right:-2px;
+    width:7px; height:7px; border-radius:50%;
+    background:var(--amber); box-shadow:0 0 0 2px var(--bg1);
+}
+.settings-btn.error::after { background:var(--red); animation:pulse 2s infinite; }
+.hdr-right { display:flex; align-items:center; gap:14px; }
+.hdr-meta { font-size:11px; color:var(--t2); font-family:var(--mono); }
+.settings-wrap { position:relative; }
+.settings-menu { position:absolute; top:calc(100% + 6px); right:0; background:var(--bg2); border:1px solid var(--bdr); border-radius:8px; min-width:180px; display:none; z-index:100; overflow:hidden; }
+.settings-menu.open { display:block; }
+
+/* Content */
+.wrap { max-width:1100px; margin:0 auto; padding:24px; }
+.page-title { font-size:22px; font-weight:600; margin-bottom:4px; }
+.page-sub { color:var(--t2); font-size:13px; font-family:var(--mono); margin-bottom:20px; }
+
+/* Overall banner */
+.overall { padding:14px 20px; border-radius:8px; margin-bottom:20px; display:flex; align-items:center; gap:12px; border:1px solid; }
+.overall.ok { background:rgba(34,197,94,.08); border-color:rgba(34,197,94,.3); }
+.overall.bad { background:rgba(239,68,68,.08); border-color:rgba(239,68,68,.3); }
+.overall.warn { background:rgba(245,158,11,.08); border-color:rgba(245,158,11,.3); }
+.overall-text { font-weight:500; font-size:15px; }
+.overall.ok .overall-text { color:var(--green); }
+.overall.bad .overall-text { color:var(--red); }
+.overall.warn .overall-text { color:var(--amber); }
+
+/* Status light — solid, no pulse */
+.light { width:12px; height:12px; border-radius:50%; flex-shrink:0; }
+.light.ok { background:var(--green); box-shadow:0 0 8px rgba(34,197,94,.5); }
+.light.bad { background:var(--red); box-shadow:0 0 8px rgba(239,68,68,.5); }
+.light.warn { background:var(--amber); box-shadow:0 0 8px rgba(245,158,11,.5); }
+.light.unknown { background:var(--t3); }
+
+/* Grid of component cards */
+.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:14px; margin-bottom:20px; }
+.card { background:var(--bg2); border:1px solid var(--bdr); border-radius:8px; padding:16px 18px; }
+.card-head { display:flex; align-items:center; gap:10px; margin-bottom:12px; }
+.card-head .light { width:10px; height:10px; }
+.card-title { font-size:14px; font-weight:500; color:var(--t1); }
+.card-subtitle { font-size:11px; color:var(--t3); font-family:var(--mono); margin-left:auto; }
+
+.row { display:flex; justify-content:space-between; padding:6px 0; font-size:12px; border-top:1px solid rgba(42,58,84,.4); }
+.row:first-of-type { border-top:none; padding-top:0; }
+.row-lbl { color:var(--t2); }
+.row-val { color:var(--t1); font-family:var(--mono); }
+.row-val.ok { color:var(--green); }
+.row-val.bad { color:var(--red); }
+.row-val.warn { color:var(--amber); }
+
+/* Meter bar */
+.meter { height:4px; background:var(--bg3); border-radius:2px; overflow:hidden; margin-top:4px; }
+.meter-fill { height:100%; background:var(--cyan); transition:width .3s; }
+.meter-fill.warn { background:var(--amber); }
+.meter-fill.bad { background:var(--red); }
+/* v2.41.6: load average health tiers. ok = below 70% of cores, busy =
+   at capacity (no headroom), warn = backlog forming, overload = ratio
+   >= 2x cores. Tooltip on the element spells out the thresholds. */
+.load-ok       { color: var(--t1); }
+.load-busy     { color: var(--cyan); }
+.load-warn     { color: var(--amber); }
+.load-overload { color: var(--red); font-weight: 500; }
+/* v2.95.0: swap memory health tiers. ok = swap exists but unused (the
+   common case on healthy boxes — render in default text colour, no
+   alarm). light = small spillover, cyan to read as "noted but not a
+   problem". busy = real pressure, amber. warn = sustained paging, red
+   bold. The tier mapping is server-side in the swap_health field; this
+   class set is purely presentation. */
+.swap-ok    { color: var(--t1); }
+.swap-light { color: var(--cyan); }
+.swap-busy  { color: var(--amber); }
+.swap-warn  { color: var(--red); font-weight: 500; }
+
+.actions { display:flex; gap:8px; margin-top:16px; }
+
+.error-box { background:rgba(239,68,68,.08); border:1px solid rgba(239,68,68,.3); border-radius:6px; padding:8px 10px; margin-top:8px; font-family:var(--mono); font-size:11px; color:var(--red); }
+/* v2.49.6: amber variant for advisory failures (e.g. hexdb resolver
+   unreachable). Keeps the same shape as .error-box but uses the amber
+   palette so the card matches the gear icon and overall-status banner,
+   which already render advisory failures in amber. */
+.warn-box { background:rgba(245,158,11,.08); border:1px solid rgba(245,158,11,.3); border-radius:6px; padding:8px 10px; margin-top:8px; font-family:var(--mono); font-size:11px; color:var(--amber); }
+
+.loading { text-align:center; padding:40px; color:var(--t3); font-size:13px; }
+
+
+</style>
+</head>
+<body>
+
+<div class="hdr">
+    <div class="hdr-left">
+        <div class="dot" id="healthDot" title="System status"></div>
+        <a href="/" class="home-link"><svg class="brand-mark" width="32" height="32" viewBox="0 0 64 64" aria-hidden="true">
+                <circle cx="32" cy="32" r="28" fill="none" stroke="#06b6d4" stroke-width="3" opacity="0.3"/>
+                <circle cx="32" cy="32" r="20" fill="none" stroke="#06b6d4" stroke-width="3" opacity="0.55"/>
+                <circle cx="32" cy="32" r="12" fill="none" stroke="#06b6d4" stroke-width="3" opacity="0.8"/>
+                <circle cx="32" cy="32" r="4" fill="#06b6d4"/>
+                <line x1="32" y1="32" x2="52" y2="12" stroke="#06b6d4" stroke-width="3" stroke-linecap="round"/>
+            </svg><h1><span>Aerodrome</span></h1></a>
+    </div>
+    <div class="hdr-right">
+        <span class="hdr-meta">v<span id="appVersion">—</span> &middot; Updated <span id="ts">—</span></span>
+        <div class="settings-wrap">
+            <button class="settings-btn" onclick="toggleMenu(event)" aria-label="Settings" title="Settings">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            </button>
+            <div class="settings-menu" id="settingsMenu">
+                <a href="/status" class="menu-item">Status</a>
+                <a href="/diagnostics" class="menu-item">Diagnostics</a>
+                <a href="/logs" class="menu-item">Logs</a>
+                <a href="/documentation" class="menu-item">Documentation</a>
+                <a href="/config" class="menu-item">Configuration</a>
+                <a href="/updates" class="menu-item">Check for updates</a>
+            
+                <div class="gear-menu-separator"></div>
+                <div class="theme-row">
+                    <div class="theme-label">Theme</div>
+                    <div class="theme-seg" role="group" aria-label="Theme preference">
+                        <button type="button" data-theme-choice="auto"  onclick="aerodromeSetTheme('auto')">Auto</button>
+                        <button type="button" data-theme-choice="dark"  onclick="aerodromeSetTheme('dark')">Dark</button>
+                        <button type="button" data-theme-choice="light" onclick="aerodromeSetTheme('light')">Light</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="wrap">
+    <div class="page-title">System Status</div>
+    <div class="page-sub">Live health check of all Aerodrome components · <span id="lastCheck">loading...</span></div>
+
+    <div id="content">
+        <div class="loading">Loading status...</div>
+    </div>
+
+    <div class="actions">
+        <button class="btn btn-primary" onclick="refresh()">Refresh</button>
+        <button class="btn" onclick="toggleAuto()"><span id="autoLbl">Enable auto-refresh (10s)</span></button>
+    </div>
+</div>
+
+<script>
+let autoTimer = null;
+
+function fmtTime(s) {
+    if (!s) return '—';
+    // v2.85.12: shared formatter — respects display.time_format. Was
+    // hard-coded hour12: false here.
+    return formatTimeFull(s);
+}
+
+function fmtUptime(seconds) {
+    if (!seconds) return '—';
+    const d = Math.floor(seconds / 86400);
+    const h = Math.floor((seconds % 86400) / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const parts = [];
+    if (d) parts.push(`${d}d`);
+    if (h) parts.push(`${h}h`);
+    parts.push(`${m}m`);
+    return parts.join(' ');
+}
+
+function statusClass(ok, warn) {
+    if (warn) return 'warn';
+    return ok ? 'ok' : 'bad';
+}
+
+function meterClass(pct) {
+    if (pct >= 90) return 'bad';
+    if (pct >= 75) return 'warn';
+    return '';
+}
+
+// v2.50.30: capacity card formatters. Sizes are stored in MB on the
+// backend; render in MB until they cross 1 GB then switch to GB.
+// Always one decimal so numbers stay readable when they shift between
+// 950 MB and 1.1 GB across refresh cycles.
+function fmtSize(mb) {
+    if (mb == null) return '—';
+    if (mb >= 1024) return (mb / 1024).toFixed(1) + ' GB';
+    if (mb >= 100)  return Math.round(mb) + ' MB';
+    return mb.toFixed(1) + ' MB';
+}
+
+// v2.85.5: daily-growth formatters. Magnitude-aware so the same string
+// works at quiet-install scale ("+8,247 rows · +1.4 MB") and busy-
+// install scale ("+703k rows · +116 MB") without overflowing the card
+// width or wrapping mid-unit. v2.85.6 lifted these from a per-card
+// IIFE to module scope so the Database card and the Capacity card
+// (which both render the same rows_per_day / mb_per_day numbers from
+// the backend) share one formatter and stay visually consistent.
+//
+// Thresholds:
+//   rows < 10,000  → exact ("+8,247 rows")
+//   rows ≥ 10,000  → compact 'k' ("+703k rows")
+//   rows ≥ 1M      → compact 'M' with one decimal ("+1.2M rows")
+//   mb < 100       → one decimal ("+12.4 MB")
+//   mb ≥ 100       → integer ("+116 MB")
+function fmtRowsCompact(r) {
+    if (r == null) return '—';
+    if (r < 10000) return '+' + Math.round(r).toLocaleString() + ' rows';
+    if (r < 1000000) return '+' + Math.round(r / 1000) + 'k rows';
+    return '+' + (r / 1000000).toFixed(1) + 'M rows';
+}
+function fmtMbCompact(m) {
+    if (m == null) return '—';
+    if (m < 100) return '+' + m.toFixed(1) + ' MB';
+    return '+' + Math.round(m) + ' MB';
+}
+
+// Headroom semantics — these are the only values that drive a user
+// action (lower retention, free disk space, get a bigger drive).
+//   >= 2.0×  comfortable (green)
+//   1.2-2.0× tight but workable (amber)
+//   < 1.2×   would fill or come close to filling the disk (red)
+function headroomClass(ratio) {
+    if (ratio == null) return '';
+    if (ratio >= 2.0) return 'ok';
+    if (ratio >= 1.2) return 'warn';
+    return 'bad';
+}
+
+function headroomLabel(ratio) {
+    if (ratio == null) return '—';
+    if (ratio < 1.0) return ratio.toFixed(2) + '× ⚠ fills disk';
+    if (ratio < 1.2) return ratio.toFixed(2) + '× tight';
+    if (ratio < 2.0) return ratio.toFixed(1) + '× ok';
+    return ratio.toFixed(1) + '× ✓';
+}
+
+// v2.50.30: persist Capacity card's what-if open state across the
+// 10-second auto-refresh. innerHTML re-render clobbers the DOM, so
+// we need a module-level flag we re-apply after each render.
+let _whatIfOpen = false;
+
+function toggleWhatIf() {
+    const el = document.getElementById('whatIfBlock');
+    const btn = document.getElementById('whatIfBtn');
+    if (!el || !btn) return;
+    const open = el.style.display !== 'none';
+    el.style.display = open ? 'none' : 'block';
+    btn.textContent = open ? 'show what-if projections ▼' : 'hide what-if projections ▲';
+    _whatIfOpen = !open;
+}
+
+function _restoreWhatIfState() {
+    if (!_whatIfOpen) return;
+    const el = document.getElementById('whatIfBlock');
+    const btn = document.getElementById('whatIfBtn');
+    if (!el || !btn) return;
+    el.style.display = 'block';
+    btn.textContent = 'hide what-if projections ▲';
+}
+
+async function refresh() {
+    try {
+        const r = await fetch('/api/status');
+        const s = await r.json();
+        render(s);
+    } catch (e) {
+        document.getElementById('content').innerHTML = `<div class="error-box">Failed to load status: ${e.message}</div>`;
+    }
+}
+
+function render(s) {
+    document.getElementById('lastCheck').textContent = 'checked at ' + fmtTime(s.timestamp);
+    document.getElementById('ts').textContent = fmtTime(s.timestamp);
+
+    const c = s.components;
+    const sys = s.system;
+
+    // v2.49.4: three-state banner. Previously this was binary (overall_ok
+    // → "All systems operational" else "issues"), which lied when severity
+    // was "warn" (advisory failure like an unreachable hexdb resolver).
+    // Now we read severity directly so the banner matches the gear icon,
+    // and we name the failing component(s) in the warn case so the user
+    // knows what the advisory is about without scanning every card.
+    //
+    // Failing names from the API are short keys (receiver, database,
+    // collector, webserver, hexdb_resolver). Map to human-friendly labels
+    // for display.
+    const failLabels = {
+        receiver: 'ADS-B receiver',
+        database: 'database',
+        collector: 'collector',
+        webserver: 'web server',
+        hexdb_resolver: 'tail resolver',
+        capacity: 'disk capacity',
+    };
+    const failingNames = (s.failing || []).map(f => failLabels[f] || f);
+    const failingStr = failingNames.length === 0 ? '' :
+        failingNames.length === 1 ? failingNames[0] :
+        failingNames.length === 2 ? `${failingNames[0]} and ${failingNames[1]}` :
+        `${failingNames.slice(0, -1).join(', ')}, and ${failingNames[failingNames.length-1]}`;
+    let bannerClass, bannerText;
+    if (s.severity === 'error') {
+        bannerClass = 'bad';
+        bannerText = failingStr
+            ? `Issue with ${failingStr} — see card${failingNames.length === 1 ? '' : 's'} below`
+            : 'One or more components reporting issues';
+    } else if (s.severity === 'warn') {
+        bannerClass = 'warn';
+        bannerText = failingStr
+            ? `All core components OK · advisory issue with ${failingStr}`
+            : 'All core components OK · advisory issue';
+    } else {
+        bannerClass = 'ok';
+        bannerText = 'All systems operational';
+    }
+
+    const html = `
+        <div class="overall ${bannerClass}">
+            <div class="light ${bannerClass}"></div>
+            <div>
+                <div class="overall-text">${bannerText}</div>
+                <div style="color:var(--t3);font-size:11px;font-family:var(--mono);margin-top:2px;">Aerodrome v${s.version}</div>
+            </div>
+        </div>
+
+        <div class="grid">
+            <!-- Collector -->
+            <div class="card">
+                <div class="card-head">
+                    <div class="light ${statusClass(c.collector.ok)}"></div>
+                    <div class="card-title">Collector</div>
+                    <div class="card-subtitle">polling thread</div>
+                </div>
+                <div class="row"><span class="row-lbl">Status</span><span class="row-val ${statusClass(c.collector.ok)}">${c.collector.ok ? 'Running' : 'Stalled'}</span></div>
+                <div class="row"><span class="row-lbl">Last write</span><span class="row-val">${c.collector.last_write_seconds_ago != null ? c.collector.last_write_seconds_ago + 's ago' : '—'}</span></div>
+                <div class="row"><span class="row-lbl">Throughput</span><span class="row-val">${c.collector.records_per_sec_5m != null ? c.collector.records_per_sec_5m.toFixed(1) + '/s' : '—'}${c.collector.records_sample_count_5m != null ? ` <span style="opacity:.6">· ${c.collector.records_sample_count_5m.toLocaleString()} in last 5m</span>` : ''}</span></div>
+                ${c.collector.error ? `<div class="error-box">${c.collector.error}</div>` : ''}
+            </div>
+
+            <!-- Web Server -->
+            <div class="card">
+                <div class="card-head">
+                    <div class="light ${statusClass(c.webserver.ok)}"></div>
+                    <div class="card-title">Web Server</div>
+                    <div class="card-subtitle">FastAPI</div>
+                </div>
+                <div class="row"><span class="row-lbl">Status</span><span class="row-val ok">Serving</span></div>
+                <div class="row"><span class="row-lbl">Bound to</span><span class="row-val">${c.webserver.host}:${c.webserver.port}</span></div>
+            </div>
+
+            <!-- Database -->
+            <div class="card">
+                <div class="card-head">
+                    <div class="light ${statusClass(c.database.ok)}"></div>
+                    <div class="card-title">Database</div>
+                    <div class="card-subtitle">SQLite</div>
+                </div>
+                <div class="row"><span class="row-lbl">Status</span><span class="row-val ${statusClass(c.database.ok)}">${c.database.ok ? 'Connected' : 'Error'}</span></div>
+                <div class="row"><span class="row-lbl">Size</span><span class="row-val">${c.database.size_mb != null ? c.database.size_mb + ' MB' : '—'}</span></div>
+                ${(function(){
+                    // v2.85.3: Daily growth metric. Reuses the rows_per_day /
+                    // mb_per_day numbers that _compute_capacity_metrics
+                    // already calculates for the Capacity card's projection
+                    // math — no extra backend work, no extra DB query. The
+                    // data-source field gates display the same way the
+                    // Capacity card gates its projection display:
+                    //   - insufficient (<24h of data): show "still
+                    //     accumulating" placeholder so the row doesn't
+                    //     look broken or extrapolate misleading numbers
+                    //     from a tiny sample
+                    //   - estimated (1-7 days): show the number with an
+                    //     "(estimated)" suffix so the user knows the
+                    //     trailing-7 average isn't fully populated yet
+                    //   - measured (7+ days): show the number plain
+                    // The Capacity card right below this one explains the
+                    // data-source state machine in detail; we just inherit
+                    // the same gating here.
+                    const cap = c.database.capacity;
+                    if (!cap || !cap.ok) return '';
+                    if (cap.data_source === 'insufficient') {
+                        return `<div class="row"><span class="row-lbl">Daily growth</span>
+                            <span class="row-val" style="color:var(--t2);">still accumulating</span></div>`;
+                    }
+                    // v2.85.5: compact display format. v2.85.3 used full
+                    // precision ("+702,965 rows/day · +116.2 MB/day") which
+                    // was fine on quiet installs but overran the Database
+                    // card width on busy ones, causing a mid-unit wrap
+                    // that read as a typo. v2.85.4 split into two rows to
+                    // dodge that. But at busy-install scale the precision
+                    // past the thousands place doesn't carry useful info
+                    // — "+703k rows" reads identically to "+702,965 rows"
+                    // for capacity-planning purposes — so the cleaner
+                    // shape is to scale the format by magnitude rather
+                    // than by line count. Keeps the metric on one line
+                    // at any data scale and gets the value back on the
+                    // same row as its label. v2.85.6 lifted the
+                    // formatters to module scope so the Capacity card
+                    // (which renders the same numbers) shares them.
+                    const rowsStr = fmtRowsCompact(cap.rows_per_day);
+                    const mbStr = fmtMbCompact(cap.mb_per_day);
+                    const suffix = cap.data_source === 'estimated' ? ' (estimated)' : '';
+                    return `<div class="row"><span class="row-lbl">Daily growth</span>
+                            <span class="row-val">${rowsStr} · ${mbStr}${suffix}</span></div>`;
+                })()}
+                ${c.database.stats.all ? `
+                    <div class="row"><span class="row-lbl">All sightings</span><span class="row-val">${c.database.stats.all.total.toLocaleString()} (${c.database.stats.all.unique} unique)</span></div>
+                    <div class="row"><span class="row-lbl">Military</span><span class="row-val">${c.database.stats.military.total.toLocaleString()} (${c.database.stats.military.unique} unique)</span></div>
+                    <div class="row"><span class="row-lbl">Watchlist</span><span class="row-val">${c.database.stats.watchlist.total.toLocaleString()} (${c.database.stats.watchlist.unique} unique)</span></div>
+                ` : ''}
+                ${c.database.error ? `<div class="error-box">${c.database.error}</div>` : ''}
+            </div>
+
+            <!-- v2.50.30: Capacity planning card. Renders three states:
+                   1. data_source === 'insufficient' — DB has less than 1 day
+                      of data. Show "still accumulating" instead of misleading
+                      extrapolated numbers.
+                   2. data_source === 'estimated' — 1-3 days. Use default
+                      bytes/row (170) and label the projection as estimated.
+                   3. data_source === 'measured' — 3+ days. Use actual
+                      bytes/row from the install. Most installs spend their
+                      lives here. -->
+            ${(function(){
+                const cap = c.database.capacity;
+                if (!cap || !cap.ok) return '';
+                if (cap.data_source === 'insufficient') {
+                    // v2.51.1: default the status dot to green during the
+                    // "still accumulating" state. Previously the dot was
+                    // suppressed (no color class), making the card look
+                    // visually broken next to its peers — every other card
+                    // has a colored dot. Capacity isn't unhealthy during
+                    // accumulation; it just doesn't have enough data to
+                    // project. Green correctly signals "working as designed,
+                    // come back tomorrow" rather than "indeterminate state."
+                    return `
+                    <div class="card">
+                        <div class="card-head">
+                            <div class="light ok"></div>
+                            <div class="card-title">Capacity</div>
+                            <div class="card-subtitle">disk planning</div>
+                        </div>
+                        <div class="row"><span class="row-lbl">Current size</span>
+                            <span class="row-val">${fmtSize(cap.db_size_mb)}</span></div>
+                        <div class="row"><span class="row-lbl">Days of data</span>
+                            <span class="row-val">${cap.days_of_data} d</span></div>
+                        <div class="row" style="padding:8px 0;">
+                            <span style="color:var(--t2);font-size:12px;line-height:1.5;">
+                                Still accumulating &mdash; capacity projections need
+                                at least 1 day of data to be reliable. Check back
+                                tomorrow.
+                            </span>
+                        </div>
+                    </div>
+                    `;
+                }
+                const sourceLabel = cap.data_source === 'measured'
+                    ? `${cap.bytes_per_row} bytes/row (measured)`
+                    : `${cap.bytes_per_row} bytes/row (estimated &mdash; ${cap.days_of_data} days of data, will refine after 3d)`;
+                const headroomCls  = headroomClass(cap.headroom_ratio);
+                const headroomLbl  = headroomLabel(cap.headroom_ratio);
+                // Build the what-if rows. Highlight the row matching the
+                // current retention with an arrow + accent. Default to
+                // hidden; user opens via the toggle button.
+                const whatIfRows = (cap.what_if || []).map(w => {
+                    const isCurrent = w.days === cap.retention_days;
+                    const cls = headroomClass(w.headroom_ratio);
+                    return `
+                    <div class="row" style="padding:4px 0;${isCurrent ? 'font-weight:600;' : ''}">
+                        <span class="row-lbl">${isCurrent ? '→ ' : '&nbsp;&nbsp;&nbsp;'}${w.days} days</span>
+                        <span class="row-val">
+                            ${fmtSize(w.projected_mb)}
+                            ${w.headroom_ratio != null ? `<span class="row-val ${cls}" style="margin-left:12px;font-size:11px;">${headroomLabel(w.headroom_ratio)}</span>` : ''}
+                        </span>
+                    </div>`;
+                }).join('');
+                return `
+                <div class="card">
+                    <div class="card-head">
+                        <div class="light ${headroomCls}"></div>
+                        <div class="card-title">Capacity</div>
+                        <div class="card-subtitle">disk planning</div>
+                    </div>
+                    <div class="row"><span class="row-lbl">Current size</span>
+                        <span class="row-val">${fmtSize(cap.db_size_mb)}</span></div>
+                    <div class="row"><span class="row-lbl">Daily growth</span>
+                        <span class="row-val">${fmtMbCompact(cap.mb_per_day)}</span></div>
+                    <div class="row"><span class="row-lbl">Retention</span>
+                        <span class="row-val">${cap.retention_days} d &middot; all sightings</span></div>
+                    <div class="row"><span class="row-lbl">Projected settled</span>
+                        <span class="row-val">${fmtSize(cap.projected_settled_mb)}</span></div>
+                    ${cap.disk_free_mb != null ? `
+                    <div class="row"><span class="row-lbl">Disk free</span>
+                        <span class="row-val">${fmtSize(cap.disk_free_mb)}</span></div>
+                    <div class="row"><span class="row-lbl">Headroom</span>
+                        <span class="row-val ${headroomCls}">${headroomLbl}</span></div>
+                    ` : ''}
+                    <div class="row" style="padding:6px 0 0;border-top:1px solid var(--bdr);margin-top:6px;">
+                        <span style="color:var(--t3);font-size:10px;font-family:var(--mono);">${sourceLabel}</span>
+                    </div>
+                    <div style="margin-top:10px;text-align:center;">
+                        <button id="whatIfBtn" type="button" class="btn"
+                                style="font-size:11px;padding:4px 10px;"
+                                onclick="toggleWhatIf()">show what-if projections ▼</button>
+                    </div>
+                    <div id="whatIfBlock" style="display:none;margin-top:10px;padding-top:8px;border-top:1px solid var(--bdr);">
+                        <div style="color:var(--t2);font-size:11px;margin-bottom:6px;">
+                            Same growth rate, different retention values:
+                        </div>
+                        ${whatIfRows}
+                        <div style="color:var(--t3);font-size:10px;margin-top:8px;line-height:1.5;">
+                            Adjust in Configuration → Retention. Headroom is computed
+                            against current free disk plus space the DB would release
+                            if shrinking.
+                        </div>
+                    </div>
+                </div>
+                `;
+            })()}
+
+            <!-- Receiver -->
+            <div class="card">
+                <div class="card-head">
+                    <div class="light ${statusClass(c.receiver.ok)}"></div>
+                    <div class="card-title">ADS-B Receiver</div>
+                    <div class="card-subtitle">upstream</div>
+                </div>
+                <div class="row"><span class="row-lbl">Status</span><span class="row-val ${statusClass(c.receiver.ok)}">${c.receiver.ok ? 'Reachable' : 'Unreachable'}</span></div>
+                <div class="row"><span class="row-lbl">URL</span><span class="row-val" style="font-size:10px;max-width:60%;text-align:right;word-break:break-all">${c.receiver.url}</span></div>
+                ${c.receiver.response_ms != null ? `<div class="row"><span class="row-lbl">Response time</span><span class="row-val">${c.receiver.response_ms} ms</span></div>` : ''}
+                ${c.receiver.error ? `<div class="error-box">${c.receiver.error}</div>` : ''}
+            </div>
+
+            <!-- Hexdb.io Resolver -->
+            <div class="card">
+                <div class="card-head">
+                    <div class="light ${c.hexdb_resolver.ok ? 'ok' : 'warn'}"></div>
+                    <div class="card-title">Tail Resolver</div>
+                    <div class="card-subtitle">hexdb.io</div>
+                </div>
+                <!-- v2.71.0: when the chosen track-link provider doesn't need
+                     a tail (airplanes_live / FlightAware), the server skips the
+                     hexdb network probe entirely and sets probe_skipped=true.
+                     In that case the "Status" row reads "Not in use" rather
+                     than "Reachable" (which would be a lie — we didn't probe)
+                     or "Unreachable" (which would be alarming and wrong).
+                     Pre-v2.71.0 this card always read "Reachable" / "Unreachable"
+                     based on probe outcome regardless of whether the resolver
+                     was actually used. -->
+                ${c.hexdb_resolver.probe_skipped ?
+                    `<div class="row"><span class="row-lbl">Status</span><span class="row-val ok">Not in use</span></div>` :
+                    `<div class="row"><span class="row-lbl">Status</span><span class="row-val ${c.hexdb_resolver.ok ? 'ok' : 'warn'}">${c.hexdb_resolver.ok ? 'Reachable' : 'Unreachable'}</span></div>`
+                }
+                ${c.hexdb_resolver.response_ms != null ? `<div class="row"><span class="row-lbl">Response time</span><span class="row-val">${c.hexdb_resolver.response_ms} ms</span></div>` : ''}
+                ${c.hexdb_resolver.error ? `<div class="warn-box">${c.hexdb_resolver.error}</div>` : ''}
+                <!-- v2.49.6: this card uses .warn (amber) instead of .bad (red)
+                     when not OK. The resolver is advisory at the system level —
+                     hexdb being unreachable doesn't break anything core, only
+                     degrades Track-link URLs for providers that need a registration.
+                     Matches the amber treatment the gear icon and overall-status
+                     banner already use for advisory failures. -->
+                <!-- v2.71.0: "Not in use" explanatory note rendered independently
+                     of cache_stats availability. Pre-v2.71.0 this lived inside the
+                     cache-stats IIFE which gated on db_available — if the DB was
+                     briefly inaccessible, the "Not in use" message disappeared
+                     too. Pulling it out keeps the user-facing explanation visible
+                     whenever the resolver is legitimately unused, even on edge
+                     cases like fresh installs before the first cache write. -->
+                ${c.hexdb_resolver.provider_requires_tail === false ? `
+                    <div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--bdr)"></div>
+                    <div class="row" style="padding:8px 0;">
+                        <span style="color:var(--t2);font-size:12px;line-height:1.5;">
+                            Not in use — <b>${c.hexdb_resolver.provider_label || 'your track provider'}</b>
+                            uses the ICAO hex directly and doesn't need tail-number lookup.
+                            Change your track-link provider in Configuration to activate the resolver.
+                        </span>
+                    </div>
+                ` : ''}
+                ${(function(){
+                    // v2.49.0: persistent-cache stats. Shown when cache_stats
+                    // is attached AND the DB is available. Missing or unavailable
+                    // stats block is silently skipped — this card still functions
+                    // without the v2.49.0 backing tables (e.g. first-boot state).
+                    const cs = c.hexdb_resolver.cache_stats;
+                    if (!cs || !cs.db_available) return '';
+
+                    // v2.71.0: when the resolver is not in use, the "Not in
+                    // use" block above already explains the empty cache. Skip
+                    // the cache-stats rows here — they'd just be three rows
+                    // of zeros that read as "something is broken" alongside
+                    // the explanatory text. The decision to render the
+                    // cache-stats rows still hangs on db_available so the
+                    // first-boot empty-state is silent, matching pre-v2.71.0
+                    // behavior for that case.
+                    if (c.hexdb_resolver.provider_requires_tail === false) return '';
+
+                    const ev = cs.events_24h || {};
+                    const rateStr = (cs.hit_rate_pct != null)
+                        ? `${ev.hit.toLocaleString()} / ${ev.total.toLocaleString()} · ${cs.hit_rate_pct}%`
+                        : `no activity in 24h`;
+                    // Positive/negative/error breakdown — color the error count
+                    // red when non-zero so a hexdb outage shouts.
+                    const posStr = `${ev.miss_positive.toLocaleString()} positive`;
+                    const negStr = `${ev.miss_negative.toLocaleString()} negative`;
+                    const errColor = ev.miss_error > 0 ? 'style="color:var(--red)"' : '';
+                    const errStr = `<span ${errColor}>${ev.miss_error.toLocaleString()} error${ev.miss_error === 1 ? '' : 's'}</span>`;
+                    return `
+                    <div class="row-group-sep" style="margin-top:10px;padding-top:8px;border-top:1px solid var(--bdr)"></div>
+                    <div class="row"><span class="row-lbl">Cache hit rate (24h)</span><span class="row-val">${rateStr}</span></div>
+                    <div class="row"><span class="row-lbl">Hexdb results (24h)</span><span class="row-val" style="font-size:11px">${posStr} · ${negStr} · ${errStr}</span></div>
+                    <div class="row"><span class="row-lbl">Cache size</span><span class="row-val">${cs.cache_size.toLocaleString()} entries${cs.refreshed_24h > 0 ? ` · ${cs.refreshed_24h.toLocaleString()} refreshed today` : ''}</span></div>
+                    `;
+                })()}
+            </div>
+
+            <!-- System Info -->
+            ${sys.ok ? `
+            <div class="card">
+                <div class="card-head">
+                    <div class="light ok"></div>
+                    <div class="card-title">System</div>
+                    <div class="card-subtitle">host</div>
+                </div>
+                <div class="row"><span class="row-lbl">Uptime</span><span class="row-val">${fmtUptime(sys.uptime_seconds)}</span></div>
+                <div class="row"><span class="row-lbl">Started at</span><span class="row-val">${fmtTime(sys.started_at)}</span></div>
+                <div class="row">
+                    <span class="row-lbl">CPU (host)</span>
+                    <span class="row-val">${sys.cpu_percent.toFixed(1)}%${sys.cpu_cores ? ` · ${sys.cpu_cores} core${sys.cpu_cores === 1 ? '' : 's'}` : ''}</span>
+                </div>
+                <div class="meter"><div class="meter-fill ${meterClass(sys.cpu_percent)}" style="width:${sys.cpu_percent}%"></div></div>
+                ${sys.load_average != null ? `
+                <div class="row" style="margin-top:8px">
+                    <span class="row-lbl">Load average (host)</span>
+                    <span class="row-val load-${sys.load_health || 'ok'}"
+                          title="1 / 5 / 15 minute averages for the whole host (every process on the box, not just Aerodrome). Each value is the average number of processes running or waiting for CPU; healthy when below the core count (${sys.cpu_cores || '?'}).">
+                        ${sys.load_average['1m'].toFixed(2)} /
+                        ${sys.load_average['5m'].toFixed(2)} /
+                        ${sys.load_average['15m'].toFixed(2)}
+                    </span>
+                </div>
+                ` : ''}
+                ${sys.process_cpu_percent != null ? `
+                <div class="row" style="margin-top:8px">
+                    <span class="row-lbl">CPU (Aerodrome)</span>
+                    <span class="row-val">${sys.process_cpu_percent.toFixed(1)}%</span>
+                </div>
+                <div class="meter"><div class="meter-fill ${meterClass(sys.process_cpu_percent)}" style="width:${sys.process_cpu_percent}%"></div></div>
+                ` : ''}
+                <div class="row" style="margin-top:8px">
+                    <span class="row-lbl">Memory</span>
+                    <span class="row-val">${sys.memory.used_mb} / ${sys.memory.total_mb} MB (${sys.memory.percent}%)</span>
+                </div>
+                <div class="meter"><div class="meter-fill ${meterClass(sys.memory.percent)}" style="width:${sys.memory.percent}%"></div></div>
+                ${sys.swap && sys.swap.total_mb > 0 ? `
+                <div class="row" style="margin-top:8px">
+                    <span class="row-lbl">Swap</span>
+                    <span class="row-val swap-${sys.swap.health || 'ok'}"
+                          title="Swap memory is overflow space on disk used when RAM fills up. Healthy systems use little or none — sustained swap activity (paging) means real pressure and a meaningful slowdown. Any non-zero usage on a healthy box is worth a look.">
+                        ${sys.swap.used_mb} / ${sys.swap.total_mb} MB (${sys.swap.percent}%)
+                    </span>
+                </div>
+                <div class="meter"><div class="meter-fill ${meterClass(sys.swap.percent)}" style="width:${sys.swap.percent}%"></div></div>
+                ` : ''}
+                <div class="row" style="margin-top:8px">
+                    <span class="row-lbl">Disk</span>
+                    <span class="row-val">${sys.disk.used_gb} / ${sys.disk.total_gb} GB (${sys.disk.percent}%)</span>
+                </div>
+                <div class="meter"><div class="meter-fill ${meterClass(sys.disk.percent)}" style="width:${sys.disk.percent}%"></div></div>
+            </div>
+            ` : `
+            <div class="card">
+                <div class="card-head"><div class="light unknown"></div><div class="card-title">System</div></div>
+                <div class="error-box">System info unavailable: ${sys.error || 'psutil not installed'}</div>
+            </div>
+            `}
+        </div>
+    `;
+
+    document.getElementById('content').innerHTML = html;
+    // v2.50.30: re-apply the user's what-if expand state after the
+    // innerHTML rewrite. Otherwise auto-refresh would collapse the
+    // panel every 10 seconds.
+    _restoreWhatIfState();
+}
+
+function toggleAuto() {
+    const lbl = document.getElementById('autoLbl');
+    if (autoTimer) {
+        clearInterval(autoTimer);
+        autoTimer = null;
+        lbl.textContent = 'Enable auto-refresh (10s)';
+    } else {
+        autoTimer = setInterval(refresh, 10000);
+        lbl.textContent = 'Auto-refresh on (10s)';
+    }
+}
+
+refresh();
+
+// Gear menu
+function toggleMenu(e) {
+    e.stopPropagation();
+    document.getElementById('settingsMenu').classList.toggle('open');
+}
+document.addEventListener('click', e => {
+    if (!e.target.closest('.settings-wrap')) {
+        document.getElementById('settingsMenu').classList.remove('open');
+    }
+});
+
+// v2.41.8+: populate header version from /api/status (was hardcoded before)
+(async function _loadAppVersion(){
+    try {
+        const r = await fetch('/api/status');
+        const j = await r.json();
+        if (j && j.version) {
+            const el = document.getElementById('appVersion');
+            if (el) el.textContent = j.version;
+        }
+    } catch (e) { /* cosmetic — ignore */ }
+})();
+
+
+
+</script>
+<script src="/static/theme.js"></script>
+<script src="/static/health-indicator.js"></script>
+</body>
+</html>

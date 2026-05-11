@@ -1,0 +1,795 @@
+<!-- Version: 2.98.2 -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <!-- theme:inline-fouc-start -->
+    <script>
+// v2.45.0: theme FOUC prevention — applies saved theme pre-paint.
+// Keep this inline and synchronous at the TOP of <head>. Moving it to a
+// deferred module or the body would reintroduce the dark-flash on first
+// load for users with light-mode saved.
+(function(){
+    try {
+        var saved = localStorage.getItem('aerodrome-theme') || 'auto';
+        var applied = saved;
+        if (saved === 'auto') {
+            applied = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+        }
+        document.documentElement.setAttribute('data-theme', applied);
+    } catch (e) { /* localStorage blocked? default-dark is fine */ }
+})();
+</script>
+    <!-- theme:inline-fouc-end -->
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Watchlist alert diagnostic — Aerodrome</title>
+<!-- v2.50.2: favicon. SVG for modern browsers (scales perfectly,
+     respects light/dark via the cyan accent), ICO fallback for older
+     browsers, apple-touch-icon for iOS home-screen / bookmarks. -->
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+    <!-- v2.47.0: theme system extracted to /static/theme.css + theme.js.
+         Palette variables and the gear-menu widget styles both live there. -->
+    <link rel="stylesheet" href="/static/theme.css">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-height:100vh; }
+a { color:var(--cyan); }
+
+.hdr { display:flex; align-items:center; justify-content:space-between;
+       padding:14px 20px; background:var(--bg1); border-bottom:1px solid var(--bdr); }
+.hdr-left h1 { font-size:20px; font-weight:600; color:var(--t1); }
+.hdr-left h1 span { color:var(--cyan); }
+.hdr-right { display:flex; align-items:center; gap:16px; }
+.hdr-meta { font-size:11px; color:var(--t2); font-family:var(--mono); }
+
+.settings-wrap { position:relative; }
+.settings-menu { position:absolute; top:100%; right:0; margin-top:4px;
+                 background:var(--bg2); border:1px solid var(--bdr); border-radius:6px;
+                 min-width:200px; display:none; z-index:100;
+                 box-shadow:0 8px 24px rgba(0,0,0,.4); }
+.settings-menu.open { display:block; }
+
+.wrap { max-width:960px; margin:0 auto; padding:24px 20px 60px; }
+.breadcrumb { color:var(--t3); font-size:12px; margin-bottom:10px;
+              font-family:var(--mono); }
+.breadcrumb a { color:var(--t2); text-decoration:none; }
+.breadcrumb a:hover { color:var(--cyan); }
+.breadcrumb .sep { color:var(--t3); padding:0 6px; }
+
+.page-title { font-size:26px; font-weight:600; margin-bottom:8px; }
+.page-sub { color:var(--t2); font-size:14px; line-height:1.6; margin-bottom:24px;
+            max-width:720px; }
+
+.toolbar { display:flex; align-items:center; gap:10px; margin-bottom:20px;
+           padding-bottom:20px; border-bottom:1px solid var(--bdr);
+           flex-wrap:wrap; }
+
+.copied-tag { color:var(--green); font-size:12px; margin-left:8px; opacity:0;
+              transition:opacity .2s; }
+.copied-tag.show { opacity:1; }
+
+.card { background:var(--bg2); border:1px solid var(--bdr); border-radius:6px;
+        padding:20px; margin-bottom:16px; }
+.card-title { font-size:13px; font-weight:600; letter-spacing:.08em;
+              text-transform:uppercase; color:var(--t3); margin-bottom:14px; }
+
+.report { font-family:var(--mono); font-size:12px; line-height:1.55;
+          color:var(--t1); background:var(--bg0); border:1px solid var(--bdr);
+          border-radius:6px; padding:18px 20px; white-space:pre-wrap;
+          overflow-x:auto; max-height:540px; overflow-y:auto; }
+.loading { color:var(--t3); font-style:italic; padding:12px 0; }
+
+.err-box { background:rgba(239,68,68,.08); border:1px solid rgba(239,68,68,.3);
+           color:var(--red); padding:12px 16px; border-radius:6px; font-size:13px;
+           font-family:var(--mono); }
+
+.interp { font-size:13px; line-height:1.6; color:var(--t2); }
+.interp strong { color:var(--t1); }
+.interp ul { padding-left:22px; margin-top:8px; }
+.interp li { margin-bottom:4px; }
+.verdict { display:inline-block; padding:3px 10px; border-radius:3px;
+           font-weight:600; font-size:11px; letter-spacing:.04em;
+           text-transform:uppercase; margin-right:8px; }
+.verdict.ok    { background:rgba(34,197,94,.15); color:var(--green); }
+.verdict.warn  { background:rgba(245,158,11,.15); color:var(--amber); }
+.verdict.bad   { background:rgba(239,68,68,.15); color:var(--red); }
+.verdict.info  { background:rgba(6,182,212,.15); color:var(--cyan); }
+
+
+</style>
+</head>
+<body>
+
+<div class="hdr">
+    <div class="hdr-left">
+        <div class="dot" id="healthDot" title="System status"></div>
+        <a class="home-link" href="/"><svg class="brand-mark" width="32" height="32" viewBox="0 0 64 64" aria-hidden="true">
+                <circle cx="32" cy="32" r="28" fill="none" stroke="#06b6d4" stroke-width="3" opacity="0.3"/>
+                <circle cx="32" cy="32" r="20" fill="none" stroke="#06b6d4" stroke-width="3" opacity="0.55"/>
+                <circle cx="32" cy="32" r="12" fill="none" stroke="#06b6d4" stroke-width="3" opacity="0.8"/>
+                <circle cx="32" cy="32" r="4" fill="#06b6d4"/>
+                <line x1="32" y1="32" x2="52" y2="12" stroke="#06b6d4" stroke-width="3" stroke-linecap="round"/>
+            </svg><h1><span>Aerodrome</span></h1></a>
+    </div>
+    <div class="hdr-right">
+        <span class="hdr-meta">v<span id="appVersion">—</span> &middot; Updated <span id="ts">—</span></span>
+        <div class="settings-wrap">
+            <button class="settings-btn" onclick="toggleMenu(event)" aria-label="Settings" title="Settings">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            </button>
+            <div class="settings-menu" id="settingsMenu">
+                <a href="/status" class="menu-item">Status</a>
+                <a href="/diagnostics" class="menu-item">Diagnostics</a>
+                <a href="/logs" class="menu-item">Logs</a>
+                <a href="/documentation" class="menu-item">Documentation</a>
+                <a href="/config" class="menu-item">Configuration</a>
+                <a href="/updates" class="menu-item">Check for updates</a>
+            
+                <div class="gear-menu-separator"></div>
+                <div class="theme-row">
+                    <div class="theme-label">Theme</div>
+                    <div class="theme-seg" role="group" aria-label="Theme preference">
+                        <button type="button" data-theme-choice="auto"  onclick="aerodromeSetTheme('auto')">Auto</button>
+                        <button type="button" data-theme-choice="dark"  onclick="aerodromeSetTheme('dark')">Dark</button>
+                        <button type="button" data-theme-choice="light" onclick="aerodromeSetTheme('light')">Light</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="wrap">
+    <div class="breadcrumb">
+        <a href="/diagnostics">Diagnostics</a><span class="sep">/</span>Watchlist alert
+    </div>
+    <div class="page-title">Watchlist alert diagnostic</div>
+    <div class="page-sub">
+        Captures the exact state the Watchlist tab pulse logic uses to decide whether
+        to pulse: client-side variables, localStorage entries, the server's
+        <code style="font-family:var(--mono);color:var(--cyan)">/api/watchlist</code>
+        response, and the current alert configuration. The report at the bottom of
+        this page is a pasteable text block. Share it in a bug report if the pulse
+        is misbehaving.
+    </div>
+
+    <div class="toolbar">
+        <button class="btn btn-primary" onclick="runDiagnostic()" id="runBtn">Run diagnostic</button>
+        <button class="btn" onclick="copyReport()" id="copyBtn" disabled>Copy diagnostic report</button>
+        <span class="copied-tag" id="copiedTag">copied to clipboard</span>
+        <a class="btn" href="/diagnostics">&larr; Back to Diagnostics</a>
+    </div>
+
+    <div id="interpretation" style="display:none" class="card">
+        <div class="card-title">Interpretation</div>
+        <div id="interpretationBody" class="interp"></div>
+    </div>
+
+    <div class="card">
+        <div class="card-title">Report</div>
+        <div id="content">
+            <div class="loading">Collecting state&hellip;</div>
+        </div>
+    </div>
+</div>
+
+<script>
+// =========================================================================
+// Watchlist alert diagnostic
+// =========================================================================
+// Captures enough state to reconstruct what evaluateWatchlistAlert() would
+// decide right now, plus enough context to understand WHY it would decide
+// that.
+//
+// Runs entirely client-side except for one fetch to /api/watchlist. No
+// privileged operations. Re-running is safe and idempotent.
+//
+// The report has four blocks:
+//   1. Environment — version, clock, timezone, path
+//   2. Configuration — the watchlist_alerts settings from the backend
+//   3. Client state — localStorage keys, derived evaluation result
+//   4. Server state — /api/watchlist summary (count, seen_at spread)
+//
+// Format is intentionally plain text with ### markdown section headers so
+// it pastes cleanly into GitHub issues, chat, or email.
+// =========================================================================
+
+let lastReportText = '';
+let lastStructured = null;
+
+async function collectDiagnostic(){
+    const now = Math.floor(Date.now() / 1000);
+    const data = {
+        collectedAt: now,
+        environment: {},
+        config: {},
+        clientState: {},
+        serverState: {},
+        evaluation: {},
+    };
+
+    // --- Environment ---
+    data.environment.nowUnix  = now;
+    data.environment.nowLocal = new Date(now * 1000).toString();
+    data.environment.nowUtc   = new Date(now * 1000).toISOString();
+    try { data.environment.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone; }
+    catch(e){ data.environment.timezone = '(unknown)'; }
+    data.environment.userAgent = navigator.userAgent || '(unknown)';
+    data.environment.path      = window.location.pathname;
+    try {
+        // Version lives on /api/status, same as every other page in the app.
+        // An earlier draft of this diagnostic mistakenly hit /api/version
+        // which doesn't exist — don't repeat that.
+        const r = await fetch('/api/status');
+        if(r.ok){
+            const j = await r.json();
+            data.environment.aerodromeVersion = j.version || '(unknown)';
+        } else {
+            data.environment.aerodromeVersion = '(HTTP ' + r.status + ')';
+        }
+    } catch(e){ data.environment.aerodromeVersion = '(fetch failed: ' + e.message + ')'; }
+
+    // --- Configuration ---
+    // /api/ui-config returns the front-end config snapshot including the
+    // watchlist_alerts block with enabled/trigger/effect/color. This is the
+    // same endpoint index.html reads on page load to decide whether to
+    // install the alert polling at all.
+    try {
+        const r = await fetch('/api/ui-config');
+        if(r.ok){
+            const j = await r.json();
+            if(j.watchlist_alerts){
+                data.config.enabled = j.watchlist_alerts.enabled !== false;
+                data.config.trigger = j.watchlist_alerts.trigger || 'new';
+                data.config.effect  = j.watchlist_alerts.effect  || 'pulse_dot';
+                data.config.color   = j.watchlist_alerts.color   || '#f59e0b';
+            } else {
+                data.config._note = 'watchlist_alerts not present in /api/ui-config response';
+            }
+        } else {
+            data.config._error = 'HTTP ' + r.status;
+        }
+    } catch(e){ data.config._error = 'fetch failed: ' + e.message; }
+
+    // --- localStorage keys starting with "wa-" ---
+    data.clientState.localStorage = {};
+    try {
+        for(let i = 0; i < localStorage.length; i++){
+            const key = localStorage.key(i);
+            if(key && key.startsWith('wa-')){
+                data.clientState.localStorage[key] = localStorage.getItem(key);
+            }
+        }
+    } catch(e){ data.clientState._localStorageError = e.message; }
+
+    // --- Server /api/watchlist summary ---
+    try {
+        const r = await fetch('/api/watchlist');
+        if(r.ok){
+            const j = await r.json();
+            const aircraft = j.aircraft || [];
+            const seenAts = aircraft
+                .map(g => Number((g.latest || {}).seen_at || 0))
+                .filter(t => t > 0);
+            data.serverState.aircraftCount = aircraft.length;
+            data.serverState.retentionDays = j.retention_days;
+            data.serverState.lastUpdated   = j.last_updated;
+            if(seenAts.length){
+                const mx = Math.max.apply(null, seenAts);
+                const mn = Math.min.apply(null, seenAts);
+                data.serverState.latestSeenAt = mx;
+                data.serverState.latestSeenAtIso = new Date(mx * 1000).toISOString();
+                data.serverState.earliestSeenAtIso = new Date(mn * 1000).toISOString();
+                // v2.42.5: secondsSinceLatest can go negative when the server's
+                // clock is ahead of the browser's clock (the browser stamps
+                // `now` from its own wall clock, the server stamps seen_at
+                // from its own). A few seconds of skew is normal across
+                // machines; more than that suggests NTP drift worth checking.
+                // We keep the raw value for diagnostic transparency but also
+                // flag the skew case explicitly.
+                data.serverState.secondsSinceLatest = now - mx;
+                if (data.serverState.secondsSinceLatest < 0) {
+                    data.serverState.clockSkewSeconds =
+                        Math.abs(data.serverState.secondsSinceLatest);
+                }
+            } else {
+                data.serverState.latestSeenAt = 0;
+                data.serverState._note = 'no sightings in retention window';
+            }
+            // Per-aircraft breakdown, trimmed for the report
+            data.serverState.perAircraft = aircraft.slice(0, 10).map(g => {
+                const l = g.latest || {};
+                return {
+                    icao: l.icao || '(none)',
+                    callsign: (l.callsign || '').trim(),
+                    seen_at: Number(l.seen_at || 0),
+                    seen_at_iso: l.seen_at ? new Date(Number(l.seen_at) * 1000).toISOString() : '(none)',
+                    label: l.watchlist_label || '',
+                };
+            });
+            if(aircraft.length > 10){
+                data.serverState.perAircraftTruncated = aircraft.length - 10;
+            }
+        } else {
+            data.serverState._error = 'HTTP ' + r.status;
+        }
+    } catch(e){ data.serverState._error = 'fetch failed: ' + e.message; }
+
+    // --- Evaluation: what would the logic decide right now? ---
+    const latest = data.serverState.latestSeenAt || 0;
+    const computedKey = 'wa-dismissed-' + latest;
+    const storedKey = (data.clientState.localStorage || {})['wa-dismissed'] || null;
+    data.evaluation.computedDismissalKey = computedKey;
+    data.evaluation.storedDismissalKey   = storedKey;
+    data.evaluation.dismissalKeyMatches  = storedKey === computedKey;
+
+    // v2.42.5: parse the stored key's timestamp so the report can show the
+    // absolute moment the user dismissed + how long ago that was + how far
+    // from the current computed key. This was the key information missing
+    // from the Pi user's diagnostic — raw unix timestamps don't make it
+    // obvious that "28 minutes ago" was when he last dismissed, so the
+    // pulse coming back was expected behavior rather than a bug.
+    if (storedKey) {
+        const storedTs = parseInt(storedKey.replace('wa-dismissed-', ''), 10) || 0;
+        if (storedTs > 0) {
+            data.evaluation.storedDismissalAt = storedTs;
+            data.evaluation.storedDismissalAtIso =
+                new Date(storedTs * 1000).toISOString();
+            // Age = how long ago the user dismissed, relative to `now`.
+            // Clamped to 0 if negative (clock skew — same reason as above).
+            data.evaluation.storedDismissalAgeSeconds =
+                Math.max(0, now - storedTs);
+            // Gap = how many seconds between the dismissal and the current
+            // "latest sighting." This is the crucial number: if it's > 0,
+            // a newer sighting has legitimately arrived since dismissal and
+            // the pulse coming back is the designed behavior.
+            if (latest > 0) {
+                data.evaluation.latestMinusDismissal = latest - storedTs;
+            }
+        }
+    }
+
+    // Predict the outcome for each trigger mode
+    const hasWatchlistSightings = (data.serverState.aircraftCount || 0) > 0;
+    // data.config.enabled is `undefined` when the config fetch failed. We
+    // must NOT conflate that with "disabled" — be explicit about it.
+    const configAvailable = data.config._error == null;
+    const isEnabled = configAvailable && data.config.enabled !== false;
+    data.evaluation.predicted = {};
+    if(!configAvailable){
+        data.evaluation.predicted.all =
+            '(cannot predict — config fetch failed: ' + data.config._error + ')';
+    } else if(!isEnabled){
+        data.evaluation.predicted.all = 'no alert (config disabled)';
+    } else if(!hasWatchlistSightings){
+        data.evaluation.predicted.all = 'no alert (watchlist is empty in retention window)';
+    } else {
+        data.evaluation.predicted['new'] = data.evaluation.dismissalKeyMatches
+            ? 'no alert (matching dismissal key in localStorage)'
+            : 'alert (dismissal key does not match or absent)';
+        data.evaluation.predicted.continuous =
+            'alert (continuous mode always fires when watchlist has sightings)';
+        data.evaluation.predicted.continuous_dismissable = data.evaluation.dismissalKeyMatches
+            ? 'no alert (dismissed)'
+            : 'alert (not yet dismissed)';
+        data.evaluation.predicted.live = 'depends on live aircraft snapshot (not captured here)';
+    }
+
+    // Current actual trigger mode's prediction
+    const cur = data.config.trigger || 'new';
+    data.evaluation.currentTrigger = cur;
+    data.evaluation.currentPrediction =
+        data.evaluation.predicted[cur] || data.evaluation.predicted.all || '(unknown)';
+
+    return data;
+}
+
+function formatReport(d){
+    const L = [];
+    L.push('=== Watchlist alert diagnostic ===');
+    L.push('Collected: ' + d.environment.nowUtc +
+           '  (unix ' + d.environment.nowUnix + ')');
+    L.push('');
+    L.push('### Environment');
+    L.push('  Aerodrome version:  ' + (d.environment.aerodromeVersion || '?'));
+    L.push('  Local time:         ' + d.environment.nowLocal);
+    L.push('  Browser timezone:   ' + d.environment.timezone);
+    L.push('  Page path:          ' + d.environment.path);
+    L.push('  User agent:         ' + d.environment.userAgent);
+    L.push('');
+    L.push('### Configuration (watchlist_alerts)');
+    if(d.config._error) L.push('  ERROR: ' + d.config._error);
+    else {
+        L.push('  enabled:  ' + String(d.config.enabled));
+        L.push('  trigger:  ' + (d.config.trigger || '(default)'));
+        L.push('  effect:   ' + (d.config.effect  || '(default)'));
+        L.push('  color:    ' + (d.config.color   || '(default)'));
+        if(d.config._note) L.push('  note:     ' + d.config._note);
+    }
+    L.push('');
+    L.push('### Client state — localStorage');
+    const keys = Object.keys(d.clientState.localStorage || {});
+    if(!keys.length) L.push('  (no wa-* entries found)');
+    else keys.forEach(k => L.push('  ' + k + ' = ' + (d.clientState.localStorage[k] || '(empty)')));
+    if(d.clientState._localStorageError)
+        L.push('  ERROR reading localStorage: ' + d.clientState._localStorageError);
+    L.push('');
+    L.push('### Server state — /api/watchlist');
+    if(d.serverState._error) L.push('  ERROR: ' + d.serverState._error);
+    else {
+        L.push('  aircraftCount:     ' + d.serverState.aircraftCount);
+        L.push('  retentionDays:     ' + d.serverState.retentionDays);
+        L.push('  lastUpdated:       ' + d.serverState.lastUpdated);
+        if(d.serverState.latestSeenAt){
+            L.push('  earliestSeenAt:    ' + d.serverState.earliestSeenAtIso);
+            L.push('  latestSeenAt:      ' + d.serverState.latestSeenAtIso +
+                   '  (unix ' + d.serverState.latestSeenAt + ')');
+            L.push('  secondsSinceLatest:' + d.serverState.secondsSinceLatest +
+                   (d.serverState.clockSkewSeconds
+                        ? '  (browser clock behind server by ' +
+                          d.serverState.clockSkewSeconds + 's — check NTP)'
+                        : ''));
+        } else if(d.serverState._note){
+            L.push('  note:              ' + d.serverState._note);
+        }
+        if(d.serverState.perAircraft && d.serverState.perAircraft.length){
+            L.push('');
+            L.push('  per-aircraft (first ' + d.serverState.perAircraft.length + '):');
+            d.serverState.perAircraft.forEach((a, i) => {
+                L.push('    [' + (i+1) + '] ' + a.icao + '  cs=' + (a.callsign || '(none)') +
+                       '  seen=' + a.seen_at_iso +
+                       (a.label ? '  label=' + a.label : ''));
+            });
+            if(d.serverState.perAircraftTruncated){
+                L.push('    … and ' + d.serverState.perAircraftTruncated + ' more (truncated)');
+            }
+        }
+    }
+    L.push('');
+    L.push('### Evaluation');
+    L.push('  computedDismissalKey: ' + d.evaluation.computedDismissalKey);
+    L.push('  storedDismissalKey:   ' + (d.evaluation.storedDismissalKey || '(not set)'));
+    // v2.42.5: emit the stored-key timestamp in human-readable form and show
+    // the age of the dismissal + the latest-vs-dismissal gap. A reader
+    // scanning the report should be able to see "user dismissed 28 minutes
+    // ago, new sighting arrived since then" directly rather than doing
+    // timestamp arithmetic in their head.
+    if (d.evaluation.storedDismissalAtIso) {
+        const ageSec = d.evaluation.storedDismissalAgeSeconds;
+        const ageHuman = _formatDuration(ageSec);
+        L.push('  storedDismissalAt:    ' + d.evaluation.storedDismissalAtIso +
+               '  (' + ageHuman + ' ago)');
+        if (d.evaluation.latestMinusDismissal != null) {
+            const gap = d.evaluation.latestMinusDismissal;
+            L.push('  latestMinusDismissal: ' + gap + 's' +
+                   (gap > 0
+                        ? '  (a newer sighting arrived ' + _formatDuration(gap) + ' after dismissal)'
+                        : gap < 0
+                            ? '  (dismissal is NEWER than latest sighting — unusual)'
+                            : '  (exact match — dismissal was from the current latest)'));
+        }
+    }
+    L.push('  keysMatch:            ' + d.evaluation.dismissalKeyMatches);
+    L.push('  currentTrigger:       ' + d.evaluation.currentTrigger);
+    L.push('  currentPrediction:    ' + d.evaluation.currentPrediction);
+    L.push('');
+    L.push('  Prediction by trigger mode:');
+    const pred = d.evaluation.predicted || {};
+    Object.keys(pred).forEach(k => L.push('    ' + k + ': ' + pred[k]));
+    L.push('');
+    L.push('=== end of diagnostic ===');
+    return L.join('\n');
+}
+
+// Short human-readable duration. 125 → "2m 5s"; 3700 → "1h 1m"; etc.
+function _formatDuration(sec){
+    sec = Math.max(0, Math.floor(sec));
+    if (sec < 60) return sec + 's';
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    if (m < 60) return s === 0 ? m + 'm' : m + 'm ' + s + 's';
+    const h = Math.floor(m / 60);
+    const mRem = m % 60;
+    return mRem === 0 ? h + 'h' : h + 'h ' + mRem + 'm';
+}
+
+function interpretReport(d){
+    // Produce human-readable verdicts for the most likely bug patterns.
+    // This is best-effort reasoning; the raw report is still the source of
+    // truth. The verdicts are meant to help the user (or a support reader)
+    // see the shape of the problem without reading the whole blob.
+    const findings = [];
+
+    // Defensive first: if the config fetch failed, don't pretend to interpret
+    // config state. An earlier draft of this diagnostic produced a confident
+    // "alerts are disabled" verdict whenever the config endpoint 404'd —
+    // which was actively misleading since the config was actually fine, the
+    // diagnostic itself was broken. Say so explicitly.
+    if(d.config._error){
+        findings.push({ verdict: 'bad',
+            text: 'Could not fetch configuration (' + d.config._error + '). ' +
+                  'The diagnostic cannot reason about alert configuration ' +
+                  'without this data. The remaining sections (client state, ' +
+                  'server state) are still accurate and may be informative ' +
+                  'on their own. Check server logs for the config endpoint.' });
+        return findings;
+    }
+
+    if(!d.config.enabled){
+        findings.push({ verdict: 'info',
+            text: 'Alerts are disabled in Configuration. That’s why the pulse never ' +
+                  'fires. Not a bug if this is intentional.' });
+        return findings;
+    }
+
+    if(d.serverState.aircraftCount === 0){
+        findings.push({ verdict: 'info',
+            text: 'No watchlist sightings in the retention window. The pulse cannot ' +
+                  'fire in "new", "continuous", or "continuous_dismissable" modes ' +
+                  'regardless of configuration. If a pulse is visible anyway, it’s ' +
+                  'stale DOM — try a full page refresh (Ctrl/Cmd+Shift+R).' });
+    }
+
+    if(d.config.trigger === 'new' && d.serverState.aircraftCount > 0){
+        if(!d.evaluation.dismissalKeyMatches && !d.evaluation.storedDismissalKey){
+            findings.push({ verdict: 'warn',
+                text: 'Trigger is "new", there are watchlist sightings, but no ' +
+                      'dismissal key is in localStorage. The pulse will fire on ' +
+                      'every page load until the user clicks the Watchlist tab. ' +
+                      'This is the designed behaviour — but if you’re expecting it ' +
+                      'NOT to pulse, the previous dismissal click didn’t persist.' });
+        } else if(!d.evaluation.dismissalKeyMatches && d.evaluation.storedDismissalKey){
+            // Compute how stale the dismissal is in seconds so the verdict
+            // can be specific instead of generic. This is one of the three
+            // numbers the user most wants to see when diagnosing a stuck
+            // pulse, so surfacing it in the interpretation saves a round-trip
+            // through the raw report.
+            const storedTs = parseInt((d.evaluation.storedDismissalKey || '')
+                                      .replace('wa-dismissed-', ''), 10) || 0;
+            const computedTs = d.serverState.latestSeenAt || 0;
+            const staleBy = computedTs - storedTs;
+            const staleLabel = staleBy > 0
+                ? staleBy + ' seconds'
+                : '(unknown; timestamp parsing failed)';
+            findings.push({ verdict: 'warn',
+                text: 'Trigger is "new" and localStorage has a dismissal key, but ' +
+                      'it doesn’t match the current computed key (stale by ' +
+                      staleLabel + '). A newer watchlist sighting has arrived since ' +
+                      'the last dismissal, so the pulse comes back — this is the ' +
+                      'designed behaviour, not necessarily a bug. To tell whether ' +
+                      'this is expected or a problem: check the Live tab. If live ' +
+                      'watchlist aircraft are currently transmitting, the new ' +
+                      'sighting is real and the pulse is correct. If the Live tab ' +
+                      'shows no watchlist aircraft but sightings keep arriving ' +
+                      '(secondsSinceLatest stays small on repeated runs), the ' +
+                      'collector is generating phantom sightings — that would be ' +
+                      'a bug worth reporting. Also worth checking: if your ' +
+                      'watchlist matches broadly (e.g. substring "airbus" matches ' +
+                      'every Airbus aircraft), the pulse is expected to fire ' +
+                      'continuously in busy airspace and no amount of dismissing ' +
+                      'will keep it suppressed — narrow the rule or switch trigger ' +
+                      'to "live" mode.' });
+        } else {
+            findings.push({ verdict: 'ok',
+                text: 'Trigger is "new" and the dismissal key in localStorage ' +
+                      'matches the current computed key. The pulse should NOT be ' +
+                      'firing. If you see a pulse anyway with this state, the ' +
+                      'classList application is buggy (not the dismissal logic).' });
+        }
+    }
+
+    if(d.config.trigger === 'live'){
+        findings.push({ verdict: 'info',
+            text: 'Trigger is "live". This diagnostic doesn’t capture the live ' +
+                  'aircraft snapshot (D.live); the pulse in this mode reflects ' +
+                  'whether any watchlist ICAO is currently transmitting. Check ' +
+                  'the Live tab alongside this report.' });
+    }
+
+    if(d.environment.aerodromeVersion &&
+       !d.environment.aerodromeVersion.match(/^\d+\.\d+\./)){
+        findings.push({ verdict: 'warn',
+            text: 'Aerodrome version string looks unusual: "' +
+                  d.environment.aerodromeVersion + '". Confirm the install isn’t ' +
+                  'mid-upgrade.' });
+    }
+
+    return findings;
+}
+
+function renderInterpretation(findings){
+    const box = document.getElementById('interpretation');
+    const body = document.getElementById('interpretationBody');
+    if(!findings.length){
+        box.style.display = 'none';
+        return;
+    }
+    body.innerHTML = findings.map(f => {
+        const v = (f.verdict || 'info').toLowerCase();
+        return '<div style="margin-bottom:10px"><span class="verdict ' + v + '">' +
+               v.toUpperCase() + '</span><span>' + escHtml(f.text) + '</span></div>';
+    }).join('');
+    box.style.display = 'block';
+}
+
+function escHtml(s){
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+async function runDiagnostic(){
+    const btn = document.getElementById('runBtn');
+    const copyBtn = document.getElementById('copyBtn');
+    const content = document.getElementById('content');
+    btn.disabled = true;
+    copyBtn.disabled = true;
+    content.innerHTML = '<div class="loading">Collecting state…</div>';
+    document.getElementById('interpretation').style.display = 'none';
+
+    try {
+        const d = await collectDiagnostic();
+        const text = formatReport(d);
+        const findings = interpretReport(d);
+        lastStructured = d;
+        lastReportText = text;
+        content.innerHTML = '<pre class="report">' + escHtml(text) + '</pre>';
+        renderInterpretation(findings);
+        copyBtn.disabled = false;
+    } catch(e){
+        content.innerHTML = '<div class="err-box">Diagnostic failed: ' +
+                            escHtml(e.message) + '</div>';
+    } finally {
+        btn.disabled = false;
+        // v2.41.27: mirror the Performance page's label convention. First
+        // click (or auto-run on load) shows 'Run diagnostic'; subsequent
+        // clicks read 'Run diagnostic again' so the button is honest about
+        // what pressing it does.
+        btn.textContent = 'Run diagnostic again';
+    }
+}
+
+async function copyReport(){
+    if(!lastReportText) return;
+    const text = lastReportText;
+
+    // Three-tier fallback, matching the pattern used on the Performance
+    // diagnostic page. Clipboard API requires a secure context (HTTPS or
+    // localhost), but plenty of Aerodrome installs are accessed over plain
+    // HTTP on a LAN — that's the Pi user's configuration right now. When
+    // the modern API is unavailable we fall through to the synchronous
+    // execCommand('copy') via a temporary textarea, which works on HTTP
+    // in every mainstream browser. If even that fails (rare), tier 3 shows
+    // a dismissible modal with the text in a selectable <pre>.
+    const flash = () => {
+        const tag = document.getElementById('copiedTag');
+        tag.textContent = 'copied to clipboard';
+        tag.classList.add('show');
+        setTimeout(() => tag.classList.remove('show'), 1500);
+    };
+
+    // Tier 1 — modern async Clipboard API (HTTPS / localhost only)
+    if(navigator.clipboard && window.isSecureContext){
+        try {
+            await navigator.clipboard.writeText(text);
+            flash();
+            return;
+        } catch(e){ /* fall through */ }
+    }
+
+    // Tier 2 — execCommand via hidden textarea (works on HTTP LAN installs)
+    try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.top = '0';
+        ta.style.left = '0';
+        ta.style.width = '2em';
+        ta.style.height = '2em';
+        ta.style.opacity = '0';
+        ta.setAttribute('readonly', '');
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        ta.setSelectionRange(0, text.length);
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        if(ok){
+            flash();
+            return;
+        }
+    } catch(e){ /* fall through */ }
+
+    // Tier 3 — dismissible modal with selectable <pre>
+    _showReportFallback(text);
+}
+
+function _showReportFallback(text){
+    const bg = document.createElement('div');
+    bg.style.cssText =
+        'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:2000;'
+      + 'display:flex;align-items:center;justify-content:center;padding:20px;';
+    const modal = document.createElement('div');
+    modal.style.cssText =
+        'background:var(--bg1);border:1px solid var(--bdr);border-top:3px solid var(--cyan);'
+      + 'border-radius:6px;max-width:800px;width:100%;max-height:80vh;'
+      + 'display:flex;flex-direction:column;';
+    modal.innerHTML = `
+        <div style="padding:14px 18px;border-bottom:1px solid var(--bdr);
+                    display:flex;justify-content:space-between;align-items:center;">
+            <strong style="font-size:14px;">Copy diagnostic report</strong>
+            <button id="fallbackClose" class="btn" style="padding:4px 10px;">Close</button>
+        </div>
+        <div style="padding:10px 18px;color:var(--t2);font-size:12px;">
+            Automatic copy wasn't available. Select all (Ctrl/Cmd+A) and copy
+            (Ctrl/Cmd+C) from the box below.
+        </div>
+        <pre id="fallbackPre" style="flex:1;overflow:auto;margin:0 18px 18px;
+                                      padding:14px;background:var(--bg0);
+                                      border:1px solid var(--bdr);border-radius:4px;
+                                      font-family:var(--mono);font-size:12px;
+                                      line-height:1.5;color:var(--t1);
+                                      user-select:text;white-space:pre-wrap;"></pre>
+    `;
+    modal.querySelector('#fallbackPre').textContent = text;
+    bg.appendChild(modal);
+    document.body.appendChild(bg);
+    // Focus and select the text for convenience
+    setTimeout(() => {
+        const pre = modal.querySelector('#fallbackPre');
+        const range = document.createRange();
+        range.selectNodeContents(pre);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+    }, 50);
+    modal.querySelector('#fallbackClose').onclick = () => bg.remove();
+    bg.onclick = (e) => { if(e.target === bg) bg.remove(); };
+}
+
+function toggleMenu(e){
+    e.stopPropagation();
+    document.getElementById('settingsMenu').classList.toggle('open');
+}
+document.addEventListener('click', e => {
+    const menu = document.getElementById('settingsMenu');
+    const btn  = document.querySelector('.settings-btn');
+    if(menu && !menu.contains(e.target) && btn && !btn.contains(e.target)){
+        menu.classList.remove('on');
+    }
+});
+
+async function loadVersion(){
+    try {
+        const r = await fetch('/api/status');
+        if(r.ok){
+            const j = await r.json();
+            const el = document.getElementById('appVersion');
+            if(el) el.textContent = j.version || '—';
+        }
+    } catch(e){ /* non-critical */ }
+    // v2.85.12: shared formatter respects display.time_format.
+    const tsEl = document.getElementById('ts');
+    if(tsEl) tsEl.textContent = formatDateTime(new Date());
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    loadVersion();
+    // v2.41.27: auto-run on page load, matching the Performance diagnostic
+    // pattern. The two fetches this triggers (/api/status, /api/ui-config,
+    // /api/watchlist) are cheap, and someone who lands on a diagnostic page
+    // almost always intends to run it. The runBtn label will flip to 'Run
+    // diagnostic again' once the first auto-run completes.
+    runDiagnostic();
+});
+
+
+</script>
+<script src="/static/theme.js"></script>
+<script src="/static/health-indicator.js"></script>
+</body>
+</html>

@@ -1,0 +1,1990 @@
+<!-- Version: 2.98.2 -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <!-- theme:inline-fouc-start -->
+    <script>
+(function(){
+    try {
+        var saved = localStorage.getItem('aerodrome-theme') || 'auto';
+        var applied = saved;
+        if (saved === 'auto') {
+            applied = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+        }
+        document.documentElement.setAttribute('data-theme', applied);
+    } catch (e) { }
+})();
+</script>
+    <!-- theme:inline-fouc-end -->
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Aircraft — Aerodrome</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="/static/theme.css">
+<!-- v2.86.0: Leaflet map for the Position history section. Bundled
+     locally to /static/leaflet/ rather than CDN so the map works on
+     air-gapped installs and doesn't add an external dependency. -->
+<link rel="stylesheet" href="/static/leaflet/leaflet.css">
+<script src="/static/leaflet/leaflet.js" defer></script>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-height:100vh; }
+
+/* v2.58.0: sticky positioning is applied globally by theme.css
+   (body .hdr {position:sticky; top:0; z-index:50}) since v2.50.16.
+   The .crumbs-bar below pins on top of that. Total pinned area is
+   ~58px header + ~30px breadcrumb bar = ~88px on this page. */
+.hdr { background:var(--bg1); border-bottom:1px solid var(--bdr); padding:12px 24px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; }
+.hdr-left { display:flex; align-items:center; gap:8px; }
+.hdr h1 { font-size:18px; font-weight:600; letter-spacing:-0.02em; }
+.hdr h1 span { color:var(--cyan); }
+.dot { width:8px; height:8px; border-radius:50%; background:var(--green); animation:pulse 2s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+.hdr-right { display:flex; align-items:center; gap:14px; }
+.hdr-meta { font-size:11px; color:var(--t2); font-family:var(--mono); }
+.brand-mark { vertical-align:middle; margin-right:6px; }
+.home-link { color:inherit; text-decoration:none; display:inline-flex; align-items:center; }
+.home-link:hover h1 { opacity:0.85; }
+
+/* Settings menu — same pattern other admin pages use. The display:none
+   on .settings-menu (and the .open variant that overrides it) is what
+   makes the gear-button toggle actually toggle. theme.css has the
+   .warn/.error variant styles + theme-row internals; this block has
+   the base structure that's currently duplicated across templates.
+   Filed: move these to theme.css when the UI consistency pass runs. */
+.settings-wrap { position:relative; }
+.settings-menu { position:absolute; top:calc(100% + 6px); right:0; background:var(--bg2); border:1px solid var(--bdr); border-radius:8px; min-width:180px; display:none; z-index:100; overflow:hidden; }
+.settings-menu.open { display:block; }
+
+.wrap { max-width:1280px; margin:0 auto; padding:24px; }
+
+/* v2.58.0: full-width sticky breadcrumb bar. Renders right below the
+   pinned header. Internal max-width container aligns the breadcrumb
+   text with the page content. The bar's bg1 background covers the
+   full viewport width while content scrolls below; without it, the
+   page bg would show through on either side of the centered content
+   column when scrolling.
+
+   v2.58.1: top offset uses --aerodrome-header-height (set by theme.js
+   from the actual measured header height) instead of hardcoded 58px,
+   so the breadcrumb bar sits flush against the header bottom border
+   regardless of font / zoom / viewport variations. See the matching
+   change on .tabs-wrap in templates/index.html. */
+.crumbs-bar {
+    background:var(--bg1); border-bottom:1px solid var(--bdr);
+    position:sticky; top:var(--aerodrome-header-height, 58px); z-index:49;
+}
+.crumbs-bar-inner {
+    max-width:1280px; margin:0 auto; padding:8px 24px;
+    font-size:12px; color:var(--t3);
+}
+.crumbs-bar-inner a { color:var(--cyan); text-decoration:none; }
+.crumbs-bar-inner a:hover { text-decoration:underline; }
+
+/* Legacy .crumbs class — kept since renderDetail still emits this
+   element. We drop the margin-bottom (the new bar handles spacing)
+   and make it transparent so it nests cleanly inside .crumbs-bar-inner.
+   Existing calls to renderDetail render a .crumbs div which we now
+   re-target to live inside the bar. See renderDetail in this template. */
+.crumbs { font-size:12px; color:var(--t3); }
+.crumbs a { color:var(--cyan); text-decoration:none; }
+.crumbs a:hover { text-decoration:underline; }
+
+.title-row { display:flex; align-items:baseline; gap:14px; margin-bottom:6px; flex-wrap:wrap; }
+.title-row h1 { font-family:var(--mono); font-size:28px; font-weight:600; letter-spacing:-0.01em; }
+.title-row .callsign-pill {
+    background:var(--cyan); color:var(--bg0); padding:3px 10px;
+    border-radius:4px; font-size:11px; font-weight:600;
+    font-family:var(--mono);
+}
+/* v2.57.0: MIL and WATCHLIST annotations on the detail-page hero
+   strip. Same color language as elsewhere in the app — red for
+   military (matches .sp-label on row data; color comes from
+   _annotate_military's mil_color, defaulting to --red), orange for
+   watchlist (matches .wl-pill on Search cards). Both pills are
+   conditional and additive: an aircraft that's both military AND
+   on the watchlist gets both pills side by side, between the
+   callsign-pill and the meta-text fields. */
+.title-row .mil-pill {
+    padding:3px 10px; border-radius:4px;
+    font-size:11px; font-weight:600;
+    font-family:var(--font); text-transform:uppercase;
+    letter-spacing:.04em;
+}
+.title-row .wl-pill {
+    background:rgba(245, 158, 11, 0.15);
+    color:var(--amber);
+    padding:3px 10px; border-radius:4px;
+    font-size:11px; font-weight:600;
+    font-family:var(--font); text-transform:uppercase;
+    letter-spacing:.04em;
+}
+.title-row .meta-text { color:var(--t2); font-size:14px; }
+.title-row .sep { color:var(--t3); font-size:14px; }
+.title-row .track-link {
+    margin-left:auto; color:var(--cyan); font-size:13px;
+    text-decoration:none; padding:4px 10px;
+    border:1px solid var(--cyan); border-radius:6px;
+}
+.title-row .track-link:hover { background:rgba(6,182,212,0.1); }
+
+.subtitle { color:var(--t3); font-size:13px; margin-bottom:24px; font-family:var(--mono); }
+
+.metrics-grid {
+    display:grid; grid-template-columns:repeat(5, 1fr);
+    gap:8px; margin-bottom:24px;
+}
+.metric-card {
+    background:var(--bg1); border:1px solid var(--bdr);
+    border-radius:6px; padding:12px;
+}
+.metric-card .lbl {
+    font-size:11px; color:var(--t3); text-transform:uppercase;
+    letter-spacing:0.04em; margin-bottom:2px;
+}
+.metric-card .val {
+    font-size:22px; font-weight:500; font-family:var(--mono);
+    color:var(--t1);
+}
+
+.section-title {
+    font-size:13px; color:var(--t2); font-weight:600;
+    text-transform:uppercase; letter-spacing:0.04em;
+    margin:0 0 12px;
+}
+
+.chips-row {
+    display:flex; flex-wrap:wrap; gap:8px; margin-bottom:24px;
+}
+.chip {
+    background:rgba(6,182,212,0.08); border:1px solid var(--cyan);
+    color:var(--cyan); padding:6px 12px; border-radius:20px;
+    font-size:12px;
+}
+.chip .lbl { opacity:0.6; }
+
+@media (max-width:900px){
+    .metrics-grid { grid-template-columns:repeat(2, 1fr); }
+    .title-row .track-link { margin-left:0; }
+}
+
+.histogram {
+    display:flex; align-items:end; gap:2px;
+    height:90px; margin-bottom:4px;
+}
+.histogram .bar {
+    flex:1; background:rgba(6,182,212,0.2);
+    border-radius:2px 2px 0 0; min-height:2px;
+    transition:background 0.15s;
+}
+.histogram .bar.peak { background:var(--cyan); }
+.histogram .bar.empty { background:var(--bdr); opacity:0.5; }
+.hour-axis {
+    display:flex; justify-content:space-between;
+    font-size:10px; color:var(--t3);
+    font-family:var(--mono); margin-bottom:24px;
+}
+
+.dow-grid {
+    display:grid; grid-template-columns:repeat(7, 1fr); gap:4px;
+}
+.dow-grid .bar {
+    height:36px; background:rgba(6,182,212,0.2); border-radius:3px;
+}
+.dow-grid .bar.active { background:var(--cyan); }
+.dow-grid .bar.empty { background:var(--bdr); opacity:0.4; }
+.dow-axis {
+    display:grid; grid-template-columns:repeat(7, 1fr); gap:4px;
+    font-size:10px; color:var(--t3); font-family:var(--mono);
+    margin-top:4px; margin-bottom:24px;
+}
+.dow-axis span { text-align:center; }
+
+.ranges-list {
+    font-size:12px; font-family:var(--mono); line-height:1.8;
+}
+.ranges-list .row {
+    display:flex; justify-content:space-between;
+}
+.ranges-list .lbl { color:var(--t3); }
+
+.ranges-grid {
+    display:grid; grid-template-columns:repeat(3, 1fr);
+    gap:8px; margin-bottom:8px;
+}
+.ranges-grid .range-card {
+    background:var(--bg1); border:1px solid var(--bdr);
+    border-radius:6px; padding:12px;
+}
+.ranges-grid .range-card .lbl {
+    margin:0 0 4px; font-size:11px; color:var(--t3);
+    text-transform:uppercase; letter-spacing:0.04em;
+}
+.ranges-grid .range-card .val {
+    margin:0; font-size:14px; font-family:var(--mono);
+    color:var(--t1);
+}
+@media (max-width:700px){
+    .ranges-grid { grid-template-columns:1fr; }
+}
+
+/* v2.92.0: aircraft detail Sightings table migrated from HTML <table>
+   to CSS-grid using the same .row-grid-header + .row-card pattern as
+   the four list tabs (Live / Watchlist / Military / Search) and the
+   v2.90.0 drill panel. Visual treatment is inherited — uppercase muted
+   blue-grey headers, monospace rows, hover highlight. The grid template
+   is a fixed 5-column layout matching the original table's column set:
+   Time, Callsign, Altitude, Speed, Position.
+
+   Why these base rules are duplicated from index.html: the canonical
+   .row-grid-header / .row-card definitions live inline in index.html
+   today, not in theme.css. The aircraft detail page is a separate
+   template that loads only theme.css, so it doesn't see those rules.
+   Filed as a follow-up to consolidate the canonical row-grid styles
+   into theme.css; until then, aircraft.html carries its own copy.
+   The duplication is constrained — visual changes to one need to land
+   in both, and the v2.92.0 changelog documents that explicitly so the
+   drift point is visible. */
+
+/* Base .row-grid-header — header strip above a list, uppercase muted
+   blue-grey, with .sortable-aware hover and a per-cell .arr indicator
+   for the active sort column. Copied from the canonical block in
+   index.html (v2.85.x styling). */
+.row-grid-header {
+    font-size: 10px;
+    color: var(--t3);
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    font-family: var(--font);
+    font-weight: 500;
+    user-select: none;
+}
+.row-grid-header .sortable {
+    cursor: pointer; transition: color .15s;
+}
+.row-grid-header .sortable:hover { color: var(--t1); }
+.row-grid-header .arr { font-size: 9px; margin-left: 3px; }
+
+/* Base .row-card — list row container, matching the canonical
+   treatment in templates/index.html (Live/Watchlist/Military
+   surfaces). v2.97.2 closed the v2.92.0-era visual drift between
+   this file's .row-card and index.html's by adopting the same card
+   appearance: visible border, rounded corners, var(--bg2) base,
+   10px padding, cyan-on-hover. The sightings-grid modifier below
+   only adds grid-template-columns now; it no longer overrides any
+   visual treatment. */
+.row-card {
+    background: var(--bg2);
+    border: 1px solid var(--bdr);
+    border-radius: 6px;
+    padding: 10px 14px;
+    transition: border-color .15s, background .15s;
+    font-family: var(--mono); font-size: 12px; color: var(--t1);
+}
+.row-card:hover { border-color: var(--cyan); background: var(--bg1); }
+/* v2.97.2: zebra striping on alternating rows for easier
+   horizontal row-tracking on wide screens. Same approach as
+   index.html, but uses :nth-child(odd) here because the
+   .row-grid-header.sightings-grid lives as :nth-child(1) inside
+   the same #sightingsTableWrap parent, so display rows start at
+   child position 2. :nth-child(odd) on .row-card.sightings-grid
+   matches child positions 3, 5, 7... = display rows 2, 4, 6 —
+   conventional "first row base, every other from row 2" zebra.
+   :not(:hover) is needed because the compound selector
+   .row-card.sightings-grid:nth-child(odd) has specificity (0,3,0)
+   which exceeds the .row-card:hover rule's (0,2,0) — without the
+   :not(), hovering an odd row would not flip to the hover bg.
+   The .row-anchored rule (specificity 0,3,0) is defined later in
+   this file and wins over zebra by cascade order regardless. */
+.row-card.sightings-grid:nth-child(odd):not(:hover) { background: var(--bg3); }
+
+/* Per-modifier grid template + display: grid for the Sightings table.
+   Five columns with content-shaped widths; Position fills remaining
+   space (1fr) since coordinate strings are the longest content. */
+.row-card.sightings-grid, .row-grid-header.sightings-grid {
+    display: grid;
+    grid-template-columns: minmax(140px, max-content) minmax(80px, max-content) minmax(80px, max-content) minmax(80px, max-content) minmax(180px, 1fr);
+    column-gap: 12px;
+    align-items: center;
+}
+.row-grid-header.sightings-grid {
+    padding: 6px 14px;
+    margin-top: 8px;
+    background: transparent;
+    border-bottom: 1px solid var(--bdr);
+}
+.row-card.sightings-grid .num { text-align: right; }
+.row-card.sightings-grid .dim { color: var(--t3); }
+.row-grid-header.sightings-grid .num { text-align: right; }
+/* v2.97.2: card-list spacing. Both the header and rows live as
+   direct children of #sightingsTableWrap; using flex column with
+   a small gap gives consistent breathing room between rows
+   without per-element margins. The gap also applies between the
+   header and the first row, which is why .row-grid-header.sightings-
+   grid no longer carries margin-bottom: 4px (would have stacked
+   on the gap and read as too much space). */
+#sightingsTableWrap {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+/* Row-anchored highlight for ?sighting={ts} URL navigation — same
+   semantic as the legacy .sightings-table tr.row-anchored. Border
+   anchors to a thin cyan stripe at left; the entire row gets a faint
+   cyan tint. */
+.row-card.sightings-grid.row-anchored {
+    background: rgba(6, 182, 212, 0.08);
+    border-left: 3px solid var(--cyan);
+    padding-left: 11px;
+}
+
+/* Legacy table styles — unused after v2.92.0 grid migration but kept
+   for one release as a reference. Remove on next pruning pass. */
+.sightings-table {
+    width:100%; font-size:12px; font-family:var(--mono);
+    border-collapse:collapse; margin-top:8px;
+}
+.sightings-table thead tr {
+    border-bottom:1px solid var(--bdr);
+}
+.sightings-table th {
+    text-align:left; padding:6px 12px 6px 0; color:var(--t3);
+    font-weight:500; white-space:nowrap;
+}
+.sightings-table th.num { text-align:right; }
+.sightings-table th:last-child { padding-right:0; }
+.sightings-table td { padding:4px 12px 4px 0; color:var(--t1); white-space:nowrap; }
+.sightings-table td.num { text-align:right; }
+.sightings-table td.dim { color:var(--t3); }
+.sightings-table td:last-child { padding-right:0; }
+
+/* v2.61.0 (Phase 1B): the row matching ?sighting={ts} URL param gets a
+   persistent cyan left-border so the user can locate the specific
+   sighting they navigated from. The border stays on the row until the
+   user clicks elsewhere (handled by the close-on-click handler in
+   initSightingsAnchor below). The first cell gets extra left-padding
+   so the border doesn't overlap the cell text. */
+.sightings-table tr.row-anchored td {
+    background: rgba(6, 182, 212, 0.08);
+}
+.sightings-table tr.row-anchored td:first-child {
+    border-left: 3px solid var(--cyan);
+    padding-left: 9px;
+}
+
+/* v2.61.0: shown when the user arrived via ?sighting={ts} but the
+   referenced sighting is no longer in the DB (retention pruned it).
+   Sits above the sightings table with an amber accent to read as a
+   "heads-up, not an error" tone. */
+.anchor-miss-banner {
+    margin: 0 0 12px;
+    padding: 10px 14px;
+    background: rgba(245, 158, 11, 0.08);
+    border: 1px solid rgba(245, 158, 11, 0.3);
+    border-radius: 6px;
+    color: var(--amber);
+    font-size: 13px;
+    line-height: 1.4;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+/* v2.73.0 (Phase 3 polish): shown when the user arrived via
+   ?sighting={ts} AND the matching row was found. Cyan-toned to
+   parallel the row-anchored highlight and to read as informational
+   rather than warning. Both banners share .anchor-clear-btn for the
+   × dismiss button. */
+.anchor-found-banner {
+    margin: 0 0 12px;
+    padding: 10px 14px;
+    background: rgba(6, 182, 212, 0.06);
+    border: 1px solid rgba(6, 182, 212, 0.3);
+    border-radius: 6px;
+    color: var(--cyan);
+    font-size: 13px;
+    line-height: 1.4;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+.anchor-found-banner .text { flex: 1; }
+.anchor-miss-banner .text { flex: 1; }
+
+/* × button shared by both banners. Subtle by default, brightens on
+   hover. Reset browser button defaults so it visually reads as a
+   small icon, not a button. */
+.anchor-clear-btn {
+    background: transparent;
+    border: 1px solid currentColor;
+    color: inherit;
+    opacity: 0.6;
+    cursor: pointer;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-family: var(--mono);
+    line-height: 1.2;
+    flex-shrink: 0;
+    transition: opacity 120ms ease;
+}
+.anchor-clear-btn:hover { opacity: 1; }
+
+.section-header {
+    display:flex; justify-content:space-between;
+    align-items:baseline; margin-bottom:8px;
+}
+.section-header .meta {
+    color:var(--t3); font-size:11px;
+}
+.section-header .meta a { color:var(--cyan); text-decoration:none; }
+.section-header .meta a:hover { text-decoration:underline; }
+
+.sightings-controls {
+    display:flex; gap:12px; margin:8px 0 12px;
+    align-items:center; flex-wrap:wrap;
+}
+
+.load-more-bar {
+    display:flex; justify-content:space-between; align-items:center;
+    margin-top:12px; padding:8px 0; gap:12px;
+}
+.load-more-info {
+    color:var(--t3); font-size:11px; font-family:var(--mono);
+}
+
+.sightings-loading {
+    color:var(--t3); font-size:12px; padding:12px 0;
+    text-align:center;
+}
+
+.position-history {
+    background:var(--bg1); border:1px solid var(--bdr);
+    border-radius:8px; padding:24px; text-align:center;
+    color:var(--t3); font-size:12px;
+}
+.position-history .head {
+    color:var(--t2); font-size:13px; margin-bottom:6px;
+}
+
+.loading-state, .error-state {
+    text-align:center; padding:60px 24px; color:var(--t3);
+}
+.error-state .err-title {
+    font-size:16px; color:var(--t1); margin-bottom:8px;
+}
+.error-state .err-detail {
+    font-size:13px; max-width:480px; margin:0 auto;
+}
+.error-state a {
+    color:var(--cyan); text-decoration:none;
+}
+
+.sparse-notice {
+    background:var(--bg1); border:1px solid var(--bdr);
+    border-radius:6px; padding:12px 16px; margin-bottom:24px;
+    font-size:12px; color:var(--t2); line-height:1.6;
+}
+.sparse-notice strong { color:var(--t1); }
+
+/* v2.86.0: Position-history map block. Hosts both the Leaflet map
+   instance and the time-window button strip above it. Sized to feel
+   visually substantial without dominating the detail page — 420px
+   tall fits roughly two thirds of a desktop viewport, lets the user
+   see surrounding context (sightings table) without scrolling. */
+.position-map-block { margin-bottom:24px; }
+.map-controls {
+    display:flex; gap:6px; align-items:center;
+    margin-bottom:8px; font-size:12px;
+}
+.map-controls .lbl { color:var(--t3); margin-right:4px; }
+.map-controls .win-btn {
+    background:var(--bg1); border:1px solid var(--bdr);
+    color:var(--t2); padding:4px 10px; border-radius:4px;
+    font-family:var(--mono); font-size:11px;
+    cursor:pointer; transition:background 0.1s, color 0.1s;
+}
+.map-controls .win-btn:hover { background:var(--bg2); color:var(--t1); }
+.map-controls .win-btn.active {
+    background:var(--cyan); color:#000; border-color:var(--cyan);
+}
+.map-controls .meta {
+    margin-left:auto; color:var(--t3); font-size:11px;
+    font-family:var(--mono);
+}
+.map-controls .meta.truncated { color:var(--amber, #f59e0b); }
+#positionMap {
+    height:420px; width:100%;
+    background:var(--bg1); border:1px solid var(--bdr);
+    border-radius:6px;
+    /* v2.86.1: smooth transition when the user toggles the expand
+       button. Map content briefly looks misaligned during transition;
+       a debounced invalidateSize() in the toggle handler resolves
+       that once the transition completes. */
+    transition:height 0.2s ease;
+}
+#positionMap.expanded { height:840px; }
+
+/* v2.86.1: expand/collapse button. Lives in Leaflet's bottom-left
+   control container so it sits cleanly above the map without colliding
+   with attribution (bottom-right) or zoom controls (top-left). The
+   .leaflet-control wrapper Leaflet adds gives us float positioning;
+   our class overrides the visual styling to match Aerodrome's dark
+   theme. SVG icon swaps innerHTML on toggle — see toggleMapSize() in
+   the JS for the icon pair. */
+.map-expand-btn {
+    background:rgba(20,20,28,0.85); color:var(--t1);
+    border:1px solid var(--bdr); border-radius:4px;
+    width:30px; height:30px; padding:0;
+    cursor:pointer;
+    display:flex; align-items:center; justify-content:center;
+    transition:background 0.1s;
+}
+.map-expand-btn:hover { background:rgba(40,40,55,0.95); }
+.map-expand-btn svg { display:block; }
+/* Leaflet's attribution bar uses light-theme defaults that look
+   washed out on Aerodrome's dark theme. Tone them down so map
+   tiles stay the focal element. */
+#positionMap .leaflet-control-attribution {
+    background:rgba(20,20,28,0.85); color:var(--t3);
+    font-size:10px; padding:2px 6px;
+}
+#positionMap .leaflet-control-attribution a {
+    color:var(--t2); text-decoration:none;
+}
+#positionMap .leaflet-control-zoom a {
+    background:var(--bg2); color:var(--t1); border-color:var(--bdr);
+}
+#positionMap .leaflet-control-zoom a:hover { background:var(--bg1); }
+.map-no-receiver {
+    background:var(--bg1); border:1px solid var(--bdr);
+    border-radius:6px; padding:20px 24px;
+    color:var(--t2); font-size:13px; line-height:1.6;
+}
+.map-no-receiver strong { color:var(--t1); }
+.map-no-receiver a { color:var(--cyan); text-decoration:none; }
+.map-no-receiver a:hover { text-decoration:underline; }
+.map-altitude-legend {
+    display:flex; align-items:center; gap:10px;
+    margin-top:8px; font-size:10px; color:var(--t3);
+    font-family:var(--mono);
+}
+.map-altitude-legend .gradient {
+    flex:1; height:8px; border-radius:2px;
+    /* Match the JS altitude→color ramp. Roughly: green at ground,
+       yellow at ~10kft, orange at ~25kft, red at ~40kft+. Pulled
+       from the perceptually-ordered "turbo"-ish ramp the JS uses. */
+    background:linear-gradient(to right,
+        #22c55e 0%, #84cc16 20%, #eab308 40%,
+        #f97316 60%, #ef4444 80%, #dc2626 100%);
+}
+</style>
+</head>
+<body>
+
+<div class="hdr">
+    <div class="hdr-left">
+        <div class="dot" title="System status"></div>
+        <a href="/" class="home-link"><svg class="brand-mark" width="32" height="32" viewBox="0 0 64 64" aria-hidden="true">
+                <circle cx="32" cy="32" r="28" fill="none" stroke="#06b6d4" stroke-width="3" opacity="0.3"/>
+                <circle cx="32" cy="32" r="20" fill="none" stroke="#06b6d4" stroke-width="3" opacity="0.55"/>
+                <circle cx="32" cy="32" r="12" fill="none" stroke="#06b6d4" stroke-width="3" opacity="0.8"/>
+                <circle cx="32" cy="32" r="4" fill="#06b6d4"/>
+                <line x1="32" y1="32" x2="52" y2="12" stroke="#06b6d4" stroke-width="3" stroke-linecap="round"/>
+            </svg><h1><span>Aerodrome</span></h1></a>
+    </div>
+    <div class="hdr-right">
+        <span class="hdr-meta">v<span id="appVersion">—</span> &middot; Updated <span id="ts">—</span></span>
+        <div class="settings-wrap">
+            <button class="settings-btn" onclick="toggleMenu(event)" aria-label="Settings" title="Settings">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            </button>
+            <div class="settings-menu" id="settingsMenu">
+                <a href="/status" class="menu-item">Status</a>
+                <a href="/diagnostics" class="menu-item">Diagnostics</a>
+                <a href="/logs" class="menu-item">Logs</a>
+                <a href="/documentation" class="menu-item">Documentation</a>
+                <a href="/config" class="menu-item">Configuration</a>
+                <a href="/updates" class="menu-item">Check for updates</a>
+                <div class="gear-menu-separator"></div>
+                <div class="theme-row">
+                    <div class="theme-label">Theme</div>
+                    <div class="theme-seg" role="group" aria-label="Theme preference">
+                        <button type="button" data-theme-choice="auto"  onclick="aerodromeSetTheme('auto')">Auto</button>
+                        <button type="button" data-theme-choice="dark"  onclick="aerodromeSetTheme('dark')">Dark</button>
+                        <button type="button" data-theme-choice="light" onclick="aerodromeSetTheme('light')">Light</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- v2.58.0: full-width sticky breadcrumb bar. Populated by
+     renderDetail() once the aircraft data loads. Static "Loading…"
+     state during fetch keeps the bar from being visually empty. -->
+<div class="crumbs-bar">
+    <div class="crumbs-bar-inner" id="crumbsBar">
+        <a href="/#search">Search</a> &nbsp;›&nbsp; Aircraft
+    </div>
+</div>
+
+<div class="wrap" id="mainContent">
+    <div class="loading-state">Loading aircraft detail…</div>
+</div>
+
+<script src="/static/theme.js"></script>
+<script>
+
+function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function fmtRelativeTime(ts) {
+    if (!ts) return '—';
+    const now = Math.floor(Date.now() / 1000);
+    const diff = now - ts;
+    if (diff < 60) return `${diff}s ago`;
+    if (diff < 3600) return `${Math.floor(diff/60)} min ago`;
+    if (diff < 86400) return `${Math.floor(diff/3600)} hr ago`;
+    return `${Math.floor(diff/86400)} days ago`;
+}
+
+function fmtAltitude(alt) {
+    if (alt == null) return '—';
+    return Math.round(alt).toLocaleString();
+}
+
+function fmtFlightLevel(alt) {
+    if (alt == null) return '—';
+    if (alt >= 18000) return `FL${Math.round(alt / 100).toString().padStart(3, '0')}`;
+    return `${Math.round(alt).toLocaleString()} ft`;
+}
+
+function fmtSpeed(s) {
+    if (s == null) return '—';
+    return `${Math.round(s)} kt`;
+}
+
+function fmtPosition(lat, lon) {
+    if (lat == null || lon == null) return '—';
+    return `${lat.toFixed(2)}, ${lon.toFixed(2)}`;
+}
+
+function fmtDateTime(ts) {
+    if (!ts) return '—';
+    const d = new Date(ts * 1000);
+    // v2.85.12: time portion now uses the shared formatTime() helper
+    // (static/timefmt.js) which respects display.time_format. The date
+    // portion stays as numeric YYYY-MM-DD-style for sighting tables
+    // where the year matters (older sightings span retention windows
+    // that can exceed a year). Pre-v2.85.12 this used hour:'2-digit'
+    // with no hour12 specifier, which silently followed browser
+    // locale instead of the configured Aerodrome setting.
+    const datePart = d.toLocaleString(undefined, {
+        year: 'numeric', month: '2-digit', day: '2-digit'
+    });
+    return `${datePart}, ${formatTime(ts)}`;
+}
+
+// Get the ICAO from the URL path: /aircraft/A12345 -> A12345
+function getIcaoFromUrl() {
+    const parts = window.location.pathname.split('/').filter(Boolean);
+    return (parts[parts.length - 1] || '').toUpperCase();
+}
+
+async function loadDetail() {
+    const icao = getIcaoFromUrl();
+    if (!icao || icao.length !== 6) {
+        renderError('Invalid aircraft URL', 'The URL must end with a 6-character ICAO hex code.');
+        return;
+    }
+    document.title = `${icao} — Aerodrome`;
+    try {
+        const r = await fetch(`/api/aircraft/${icao}`);
+        if (r.status === 404) {
+            renderError('Aircraft not found',
+                `No record of ICAO <code>${escapeHtml(icao)}</code> in this install. ` +
+                `Either the aircraft hasn't been seen yet, or the ICAO is incorrect. ` +
+                `<a href="/#search">Try a search</a> to find aircraft this install has data for.`);
+            return;
+        }
+        if (!r.ok) {
+            const txt = await r.text();
+            renderError('Could not load aircraft', escapeHtml(txt) || `HTTP ${r.status}`);
+            return;
+        }
+        const data = await r.json();
+        renderDetail(data);
+        // v2.53.6: header timestamp for visual consistency with the
+        // rest of the app. Other pages set this from API-returned
+        // server timestamps on their refresh tick. The detail page is
+        // a snapshot — no auto-refresh — so we set it from the local
+        // wall clock at the moment the data renders. Same display
+        // format as index.html's fmtTime (12-hour HH:MM AM/PM).
+        const tsEl = document.getElementById('ts');
+        if (tsEl) {
+            // v2.85.12: shared formatter respects display.time_format.
+            tsEl.textContent = formatDateTime(new Date());
+        }
+    } catch (e) {
+        renderError('Could not load aircraft', escapeHtml(e.message || String(e)));
+    }
+}
+
+function renderError(title, detail) {
+    document.getElementById('mainContent').innerHTML = `
+        <div class="error-state">
+            <div class="err-title">${escapeHtml(title)}</div>
+            <div class="err-detail">${detail}</div>
+        </div>`;
+}
+
+function renderDetail(d) {
+    const main = document.getElementById('mainContent');
+
+    const callsign = d.last_callsign || d.first_callsign || '';
+    const aircraftType = d.aircraft_type_desc || d.aircraft_type || '';
+    const operator = d.operator || '';
+    const country = d.country || '';
+    const registration = d.registration || '';
+
+    // v2.57.0: MIL and WATCHLIST pills in the hero. Backend annotates
+    // is_military / mil_label / mil_color and is_watchlist / watchlist_label
+    // on the response. Pills sit immediately after the callsign-pill so
+    // they read as part of the aircraft's identity row.
+    let pills = '';
+    if (d.is_military){
+        const milColor = d.mil_color || '#ef4444';
+        const milLabel = d.mil_label || 'MIL';
+        pills += `<span class="mil-pill" style="background:${milColor}25;color:${milColor}">${escapeHtml(milLabel)}</span>`;
+    }
+    if (d.is_watchlist){
+        const wlLabel = d.watchlist_label || 'WATCHLIST';
+        pills += `<span class="wl-pill">${escapeHtml(wlLabel)}</span>`;
+    }
+
+    // v2.58.0: breadcrumb now renders into the sticky #crumbsBar bar
+    // above the main content rather than as the first element of
+    // .wrap. The bar is full-width so it aligns visually with the
+    // pinned header above it. Update the existing static "Loading…"
+    // breadcrumb so the ICAO crumb appears once data loads.
+    const crumbsEl = document.getElementById('crumbsBar');
+    if (crumbsEl){
+        crumbsEl.innerHTML = `<a href="/#search">Search</a> &nbsp;›&nbsp; Aircraft &nbsp;›&nbsp; <span style="color:var(--t2)">${escapeHtml(d.icao)}</span>`;
+    }
+
+    let html = `
+        <div class="title-row">
+            <h1>${escapeHtml(d.icao)}</h1>
+            ${callsign ? `<span class="callsign-pill">${escapeHtml(callsign)}</span>` : ''}
+            ${pills}
+            ${aircraftType ? `<span class="meta-text">${escapeHtml(aircraftType)}</span>` : ''}
+            ${operator ? `<span class="sep">·</span><span class="meta-text">${escapeHtml(operator)}</span>` : ''}
+            ${country ? `<span class="sep">·</span><span class="meta-text">${escapeHtml(country)}</span>` : ''}
+            ${registration ? `<span class="sep">·</span><span class="meta-text">${escapeHtml(registration)}</span>` : ''}
+            <a href="javascript:void(0)" class="track-link" id="trackLink">Track ↗</a>
+        </div>
+
+        <div class="subtitle">
+            First seen ${fmtRelativeTime(d.first_seen_at)} · Last seen ${fmtRelativeTime(d.last_seen_at)}
+        </div>
+    `;
+
+    if (d.mode === 'sparse') {
+        html += renderSparseMode(d);
+    } else {
+        html += renderFullMode(d);
+    }
+
+    main.innerHTML = html;
+
+    // Wire the Track ↗ link via the configured provider. If providers
+    // haven't loaded yet, hide the link entirely rather than emit a
+    // wrong URL. Same shape as the inline drill's trackLink() — uses
+    // registration (not callsign) for providers that need it.
+    const trackBtn = document.getElementById('trackLink');
+    if (trackBtn) {
+        const url = buildTrackUrl(d.icao, registration);
+        if (url) {
+            trackBtn.href = url;
+            trackBtn.target = '_blank';
+            trackBtn.rel = 'noopener';
+        } else {
+            trackBtn.style.display = 'none';
+        }
+    }
+
+    // v2.53.3: kick off the paginated sightings load. The detail page
+    // is the canonical "everything about this aircraft" view, so we
+    // load lifetime sightings (not just retention-window). Initial
+    // page is 100; user can change via the Rows: dropdown or use
+    // Load more to page through the full history.
+    if ((d.sighting_count || 0) > 0) {
+        initSightings(d.icao);
+    }
+
+    // v2.86.0: initialize the position-history map. Only relevant in
+    // full mode — sparse-mode aircraft (fewer than 10 sightings) skip
+    // the position map block in renderSparseMode, and #positionMapBlock
+    // won't exist in the DOM. initPositionMap is defensive and no-ops
+    // if the container isn't present.
+    if (d.mode !== 'sparse') {
+        initPositionMap(d.icao);
+    }
+}
+
+function buildTrackUrl(icao, registration) {
+    // v2.53.1: respect the configured track_link_provider system.
+    // Mirrors the trackLink() helper in index.html — same template
+    // substitution, same fallback when the chosen provider needs a
+    // registration we don't have. Loaded async from /api/ui-config;
+    // until that resolves, _trackProviderState.ready is false and
+    // we render a non-link fallback span instead.
+    if (!_trackProviderState.ready) return null;
+    const providers = _trackProviderState.providers || {};
+    const chosen = _trackProviderState.chosen;
+    const fallback = _trackProviderState.fallback;
+    let cfg = providers[chosen];
+    if (!cfg) cfg = providers[fallback];
+    // If the chosen provider needs a registration but we don't have
+    // one, fall back to a registration-free provider.
+    if (cfg && cfg.reg_required && !registration) {
+        cfg = providers[fallback];
+    }
+    if (!cfg) return null;
+    return _renderTrackUrl(cfg.url, icao, registration);
+}
+
+function _renderTrackUrl(tmpl, hex, reg) {
+    const hexUp = (hex || '').toUpperCase();
+    const hexLo = (hex || '').toLowerCase();
+    const regUp = (reg || '').toUpperCase();
+    const regLo = (reg || '').toLowerCase();
+    return tmpl
+        .replace(/\{HEX_UPPER\}/g, hexUp)
+        .replace(/\{HEX_LOWER\}/g, hexLo)
+        .replace(/\{REG_UPPER\}/g, regUp)
+        .replace(/\{REG_LOWER\}/g, regLo);
+}
+
+// Track-provider state, populated from /api/ui-config on page load.
+// Until it's ready, the Track ↗ link renders as a non-link placeholder
+// so we don't ship users to the wrong external site.
+let _trackProviderState = {
+    ready: false,
+    chosen: null,
+    fallback: null,
+    providers: {},
+};
+
+async function loadTrackProviders() {
+    try {
+        const r = await fetch('/api/ui-config');
+        const j = await r.json();
+        _trackProviderState.chosen = j.track_link_provider;
+        _trackProviderState.fallback = j.track_link_fallback;
+        _trackProviderState.providers = j.track_link_providers || {};
+        _trackProviderState.ready = true;
+    } catch (e) {
+        // Stay not-ready — the Track button will render as disabled rather
+        // than guessing wrong about which tracker to link to.
+    }
+}
+
+function renderFullMode(d) {
+    const ranges = d.ranges || {};
+    const totalSightings = d.sighting_count || 0;
+    const avgPerDay = ranges.days_active
+        ? Math.round(totalSightings / ranges.days_active)
+        : 0;
+    const peakHourIdx = (d.hour_of_day || []).reduce((maxIdx, val, i, arr) =>
+        val > arr[maxIdx] ? i : maxIdx, 0);
+    const peakHourLabel = String(peakHourIdx).padStart(2, '0') + ':00';
+
+    let html = `
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <div class="lbl">Sightings</div>
+                <div class="val">${totalSightings.toLocaleString()}</div>
+            </div>
+            <div class="metric-card">
+                <div class="lbl">Days active</div>
+                <div class="val">${ranges.days_active || 0}</div>
+            </div>
+            <div class="metric-card">
+                <div class="lbl">Max altitude</div>
+                <div class="val">${fmtFlightLevel(ranges.max_altitude_ft)}</div>
+            </div>
+            <div class="metric-card">
+                <div class="lbl">Avg/day</div>
+                <div class="val">${avgPerDay}</div>
+            </div>
+            <div class="metric-card">
+                <div class="lbl">Peak hour</div>
+                <div class="val">${peakHourLabel}</div>
+            </div>
+        </div>
+    `;
+
+    if (d.chips && d.chips.length) {
+        html += `
+            <div class="section-title">Patterns</div>
+            <div class="chips-row">
+                ${d.chips.map(c =>
+                    `<span class="chip"><span class="lbl">${escapeHtml(c.label)}</span> — ${escapeHtml(c.value)}</span>`
+                ).join('')}
+            </div>
+        `;
+    }
+
+    html += `
+        <div class="hour-section">
+            ${renderHourHistogram(d.hour_of_day || [])}
+        </div>
+        <div class="dow-section">
+            ${renderDayOfWeek(d.day_of_week || [])}
+        </div>
+        <div class="ranges-section">
+            ${renderRanges(ranges)}
+        </div>
+
+        <div class="section-title">Position history</div>
+        <div id="positionMapBlock" class="position-map-block">
+            <!-- Filled in by initPositionMap() after the detail data
+                 has rendered. Renders one of:
+                  - The Leaflet map (if receiver lat/lon configured)
+                  - A configuration nudge (if not configured)
+                 Either way, replaces the v2.53.0–v2.85.x placeholder
+                 that just said "map will be added in a future release."
+                 -->
+        </div>
+
+        <div class="sightings-section" style="margin-top:24px;">
+            ${renderRecentSightings(d)}
+        </div>
+    `;
+    return html;
+}
+
+function renderSparseMode(d) {
+    const totalSightings = d.sighting_count || 0;
+    const threshold = d.low_sighting_threshold || 10;
+
+    let html = `
+        <div class="sparse-notice">
+            This aircraft has been seen <strong>${totalSightings}</strong> ${totalSightings === 1 ? 'time' : 'times'}.
+            Computed analytics (activity patterns, hour-of-day distribution) need at least ${threshold} sightings
+            to be meaningful — they're hidden here to avoid misleading conclusions.
+        </div>
+
+        <div class="metrics-grid" style="grid-template-columns:repeat(3, 1fr);">
+            <div class="metric-card">
+                <div class="lbl">Sightings</div>
+                <div class="val">${totalSightings.toLocaleString()}</div>
+            </div>
+            <div class="metric-card">
+                <div class="lbl">First seen</div>
+                <div class="val" style="font-size:14px;">${fmtDateTime(d.first_seen_at)}</div>
+            </div>
+            <div class="metric-card">
+                <div class="lbl">Last seen</div>
+                <div class="val" style="font-size:14px;">${fmtDateTime(d.last_seen_at)}</div>
+            </div>
+        </div>
+
+        ${renderRecentSightings(d, /*expanded=*/true)}
+    `;
+    return html;
+}
+
+function renderHourHistogram(hours) {
+    if (!hours || hours.length !== 24) return '';
+    const max = Math.max(...hours, 1);
+    let bars = '';
+    for (let i = 0; i < 24; i++) {
+        const v = hours[i];
+        // Map non-zero values to a minimum 8% height so they're visible
+        // even when one bar dominates (e.g., 31 sightings all in hour 23
+        // would render the other 23 hours as 1px otherwise — invisible).
+        // Zero values render as a thin line so the axis stays continuous.
+        let pct;
+        let isZero = false;
+        if (v === 0) {
+            pct = 4;
+            isZero = true;
+        } else {
+            const raw = (v / max) * 100;
+            pct = Math.max(8, raw);
+        }
+        const isPeak = v >= max * 0.7 && v > 0;
+        bars += `<div class="bar ${isPeak ? 'peak' : ''} ${isZero ? 'empty' : ''}" style="height:${pct}%" title="${i}:00 — ${v} hits"></div>`;
+    }
+    return `
+        <div class="section-title">Activity by hour</div>
+        <div class="histogram">${bars}</div>
+        <div class="hour-axis">
+            <span>00</span><span>06</span><span>12</span><span>18</span><span>23</span>
+        </div>
+    `;
+}
+
+function renderDayOfWeek(days) {
+    if (!days || days.length !== 7) return '';
+    const max = Math.max(...days, 1);
+    let bars = '';
+    const dowLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    for (let i = 0; i < 7; i++) {
+        const v = days[i];
+        const isActive = v >= max * 0.5 && v > 0;
+        // Same minimum-visibility rule as the hour histogram. Zero days
+        // get the .empty class for a different (dimmer, no fill) look so
+        // the user can distinguish "few sightings" from "no sightings."
+        const isZero = v === 0;
+        const opacity = isZero ? 1 : Math.max(0.5, v / max);
+        bars += `<div class="bar ${isActive ? 'active' : ''} ${isZero ? 'empty' : ''}" style="opacity:${opacity}" title="${dowLabels[i]} — ${v} hits"></div>`;
+    }
+    return `
+        <div class="section-title">By day of week</div>
+        <div class="dow-grid">${bars}</div>
+        <div class="dow-axis">
+            <span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span>
+        </div>
+    `;
+}
+
+function renderRanges(ranges) {
+    if (!ranges) return '';
+    const minAlt = ranges.min_altitude_ft;
+    const maxAlt = ranges.max_altitude_ft;
+    const maxSpeed = ranges.max_speed_kt;
+    const spdMin = ranges.sightings_per_day_min;
+    const spdMax = ranges.sightings_per_day_max;
+    const spdMed = ranges.sightings_per_day_median;
+    // v2.53.4: rendered as 3 horizontal cards matching the metric-tile
+    // pattern. The previous vertical key-value list was a sidebar
+    // artifact from when this section lived in a 280px column; at
+    // full width, horizontal cards read better and align visually
+    // with the metric-tile row at the top of the page.
+    const altDisplay = (minAlt != null && maxAlt != null)
+        ? `${minAlt.toLocaleString()} – ${maxAlt.toLocaleString()} ft`
+        : '—';
+    const spdDisplay = (maxSpeed != null) ? `${maxSpeed} kt` : '—';
+    const sightingsDisplay = `${spdMin} – ${spdMax} (med ${spdMed})`;
+    return `
+        <div class="section-title">Ranges</div>
+        <div class="ranges-grid">
+            <div class="range-card">
+                <div class="lbl">Altitude</div>
+                <div class="val">${altDisplay}</div>
+            </div>
+            <div class="range-card">
+                <div class="lbl">Max speed</div>
+                <div class="val">${spdDisplay}</div>
+            </div>
+            <div class="range-card">
+                <div class="lbl">Sightings/day</div>
+                <div class="val">${sightingsDisplay}</div>
+            </div>
+        </div>
+    `;
+}
+
+// v2.53.3: paginated sightings panel.
+//
+// Replaces the static 20-row preview with a real paginated table —
+// same Page-size dropdown + Load-more pattern as Search and All.
+// Default first load is 100 rows; user can change to 200/500/1000 via
+// dropdown; Load-more appends the next page. Reuses /api/all/drill
+// (with the new offset parameter added in this release) so the data
+// path is well-tested and consistent with the inline Search drill.
+//
+// State separated into _sightingsState so the dropdown change handler
+// and load-more handler can re-render without re-rendering the whole
+// detail page.
+let _sightingsState = {
+    icao: null,
+    rows: [],
+    totalCount: 0,
+    pageSize: 100,
+    offset: 0,
+    loading: false,
+    // v2.61.0 (Phase 1B): if the URL had ?sighting={ts}, anchorTs holds
+    // the unix timestamp the user wants to land on. _anchorResolved is
+    // a once-per-arrival latch — flips true the moment we either find
+    // the row OR conclude it's been pruned, so we don't repeatedly
+    // chase pages or repeatedly toast the user as they scroll/load-more.
+    anchorTs: null,
+    _anchorResolved: false,
+    // v2.92.0: server-side sort. col is one of seen_at / callsign /
+    // altitude / speed (the whitelist enforced by /api/all/drill); dir
+    // is "asc" or "desc". Default mirrors the legacy ORDER BY seen_at
+    // DESC behavior, so callers that don't touch the headers see the
+    // same order as before. Click on a header re-fetches from offset=0
+    // with the new params; load-more continues from there with the
+    // same sort.
+    sortCol: 'seen_at',
+    sortDir: 'desc',
+};
+
+function renderRecentSightings(d) {
+    const total = d.sighting_count || 0;
+    if (total === 0) {
+        return `<div class="section-title">Sightings</div>
+            <div style="color:var(--t3); font-size:12px; padding:8px 0;">No sightings recorded.</div>`;
+    }
+    // Skeleton — populated by fetchSightings() + _renderSightingsTable().
+    // Initial state shows a loading hint; first fetch fires from
+    // initSightings() right after detail data arrives.
+    return `
+        <div class="section-header">
+            <div class="section-title" style="margin:0;">Sightings</div>
+            <span class="meta" id="sightingsMeta">
+                ${total.toLocaleString()} total
+            </span>
+        </div>
+        <div class="sightings-controls">
+            <label class="ctrl-label">Rows:
+                <select class="ctrl-select" id="sightingsPageSize" onchange="onSightingsPageSizeChange()">
+                    <option value="100" selected>100</option>
+                    <option value="200">200</option>
+                    <option value="500">500</option>
+                    <option value="1000">1000</option>
+                </select>
+            </label>
+        </div>
+        <div id="sightingsTableWrap">
+            <div class="sightings-loading">Loading sightings…</div>
+        </div>
+        <div class="load-more-bar" id="sightingsLoadMoreBar" style="display:none;">
+            <span class="load-more-info" id="sightingsLoadMoreInfo"></span>
+            <button class="btn-load-more" onclick="loadMoreSightings()">Load more</button>
+        </div>
+    `;
+}
+
+// Kick off the first sightings fetch after the detail page renders.
+// Called from renderDetail's success path with the ICAO so the state
+// knows what aircraft we're paging through.
+async function initSightings(icao) {
+    _sightingsState.icao = icao;
+    _sightingsState.rows = [];
+    _sightingsState.totalCount = 0;
+    _sightingsState.offset = 0;
+    // v2.92.0: reset sort to seen_at desc on each aircraft load. Sort
+    // is per-page, not persisted across navigations — same model as the
+    // v2.90.0 drill panel reset-on-open. A user looking at a different
+    // aircraft starts with the default "most recent first" view.
+    _sightingsState.sortCol = 'seen_at';
+    _sightingsState.sortDir = 'desc';
+
+    // v2.61.0 (Phase 1B): read ?sighting={ts} from the URL. When set,
+    // _renderSightingsTable applies a persistent cyan border to the
+    // matching row and scrolls it into view; if the row isn't on the
+    // current page, fetchSightings auto-paginates until found OR the
+    // user has loaded everything available (in which case we toast
+    // "sighting may have been pruned by retention" with the timestamp).
+    const urlParams = new URLSearchParams(window.location.search);
+    const sightingParam = urlParams.get('sighting');
+    if (sightingParam) {
+        const ts = parseInt(sightingParam, 10);
+        if (Number.isFinite(ts) && ts > 0) {
+            _sightingsState.anchorTs = ts;
+            _sightingsState._anchorResolved = false;
+        }
+    } else {
+        _sightingsState.anchorTs = null;
+        _sightingsState._anchorResolved = true;
+    }
+
+    await fetchSightings();
+}
+
+async function fetchSightings() {
+    if (_sightingsState.loading) return;
+    if (!_sightingsState.icao) return;
+    _sightingsState.loading = true;
+    try {
+        const params = new URLSearchParams();
+        params.set('icao', _sightingsState.icao);
+        params.set('limit', _sightingsState.pageSize);
+        params.set('offset', _sightingsState.offset);
+        // from_ts=0 → lifetime sightings, not just retention window.
+        // The detail page is the canonical "everything about this
+        // aircraft" view, so retention-bound results would be wrong here.
+        params.set('from_ts', 0);
+        // v2.92.0: backend sort. order/dir are whitelisted server-side
+        // (see /api/all/drill); unknown values fall through to seen_at
+        // desc, so a stale state won't break the request.
+        params.set('order', _sightingsState.sortCol);
+        params.set('dir', _sightingsState.sortDir);
+        const r = await fetch(`/api/all/drill?${params.toString()}`);
+        const j = await r.json();
+        if (!j.ok) {
+            const wrap = document.getElementById('sightingsTableWrap');
+            if (wrap) wrap.innerHTML = `<div class="sightings-loading">Could not load sightings.</div>`;
+            return;
+        }
+        // Append on pagination, replace on initial / page-size change
+        if (_sightingsState.offset === 0) {
+            _sightingsState.rows = j.sightings || [];
+        } else {
+            _sightingsState.rows = _sightingsState.rows.concat(j.sightings || []);
+        }
+        _sightingsState.totalCount = j.total_count || j.sightings?.length || 0;
+        _renderSightingsTable();
+    } catch (e) {
+        const wrap = document.getElementById('sightingsTableWrap');
+        if (wrap) wrap.innerHTML = `<div class="sightings-loading">Error: ${escapeHtml(e.message || String(e))}</div>`;
+    } finally {
+        _sightingsState.loading = false;
+    }
+}
+
+function _renderSightingsTable() {
+    const rows = _sightingsState.rows;
+    const total = _sightingsState.totalCount;
+    const wrap = document.getElementById('sightingsTableWrap');
+    const meta = document.getElementById('sightingsMeta');
+    const loadMoreBar = document.getElementById('sightingsLoadMoreBar');
+    const loadMoreInfo = document.getElementById('sightingsLoadMoreInfo');
+
+    if (!wrap) return;
+
+    if (rows.length === 0) {
+        wrap.innerHTML = `<div class="sightings-loading">No sightings in this window.</div>`;
+        if (loadMoreBar) loadMoreBar.style.display = 'none';
+        return;
+    }
+
+    if (meta) {
+        meta.textContent = `Showing ${rows.length.toLocaleString()} of ${total.toLocaleString()}`;
+    }
+
+    // v2.92.0: grid-based markup replacing the legacy <table>. Header
+    // cells are .sortable spans with data-c + onclick='srtSightings(...)';
+    // the .arr child is painted by _paintSightingsSortArrow after this
+    // render. Each row is a .row-card.sightings-grid <div>; the
+    // ?sighting={ts} anchor highlight applies via .row-anchored on the
+    // matching row.
+    const headerHtml = `
+        <div class="row-grid-header sightings-grid">
+            <span class="sortable" data-c="seen_at" onclick="srtSightings('seen_at')">Time<span class="arr"></span></span>
+            <span class="sortable" data-c="callsign" onclick="srtSightings('callsign')">Callsign<span class="arr"></span></span>
+            <span class="sortable num" data-c="altitude" onclick="srtSightings('altitude')">Alt<span class="arr"></span></span>
+            <span class="sortable num" data-c="speed" onclick="srtSightings('speed')">Speed<span class="arr"></span></span>
+            <span>Position</span>
+        </div>
+    `;
+    const bodyHtml = rows.map(r => {
+        // v2.61.0 (Phase 1B): mark the row whose seen_at matches the URL
+        // anchor. The data-seen-at attr doubles as a hook for
+        // _resolveAnchor below.
+        const isAnchor = (_sightingsState.anchorTs != null &&
+                          r.seen_at === _sightingsState.anchorTs);
+        const cls = isAnchor ? ' row-anchored' : '';
+        return `
+            <div class="row-card sightings-grid${cls}" data-seen-at="${r.seen_at}">
+                <span class="dim" title="${escapeHtml(fmtDateTime(r.seen_at))}">${escapeHtml(fmtRelativeTime(r.seen_at))}</span>
+                <span>${escapeHtml(r.callsign || '—')}</span>
+                <span class="num">${fmtAltitude(r.altitude)}</span>
+                <span class="num">${fmtSpeed(r.speed)}</span>
+                <span class="dim">${escapeHtml(fmtPosition(r.lat, r.lon))}</span>
+            </div>
+        `;
+    }).join('');
+
+    wrap.innerHTML = headerHtml + bodyHtml;
+    _paintSightingsSortArrow();
+
+    // Load-more visibility: show when there are unloaded rows. The
+    // info shows the running "Showing X of Y" count next to the button
+    // so the user knows where they are.
+    if (loadMoreBar) {
+        if (rows.length < total) {
+            loadMoreBar.style.display = '';
+            if (loadMoreInfo) loadMoreInfo.textContent = `Showing ${rows.length} of ${total}`;
+        } else {
+            loadMoreBar.style.display = 'none';
+        }
+    }
+
+    // v2.61.0 (Phase 1B): resolve the URL anchor if one is set. Three
+    // outcomes: (1) match found in current rows → scroll into view,
+    // mark resolved; (2) match not in current rows but more pages
+    // available → keep paginating; (3) all pages loaded, no match →
+    // toast with the timestamp, mark resolved so we don't keep toasting
+    // on subsequent re-renders (e.g. user changes page size).
+    _resolveSightingsAnchor();
+}
+
+function _resolveSightingsAnchor() {
+    if (_sightingsState._anchorResolved) return;
+    if (_sightingsState.anchorTs == null) {
+        _sightingsState._anchorResolved = true;
+        return;
+    }
+    const found = (_sightingsState.rows || []).some(
+        r => r.seen_at === _sightingsState.anchorTs
+    );
+    if (found) {
+        _sightingsState._anchorResolved = true;
+        // v2.73.0: render a banner above the sightings table that
+        // confirms the anchor and offers a × dismiss button. Helps
+        // users who clicked through from a Stats card see "yes,
+        // this is the sighting you came from" without having to
+        // scroll back up to find the highlighted row.
+        const ts = _sightingsState.anchorTs;
+        const dateStr = (typeof fmtDateTime === 'function')
+            ? fmtDateTime(ts)
+            : new Date(ts * 1000).toLocaleString();
+        const wrap = document.getElementById('sightingsTableWrap');
+        if (wrap && !document.querySelector('.anchor-found-banner')) {
+            const banner = document.createElement('div');
+            banner.className = 'anchor-found-banner';
+            banner.innerHTML = `
+                <span class="text">Anchored on ${escapeHtml(dateStr)}.</span>
+                <button type="button" class="anchor-clear-btn"
+                        title="Clear anchor"
+                        onclick="clearSightingsAnchor()">× Clear</button>
+            `;
+            wrap.parentNode.insertBefore(banner, wrap);
+        }
+        // Defer scroll-into-view to next animation frame so the DOM has
+        // committed the new innerHTML before we measure positions.
+        requestAnimationFrame(() => {
+            // v2.92.0: selector updated for the grid migration —
+            // anchor rows are now .row-card.sightings-grid divs, not
+            // <tr>. Look for any element with the matching data-seen-at,
+            // bounded to the sightings wrap so we don't catch stray
+            // attributes elsewhere on the page.
+            const wrapEl = document.getElementById('sightingsTableWrap');
+            const row = wrapEl
+                ? wrapEl.querySelector(`[data-seen-at="${_sightingsState.anchorTs}"]`)
+                : null;
+            if (row && typeof row.scrollIntoView === 'function') {
+                row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        });
+        return;
+    }
+    // Not found yet. If there are more pages, keep paginating —
+    // fetchSightings will re-render and re-call this function.
+    const haveAllPages = _sightingsState.rows.length >= _sightingsState.totalCount;
+    if (!haveAllPages && !_sightingsState.loading) {
+        _sightingsState.offset = _sightingsState.rows.length;
+        fetchSightings();
+        return;
+    }
+    // All pages loaded, no match. Surface an inline banner above the
+    // sightings table with the requested timestamp so the user knows
+    // what happened. fmtDateTime uses the user's locale.
+    if (haveAllPages) {
+        _sightingsState._anchorResolved = true;
+        const ts = _sightingsState.anchorTs;
+        const dateStr = (typeof fmtDateTime === 'function')
+            ? fmtDateTime(ts)
+            : new Date(ts * 1000).toLocaleString();
+        const wrap = document.getElementById('sightingsTableWrap');
+        if (wrap) {
+            const banner = document.createElement('div');
+            banner.className = 'anchor-miss-banner';
+            // v2.73.0: structured banner with × dismiss button matching
+            // the anchor-found-banner pattern. The × clears the URL's
+            // ?sighting= param so a refresh doesn't re-trigger the
+            // miss-banner for an already-acknowledged stale anchor.
+            banner.innerHTML = `
+                <span class="text">No sighting found at ${escapeHtml(dateStr)} — may have been pruned by retention.</span>
+                <button type="button" class="anchor-clear-btn"
+                        title="Dismiss"
+                        onclick="clearSightingsAnchor()">× Dismiss</button>
+            `;
+            // Insert banner before the sightings table so it sits at
+            // the top of the section.
+            wrap.parentNode.insertBefore(banner, wrap);
+        } else {
+            console.warn(`No sighting found at ${dateStr} (anchor unresolved)`);
+        }
+    }
+}
+
+function loadMoreSightings() {
+    _sightingsState.offset = _sightingsState.rows.length;
+    fetchSightings();
+}
+
+// v2.92.0: Sortable column header click handler for the Sightings
+// table. Mirrors the shape of srt() / srtSearch() / srtDrill() in
+// index.html: same column → flip direction; new column → start with
+// the column's natural default direction (numeric/timestamp = desc,
+// string = asc, matching how an interactive header reads).
+//
+// Sort happens server-side: the new params land in _sightingsState,
+// offset is reset to 0, _sightingsState.rows is cleared (so the next
+// fetch replaces rather than appends), and fetchSightings re-runs.
+// The legacy "load-more appends" semantic is preserved on subsequent
+// pagination clicks because the offset increments from the new sort's
+// page-1 baseline.
+const _SIGHTINGS_DEFAULT_DESC = new Set(['seen_at', 'altitude', 'speed']);
+function srtSightings(col) {
+    const s = _sightingsState;
+    if (s.sortCol === col) {
+        s.sortDir = (s.sortDir === 'asc') ? 'desc' : 'asc';
+    } else {
+        s.sortDir = _SIGHTINGS_DEFAULT_DESC.has(col) ? 'desc' : 'asc';
+    }
+    s.sortCol = col;
+    // Reset pagination — the new sort changes which rows are page-1.
+    s.offset = 0;
+    s.rows = [];
+    fetchSightings();
+}
+
+// Paint the active-column arrow on the Sightings table header. Clears
+// all arrows first, then sets the indicator on the active column.
+// Mirrors the .arr-painting block in index.html's srt().
+function _paintSightingsSortArrow() {
+    const wrap = document.getElementById('sightingsTableWrap');
+    if (!wrap) return;
+    wrap.querySelectorAll('.row-grid-header.sightings-grid .arr')
+        .forEach(a => a.textContent = '');
+    const col = _sightingsState.sortCol;
+    if (!col) return;
+    const cell = wrap.querySelector(`.row-grid-header.sightings-grid [data-c="${col}"] .arr`);
+    if (cell) cell.textContent = (_sightingsState.sortDir === 'asc') ? '▲' : '▼';
+}
+
+// v2.73.0 (Phase 3 polish): user-initiated dismiss for the sightings
+// anchor. Called by the × button on both the found-banner (anchor
+// resolved successfully) and the miss-banner (anchor's row was pruned
+// by retention). Does three things:
+//
+//   1. Removes the .row-anchored class from any matching row so the
+//      cyan border highlight goes away. There's normally only one such
+//      row, but querySelectorAll handles any number defensively.
+//   2. Removes the banner element itself (whichever variant rendered).
+//   3. Strips the ?sighting= query param from the URL via
+//      history.replaceState so a refresh or copy-link doesn't re-anchor.
+//      Other query params are preserved.
+//
+// Also updates _sightingsState so any subsequent re-render
+// (e.g. page-size change) doesn't re-apply the anchor styling.
+function clearSightingsAnchor() {
+    // 1. Clear the row highlight. v2.92.0: selector updated for the
+    //    grid migration — the row container is now .row-card not <tr>.
+    //    Old .sightings-table selector left for one release as a no-op
+    //    safety net while old DOM might briefly exist during reloads.
+    document.querySelectorAll('.row-card.sightings-grid.row-anchored, .sightings-table tr.row-anchored')
+        .forEach(row => row.classList.remove('row-anchored'));
+
+    // 2. Remove whichever banner variant is currently in the DOM.
+    document.querySelectorAll('.anchor-found-banner, .anchor-miss-banner')
+        .forEach(b => b.remove());
+
+    // 3. Strip ?sighting= from the URL. Preserve any other query params
+    // and the path. history.replaceState rather than pushState so the
+    // browser back button still goes back to the previous page rather
+    // than to the same page with the anchor.
+    try {
+        const url = new URL(window.location.href);
+        if (url.searchParams.has('sighting')) {
+            url.searchParams.delete('sighting');
+            // Build the new path-and-query with the stripped param.
+            const newQs = url.searchParams.toString();
+            const newPath = url.pathname + (newQs ? '?' + newQs : '') + url.hash;
+            history.replaceState(null, '', newPath);
+        }
+    } catch (e) {
+        // URL parsing failed for some reason — log but don't break the
+        // dismiss flow. The user-visible state (highlight + banner) is
+        // already cleared above; the URL just stays as-is.
+        console.warn('Could not strip ?sighting= from URL:', e);
+    }
+
+    // 4. Clear in-memory state so re-renders don't re-apply the anchor.
+    _sightingsState.anchorTs = null;
+    _sightingsState._anchorResolved = true;
+}
+
+function onSightingsPageSizeChange() {
+    const sel = document.getElementById('sightingsPageSize');
+    if (!sel) return;
+    const newSize = parseInt(sel.value, 10);
+    if (!Number.isFinite(newSize) || newSize < 1) return;
+    _sightingsState.pageSize = newSize;
+    _sightingsState.rows = [];
+    _sightingsState.offset = 0;
+    fetchSightings();
+}
+
+// Settings menu helpers — copied from other admin pages
+function toggleMenu(e) {
+    e.stopPropagation();
+    const menu = document.getElementById('settingsMenu');
+    menu.classList.toggle('open');
+}
+document.addEventListener('click', () => {
+    const menu = document.getElementById('settingsMenu');
+    if (menu) menu.classList.remove('open');
+});
+
+// v2.53.5: fetch app version for header. /api/status returns the
+// version under the key `version` (not `aerodrome_version` — that
+// other key is on different endpoints). Bug from v2.53.0: the
+// aircraft page was reading the wrong key, so the header showed
+// "v—" instead of the actual version. Mirrors how status.html
+// loads its own version into the same #appVersion span.
+fetch('/api/status').then(r => r.json()).then(j => {
+    if (j && j.version) {
+        document.getElementById('appVersion').textContent = j.version;
+    }
+}).catch(() => {});
+
+// Load providers FIRST, then render detail. We could parallelize, but
+// renderDetail wires the Track ↗ button using buildTrackUrl which
+// reads _trackProviderState — if detail finishes before providers,
+// the Track button gets hidden instead of populated. One extra
+// serialized round-trip is the cheap fix; the second request is small
+// (/api/ui-config returns ~1KB of config JSON) and both fetches go
+// against the same server so the cost is negligible.
+(async () => {
+    await loadTrackProviders();
+    await loadDetail();
+})();
+
+// =========================================================================
+// v2.86.0: Position-history map
+// =========================================================================
+// Renders an interactive Leaflet map showing every position fix
+// recorded for this aircraft over a chosen time window. Dots only
+// (no track lines connecting them) — the dot density itself
+// communicates flight pattern. Heavy fliers cluster, transients show
+// single dots. Users wanting actual flight paths use the external
+// Track ↗ link.
+//
+// State machine on first call:
+//   1. Render the controls UI synchronously (skeleton with empty map div)
+//   2. Fetch /api/aircraft/{icao}/positions?window=24h
+//   3. If receiver coords absent in response → render config-nudge
+//      placeholder, abort. (Server returns receiver=null when
+//      receiver.latitude/longitude is unconfigured.)
+//   4. Else initialize Leaflet map (once), paint dots, fit bounds.
+//
+// Subsequent button clicks refetch with new window and replace the
+// dot layer in place — map instance and tile layer persist.
+//
+// Performance: uses L.canvas() renderer instead of Leaflet's default
+// SVG, which scales to thousands of circles smoothly even on a Pi.
+// Server caps at 10k positions and even-samples beyond that.
+
+// v2.86.1: SVG icons for the expand/collapse button. Standard
+// "four corner brackets pointing outward" for expand, "four corner
+// brackets pointing inward" for collapse — same shape pair used by
+// most map UIs (Google Maps, Mapbox, etc) so the affordance is
+// instantly recognizable. Inlined as constants instead of fetching
+// from a sprite or icon font because they're 4 lines each and
+// guaranteed to render consistently across browsers and themes.
+const MAP_EXPAND_ICON = `<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+  <path d="M 2 6 L 2 2 L 6 2" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+  <path d="M 10 2 L 14 2 L 14 6" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+  <path d="M 14 10 L 14 14 L 10 14" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+  <path d="M 6 14 L 2 14 L 2 10" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+</svg>`;
+const MAP_COLLAPSE_ICON = `<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+  <path d="M 2 6 L 6 6 L 6 2" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+  <path d="M 10 2 L 10 6 L 14 6" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+  <path d="M 14 10 L 10 10 L 10 14" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+  <path d="M 6 14 L 6 10 L 2 10" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+</svg>`;
+
+// v2.86.3: SVG icons for the dark/light theme toggle. Universal
+// convention is "icon shows the destination state" — when the map
+// is dark the button shows a sun (click to go light), when light
+// shows a moon (click to go dark). Same inline-constant pattern as
+// the expand icons above.
+const MAP_SUN_ICON = `<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+  <circle cx="8" cy="8" r="3" fill="currentColor"/>
+  <line x1="8" y1="1" x2="8" y2="3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="8" y1="13" x2="8" y2="15" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="1" y1="8" x2="3" y2="8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="13" y1="8" x2="15" y2="8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="2.9" y1="2.9" x2="4.3" y2="4.3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="11.7" y1="11.7" x2="13.1" y2="13.1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="2.9" y1="13.1" x2="4.3" y2="11.7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="11.7" y1="4.3" x2="13.1" y2="2.9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+</svg>`;
+const MAP_MOON_ICON = `<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+  <path d="M 12 8.5 A 5 5 0 1 1 7 3.5 A 4 4 0 0 0 12 8.5 Z" fill="currentColor"/>
+</svg>`;
+
+// v2.86.3: localStorage key for persisting the user's map theme
+// choice across navigations. Set once, sticks across page loads
+// and aircraft detail page navigations. Uses dotted-namespace
+// convention so future Aerodrome browser-side preferences don't
+// collide with this one.
+const MAP_THEME_KEY = 'aerodrome.map_theme';
+
+function getStoredMapTheme() {
+    // Defensive: localStorage can throw in some browser configurations
+    // (private mode, disabled storage, etc). Fall back to 'dark'
+    // (the chosen default) on any read failure.
+    try {
+        const v = localStorage.getItem(MAP_THEME_KEY);
+        if (v === 'light' || v === 'dark') return v;
+    } catch (e) { /* ignore */ }
+    return 'dark';
+}
+function setStoredMapTheme(theme) {
+    try {
+        localStorage.setItem(MAP_THEME_KEY, theme);
+    } catch (e) { /* ignore — storage may be unavailable */ }
+}
+
+// v2.86.1: toggle the map between default and expanded heights.
+// CSS handles the actual height transition (220ms ease); we just
+// flip the .expanded class on #positionMap, swap the button's icon
+// + title to match the new state, and tell Leaflet to recompute
+// its viewport after the transition completes. Without the
+// invalidateSize() call, tiles outside the original 420px viewport
+// don't load until the user pans — looks broken.
+function toggleMapSize() {
+    const mapEl = document.getElementById('positionMap');
+    const btn = document.querySelector('.map-expand-btn');
+    if (!mapEl || !btn) return;
+    const isExpanded = mapEl.classList.toggle('expanded');
+    btn.innerHTML = isExpanded ? MAP_COLLAPSE_ICON : MAP_EXPAND_ICON;
+    btn.title = isExpanded ? 'Collapse map' : 'Expand map';
+    btn.setAttribute('aria-label', btn.title);
+    // Wait for the CSS height transition (200ms) to finish before
+    // telling Leaflet the container size changed. Calling it sooner
+    // means Leaflet computes tile positions for an intermediate
+    // height, then the container keeps growing past where Leaflet
+    // thinks the edge is — half-loaded tiles until pan/zoom.
+    setTimeout(() => {
+        if (_posMapState.map) _posMapState.map.invalidateSize();
+    }, 220);
+}
+
+// v2.86.3: toggle the map between dark and light tile providers.
+// Both tile layers were pre-created at map-init time and stored in
+// _posMapState; this function just removes one and adds the other.
+// State is persisted to localStorage so the choice sticks across
+// navigations (a single-page app refresh, navigating to a different
+// aircraft's detail page, etc).
+function toggleMapTheme() {
+    if (!_posMapState.map) return;
+    const goingDark = _posMapState.currentTheme === 'light';
+    if (goingDark) {
+        _posMapState.lightTiles.removeFrom(_posMapState.map);
+        _posMapState.darkTiles.addTo(_posMapState.map);
+    } else {
+        _posMapState.darkTiles.removeFrom(_posMapState.map);
+        _posMapState.lightTiles.addTo(_posMapState.map);
+    }
+    _posMapState.currentTheme = goingDark ? 'dark' : 'light';
+    setStoredMapTheme(_posMapState.currentTheme);
+
+    // Update the theme button's icon + label. Querying by class is
+    // sufficient since there's only one .map-theme-btn per page.
+    const btn = document.querySelector('.map-theme-btn');
+    if (btn) {
+        const isDark = _posMapState.currentTheme === 'dark';
+        btn.innerHTML = isDark ? MAP_SUN_ICON : MAP_MOON_ICON;
+        btn.title = isDark ? 'Switch to light map' : 'Switch to dark map';
+        btn.setAttribute('aria-label', btn.title);
+    }
+}
+
+let _posMapState = {
+    map: null,           // Leaflet Map instance once initialized
+    dotsLayer: null,     // L.layerGroup of circleMarkers, replaced per fetch
+    receiverMarker: null,
+    canvasRenderer: null,
+    icao: null,
+    currentWindow: '24h',
+    // v2.86.3: theme-related state. We keep BOTH tile layers as
+    // Leaflet objects from map-init time, then add/remove them on
+    // toggle rather than constructing them on demand. Two reasons:
+    // (1) creating a TileLayer triggers tile fetches; pre-creating
+    // both at init time means the first toggle is instant for tiles
+    // already in cache. (2) keeping the layer references lets us
+    // call removeLayer cleanly without identity-tracking.
+    lightTiles: null,    // L.tileLayer pointing at OSM standard
+    darkTiles: null,     // L.tileLayer pointing at Carto Dark Matter
+    currentTheme: 'dark',
+};
+
+// Altitude → color. Perceptually-ordered green→yellow→orange→red ramp
+// matching the .map-altitude-legend gradient in the page CSS. Standard
+// flight-tracking convention: warm colors near the ground, cool colors
+// at cruise. Null altitude (some sightings have lat/lon without
+// altitude) renders as ground-color since "no altitude reported"
+// usually correlates with surface or low-altitude regimes.
+function altToColor(alt) {
+    if (alt == null) return '#22c55e'; // ground/no-data → green
+    // Clamp to legend range. Stops chosen to match common flight-level
+    // bands: 0-1k taxi/ground, 1-10k climb, 10-25k mid, 25-35k high,
+    // 35-45k cruise, 45k+ rare.
+    if (alt < 1000)   return '#22c55e';  // green
+    if (alt < 10000)  return '#84cc16';  // green-yellow
+    if (alt < 25000)  return '#eab308';  // yellow
+    if (alt < 35000)  return '#f97316';  // orange
+    if (alt < 45000)  return '#ef4444';  // red
+    return '#dc2626';                    // dark red
+}
+
+function initPositionMap(icao) {
+    const block = document.getElementById('positionMapBlock');
+    if (!block) return;
+    _posMapState.icao = icao;
+
+    // Render controls + map skeleton up front. Even before the first
+    // fetch returns, the user sees the buttons and the empty map
+    // surface — avoids a blank-rectangle flash. The "loading…" tag
+    // in .meta tells them data is on the way.
+    block.innerHTML = `
+        <div class="map-controls" id="mapControls">
+            <span class="lbl">Window:</span>
+            <button type="button" class="win-btn active" data-win="24h">24h</button>
+            <button type="button" class="win-btn" data-win="7d">7d</button>
+            <button type="button" class="win-btn" data-win="30d">30d</button>
+            <button type="button" class="win-btn" data-win="all">All</button>
+            <span class="meta" id="mapMeta">loading…</span>
+        </div>
+        <div id="positionMap"></div>
+        <div class="map-altitude-legend">
+            <span>Altitude:</span>
+            <span>0 ft</span>
+            <div class="gradient"></div>
+            <span>45,000+ ft</span>
+        </div>
+    `;
+
+    // Wire button clicks. Each button refetches positions for its
+    // window and replaces the dots layer. Active-state class is
+    // toggled in lockstep so the user sees which window is current.
+    block.querySelectorAll('.win-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const win = btn.getAttribute('data-win');
+            if (win === _posMapState.currentWindow) return;
+            block.querySelectorAll('.win-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            _posMapState.currentWindow = win;
+            loadPositions(win);
+        });
+    });
+
+    // Initial fetch. The default-active button is 24h, so this matches.
+    loadPositions('24h');
+}
+
+async function loadPositions(window) {
+    const meta = document.getElementById('mapMeta');
+    if (meta) {
+        meta.textContent = 'loading…';
+        meta.classList.remove('truncated');
+    }
+    let data;
+    try {
+        const r = await fetch(
+            `/api/aircraft/${encodeURIComponent(_posMapState.icao)}` +
+            `/positions?window=${encodeURIComponent(window)}`
+        );
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        data = await r.json();
+    } catch (e) {
+        if (meta) meta.textContent = `error: ${e.message || e}`;
+        return;
+    }
+
+    // No receiver lat/lon configured → render the config-nudge
+    // placeholder. We swap the entire #positionMapBlock contents
+    // because the controls + map UI is meaningless without a map.
+    // This branch only fires the first time loadPositions runs (the
+    // server's receiver field is config-driven, not request-scoped),
+    // so we don't worry about toggling between nudge and map.
+    if (!data.receiver) {
+        const block = document.getElementById('positionMapBlock');
+        if (block) {
+            block.innerHTML = `
+                <div class="map-no-receiver">
+                    <div><strong>Map view needs receiver coordinates.</strong></div>
+                    <div style="margin-top:6px">
+                        Set <code>receiver.latitude</code> and <code>receiver.longitude</code> on the
+                        <a href="/configuration#receiver">Configuration → Receiver</a> tab to see this aircraft's
+                        position history plotted on a map.
+                    </div>
+                </div>
+            `;
+        }
+        return;
+    }
+
+    // Initialize the map on first run; subsequent loadPositions calls
+    // reuse the existing map instance and just swap the dots layer.
+    if (!_posMapState.map) {
+        // Canvas renderer. Default Leaflet uses SVG which gets sluggish
+        // past ~1000 markers; canvas scales to 10k+ comfortably.
+        _posMapState.canvasRenderer = L.canvas({ padding: 0.5 });
+
+        _posMapState.map = L.map('positionMap', {
+            preferCanvas: true,
+            zoomControl: true,
+            attributionControl: true,
+        }).setView([data.receiver.lat, data.receiver.lon], 9);
+
+        // v2.86.3: pre-create both tile layers and pick which to add
+        // based on the persisted theme preference. Carto Dark Matter
+        // is a free, no-API-key tile set with cartography that fits
+        // Aerodrome's dark theme; OSM standard is the original light
+        // tiles from v2.86.0. Default theme is 'dark' (chosen because
+        // the rest of the app is dark-themed and the light tiles
+        // looked jarring in context).
+        _posMapState.lightTiles = L.tileLayer(
+            'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+            {
+                maxZoom: 18,
+                attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+            }
+        );
+        _posMapState.darkTiles = L.tileLayer(
+            'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+            {
+                maxZoom: 19,
+                subdomains: 'abcd',
+                attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>',
+            }
+        );
+        _posMapState.currentTheme = getStoredMapTheme();
+        const initialTiles = (_posMapState.currentTheme === 'light')
+            ? _posMapState.lightTiles
+            : _posMapState.darkTiles;
+        initialTiles.addTo(_posMapState.map);
+
+        // Receiver marker: standard Leaflet default-icon pin so it's
+        // visually distinct from the colored sighting dots. Uses the
+        // bundled marker images from /static/leaflet/images.
+        const receiverIcon = L.icon({
+            iconUrl: '/static/leaflet/images/marker-icon.png',
+            iconRetinaUrl: '/static/leaflet/images/marker-icon-2x.png',
+            shadowUrl: '/static/leaflet/images/marker-shadow.png',
+            iconSize: [25, 41],
+            iconAnchor: [12, 41],
+            popupAnchor: [1, -34],
+            shadowSize: [41, 41],
+        });
+        _posMapState.receiverMarker = L.marker(
+            [data.receiver.lat, data.receiver.lon],
+            { icon: receiverIcon, title: 'Receiver location' }
+        ).addTo(_posMapState.map).bindPopup('Your receiver');
+
+        // v2.86.1: expand/collapse control. Toggles #positionMap's
+        // height between the default 420px and an expanded 840px so
+        // users who want to study the data have more vertical real
+        // estate without it dominating the page by default. Lives in
+        // Leaflet's bottomleft control container — clean placement,
+        // no collision with OSM attribution (bottom-right) or zoom
+        // controls (top-left).
+        const ExpandControl = L.Control.extend({
+            options: { position: 'bottomleft' },
+            onAdd: function(_map) {
+                const btn = L.DomUtil.create('button', 'map-expand-btn');
+                btn.type = 'button';
+                btn.title = 'Expand map';
+                btn.setAttribute('aria-label', 'Expand map');
+                btn.innerHTML = MAP_EXPAND_ICON;
+                // Stop clicks from propagating to the map below — without
+                // this, clicking the button also pans/zooms the map.
+                L.DomEvent.disableClickPropagation(btn);
+                L.DomEvent.on(btn, 'click', toggleMapSize);
+                return btn;
+            }
+        });
+        _posMapState.map.addControl(new ExpandControl());
+
+        // v2.86.3: theme toggle control. Same Leaflet-control-extension
+        // pattern as ExpandControl above, anchored topright (only empty
+        // corner — zoom controls top-left, expand bottom-left, OSM
+        // attribution bottom-right). Icon shows the destination state:
+        // when dark mode is active, button shows sun (click → light);
+        // when light mode is active, button shows moon (click → dark).
+        const ThemeControl = L.Control.extend({
+            options: { position: 'topright' },
+            onAdd: function(_map) {
+                const btn = L.DomUtil.create('button', 'map-expand-btn map-theme-btn');
+                btn.type = 'button';
+                // Initial icon + label match initial state. Toggle handler
+                // updates these in lockstep.
+                const isDark = _posMapState.currentTheme === 'dark';
+                btn.innerHTML = isDark ? MAP_SUN_ICON : MAP_MOON_ICON;
+                btn.title = isDark ? 'Switch to light map' : 'Switch to dark map';
+                btn.setAttribute('aria-label', btn.title);
+                L.DomEvent.disableClickPropagation(btn);
+                L.DomEvent.on(btn, 'click', toggleMapTheme);
+                return btn;
+            }
+        });
+        _posMapState.map.addControl(new ThemeControl());
+    }
+
+    // Replace dots layer. Remove the previous group (if any), build a
+    // fresh one from the new positions, add it. Each position becomes
+    // a small circleMarker rendered on the canvas — radius 3.5 with
+    // 70% opacity so overlapping dots build up density visually.
+    if (_posMapState.dotsLayer) {
+        _posMapState.dotsLayer.removeFrom(_posMapState.map);
+        _posMapState.dotsLayer = null;
+    }
+    const dots = [];
+    for (const p of data.positions) {
+        const [seenAt, lat, lon, alt] = p;
+        const dot = L.circleMarker([lat, lon], {
+            renderer: _posMapState.canvasRenderer,
+            radius: 3.5,
+            fillColor: altToColor(alt),
+            fillOpacity: 0.7,
+            stroke: false,
+        });
+        dots.push(dot);
+    }
+    _posMapState.dotsLayer = L.layerGroup(dots).addTo(_posMapState.map);
+
+    // Auto-fit bounds: include receiver + all dots. If there are no
+    // dots in this window, just keep the existing view (don't fitBounds
+    // to a single-point marker — Leaflet zooms to max which is jarring).
+    if (data.positions.length > 0) {
+        const bounds = L.latLngBounds(
+            data.positions.map(p => [p[1], p[2]])
+        );
+        bounds.extend([data.receiver.lat, data.receiver.lon]);
+        _posMapState.map.fitBounds(bounds, { padding: [30, 30], maxZoom: 12 });
+    } else {
+        // No positions in this window — re-center on the receiver
+        // since the previous window's bounds are no longer relevant.
+        _posMapState.map.setView([data.receiver.lat, data.receiver.lon], 9);
+    }
+
+    // Update the meta line with count + truncation notice.
+    if (meta) {
+        if (data.count === 0) {
+            meta.textContent = 'no positions in this window';
+        } else {
+            const label = data.count === 1 ? 'position' : 'positions';
+            meta.textContent = `${data.count.toLocaleString()} ${label}`;
+            if (data.truncated) {
+                meta.textContent += ' (sampled)';
+                meta.classList.add('truncated');
+                meta.title = 'Result set exceeded 10,000 points; even-sampled to fit.';
+            }
+        }
+    }
+}
+</script>
+
+</body>
+</html>

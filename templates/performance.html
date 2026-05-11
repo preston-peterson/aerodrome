@@ -1,0 +1,832 @@
+<!-- Version: 2.98.2 -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <!-- theme:inline-fouc-start -->
+    <script>
+// v2.45.0: theme FOUC prevention — applies saved theme pre-paint.
+// Keep this inline and synchronous at the TOP of <head>. Moving it to a
+// deferred module or the body would reintroduce the dark-flash on first
+// load for users with light-mode saved.
+(function(){
+    try {
+        var saved = localStorage.getItem('aerodrome-theme') || 'auto';
+        var applied = saved;
+        if (saved === 'auto') {
+            applied = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+        }
+        document.documentElement.setAttribute('data-theme', applied);
+    } catch (e) { /* localStorage blocked? default-dark is fine */ }
+})();
+</script>
+    <!-- theme:inline-fouc-end -->
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Performance — Aerodrome</title>
+<!-- v2.50.2: favicon. SVG for modern browsers (scales perfectly,
+     respects light/dark via the cyan accent), ICO fallback for older
+     browsers, apple-touch-icon for iOS home-screen / bookmarks. -->
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+    <!-- v2.47.0: theme system extracted to /static/theme.css + theme.js.
+         Palette variables and the gear-menu widget styles both live there. -->
+    <link rel="stylesheet" href="/static/theme.css">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-height:100vh; }
+a { color:var(--cyan); }
+
+.hdr { background:var(--bg1); border-bottom:1px solid var(--bdr); padding:12px 24px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; }
+.hdr-left { display:flex; align-items:center; gap:8px; }
+.hdr h1 { font-size:18px; font-weight:600; letter-spacing:-0.02em; }
+.hdr h1 span { color:var(--cyan); }
+.hdr-right { display:flex; align-items:center; gap:14px; }
+.hdr-meta { font-size:11px; color:var(--t2); font-family:var(--mono); }
+.settings-wrap { position:relative; }
+.settings-menu { position:absolute; top:calc(100% + 6px); right:0; background:var(--bg2); border:1px solid var(--bdr); border-radius:8px; min-width:180px; display:none; z-index:100; overflow:hidden; }
+.settings-menu.open { display:block; }
+
+.wrap { max-width:1100px; margin:0 auto; padding:24px; }
+.page-title { font-size:22px; font-weight:600; margin-bottom:4px; }
+.page-sub { color:var(--t2); font-size:13px; margin-bottom:20px; }
+
+.toolbar { display:flex; gap:8px; margin-bottom:18px; flex-wrap:wrap; }
+.legacy-toggle { margin-bottom: 12px; font-size: 13px; color: var(--t2); }
+.legacy-toggle label { cursor: pointer; user-select: none; display: inline-flex; align-items: center; gap: 6px; }
+.legacy-toggle input[type=checkbox] { cursor: pointer; }
+.legacy-hint { color: var(--t3); font-family: var(--mono); font-size: 11px; margin-left: 4px; }
+.legacy-skipped-note {
+    margin: 12px 0; padding: 10px 14px;
+    background: var(--bg1); border: 1px solid var(--bdr); border-radius: 4px;
+    color: var(--t3); font-size: 12px; font-family: var(--mono); line-height: 1.5;
+}
+
+.card { background:var(--bg2); border:1px solid var(--bdr); border-radius:8px; padding:16px 18px; margin-bottom:14px; }
+.card-head { display:flex; align-items:baseline; gap:10px; margin-bottom:12px; }
+.card-title { font-size:14px; font-weight:500; color:var(--t1); }
+.card-sub { font-size:11px; color:var(--t3); font-family:var(--mono); margin-left:auto; }
+
+.row { display:flex; justify-content:space-between; padding:6px 0; font-size:12px; border-top:1px solid rgba(42,58,84,.4); gap:12px; }
+.row:first-of-type { border-top:none; padding-top:0; }
+.row-lbl { color:var(--t2); white-space:nowrap; }
+.row-val { font-family:var(--mono); color:var(--t1); text-align:right; word-break:break-all; }
+.row-val.good { color:var(--green); }
+.row-val.warn { color:var(--amber); }
+.row-val.bad  { color:var(--red); font-weight:500; }
+
+.hints-card { background:rgba(245,158,11,.06); border:1px solid rgba(245,158,11,.25); }
+.hints-card .card-title { color:var(--amber); }
+.hints-list { list-style:none; }
+.hints-list li { padding:8px 0; color:var(--t1); font-size:12px; line-height:1.5; border-top:1px solid rgba(245,158,11,.15); }
+.hints-list li:first-child { border-top:none; }
+.hints-list li::before { content:'\25B8 '; color:var(--amber); }
+
+.query-card { padding:10px 14px; background:var(--bg1); border:1px solid var(--bdr); border-radius:6px; margin-bottom:8px; }
+.query-head { display:flex; justify-content:space-between; gap:12px; align-items:center; cursor:pointer; }
+.query-label { font-size:12px; color:var(--t1); flex:1; }
+.query-ms { font-family:var(--mono); font-size:12px; font-weight:500; padding:2px 8px; border-radius:4px; }
+.query-ms.q-ok   { color:var(--green); background:rgba(34,197,94,.1); }
+.query-ms.q-warn { color:var(--amber); background:rgba(245,158,11,.1); }
+.query-ms.q-bad  { color:var(--red); background:rgba(239,68,68,.12); }
+.query-plan { display:none; margin-top:8px; padding:8px 10px; background:var(--bg0); border-radius:4px; font-family:var(--mono); font-size:11px; color:var(--t2); line-height:1.5; }
+.query-plan.open { display:block; }
+.query-plan-step { padding:2px 0; }
+
+.tbl { width:100%; font-size:12px; border-collapse:collapse; }
+.tbl th { text-align:left; color:var(--t2); font-weight:500; padding:6px 10px 6px 0; border-bottom:1px solid var(--bdr); }
+.tbl td { padding:6px 10px 6px 0; border-bottom:1px solid rgba(42,58,84,.4); font-family:var(--mono); color:var(--t1); }
+.tbl td.num { text-align:right; }
+.tbl tr:last-child td { border-bottom:none; }
+
+.code-block { background:var(--bg0); border:1px solid var(--bdr); border-radius:6px; padding:12px 14px; font-family:var(--mono); font-size:11px; color:var(--t2); line-height:1.6; white-space:pre-wrap; word-break:break-word; max-height:360px; overflow-y:auto; }
+
+.loading { padding:40px 20px; text-align:center; color:var(--t2); font-size:13px; }
+.spinner { display:inline-block; width:14px; height:14px; border:2px solid var(--bdr); border-top-color:var(--cyan); border-radius:50%; animation:spin .8s linear infinite; margin-right:8px; vertical-align:middle; }
+@keyframes spin { to { transform:rotate(360deg); } }
+
+.error-box { background:rgba(239,68,68,.08); border:1px solid rgba(239,68,68,.3); color:var(--red); padding:12px 16px; border-radius:6px; font-size:13px; }
+
+.copied-tag { color:var(--green); font-size:11px; margin-left:8px; opacity:0; transition:opacity .2s; }
+.copied-tag.show { opacity:1; }
+
+
+</style>
+</head>
+<body>
+
+<div class="hdr">
+    <div class="hdr-left">
+        <div class="dot" id="healthDot" title="System status"></div>
+        <a class="home-link" href="/"><svg class="brand-mark" width="32" height="32" viewBox="0 0 64 64" aria-hidden="true">
+                <circle cx="32" cy="32" r="28" fill="none" stroke="#06b6d4" stroke-width="3" opacity="0.3"/>
+                <circle cx="32" cy="32" r="20" fill="none" stroke="#06b6d4" stroke-width="3" opacity="0.55"/>
+                <circle cx="32" cy="32" r="12" fill="none" stroke="#06b6d4" stroke-width="3" opacity="0.8"/>
+                <circle cx="32" cy="32" r="4" fill="#06b6d4"/>
+                <line x1="32" y1="32" x2="52" y2="12" stroke="#06b6d4" stroke-width="3" stroke-linecap="round"/>
+            </svg><h1><span>Aerodrome</span></h1></a>
+    </div>
+    <div class="hdr-right">
+        <span class="hdr-meta">v<span id="appVersion">—</span> &middot; Updated <span id="ts">—</span></span>
+        <div class="settings-wrap">
+            <button class="settings-btn" onclick="toggleMenu(event)" aria-label="Settings" title="Settings">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            </button>
+            <div class="settings-menu" id="settingsMenu">
+                <a href="/status" class="menu-item">Status</a>
+                <a href="/diagnostics" class="menu-item">Diagnostics</a>
+                <a href="/logs" class="menu-item">Logs</a>
+                <a href="/documentation" class="menu-item">Documentation</a>
+                <a href="/config" class="menu-item">Configuration</a>
+                <a href="/updates" class="menu-item">Check for updates</a>
+            
+                <div class="gear-menu-separator"></div>
+                <div class="theme-row">
+                    <div class="theme-label">Theme</div>
+                    <div class="theme-seg" role="group" aria-label="Theme preference">
+                        <button type="button" data-theme-choice="auto"  onclick="aerodromeSetTheme('auto')">Auto</button>
+                        <button type="button" data-theme-choice="dark"  onclick="aerodromeSetTheme('dark')">Dark</button>
+                        <button type="button" data-theme-choice="light" onclick="aerodromeSetTheme('light')">Light</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="wrap">
+    <div class="page-title">Performance diagnostics</div>
+    <div class="page-sub">
+        Snapshot of database size, query timings, and system context.
+        Use this when something feels slow — the output is pasteable into a GitHub issue.
+        Running the diagnostic is safe and read-only, but can take a few seconds on large databases.
+    </div>
+
+    <!-- v2.50.26: opt-in toggle for the legacy raw-fallback probes.
+         Default is off because on large installs (8M+ rows) the three
+         legacy probes account for ~97% of total perf-diag runtime —
+         turning a 2.5-second snapshot into a 2.5-minute wait. Off-by-
+         default keeps the routine experience fast; users who want the
+         comparison toggle it on. localStorage persists the choice
+         across visits because once you care about the comparison once
+         you usually care about it for the next visit too. The query
+         param ?include_legacy=true also works for direct linking. -->
+    <div class="legacy-toggle">
+        <label>
+            <input type="checkbox" id="includeLegacyChk" onchange="onLegacyToggle()">
+            Include legacy raw-fallback probes
+            <span class="legacy-hint">(adds 2+ minutes on large databases — for comparing rollup vs raw)</span>
+        </label>
+    </div>
+
+    <div class="toolbar">
+        <button class="btn btn-primary" onclick="runDiagnostic()" id="runBtn">Run diagnostic</button>
+        <button class="btn" onclick="copyReport()" id="copyBtn" disabled>Copy diagnostic report</button>
+        <span class="copied-tag" id="copiedTag">copied to clipboard</span>
+        <!-- v2.42.6: manual ANALYZE trigger. Refreshes SQLite planner
+             stats in case of performance regressions from stale stats.
+             Blocking on this page because ANALYZE can take 30-60s on a
+             large DB; the button shows progress and disables itself
+             during the run. -->
+        <button class="btn" onclick="runAnalyze()" id="analyzeBtn"
+                title="Refresh SQLite query-planner statistics (safe, takes 30-60s on large DBs)">
+            Re-analyze DB
+        </button>
+        <a class="btn" href="/diagnostics" style="text-decoration:none">&larr; Back to Diagnostics</a>
+    </div>
+
+    <div id="content">
+        <div class="card">
+            <div class="loading">
+                Click <strong>Run diagnostic</strong> above to measure this system.
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+let _lastReport = null;
+
+function _esc(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function _fmtBytes(n) {
+    if (n == null) return '—';
+    const units = ['B','KB','MB','GB','TB'];
+    let i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    return (i === 0 ? n : n.toFixed(1)) + ' ' + units[i];
+}
+
+function _fmtTs(ts) {
+    if (!ts) return '—';
+    return new Date(ts * 1000).toISOString().replace('T',' ').slice(0,19) + ' UTC';
+}
+
+function _queryMsClass(ms) {
+    if (ms == null) return '';
+    if (ms < 100) return 'q-ok';
+    if (ms < 1000) return 'q-warn';
+    return 'q-bad';
+}
+
+async function runDiagnostic() {
+    const btn = document.getElementById('runBtn');
+    const content = document.getElementById('content');
+    btn.disabled = true;
+    btn.textContent = 'Running…';
+    content.innerHTML = `<div class="card"><div class="loading"><span class="spinner"></span>Measuring your system. This can take several seconds on large databases.</div></div>`;
+
+    try {
+        // v2.50.26: include_legacy=true skips the raw-fallback and
+        // window-functions reference probes that dominate runtime on
+        // large databases.
+        const includeLegacy = document.getElementById('includeLegacyChk').checked;
+        const url = includeLegacy
+            ? '/api/perf/diagnostics?include_legacy=true'
+            : '/api/perf/diagnostics';
+        const r = await fetch(url);
+        const j = await r.json();
+        _lastReport = j;
+        renderReport(j);
+        document.getElementById('copyBtn').disabled = false;
+    } catch (e) {
+        content.innerHTML = `<div class="error-box">Diagnostic failed: ${_esc(e.message)}</div>`;
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Run diagnostic again';
+    }
+}
+
+// v2.50.26: persist the legacy-probe preference across page reloads.
+// Once a user opts in to the comparison they typically want it on for
+// their next visit too — and if they leave it off, default-off
+// continues to be the right behaviour.
+function onLegacyToggle() {
+    try {
+        const checked = document.getElementById('includeLegacyChk').checked;
+        localStorage.setItem('aerodrome-perf-include-legacy', checked ? '1' : '0');
+    } catch (e) { /* localStorage blocked? non-fatal */ }
+}
+
+// Apply saved preference (or URL param override) on first paint, before
+// the user clicks Run. URL ?include_legacy=true takes precedence so a
+// shared link explicitly asking for the comparison wins over local pref.
+(function _initLegacyToggle() {
+    const chk = document.getElementById('includeLegacyChk');
+    if (!chk) return;
+    let initial = false;
+    try {
+        const url = new URL(window.location.href);
+        if (url.searchParams.get('include_legacy') === 'true') {
+            initial = true;
+        } else {
+            initial = localStorage.getItem('aerodrome-perf-include-legacy') === '1';
+        }
+    } catch (e) { /* ignore */ }
+    chk.checked = initial;
+})();
+
+function renderReport(j) {
+    const content = document.getElementById('content');
+
+    if (!j.ok) {
+        content.innerHTML = `<div class="error-box">Diagnostic error: ${_esc(j.error || 'unknown')}</div>`;
+        return;
+    }
+
+    document.getElementById('appVersion').textContent = j.aerodrome_version || '?';
+    // v2.84.2: Format A — date + 24-hour time including seconds. Matches
+    // config.html / updates.html / aircraft.html / diagnostics-*. The
+    // server-provided generated_at is preferred when present (more
+    // accurate for a slow perf-diag run), falling back to wall-clock.
+    // v2.85.12: shared formatter respects display.time_format. Was
+    // hard-coded 24h here. formatDateTime gives the month+day+time
+    // shape this card wants ("May 6, 09:54"); seconds dropped because
+    // perf-diag updates aren't second-sensitive.
+    document.getElementById('ts').textContent =
+        j.generated_at ? formatDateTime(j.generated_at) : '—';
+
+    let html = '';
+
+    // Hints first (most actionable)
+    if (j.hints && j.hints.length > 0) {
+        html += `<div class="card hints-card">
+            <div class="card-head"><div class="card-title">Hints</div>
+                <div class="card-sub">attention needed</div></div>
+            <ul class="hints-list">
+                ${j.hints.map(h => `<li>${_esc(h)}</li>`).join('')}
+            </ul>
+        </div>`;
+    }
+
+    // Storage
+    const st = j.storage || {};
+    html += `<div class="card">
+        <div class="card-head"><div class="card-title">Storage</div>
+            <div class="card-sub">database file on disk</div></div>
+        <div class="row"><span class="row-lbl">Path</span>
+            <span class="row-val">${_esc(st.db_file || '—')}</span></div>
+        <div class="row"><span class="row-lbl">Size (incl. WAL/SHM)</span>
+            <span class="row-val ${st.size_bytes > 5*1024**3 ? 'bad' : st.size_bytes > 1*1024**3 ? 'warn' : ''}">${_fmtBytes(st.size_bytes)}</span></div>
+        ${st.wal_bytes != null ? `<div class="row"><span class="row-lbl">WAL file</span>
+            <span class="row-val">${_fmtBytes(st.wal_bytes)}</span></div>` : ''}
+        ${st.shm_bytes != null ? `<div class="row"><span class="row-lbl">SHM file</span>
+            <span class="row-val">${_fmtBytes(st.shm_bytes)}</span></div>` : ''}
+    </div>`;
+
+    // Tables
+    // v2.80.0: added Size column rendered from t.size_bytes (populated
+    // server-side via dbstat virtual table). Tables that are FTS5
+    // shadow aggregates render with rows="—" and a size value; the
+    // shadow_tables array is shown as a tooltip via title attribute.
+    const tables = j.tables || [];
+    if (tables.length > 0) {
+        html += `<div class="card">
+            <div class="card-head"><div class="card-title">Tables</div>
+                <div class="card-sub">row counts, sizes, retention span</div></div>
+            <table class="tbl">
+                <thead><tr><th>Table</th><th class="num">Rows</th>
+                    <th class="num">Size</th>
+                    <th class="num">Count time</th><th class="num">Oldest</th>
+                    <th class="num">Newest</th><th class="num">Span</th></tr></thead>
+                <tbody>
+                ${tables.map(t => {
+                    const rowsFmt = (t.rows != null) ? t.rows.toLocaleString() : '—';
+                    const rowsClass = (t.rows > 10_000_000) ? 'bad' :
+                                      (t.rows > 1_000_000) ? 'warn' : '';
+                    const sizeFmt = (t.size_bytes != null)
+                        ? _fmtBytes(t.size_bytes) : '—';
+                    // Shadow-aggregate row gets a tooltip listing each
+                    // shadow table that contributed to the size.
+                    const titleAttr = t.shadow_tables
+                        ? `title="${_esc(t.shadow_tables.join(', '))}"`
+                        : '';
+                    return `<tr ${titleAttr}>
+                        <td>${_esc(t.name)}</td>
+                        <td class="num"><span class="row-val ${rowsClass}">${rowsFmt}</span></td>
+                        <td class="num">${sizeFmt}</td>
+                        <td class="num">${t.count_ms != null ? t.count_ms + ' ms' : '—'}</td>
+                        <td class="num">${t.oldest_ts ? _fmtTs(t.oldest_ts) : '—'}</td>
+                        <td class="num">${t.newest_ts ? _fmtTs(t.newest_ts) : '—'}</td>
+                        <td class="num">${t.span_days != null ? t.span_days + 'd' : '—'}</td>
+                    </tr>`;
+                }).join('')}
+                </tbody>
+            </table>
+        </div>`;
+    }
+
+    // Indexes
+    const indexes = j.indexes || [];
+    if (indexes.length > 0) {
+        const byTable = {};
+        indexes.forEach(i => { (byTable[i.table] = byTable[i.table] || []).push(i.name); });
+        html += `<div class="card">
+            <div class="card-head"><div class="card-title">Indexes</div>
+                <div class="card-sub">${indexes.length} total</div></div>
+            ${Object.entries(byTable).map(([tbl, names]) => `
+                <div class="row"><span class="row-lbl">${_esc(tbl)}</span>
+                    <span class="row-val">${names.map(_esc).join(', ')}</span></div>
+            `).join('')}
+        </div>`;
+    }
+
+    // Queries — the meat of the diagnostic
+    const queries = j.queries || [];
+    if (queries.length > 0) {
+        // v2.50.26: render an explicit note when legacy raw-fallback
+        // probes were skipped, so their absence is acknowledged rather
+        // than mysterious. The skipped count comes from the backend so
+        // the message stays accurate if the set ever changes.
+        // v2.83.5: pluralization handled explicitly because the count
+        // dropped from 3 to 1 when the All-tab Q5 probes were removed.
+        const skippedCount = j.legacy_probes_skipped;
+        const skippedNoun = skippedCount === 1 ? 'probe' : 'probes';
+        const skippedNote = (!j.include_legacy && skippedCount > 0)
+            ? `<div class="legacy-skipped-note">
+                Legacy raw-fallback ${skippedCount === 1 ? 'probe' : 'probes'} skipped (${skippedCount} ${skippedNoun}) —
+                check "Include legacy raw-fallback probes" above to compare against the
+                pre-rollup query paths. Skipped by default because they dominate runtime
+                on large databases.
+               </div>`
+            : '';
+        html += `<div class="card">
+            <div class="card-head"><div class="card-title">Query timings</div>
+                <div class="card-sub">representative UI queries</div></div>
+            <div style="font-size:11px;color:var(--t3);margin-bottom:10px">
+                Green &lt; 100 ms · amber 100&ndash;1000 ms · red &gt; 1000 ms.
+                Click any query to see its plan (EXPLAIN QUERY PLAN).
+            </div>
+            ${skippedNote}
+            ${queries.map((q, i) => `
+                <div class="query-card">
+                    <div class="query-head" onclick="togglePlan(${i})">
+                        <span class="query-label">${_esc(q.label)}</span>
+                        ${q.ok
+                            ? `<span class="query-ms ${_queryMsClass(q.ms)}">${q.ms} ms</span>`
+                            : `<span class="query-ms q-bad">error</span>`}
+                    </div>
+                    ${q.ok && q.plan ? `<div class="query-plan" id="plan-${i}">
+                        ${q.plan.map(step => `<div class="query-plan-step">${_esc(step.detail || JSON.stringify(step))}</div>`).join('')}
+                    </div>` : ''}
+                    ${!q.ok ? `<div class="error-box" style="margin-top:8px;font-size:11px">${_esc(q.error || 'unknown')}</div>` : ''}
+                </div>
+            `).join('')}
+        </div>`;
+    }
+
+    // hexdb_events retention — v2.80.0. Surface the rolling-events
+    // table's row count + oldest age so retention regressions become
+    // visible. Healthy installs report oldest_age_days well below the
+    // configured retention (default 7 days); a regression shows older
+    // rows piling up.
+    const her = j.hexdb_events_retention;
+    if (her && her.ok) {
+        const ageWarn = (her.oldest_age_days != null && her.oldest_age_days > 14);
+        html += `<div class="card">
+            <div class="card-head"><div class="card-title">hexdb_events retention</div>
+                <div class="card-sub">cache event log — should stay bounded by cleanup_old_data</div></div>
+            <div class="row"><span class="row-lbl">Rows</span>
+                <span class="row-val">${(her.rows || 0).toLocaleString()}</span></div>
+            ${her.oldest_age_days != null ? `
+                <div class="row"><span class="row-lbl">Oldest event</span>
+                    <span class="row-val ${ageWarn ? 'warn' : ''}">${her.oldest_age_days}d ago</span></div>
+            ` : `
+                <div class="row"><span class="row-lbl">Oldest event</span>
+                    <span class="row-val">— (table empty)</span></div>
+            `}
+        </div>`;
+    }
+
+    // I/O baseline
+    const io = j.io_baseline || {};
+    if (Object.keys(io).length > 0) {
+        html += `<div class="card">
+            <div class="card-head"><div class="card-title">Disk I/O baseline</div>
+                <div class="card-sub">1 MB sequential read from DB file</div></div>
+            ${io.throughput_mb_s != null ? `
+                <div class="row"><span class="row-lbl">Throughput</span>
+                    <span class="row-val ${io.throughput_mb_s < 15 ? 'warn' : ''}">${io.throughput_mb_s} MB/s</span></div>
+                <div class="row"><span class="row-lbl">Elapsed</span>
+                    <span class="row-val">${io.elapsed_ms} ms</span></div>
+            ` : `<div class="row"><span class="row-lbl">Status</span>
+                <span class="row-val">${_esc(io.error || 'DB file too small to sample')}</span></div>`}
+        </div>`;
+    }
+
+    // Pragmas + system (less prominent, collapsed below)
+    const p = j.pragmas || {};
+    const plat = j.platform || {};
+    html += `<div class="card">
+        <div class="card-head"><div class="card-title">SQLite + system</div>
+            <div class="card-sub">context</div></div>
+        <div class="row"><span class="row-lbl">SQLite version</span>
+            <span class="row-val">${_esc(j.sqlite_version)}</span></div>
+        <div class="row"><span class="row-lbl">Python version</span>
+            <span class="row-val">${_esc(j.python_version)}</span></div>
+        <div class="row"><span class="row-lbl">Platform</span>
+            <span class="row-val">${_esc(plat.system)} ${_esc(plat.release)} (${_esc(plat.machine)})</span></div>
+        ${p.journal_mode ? `<div class="row"><span class="row-lbl">journal_mode</span>
+            <span class="row-val">${_esc(p.journal_mode)}</span></div>` : ''}
+        ${p.page_size ? `<div class="row"><span class="row-lbl">page_size</span>
+            <span class="row-val">${p.page_size} B</span></div>` : ''}
+        ${p.page_count ? `<div class="row"><span class="row-lbl">page_count</span>
+            <span class="row-val">${p.page_count.toLocaleString()}</span></div>` : ''}
+        ${p.logical_size_bytes ? `<div class="row"><span class="row-lbl">Logical DB size</span>
+            <span class="row-val">${_fmtBytes(p.logical_size_bytes)}</span></div>` : ''}
+        ${p.cache_size ? `<div class="row"><span class="row-lbl">cache_size</span>
+            <span class="row-val">${p.cache_size.toLocaleString()}</span></div>` : ''}
+        ${p.wal_autocheckpoint ? `<div class="row"><span class="row-lbl">wal_autocheckpoint</span>
+            <span class="row-val">${p.wal_autocheckpoint}</span></div>` : ''}
+        ${p.synchronous != null ? `<div class="row"><span class="row-lbl">synchronous</span>
+            <span class="row-val">${p.synchronous}</span></div>` : ''}
+        ${p.mmap_size != null ? `<div class="row"><span class="row-lbl">mmap_size</span>
+            <span class="row-val">${_fmtBytes(p.mmap_size)}</span></div>` : ''}
+    </div>`;
+
+    content.innerHTML = html;
+}
+
+function togglePlan(i) {
+    const el = document.getElementById('plan-' + i);
+    if (el) el.classList.toggle('open');
+}
+
+// Produce a pasteable plaintext report
+function buildReportText(j) {
+    const lines = [];
+    const plat = j.platform || {};
+    lines.push('=== Aerodrome performance diagnostic ===');
+    lines.push('Generated: ' + _fmtTs(j.generated_at));
+    lines.push('Aerodrome: ' + (j.aerodrome_version || '?'));
+    lines.push('SQLite:    ' + (j.sqlite_version || '?'));
+    lines.push('Python:    ' + (j.python_version || '?'));
+    lines.push('Platform:  ' + plat.system + ' ' + plat.release + ' (' + plat.machine + ')');
+    lines.push('');
+
+    const st = j.storage || {};
+    lines.push('--- Storage ---');
+    lines.push('DB file:     ' + (st.db_file || '?'));
+    lines.push('Total size:  ' + _fmtBytes(st.size_bytes));
+    if (st.wal_bytes) lines.push('WAL:         ' + _fmtBytes(st.wal_bytes));
+    lines.push('');
+
+    const p = j.pragmas || {};
+    lines.push('--- SQLite pragmas ---');
+    ['journal_mode','page_size','page_count','cache_size','wal_autocheckpoint',
+     'synchronous','temp_store','auto_vacuum','mmap_size'].forEach(k => {
+        if (p[k] != null) lines.push('  ' + k.padEnd(20) + String(p[k]));
+    });
+    lines.push('');
+
+    // v2.52.1: configured tuning profile (separate from the raw pragmas
+    // above — those show what's in effect; this shows what was requested).
+    const cfg = j.config || {};
+    if (cfg.tuning_profile != null){
+        lines.push('--- Configured tuning ---');
+        lines.push('  profile             ' + cfg.tuning_profile);
+        const overrides = cfg.tuning_overrides || {};
+        const overrideKeys = Object.keys(overrides);
+        if (overrideKeys.length){
+            lines.push('  overrides:');
+            overrideKeys.forEach(k => {
+                lines.push('    ' + k.padEnd(18) + String(overrides[k]));
+            });
+        }
+        lines.push('');
+    }
+
+    lines.push('--- Tables ---');
+    (j.tables || []).forEach(t => {
+        // v2.80.2: render null rows count as em-dash for parity with the
+        // HTML view (line ~354), which already uses '—' for missing
+        // fields. Pre-v2.80.0 every inventory row had a numeric rows
+        // count so the fallback never fired in normal output; v2.80.0's
+        // aggregated FTS5 shadows row introduced rows=null deliberately
+        // (count is meaningless across five aggregated shadow tables),
+        // and the text export's pre-existing '?' fallback became user-
+        // visible. v2.80.1 fixed the server-side hint-loop crash from
+        // the same root cause but missed this rendering path.
+        const rows = (t.rows != null) ? t.rows.toLocaleString() : '—';
+        const span = (t.span_days != null) ? ' span=' + t.span_days + 'd' : '';
+        const cnt = (t.count_ms != null) ? ' count_ms=' + t.count_ms : '';
+        // v2.80.0: include size in the text export so the maintainer
+        // can copy-paste the diag into an issue / chat without losing
+        // the storage breakdown.
+        const size = (t.size_bytes != null) ? ' size=' + _fmtBytes(t.size_bytes) : '';
+        lines.push('  ' + t.name.padEnd(28) + rows.padStart(12) + size + span + cnt);
+    });
+    lines.push('');
+
+    lines.push('--- Indexes ---');
+    (j.indexes || []).forEach(i => {
+        lines.push('  ' + i.name + ' on ' + i.table);
+    });
+    lines.push('');
+
+    lines.push('--- Query timings ---');
+    // v2.50.26: same note in the pasteable text — anyone reading the
+    // copy in a GitHub issue should see it for the same reason the UI
+    // does, so the missing rows aren't a surprise.
+    if (!j.include_legacy && j.legacy_probes_skipped > 0) {
+        const n = j.legacy_probes_skipped;
+        const noun = n === 1 ? 'probe' : 'probes';
+        lines.push('  (' + n + ' legacy raw-fallback ' + noun + ' skipped;'
+                   + ' enable in UI or pass ?include_legacy=true to include them)');
+    }
+    (j.queries || []).forEach(q => {
+        const status = q.ok ? (q.ms + ' ms') : 'ERROR: ' + (q.error || '?');
+        lines.push('  ' + q.label);
+        lines.push('    ' + status);
+        if (q.plan) {
+            q.plan.forEach(step => {
+                lines.push('    plan: ' + (step.detail || JSON.stringify(step)));
+            });
+        }
+    });
+    lines.push('');
+
+    const io = j.io_baseline || {};
+    if (io.throughput_mb_s != null) {
+        lines.push('--- I/O baseline ---');
+        lines.push('  ' + io.throughput_mb_s + ' MB/s (' + io.sample_bytes + ' bytes in ' + io.elapsed_ms + ' ms)');
+        lines.push('');
+    }
+
+    // v2.80.0: hexdb_events retention — surface row count + oldest age
+    // so the maintainer can paste the diag and the retention state
+    // travels with it.
+    const her = j.hexdb_events_retention;
+    if (her && her.ok) {
+        lines.push('--- hexdb_events retention ---');
+        lines.push('  rows         ' + (her.rows || 0).toLocaleString());
+        if (her.oldest_age_days != null) {
+            lines.push('  oldest_event ' + her.oldest_age_days + 'd ago');
+        } else {
+            lines.push('  oldest_event (table empty)');
+        }
+        lines.push('');
+    }
+
+    if (j.hints && j.hints.length) {
+        lines.push('--- Hints ---');
+        j.hints.forEach(h => lines.push('  * ' + h));
+        lines.push('');
+    }
+
+    return lines.join('\n');
+}
+
+async function copyReport() {
+    if (!_lastReport) return;
+    const text = buildReportText(_lastReport);
+
+    // v2.41.10: three-tier fallback. Clipboard API requires a secure context
+    // (HTTPS or localhost); plenty of Aerodrome installs are accessed over
+    // plain HTTP on a LAN. Tier 1: modern async Clipboard API. Tier 2:
+    // synchronous execCommand('copy') via a temporary textarea — works on
+    // HTTP, supported in all browsers we care about (it's "deprecated" but
+    // every mainstream engine still implements it). Tier 3: show the text
+    // in a pre block with "Select all" so the user can copy manually.
+    const flash = () => {
+        const tag = document.getElementById('copiedTag');
+        tag.classList.add('show');
+        setTimeout(() => tag.classList.remove('show'), 1500);
+    };
+
+    // Tier 1
+    if (navigator.clipboard && window.isSecureContext) {
+        try {
+            await navigator.clipboard.writeText(text);
+            flash();
+            return;
+        } catch (e) { /* fall through to tier 2 */ }
+    }
+
+    // Tier 2: execCommand via hidden textarea
+    try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.top = '0';
+        ta.style.left = '0';
+        ta.style.width = '2em';
+        ta.style.height = '2em';
+        ta.style.opacity = '0';
+        ta.setAttribute('readonly', '');
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        ta.setSelectionRange(0, text.length);
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        if (ok) {
+            flash();
+            return;
+        }
+    } catch (e) { /* fall through to tier 3 */ }
+
+    // Tier 3: show the report in a dismissible modal with a pre block the
+    // user can select manually (better UX than a blocking alert()).
+    _showReportFallback(text);
+}
+
+function _showReportFallback(text) {
+    const bg = document.createElement('div');
+    bg.style.cssText =
+        'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:2000;'
+      + 'display:flex;align-items:center;justify-content:center;padding:20px;';
+
+    const modal = document.createElement('div');
+    modal.style.cssText =
+        'background:var(--bg1);border:1px solid var(--bdr);border-top:3px solid var(--cyan);'
+      + 'border-radius:10px;max-width:720px;width:100%;max-height:90vh;'
+      + 'overflow:hidden;display:flex;flex-direction:column';
+
+    modal.innerHTML = `
+        <div style="padding:16px 20px;border-bottom:1px solid var(--bdr)">
+            <div style="font-size:14px;font-weight:500;color:var(--cyan);margin-bottom:4px">
+                Diagnostic report
+            </div>
+            <div style="font-size:11px;color:var(--t2);line-height:1.5">
+                Clipboard access is blocked (this page is served over plain HTTP, so
+                the browser won't hand out clipboard permission). Select the text
+                below manually: <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>A</kbd> to
+                select all, then <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>C</kbd> to copy.
+            </div>
+        </div>
+        <div style="padding:14px 20px;overflow-y:auto;flex:1">
+            <textarea readonly id="_fb_text"
+                style="width:100%;height:50vh;background:var(--bg0);color:var(--t1);
+                       border:1px solid var(--bdr);border-radius:4px;padding:10px;
+                       font-family:var(--mono);font-size:11px;resize:none"></textarea>
+        </div>
+        <div style="padding:12px 20px;border-top:1px solid var(--bdr);
+                    display:flex;gap:8px;justify-content:flex-end">
+            <button class="btn" id="_fb_select">Select all</button>
+            <button class="btn btn-primary" id="_fb_close">Close</button>
+        </div>
+    `;
+    bg.appendChild(modal);
+    document.body.appendChild(bg);
+
+    const ta = modal.querySelector('#_fb_text');
+    ta.value = text;
+
+    const dismiss = () => {
+        if (bg.parentNode) bg.parentNode.removeChild(bg);
+        document.removeEventListener('keydown', onKey);
+    };
+    const onKey = (e) => { if (e.key === 'Escape') dismiss(); };
+    document.addEventListener('keydown', onKey);
+    modal.querySelector('#_fb_close').onclick = dismiss;
+    modal.querySelector('#_fb_select').onclick = () => {
+        ta.focus();
+        ta.select();
+    };
+    bg.onclick = (e) => { if (e.target === bg) dismiss(); };
+
+    // Auto-select on open so Ctrl+C works immediately
+    setTimeout(() => { ta.focus(); ta.select(); }, 50);
+}
+
+// Gear menu
+function toggleMenu(e) {
+    e.stopPropagation();
+    document.getElementById('settingsMenu').classList.toggle('open');
+}
+document.addEventListener('click', e => {
+    if (!e.target.closest('.settings-wrap')) {
+        document.getElementById('settingsMenu').classList.remove('open');
+    }
+});
+
+// Populate header version on page load (and again after the diagnostic runs —
+// the diagnostic's own aerodrome_version field also fills #appVersion, but
+// this gets the right value up quickly so there's no "—" flash.
+(async function _loadAppVersion(){
+    try {
+        const r = await fetch('/api/status');
+        const j = await r.json();
+        if (j && j.version) {
+            const el = document.getElementById('appVersion');
+            if (el) el.textContent = j.version;
+        }
+    } catch (e) { /* cosmetic — ignore */ }
+})();
+
+// v2.42.6: manual ANALYZE. Refreshes SQLite's query-planner statistics.
+// On large DBs (millions of rows) this blocks 30-60s; disable the button
+// and show progress while waiting, then auto-rerun the diagnostic so the
+// user can see the improvement (or not) in measured timings.
+async function runAnalyze() {
+    const btn = document.getElementById('analyzeBtn');
+    if (!btn || btn.disabled) return;
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Analyzing…';
+    try {
+        const r = await fetch('/api/perf/analyze', { method: 'POST' });
+        // Tolerate non-JSON responses — if ANALYZE crashes the handler,
+        // FastAPI returns HTML and r.json() would throw a bare parse error
+        // that tells the user nothing useful.
+        let j;
+        try { j = await r.json(); }
+        catch (parseErr) {
+            const txt = await r.text().catch(() => '(no body)');
+            alert('Analyze failed: HTTP ' + r.status + '\n\n' + txt.slice(0, 400));
+            return;
+        }
+        if (j.ok) {
+            alert(j.message || 'ANALYZE complete. Running diagnostic again to measure the effect.');
+            // Auto-run the diagnostic so users see updated timings without
+            // a second click. If they don't want the comparison, they can
+            // just click away — the new stats are live regardless.
+            runDiagnostic();
+        } else {
+            alert('Analyze failed: ' + (j.message || 'unknown error. Check journalctl for details.'));
+        }
+    } catch (e) {
+        alert('Analyze request failed: ' + (e.message || 'network error'));
+    } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+    }
+}
+
+// Auto-run on page load so the user doesn't have to click twice to get data
+runDiagnostic();
+
+
+</script>
+
+<script src="/static/theme.js"></script>
+<script src="/static/health-indicator.js"></script>
+</body>
+</html>
