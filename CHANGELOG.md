@@ -19,6 +19,25 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.5] — 2026-05-12
+
+### Fixed
+- **Continuing the v3.4.3 + v3.4.4 docs-accuracy work — caught the same backwards `--demo` framing in a third surface, this time in the Configuration UI itself.** v3.4.3 fixed the README's demo paragraph; v3.4.4 fixed `docs/INSTALL.md`'s Curl Install walkthrough and the README platform badge. v3.4.5 fixes the in-app Demo configuration tab's explainer text, which had two issues in a single sentence: it framed `--demo` as the primary install path (with the menu prompt as secondary) AND it cited the prompt text incorrectly as *"Do you have a receiver?"* when the actual bootstrap prompt has been *"Real receiver or demo mode?"* since v3.1.0.
+
+  **What changed:**
+  - **`templates/config.html` — Demo tab explainer paragraph.** The visible text shown to users viewing the Demo configuration tab on a real-receiver install. Old text: *"Demo mode is set at install time only — via the bootstrap's `--demo` flag or the interactive 'Do you have a receiver?' prompt."* Two simultaneous problems: (1) `--demo` framed as primary path, matching the same backwards framing v3.4.3 and v3.4.4 fixed in the README and INSTALL.md; (2) the prompt text *"Do you have a receiver?"* doesn't match the actual prompt the bootstrap shows (*"Real receiver or demo mode?"*). New text describes the menu as the primary path (*"when the bootstrap reaches the 'Real receiver or demo mode?' prompt, picking option [2] installs the synthetic feeder"*), retains `--demo` as the scripted-install escape hatch, and uses the correct prompt text verbatim. Also updated the "switch to demo in a VM" recommendation to mention both paths consistently.
+  - **`templates/config.html` — internal JS comment.** The comment block above `sectionDemo()` documenting the function's behavior used the same backwards framing (*"can only be entered via a fresh install with the bootstrap's --demo flag"*). Updated to *"can only be entered via a fresh install at the bootstrap's 'Real receiver or demo mode?' prompt (or via --demo for scripted installs)."* Internal but worth keeping consistent — future maintainers reading the comment shouldn't pick up the wrong mental model.
+  - **`config_validator.py` — internal comment about the demo config flag.** Same backwards framing in the comment describing when `demo.enabled` gets set. Updated to acknowledge both paths. Internal, but the docs-accuracy discipline says fix it everywhere it appears.
+
+  **What this means for the docs-accuracy arc:** v3.4.3 + v3.4.4 + v3.4.5 are now the complete docs-accuracy pass for the v3.1.0+v3.2.0+v3.3.0 cumulative scope changes (interactive menu prompt, multi-distro support, `/opt/aerodrome` standardization). Three iterations because each pass missed a quadrant of the audit space — paths (caught by v3.4.3), distro vocabulary (caught by v3.4.4), UX flow names (caught by v3.4.5). The lesson filed in the HANDOFF (4.9) captures the discipline: when running a docs-accuracy pass after a scope change, grep the OLD scope's distinctive vocabulary, not just the OLD literal strings, and enumerate the *kinds* of staleness before grepping each.
+
+  **Scope:**
+  - `templates/config.html` — Demo tab explainer text rewritten (~10 lines), one internal JS comment updated (~5 lines)
+  - `config_validator.py` — internal comment about demo flag updated (~5 lines)
+  - **No code-behavior changes, no schema changes, no API changes, no UI flow changes.** Strictly text accuracy. 88 endpoints unchanged. SUDOERS_VERSION unchanged at 4.
+
+  **Operational note:** users already on v3.4.x see no functional difference. The Configuration → Demo tab now describes the actual bootstrap UX accurately; users who read the explainer get a correct mental model of how demo mode is set rather than a backwards-and-wrong one. Pure docs-quality release.
+
 ## [3.4.4] — 2026-05-12
 
 ### Fixed

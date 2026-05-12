@@ -10,7 +10,7 @@ Usage:
         # each error: {"path": "receiver.port", "message": "Must be 1-65535"}
         return error_response(errors)
 """
-# Version: 3.4.4
+# Version: 3.4.5
 
 import re
 from typing import Any, List, Tuple
@@ -822,7 +822,9 @@ def validate_config(cfg: Any) -> Errors:
     # --- demo (v3.1.0: demo mode with synthetic feeder) ---
     # Optional section. demo.enabled defaults to false at read-time, so
     # existing configs without the section validate cleanly. The flag is
-    # set by the bootstrap when --demo is chosen at install time, and
+    # set by the bootstrap when demo mode is selected at install time
+    # (either by picking option [2] at the "Real receiver or demo mode?"
+    # menu prompt, or by passing --demo for scripted installs), and
     # flipped to false by the switch-to-real wizard. Users shouldn't edit
     # this in YAML — the wizard handles the full transition including
     # stopping the feeder service, clearing the demo DB, and clearing the

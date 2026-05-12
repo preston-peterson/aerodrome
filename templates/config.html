@@ -1,4 +1,4 @@
-<!-- Version: 3.4.4 -->
+<!-- Version: 3.4.5 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -3772,8 +3772,9 @@ function sectionUpdates() {
 // the switch-to-real wizard at /setup/switch-to-real.
 //
 // On real installs (demo.enabled=false), the section explains what demo
-// mode is and notes that it can only be entered via a fresh install with
-// the bootstrap's --demo flag — there's no in-app "switch to demo" because
+// mode is and notes that it can only be entered via a fresh install at
+// the bootstrap's "Real receiver or demo mode?" prompt (or via --demo
+// for scripted installs) — there's no in-app "switch to demo" because
 // going to demo would mean discarding real receiver data, which has no
 // legitimate use case (if you want to test, install demo in a VM).
 //
@@ -3885,12 +3886,15 @@ function _renderDemoInactive() {
         </div>
 
         <div style="font-size:13px;color:var(--t2);line-height:1.6">
-            Demo mode is set at install time only — via the bootstrap's
-            <code>--demo</code> flag or the interactive "Do you have a
-            receiver?" prompt. There's no in-app "switch to demo" because
-            that would mean discarding your real receiver data, which has
-            no legitimate use case. If you want to experiment with demo mode,
-            install Aerodrome in a separate VM with <code>--demo</code>.
+            Demo mode is set at install time only — when the bootstrap reaches
+            the "Real receiver or demo mode?" prompt, picking option [2]
+            installs the synthetic feeder alongside Aerodrome. Scripted
+            installs can pass <code>--demo</code> to skip the menu and select
+            demo mode non-interactively. There's no in-app "switch to demo"
+            because that would mean discarding your real receiver data, which
+            has no legitimate use case. If you want to experiment with demo
+            mode, install Aerodrome in a separate VM and pick demo mode at
+            the prompt (or pass <code>--demo</code>).
         </div>
     </div>`;
 }
