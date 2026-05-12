@@ -19,6 +19,37 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.3] — 2026-05-12
+
+### Fixed
+- **Docs-accuracy pass cleaning up stale references the v3.3.0 doc pass missed.** v3.3.0 changed the default install location to `/opt/aerodrome` and added the interactive Real-receiver-or-demo prompt to the bootstrap, but several user-visible surfaces still referenced the pre-v3.3.0 conventions: `~/aerodrome` paths in SSH-stage instructions, `--demo` framed as the only way to opt into demo mode rather than the menu option. v3.4.3 systematically corrects every user-facing path reference and bootstrap UX description.
+
+  **What changed:**
+  - **README.md** — the Install section's demo-mode paragraph rewritten. Old text said *"Pass `--demo` to the bootstrap and it installs a small synthetic feeder."* New text describes what users actually see today: a *"Real receiver or demo mode?"* prompt with options [1] and [2], with `--demo` retained as a documented escape hatch for scripted installs. Also fixed the prereq list — `python3-venv` was described as if it were the universal package name, when it's actually Debian-family-specific (Fedora, Arch, openSUSE bundle venv into the main python3 package). The bootstrap's multi-distro abstraction handles this transparently, but the README should describe the reality rather than the Debian-shaped assumption.
+  - **templates/updates.html** — the Local Update card's SSH-stage instructions hardcoded `~/aerodrome/update/` for both scp and rsync commands, plus the surrounding "Either path lands in" hint. Updated to `/opt/aerodrome/update/` with an explicit "or wherever your install lives" caveat for users who passed `--prefix`. Three JS fallback strings updated too — when the API doesn't return an `install_dir` (shouldn't happen post-v3.1.1 but the fallback exists for safety), the placeholder shown in modals and inline status messages was `/home/<user>/aerodrome` or `~/aerodrome`; both now `/opt/aerodrome`. One comment block updated similarly.
+  - **update/UPDATE_README.md** — the README that ships inside `update/` describing the in-place update flow. Two `~/aerodrome` references (the scp/rsync staging path and the backup destination path) updated to `/opt/aerodrome`, with the "or wherever your install lives" caveat for `--prefix` users.
+  - **DEVELOPMENT.md** — the *Pull the live db to your dev machine* recipe used `/home/user/aerodrome/aircraft-history.db` (which was wrong on two counts: the path is now `/opt/aerodrome/` AND the filename is `aircraft_history.db` with an underscore, not `aircraft-history.db` with a hyphen). Both fixed; the example now matches the actual on-disk filename and the v3.3.0+ install location.
+  - **server.py** — one inline comment referencing the placeholder fallback updated for consistency. No code-behavior change.
+
+  **What was left alone (intentional):**
+  - `scripts/bootstrap.sh` help text mentions "Pre-v3.3.0 default was ~/aerodrome; override with --prefix ~/aerodrome to restore that layout" — this is accurate historical context that users with existing `~/aerodrome` installs should still see when they read `--help`. Not stale; intentional.
+  - `docs/INSTALL.md` has two `~/aerodrome` references — one in the `--prefix ~/aerodrome` override example, one in the "Existing installs at `~/aerodrome` keep working untouched" subsection. Both intentional and document the actual v3.3.0+ behavior accurately.
+  - `install.sh` comments explaining the v3.1.2 install-from-`update/`-subdirectory footgun reference `/home/user/aerodrome/update/` — these are historical bug commentary, not user-facing instructions.
+  - `CHANGELOG.md` historical entries — accurate at the time they were written.
+  - `server.py` historical comment about the pre-v3.4.0 update flow.
+
+  **Why this is a patch (3.4.3) rather than a polish bundle waiting for more company.** Docs accuracy on the public README and the in-app Updates UI matters more than the cost of a small release. v3.4.2 went live to GitHub with the stale README; users coming to the repo right now read text that doesn't match what the installer actually does. Same for users on existing installs who open the Updates page and see SSH-stage instructions pointing at the wrong directory. A small fast patch closes the gap.
+
+  **Scope:**
+  - `README.md` — Install section's demo paragraph + prereq list rewritten (~10 lines net)
+  - `templates/updates.html` — SSH-stage HTML hint, 3 JS fallback strings, 1 comment (~10 lines net)
+  - `update/UPDATE_README.md` — 2 path references + "or wherever your install lives" caveat added (~3 lines net)
+  - `DEVELOPMENT.md` — 1 scp recipe path (1 line)
+  - `server.py` — 1 inline comment (1 line)
+  - **No code-behavior changes, no schema changes, no API changes, no UI flow changes.** Strictly text accuracy. 88 endpoints unchanged. SUDOERS_VERSION unchanged at 4.
+
+  **Operational note:** users already on v3.4.x see no functional difference. The Updates page's SSH-stage hint changes from referencing the wrong path to the right one; the new-user README experience on GitHub stops describing a `--demo` flag pattern that hasn't been the recommended path since v3.1.0's interactive prompt landed. Pure docs-quality release.
+
 ## [3.4.2] — 2026-05-12
 
 ### Fixed

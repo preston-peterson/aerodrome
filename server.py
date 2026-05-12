@@ -1,4 +1,4 @@
-# Version: 3.4.2
+# Version: 3.4.3
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -8819,7 +8819,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 "sudoers": sudoers_check,
                 # v3.1.1: include the install_dir so the client-side modal can
                 # show the exact command path. Without this the modal falls
-                # back to a placeholder /home/<user>/aerodrome which is wrong
+                # back to a placeholder /opt/aerodrome which is wrong
                 # for any non-default install location.
                 "install_dir": str(install_dir),
             })

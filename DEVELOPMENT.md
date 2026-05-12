@@ -203,7 +203,7 @@ Sometimes you need to reproduce something that only shows up on your real instal
 **Pull the live db to your dev machine:**
 
 ```bash
-scp user@server:/home/user/aerodrome/aircraft-history.db ./dev.db
+scp user@server:/opt/aerodrome/aircraft_history.db ./dev.db
 ```
 
 Then point your dev config at it. You now have the real data to reproduce Stats-tab issues, query timings, etc.

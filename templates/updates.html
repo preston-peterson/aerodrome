@@ -1,4 +1,4 @@
-<!-- Version: 3.4.2 -->
+<!-- Version: 3.4.3 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -379,10 +379,10 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
 
         <div class="instructions" id="localInstructions" style="display:none">
             Alternative: stage the update via SSH instead of the upload box above.
-            <pre>scp -r aerodrome/ user@server:~/aerodrome/update/
+            <pre>scp -r aerodrome/ user@server:/opt/aerodrome/update/
 # or
-rsync -av aerodrome/ user@server:~/aerodrome/update/</pre>
-            Either path lands in <code>~/aerodrome/update/</code>. The new release will be applied with the current <code>config.yaml</code>, database, logs, and venv preserved. The previous install is backed up to <code>.backups/&lt;timestamp&gt;/</code>.
+rsync -av aerodrome/ user@server:/opt/aerodrome/update/</pre>
+            Either path lands in <code>/opt/aerodrome/update/</code> (or wherever your install lives — replace <code>/opt/aerodrome</code> with your install dir if you used <code>--prefix</code>). The new release will be applied with the current <code>config.yaml</code>, database, logs, and venv preserved. The previous install is backed up to <code>.backups/&lt;timestamp&gt;/</code>.
         </div>
     </div>
 
@@ -482,7 +482,7 @@ function showSudoersRequiredModal(opts){
     opts = opts || {};
     const stagedVer = opts.staged_version != null ? opts.staged_version : '?';
     const liveVer = opts.live_version != null ? opts.live_version : '(none)';
-    const installDir = opts.install_dir || '/home/<user>/aerodrome';
+    const installDir = opts.install_dir || '/opt/aerodrome';
     const command = `sudo bash ${installDir}/install.sh`;
 
     return new Promise(resolve => {
@@ -744,7 +744,7 @@ async function checkLocal(){
             if (driftCheck && driftCheck.can_verify && driftCheck.needs_refresh) {
                 const ev = driftCheck.expected_version;
                 const lv = driftCheck.live_version;
-                const installDir = driftCheck.install_dir || '/home/<user>/aerodrome';
+                const installDir = driftCheck.install_dir || '/opt/aerodrome';
                 driftBanner =
                     `<div class="status-msg warn" style="margin-bottom:8px">` +
                     `⚠ <strong>Sudoers refresh required.</strong> ` +
@@ -785,7 +785,7 @@ let _lastSudoersCheck = null;
 let _lastUpdateInfo = {};
 
 // v2.41.7: drop/upload handlers for the in-UI release upload. These call
-// POST /api/updates/local/upload which extracts the zip into ~/aerodrome/update/
+// POST /api/updates/local/upload which extracts the zip into /opt/aerodrome/update/
 // and returns the same shape as /api/updates/local/check. We then feed
 // that response straight into the existing check-render logic so the
 // Apply button lights up automatically — no manual re-check needed.
@@ -1645,7 +1645,7 @@ async function applyGithubUpdate(tag){
             // who want the deeper modal experience.
             _lastSudoersCheck = j.sudoers;
             _lastUpdateInfo = { version: tag, install_dir: j.install_dir || null };
-            const installDir = j.install_dir || '~/aerodrome';
+            const installDir = j.install_dir || '/opt/aerodrome';
             const cmd = `sudo bash ${installDir}/install.sh`;
             const stagedV = j.sudoers.staged_version != null ? j.sudoers.staged_version : '?';
             const liveV = j.sudoers.live_version != null ? j.sudoers.live_version : '(none)';

@@ -1,5 +1,5 @@
 # Aerodrome
-<!-- Version: 3.4.2 -->
+<!-- Version: 3.4.3 -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -168,14 +168,16 @@ You need:
 - Python 3.10+ (installed automatically by the bootstrap if missing)
 
 Don't have a receiver yet but want to see what Aerodrome looks like
-populated? Pass `--demo` to the bootstrap and it installs a small
-synthetic feeder alongside Aerodrome itself, so the dashboard comes
-alive with 50 simulated aircraft, watchlist hits, and the occasional
-emergency squawk. When you're ready for the real thing, an in-app
-wizard at **Configuration → Demo → Switch to real receiver** walks
-through the transition. See the
+populated? When the bootstrap reaches the **Real receiver or demo
+mode?** prompt, pick option **[2] Demo mode**. The bootstrap installs
+a small synthetic feeder alongside Aerodrome itself, so the dashboard
+comes alive with 50 simulated aircraft, watchlist hits, and the
+occasional emergency squawk — no receiver needed. When you're ready
+for the real thing, an in-app wizard at **Configuration → Demo →
+Switch to real receiver** walks through the transition. See the
 [Demo mode](docs/INSTALL.md#demo-mode-v310) section in INSTALL.md for
-details.
+details. (Scripted installs can pass `--demo` to skip the menu and go
+straight to a demo install non-interactively.)
 
 One command:
 
@@ -184,12 +186,15 @@ bash <(curl -fsSL https://install.aerodromeadsb.com)
 ```
 
 The bootstrap detects your platform, installs prerequisites (`unzip`,
-`python3-venv`), downloads the latest release zip from GitHub Releases,
-verifies its SHA256 checksum, prompts for the bare minimum config
-(receiver IP/port, lat/lon, distance unit), and hands off to the
-bundled `install.sh` to create a Python venv, install the systemd
-service, and start it. The whole thing typically takes under a minute.
-When it finishes, open `http://your-host:8000/` in a browser and visit
+plus Python's venv module — separately packaged on Debian-family,
+bundled into the main python3 package on Fedora/Arch/openSUSE),
+downloads the latest release zip from GitHub Releases, verifies its
+SHA256 checksum, prompts you to pick real-receiver or demo mode,
+prompts for the bare minimum config (receiver IP/port, lat/lon,
+distance unit), and hands off to the bundled `install.sh` to create
+a Python venv, install the systemd service, and start it. The whole
+thing typically takes under a minute. When it finishes, open
+`http://your-host:8000/` in a browser and visit
 **gear menu → Configuration** to adjust the timezone, set up a
 watchlist, enable push notifications, and configure the rest — no
 terminal or YAML editing required.

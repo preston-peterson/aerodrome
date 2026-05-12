@@ -14,7 +14,9 @@ You have three ways to put a release in this folder:
    version, and enables the **Apply & restart** button.
 
 2. **SCP / rsync from your workstation.** Transfer the release contents into
-   `~/aerodrome/update/` directly. Either of these layouts works:
+   `/opt/aerodrome/update/` directly (or wherever your install lives — replace
+   `/opt/aerodrome` with your install dir if you used `--prefix`). Either of
+   these layouts works:
 
    - Flat: `update/VERSION`, `update/server.py`, `update/templates/…`, etc.
    - Nested: `update/aerodrome/VERSION`, `update/aerodrome/server.py`, etc.
@@ -28,7 +30,7 @@ You have three ways to put a release in this folder:
 
 ## What happens when you apply
 
-1. The current install is backed up to `~/aerodrome/.backups/<timestamp>/`
+1. The current install is backed up to `/opt/aerodrome/.backups/<timestamp>/`
 2. Files are copied from `update/` over the live install, preserving
    user-managed paths (config.yaml, database, logs, venv)
 3. Python dependencies are reinstalled from `requirements.txt` (best-effort)
