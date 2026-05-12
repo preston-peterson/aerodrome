@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.1.2
+# Version: 3.2.0
 # =============================================================================
 # Aerodrome — Uninstall Script
 # =============================================================================
@@ -301,9 +301,39 @@ echo -e "${GREEN}═════════════════════
 echo ""
 echo "  Aerodrome has been removed from this system."
 echo ""
+
+# v3.2.0: family-aware "system packages weren't removed" hint. Most users
+# will leave python3/pip alone — they're useful for other things — so this
+# is purely informational. Detect the package manager and emit the right
+# removal command for the user's distro.
+_uninstall_os_id=""
+if [ -r /etc/os-release ]; then
+    eval "$(
+        . /etc/os-release
+        printf '_uninstall_os_id=%q\n' "${ID:-}"
+    )"
+fi
+case "$_uninstall_os_id" in
+    debian|ubuntu|raspbian|linuxmint|pop|elementary|neon|kali|parrot)
+        _uninstall_pkg_remove="sudo apt-get remove python3-venv"
+        _uninstall_pkg_list="python3, pip, python3-venv" ;;
+    fedora|rhel|centos|rocky|almalinux|amzn|ol)
+        _uninstall_pkg_remove="sudo dnf remove python3 python3-pip"
+        _uninstall_pkg_list="python3, python3-pip" ;;
+    arch|manjaro|endeavouros|garuda|artix|cachyos)
+        _uninstall_pkg_remove="sudo pacman -R python python-pip"
+        _uninstall_pkg_list="python, python-pip" ;;
+    opensuse*|sles|sled)
+        _uninstall_pkg_remove="sudo zypper remove python3 python3-pip"
+        _uninstall_pkg_list="python3, python3-pip" ;;
+    *)
+        _uninstall_pkg_remove="(use your distro's package manager)"
+        _uninstall_pkg_list="python3 and its modules" ;;
+esac
+
 echo "  NOT removed (intentional):"
-echo "    - System packages (python3, pip, python3-venv)"
-echo "      Remove manually if desired: sudo apt remove python3-venv"
+echo "    - System packages ($_uninstall_pkg_list)"
+echo "      Remove manually if desired: $_uninstall_pkg_remove"
 echo ""
 echo "  If you ever want to reinstall, just run ./install.sh again."
 echo ""

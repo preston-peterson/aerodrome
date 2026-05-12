@@ -1,5 +1,5 @@
 # Aerodrome
-<!-- Version: 3.1.2 -->
+<!-- Version: 3.2.0 -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -162,7 +162,9 @@ You need:
 
 - An ADS-B receiver on your network serving an `aircraft.json` endpoint
   (readsb, dump1090-fa, tar1090, PiAware — anything compatible)
-- A Linux host (Ubuntu 22.04+ or Debian 12+ recommended)
+- A Linux host with systemd and one of: apt-get (Debian/Ubuntu/Raspberry Pi OS),
+  dnf (Fedora/RHEL/Rocky/Alma), pacman (Arch/Manjaro), or zypper (openSUSE).
+  All four families are tier-1 supported as of v3.2.0.
 - Python 3.10+ (installed automatically by the bootstrap if missing)
 
 Don't have a receiver yet but want to see what Aerodrome looks like

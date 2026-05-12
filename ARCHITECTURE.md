@@ -156,6 +156,14 @@ A small but architecturally distinct mode for users who don't have a real ADS-B 
 
 The switch-to-real wizard at `/setup/switch-to-real` handles the destructive transition: tests reachability of the user's real receiver first (refuses to proceed on typo'd IPs), then stops + disables + removes the feeder service, nukes the demo database (synthetic sightings polluting all-time stats forever is the failure mode this avoids), clears the demo watchlist, updates `config.yaml`, and restarts aerodrome. The route lives at its own URL rather than inside `/config` so the browser back button does the right thing during a multi-step destructive flow.
 
+## Multi-distro support (v3.2.0)
+
+Aerodrome's install scripts (`bootstrap.sh`, `install.sh`, `uninstall.sh`) recognize four package-manager families and translate between them: apt-get for Debian-family, dnf for Fedora/RHEL, pacman for Arch, zypper for openSUSE. Detection runs against `/etc/os-release` with `ID` first (specific) then `ID_LIKE` (derivative fallback), and a translation table handles per-family package-name differences — most notably that `python3-venv` is a separate package only on Debian-family, since Fedora/Arch/openSUSE bundle the venv module into their main `python3`/`python` package.
+
+The detection + install functions (`pkg_detect`, `pkg_install`, `pkg_refresh`) are *duplicated verbatim* across the three install scripts rather than sourced from a shared library. This is deliberate: the curl-installed `bootstrap.sh` runs standalone from `/tmp` before any release zip exists, so it has no way to source from a shared file. When updating any of the three scripts' detection logic, update all three copies. The duplication is small (~70 lines) and stable — it's not the kind of code that needs frequent changes.
+
+The data plane (collector, server, notifier, classifier) is entirely distro-agnostic; only the install/uninstall surface knows about the package manager. Inside the systemd unit, every distro looks identical from Aerodrome's perspective: a Python process running under a non-root user with network access.
+
 ## Where the surprises hide
 
 Three places in the code that have caught even the author off-guard and will catch you too:

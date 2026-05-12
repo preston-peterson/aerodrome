@@ -15,6 +15,7 @@ something specific, the table of contents below has direct links.
 - [Capacity planning](#capacity-planning)
 - [Installation](#installation)
 - [Demo mode (v3.1.0)](#demo-mode-v310)
+- [Multi-distro support (v3.2.0)](#multi-distro-support-v320)
 - [Remote access (optional)](#remote-access-optional)
 - [Managing the service](#managing-the-service)
 - [Updating](#updating)
@@ -39,7 +40,16 @@ something specific, the table of contents below has direct links.
 
 - An ADS-B receiver on your network serving an `aircraft.json` endpoint
   (readsb, dump1090-fa, tar1090, PiAware, or any compatible).
-- A Linux server (Ubuntu 22.04+ or Debian 12+ recommended).
+- A Linux server with systemd and a supported package manager. As of v3.2.0,
+  Aerodrome supports four distro families as tier-1 (tested before each
+  release):
+    - **Debian-family** — Ubuntu 22.04+, Debian 12+, Raspberry Pi OS, Linux Mint, Pop!_OS
+    - **Fedora-family** — Fedora 40+, RHEL 9+, Rocky 9+, AlmaLinux 9+
+    - **Arch-family** — Arch Linux (rolling), Manjaro, EndeavourOS
+    - **openSUSE** — Tumbleweed, Leap 15.5+
+  Any other distro with systemd + apt-get/dnf/pacman/zypper will likely
+  install (the bootstrap will warn and prompt before proceeding); see
+  *Multi-distro support* below for details.
 - Python 3.10+ (installed automatically by the install script if missing).
 
 ## Hardware sizing
@@ -365,6 +375,97 @@ The wizard is a 4-step flow:
 `aerodrome-synthetic-feeder.service`) the same way it removes a real
 install. The synthetic feeder is detected and cleaned up automatically;
 no special demo-mode uninstall flag is needed.
+
+## Multi-distro support (v3.2.0)
+
+Aerodrome supports four Linux distro families as tier-1 (tested by the
+maintainer before each release), and best-effort support for any other
+systemd-based distro with one of the recognized package managers.
+
+### Tier-1 families
+
+The bootstrap and `install.sh` automatically detect the distro family
+from `/etc/os-release` and use the appropriate package manager:
+
+| Family       | Detection IDs                                                    | Refresh                 | Install                              |
+|--------------|------------------------------------------------------------------|-------------------------|--------------------------------------|
+| **Debian**   | `debian`, `ubuntu`, `raspbian`, `linuxmint`, `pop`, `elementary`, `neon`, `kali`, `parrot` | `apt-get update`         | `apt-get install -y`                 |
+| **Fedora**   | `fedora`, `rhel`, `centos`, `rocky`, `almalinux`, `amzn`, `ol`   | *(auto-refresh on install)* | `dnf install -y`                    |
+| **Arch**     | `arch`, `manjaro`, `endeavouros`, `garuda`, `artix`, `cachyos`   | `pacman -Sy`            | `pacman -S --needed`                 |
+| **openSUSE** | `opensuse-*`, `sles`, `sled`                                     | `zypper refresh`        | `zypper install`                     |
+
+For derivatives whose ID isn't listed, the family is inferred from
+`ID_LIKE` in `/etc/os-release` — so most downstream distros that set
+that field correctly (Pop!_OS reports `ID_LIKE=ubuntu debian`, etc.)
+fall back to their parent family automatically.
+
+### Package name differences
+
+Python's venv module is a separate package on Debian-family
+(`python3-venv`) but bundled into the main `python3`/`python` package on
+Fedora, Arch, and openSUSE. The bootstrap handles this difference
+transparently — it tests whether `python3 -c 'import ensurepip'` works
+and only requests `python3-venv` if needed. You shouldn't have to think
+about this.
+
+On Arch and Arch derivatives the Python package is `python` (not
+`python3`) and pip is `python-pip`. Everything else is identical across
+families.
+
+### Best-effort tier (tier-2)
+
+If your distro isn't in the tier-1 list but has both `systemctl` AND one
+of `apt-get`/`dnf`/`pacman`/`zypper`, the bootstrap will warn and prompt
+to continue. It'll then proceed with whichever package manager it finds.
+This covers obscure derivatives the explicit ID list doesn't enumerate.
+
+Override the interactive prompt with `--yes` or `--force`:
+
+```bash
+bash <(curl -fsSL https://install.aerodromeadsb.com) --yes
+```
+
+### What's not supported (tier-3 hard refuse)
+
+The bootstrap refuses to run if either of these is true:
+
+- **No systemd**: Aerodrome needs systemctl to manage its service. Init
+  systems like OpenRC, runit, or s6 (Alpine, Void, Gentoo without
+  systemd, etc.) aren't supported. You'd need to write your own service
+  scripts; see *Manual install on unsupported distros* below.
+- **No recognized package manager**: if none of apt-get/dnf/pacman/zypper
+  is on PATH, the bootstrap can't install prerequisites. The same
+  manual-install path applies.
+
+### Manual install on unsupported distros
+
+If you're on a distro the bootstrap doesn't support but you still want
+to run Aerodrome:
+
+1. **Install prerequisites manually**: Python 3.10+, pip, the venv
+   module, curl, unzip. The exact package names depend on your distro.
+2. **Download the release zip**: from
+   `https://github.com/preston-peterson/aerodrome/releases/latest`.
+3. **Extract it** to a directory like `~/aerodrome`.
+4. **Set up the virtualenv manually**:
+   ```bash
+   cd ~/aerodrome
+   python3 -m venv venv
+   source venv/bin/activate
+   pip install -r requirements.txt
+   ```
+5. **Write your own service script** for your init system (OpenRC,
+   runit, etc.). The command Aerodrome's service needs to run is:
+   `~/aerodrome/venv/bin/python3 ~/aerodrome/main.py start`. The
+   service should run as a non-root user, restart on failure, and have
+   network access.
+6. **Edit `config.yaml`** to point at your receiver, and start your
+   service.
+
+Some Aerodrome features (the in-UI restart button, the sudoers-managed
+update channel, the ntfy installer) assume systemd and will be inert on
+non-systemd installs. The core dashboard, watchlist, stats, and
+notifications all work fine without them.
 
 ## Remote access (optional)
 

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.1.2
+# Version: 3.2.0
 # =============================================================================
 # Aerodrome — Server Install Script
 # =============================================================================
@@ -131,9 +131,88 @@ fi
 echo ""
 
 echo -e "${CYAN}[1/5]${RESET} Installing system packages..."
-sudo apt update -qq
-sudo apt install -y -qq python3 python3-pip python3-venv curl > /dev/null 2>&1
-echo -e "  ${GREEN}✓${RESET} Python3, pip, venv installed"
+
+# v3.2.0: multi-distro package install. Detect the package manager family
+# from /etc/os-release and use the right command + package names. Block is
+# inlined (not sourced) so install.sh remains standalone if copied alone.
+pkg_detect() {
+    local os_id="" os_like=""
+    if [ -r /etc/os-release ]; then
+        eval "$(
+            . /etc/os-release
+            printf 'os_id=%q\nos_like=%q\n' "${ID:-}" "${ID_LIKE:-}"
+        )"
+    fi
+    PKG_FAMILY=unknown
+    case "$os_id" in
+        debian|ubuntu|raspbian|linuxmint|pop|elementary|neon|kali|parrot)
+            PKG_FAMILY=debian ;;
+        fedora|rhel|centos|rocky|almalinux|amzn|ol)
+            PKG_FAMILY=fedora ;;
+        arch|manjaro|endeavouros|garuda|artix|cachyos)
+            PKG_FAMILY=arch ;;
+        opensuse*|sles|sled)
+            PKG_FAMILY=opensuse ;;
+        *)
+            case " $os_like " in
+                *" debian "*|*" ubuntu "*) PKG_FAMILY=debian ;;
+                *" fedora "*|*" rhel "*|*" centos "*) PKG_FAMILY=fedora ;;
+                *" arch "*) PKG_FAMILY=arch ;;
+                *" suse "*|*" opensuse "*) PKG_FAMILY=opensuse ;;
+            esac ;;
+    esac
+    case "$PKG_FAMILY" in
+        debian)
+            PKG_REFRESH_CMD="sudo apt-get update -qq"
+            PKG_INSTALL_CMD="sudo apt-get install -y -qq"
+            PKG_PYTHON3="python3"; PKG_PIP="python3-pip"
+            PKG_VENV="python3-venv"; PKG_CURL="curl"; PKG_UNZIP="unzip" ;;
+        fedora)
+            PKG_REFRESH_CMD=""
+            PKG_INSTALL_CMD="sudo dnf install -y -q"
+            PKG_PYTHON3="python3"; PKG_PIP="python3-pip"
+            PKG_VENV=""; PKG_CURL="curl"; PKG_UNZIP="unzip" ;;
+        arch)
+            PKG_REFRESH_CMD="sudo pacman -Sy --noconfirm"
+            PKG_INSTALL_CMD="sudo pacman -S --needed --noconfirm"
+            PKG_PYTHON3="python"; PKG_PIP="python-pip"
+            PKG_VENV=""; PKG_CURL="curl"; PKG_UNZIP="unzip" ;;
+        opensuse)
+            PKG_REFRESH_CMD="sudo zypper --non-interactive refresh"
+            PKG_INSTALL_CMD="sudo zypper --non-interactive install"
+            PKG_PYTHON3="python3"; PKG_PIP="python3-pip"
+            PKG_VENV=""; PKG_CURL="curl"; PKG_UNZIP="unzip" ;;
+        *)
+            PKG_REFRESH_CMD=""; PKG_INSTALL_CMD="" ;;
+    esac
+}
+pkg_install() {
+    local pkgs=() p
+    for p in "$@"; do [ -n "$p" ] && pkgs+=("$p"); done
+    [ "${#pkgs[@]}" -eq 0 ] && return 0
+    [ -z "$PKG_INSTALL_CMD" ] && {
+        echo "  ${RED}✗${RESET} Unknown package manager — cannot install: ${pkgs[*]}" >&2
+        echo "    Aerodrome requires apt-get, dnf, pacman, or zypper." >&2
+        return 1
+    }
+    $PKG_INSTALL_CMD "${pkgs[@]}"
+}
+pkg_refresh() {
+    [ -z "$PKG_REFRESH_CMD" ] && return 0
+    $PKG_REFRESH_CMD
+}
+pkg_detect
+
+if [ "$PKG_FAMILY" = "unknown" ]; then
+    echo -e "  ${RED}✗${RESET} Could not detect a supported package manager"
+    echo "    Supported families: Debian/Ubuntu, Fedora/RHEL, Arch, openSUSE"
+    echo "    See docs/INSTALL.md for manual install steps on other distros."
+    exit 1
+fi
+
+pkg_refresh > /dev/null 2>&1
+pkg_install "$PKG_PYTHON3" "$PKG_PIP" "$PKG_VENV" "$PKG_CURL" > /dev/null 2>&1
+echo -e "  ${GREEN}✓${RESET} Python3, pip, venv installed (via $PKG_FAMILY package manager)"
 
 echo -e "${CYAN}[2/5]${RESET} Setting up Python virtual environment..."
 cd "$INSTALL_DIR"

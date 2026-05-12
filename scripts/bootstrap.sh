@@ -269,44 +269,118 @@ fi
 ARCH="$(uname -m)"
 log_info "Detected: $OS_PRETTY ($ARCH)"
 
-# Tier 1: recognized Debian family — proceed silently
-recognized=false
-case "$OS_ID" in
-    debian|ubuntu|raspbian|linuxmint|pop|elementary|neon)
-        recognized=true ;;
-esac
-if [ "$recognized" = false ] && [ -n "$OS_LIKE" ]; then
-    case " $OS_LIKE " in
-        *" debian "*|*" ubuntu "*) recognized=true ;;
+# v3.2.0: multi-distro support. Detect the package manager family and load
+# its install commands + translated package names. The four tier-1 families
+# proceed silently; anything else falls to tier-2 (best-effort) if systemctl
+# is present, or tier-3 (hard refuse) if not.
+pkg_detect() {
+    local os_id="" os_like=""
+    if [ -r /etc/os-release ]; then
+        eval "$(
+            . /etc/os-release
+            printf 'os_id=%q\nos_like=%q\n' "${ID:-}" "${ID_LIKE:-}"
+        )"
+    fi
+    PKG_FAMILY=unknown
+    case "$os_id" in
+        debian|ubuntu|raspbian|linuxmint|pop|elementary|neon|kali|parrot)
+            PKG_FAMILY=debian ;;
+        fedora|rhel|centos|rocky|almalinux|amzn|ol)
+            PKG_FAMILY=fedora ;;
+        arch|manjaro|endeavouros|garuda|artix|cachyos)
+            PKG_FAMILY=arch ;;
+        opensuse*|sles|sled)
+            PKG_FAMILY=opensuse ;;
+        *)
+            case " $os_like " in
+                *" debian "*|*" ubuntu "*) PKG_FAMILY=debian ;;
+                *" fedora "*|*" rhel "*|*" centos "*) PKG_FAMILY=fedora ;;
+                *" arch "*) PKG_FAMILY=arch ;;
+                *" suse "*|*" opensuse "*) PKG_FAMILY=opensuse ;;
+            esac ;;
     esac
-fi
+    case "$PKG_FAMILY" in
+        debian)
+            PKG_REFRESH_CMD="sudo apt-get update -qq"
+            PKG_INSTALL_CMD="sudo apt-get install -y -qq"
+            PKG_PYTHON3="python3"; PKG_PIP="python3-pip"
+            PKG_VENV="python3-venv"; PKG_CURL="curl"; PKG_UNZIP="unzip" ;;
+        fedora)
+            PKG_REFRESH_CMD=""
+            PKG_INSTALL_CMD="sudo dnf install -y -q"
+            PKG_PYTHON3="python3"; PKG_PIP="python3-pip"
+            PKG_VENV=""; PKG_CURL="curl"; PKG_UNZIP="unzip" ;;
+        arch)
+            PKG_REFRESH_CMD="sudo pacman -Sy --noconfirm"
+            PKG_INSTALL_CMD="sudo pacman -S --needed --noconfirm"
+            PKG_PYTHON3="python"; PKG_PIP="python-pip"
+            PKG_VENV=""; PKG_CURL="curl"; PKG_UNZIP="unzip" ;;
+        opensuse)
+            PKG_REFRESH_CMD="sudo zypper --non-interactive refresh"
+            PKG_INSTALL_CMD="sudo zypper --non-interactive install"
+            PKG_PYTHON3="python3"; PKG_PIP="python3-pip"
+            PKG_VENV=""; PKG_CURL="curl"; PKG_UNZIP="unzip" ;;
+        *)
+            PKG_REFRESH_CMD=""; PKG_INSTALL_CMD="" ;;
+    esac
+}
+pkg_install() {
+    local pkgs=() p
+    for p in "$@"; do [ -n "$p" ] && pkgs+=("$p"); done
+    [ "${#pkgs[@]}" -eq 0 ] && return 0
+    [ -z "$PKG_INSTALL_CMD" ] && {
+        echo "pkg_install: no install command for PKG_FAMILY=$PKG_FAMILY" >&2
+        return 1
+    }
+    $PKG_INSTALL_CMD "${pkgs[@]}"
+}
+pkg_refresh() {
+    [ -z "$PKG_REFRESH_CMD" ] && return 0
+    $PKG_REFRESH_CMD
+}
+pkg_detect
+
+# Tier 1: recognized family with a known package manager — proceed silently.
+recognized=false
+case "$PKG_FAMILY" in
+    debian|fedora|arch|opensuse) recognized=true ;;
+esac
 
 if [ "$recognized" = true ]; then
-    log_ok "Recognized Debian-family system"
+    case "$PKG_FAMILY" in
+        debian)   log_ok "Recognized Debian-family system" ;;
+        fedora)   log_ok "Recognized Fedora/RHEL-family system" ;;
+        arch)     log_ok "Recognized Arch-family system" ;;
+        opensuse) log_ok "Recognized openSUSE/SUSE system" ;;
+    esac
 else
-    # Tier 2/3: check capabilities
-    has_apt=false
+    # Tier 2/3: check capabilities. We require systemctl (no realistic
+    # workaround for a service-managed app) plus a recognized package
+    # manager. If both are present we proceed in best-effort mode; if
+    # either is missing we hard-refuse.
     has_systemctl=false
-    command -v apt >/dev/null 2>&1 && has_apt=true
+    has_known_pkgmgr=false
     command -v systemctl >/dev/null 2>&1 && has_systemctl=true
+    for cmd in apt-get dnf pacman zypper; do
+        command -v "$cmd" >/dev/null 2>&1 && has_known_pkgmgr=true
+    done
 
-    if [ "$has_apt" = false ] || [ "$has_systemctl" = false ]; then
-        # Tier 3: hard refuse
-        log_err "Aerodrome's installer requires apt (Debian-family package manager)"
-        log_err "and systemctl (systemd). Your system reports ID=$OS_ID."
+    if [ "$has_systemctl" = false ] || [ "$has_known_pkgmgr" = false ]; then
+        log_err "Aerodrome's installer requires systemd (systemctl) and one of"
+        log_err "apt-get, dnf, pacman, or zypper. Your system reports ID=$os_id."
         echo ""
         echo "  See docs/INSTALL.md for manual install steps on other distros."
         echo "  Browse the docs at: https://github.com/${REPO}/blob/main/docs/INSTALL.md"
         exit 1
     fi
 
-    # Tier 2: warn and prompt (or accept --force)
     if [ "$FORCE" = true ]; then
-        log_warn "Unrecognized distro ($OS_ID), but apt and systemctl present — continuing per --force"
+        log_warn "Unrecognized distro ($os_id), but a known package manager and"
+        log_warn "systemctl are present — continuing per --force"
     else
-        log_warn "Aerodrome is tested on Ubuntu, Debian, and Raspberry Pi OS."
-        log_warn "Your system reports ID=$OS_ID, but apt and systemctl are available,"
-        log_warn "so the install will probably work."
+        log_warn "Aerodrome is tested on Debian/Ubuntu, Fedora/RHEL, Arch, and openSUSE."
+        log_warn "Your system reports ID=$os_id, but a known package manager and"
+        log_warn "systemctl are available, so the install will probably work."
         if [ "$ASSUME_YES" = true ]; then
             log_warn "Continuing anyway per --yes."
         else
@@ -366,26 +440,34 @@ log_ok "No existing install found"
 # ---------------------------------------------------------------------------
 log_step "3/7" "Checking prerequisites..."
 
-NEED_APT=()
-command -v curl       >/dev/null 2>&1 || NEED_APT+=("curl")
-command -v unzip      >/dev/null 2>&1 || NEED_APT+=("unzip")
-command -v sha256sum  >/dev/null 2>&1 || NEED_APT+=("coreutils")
-command -v python3    >/dev/null 2>&1 || NEED_APT+=("python3")
+# v3.2.0: use the family-aware abstraction. PKG_VENV is empty on
+# fedora/arch/opensuse (venv is bundled into the python3 package);
+# pkg_install skips empty args, so passing it unconditionally is safe.
+NEED_PKGS=()
+command -v curl       >/dev/null 2>&1 || NEED_PKGS+=("$PKG_CURL")
+command -v unzip      >/dev/null 2>&1 || NEED_PKGS+=("$PKG_UNZIP")
+# sha256sum is in coreutils on every supported family; coreutils is part
+# of the base install on all four, so it's never actually missing. Skip.
+command -v python3    >/dev/null 2>&1 || NEED_PKGS+=("$PKG_PYTHON3")
 
-# python3-venv is a separate package on Debian/Ubuntu
+# venv may be a separate package (Debian-family) or built-in (others).
+# Test whether the ensurepip module is importable; if not, add the venv
+# package. On non-Debian families PKG_VENV is empty, in which case the
+# python3 package itself needs (re)installing — but that's already in
+# NEED_PKGS above if python3 was missing.
 if command -v python3 >/dev/null 2>&1; then
     if ! python3 -c 'import ensurepip' 2>/dev/null; then
-        NEED_APT+=("python3-venv")
+        [ -n "$PKG_VENV" ] && NEED_PKGS+=("$PKG_VENV")
     fi
 else
-    NEED_APT+=("python3-venv")
+    [ -n "$PKG_VENV" ] && NEED_PKGS+=("$PKG_VENV")
 fi
 
-if [ ${#NEED_APT[@]} -gt 0 ]; then
-    log_info "Need to install: ${NEED_APT[*]}"
-    log_info "Running: sudo apt update && sudo apt install -y ${NEED_APT[*]}"
-    sudo apt update -qq
-    sudo apt install -y -qq "${NEED_APT[@]}" >/dev/null
+if [ ${#NEED_PKGS[@]} -gt 0 ]; then
+    log_info "Need to install: ${NEED_PKGS[*]}"
+    log_info "Using: $PKG_INSTALL_CMD"
+    pkg_refresh
+    pkg_install "${NEED_PKGS[@]}" >/dev/null
     log_ok "Prerequisites installed"
 else
     log_ok "All prerequisites present"
