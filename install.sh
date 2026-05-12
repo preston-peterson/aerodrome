@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.0.17
+# Version: 3.1.0
 # =============================================================================
 # Aerodrome — Server Install Script
 # =============================================================================
@@ -22,10 +22,47 @@ set -e
 GREEN='\033[32m\033[1m'
 RED='\033[31m\033[1m'
 CYAN='\033[36m\033[1m'
+YELLOW='\033[33m\033[1m'
 RESET='\033[0m'
 
 INSTALL_DIR="$(cd "$(dirname "$0")" && pwd)"
 SERVICE_NAME="aerodrome"
+FEEDER_SERVICE_NAME="aerodrome-synthetic-feeder"
+
+# v3.1.0: --demo flag puts the install into demo mode. The bootstrap
+# passes --demo when the user picks "explore with simulated data" at
+# the install-time prompt. Demo mode installs a second systemd unit
+# (aerodrome-synthetic-feeder.service) alongside the main aerodrome
+# service, seeds a small starter watchlist, and sets demo.enabled=true
+# in config.yaml so the dashboard surfaces the demo banner and prefixes
+# notifications with [DEMO].
+DEMO_MODE=false
+HOME_LAT="40.0"
+HOME_LON="-75.0"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --demo)             DEMO_MODE=true; shift ;;
+        --home-lat)         HOME_LAT="$2"; shift 2 ;;
+        --home-lon)         HOME_LON="$2"; shift 2 ;;
+        -h|--help)
+            cat <<EOF
+Aerodrome install script.
+
+Usage:
+  ./install.sh                    Real install (default — assumes you have a receiver)
+  ./install.sh --demo             Demo install (synthetic feeder, no receiver needed)
+
+Flags (used by bootstrap.sh --demo):
+  --home-lat <n>                  Synthetic receiver latitude (default: 40.0)
+  --home-lon <n>                  Synthetic receiver longitude (default: -75.0)
+EOF
+            exit 0 ;;
+        *)
+            echo "Unknown flag: $1" >&2
+            echo "Run ./install.sh --help for usage." >&2
+            exit 2 ;;
+    esac
+done
 
 # Use the invoking user (works whether invoked directly or via sudo)
 USER="${SUDO_USER:-$(whoami)}"
@@ -57,6 +94,11 @@ echo ""
 echo "  Install dir:  ${INSTALL_DIR}"
 echo "  Service name: ${SERVICE_NAME}"
 echo "  Run as user:  ${USER}"
+if [ "$DEMO_MODE" = "true" ]; then
+    echo ""
+    echo -e "  ${YELLOW}Demo mode:${RESET} also installing ${FEEDER_SERVICE_NAME}"
+    echo -e "             synthetic receiver at (${HOME_LAT}, ${HOME_LON})"
+fi
 echo ""
 
 echo -e "${CYAN}[1/5]${RESET} Installing system packages..."
@@ -100,6 +142,50 @@ if [ ! -f "${INSTALL_DIR}/config.yaml" ]; then
         # blocking the in-UI config editor from writing changes.
         chown "${USER}:${USER}" "${INSTALL_DIR}/config.yaml" 2>/dev/null || true
         echo -e "  ${GREEN}✓${RESET} Created config.yaml from example (edit it to set your receiver IP)"
+
+        # v3.1.0: when --demo is used AND we just created a fresh
+        # config.yaml from the example, patch the receiver target to
+        # the synthetic feeder + flip demo.enabled=true. Lets a
+        # manual zip install run `./install.sh --demo` without
+        # needing the bootstrap. On upgrade paths (config.yaml
+        # already existed) we leave the file alone — the in-app
+        # switch-to-real wizard is the path for those.
+        if [ "$DEMO_MODE" = "true" ]; then
+            DEMO_HOME_LAT="$HOME_LAT" DEMO_HOME_LON="$HOME_LON" \
+            python3 - "${INSTALL_DIR}/config.yaml" <<'PYEOF'
+import os, re, sys
+path = sys.argv[1]
+home_lat = os.environ.get("DEMO_HOME_LAT", "40.0")
+home_lon = os.environ.get("DEMO_HOME_LON", "-75.0")
+with open(path, "r", encoding="utf-8") as f:
+    text = f.read()
+# receiver.ip → 127.0.0.1 (first match is receiver.ip; same pattern bootstrap uses)
+text = re.sub(r'^(\s*ip:\s*)"[^"]*"(.*)$', r'\1"127.0.0.1"\2',
+              text, count=1, flags=re.M)
+# receiver.port → 8080
+text = re.sub(r'^(\s*port:\s*)\S+(\s.*)?$',
+              lambda m: f'{m.group(1)}8080{m.group(2) or ""}',
+              text, count=1, flags=re.M)
+# receiver.latitude / longitude → demo home coords
+text = re.sub(r'^(\s*latitude:\s*)\S+(\s.*)?$',
+              lambda m: f'{m.group(1)}{home_lat}{m.group(2) or ""}',
+              text, count=1, flags=re.M)
+text = re.sub(r'^(\s*longitude:\s*)\S+(\s.*)?$',
+              lambda m: f'{m.group(1)}{home_lon}{m.group(2) or ""}',
+              text, count=1, flags=re.M)
+# demo.enabled: false → true (under the demo: section header)
+ds = re.search(r"^demo:\s*\n", text, re.M)
+if ds:
+    after = text[ds.end():]
+    m = re.search(r"^(\s*enabled:\s*)false(.*)$", after, re.M)
+    if m:
+        new_after = after[:m.start()] + m.group(1) + "true" + m.group(2) + after[m.end():]
+        text = text[:ds.end()] + new_after
+with open(path, "w", encoding="utf-8") as f:
+    f.write(text)
+PYEOF
+            echo -e "  ${GREEN}✓${RESET} Patched config.yaml for demo mode"
+        fi
     fi
 else
     echo -e "  ${GREEN}✓${RESET} Existing config.yaml preserved — new keys will be merged on service start"
@@ -133,6 +219,53 @@ sudo systemctl daemon-reload
 sudo systemctl enable ${SERVICE_NAME}
 echo -e "  ${GREEN}✓${RESET} Service installed and enabled"
 
+# v3.1.0: in demo mode, also install the synthetic-feeder service.
+# It serves /data/aircraft.json on port 8080 (matching the demo-mode
+# receiver config the bootstrap wrote: receiver.ip=127.0.0.1:8080).
+# Runs independently of aerodrome.service — both start in parallel
+# on boot, and the collector's existing retry behaviour handles the
+# rare case where it polls before the feeder is listening.
+#
+# Seed is locked to 1903 (Wright Brothers' first powered flight) so:
+#   - every demo install everywhere sees the same 50 simulated aircraft
+#   - restarts produce the same fleet (the user's "regulars" persist)
+#   - the seed_watchlist.py output matches what the running feeder
+#     actually generates, since both use the same seed + home coords
+if [ "$DEMO_MODE" = "true" ]; then
+    echo -e "  ${YELLOW}·${RESET}  Installing ${FEEDER_SERVICE_NAME} (demo mode)..."
+    sudo tee /etc/systemd/system/${FEEDER_SERVICE_NAME}.service > /dev/null << FEEDEREOF
+[Unit]
+Description=Aerodrome — Synthetic ADS-B Feeder (demo mode)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${USER}
+Group=${USER}
+WorkingDirectory=${INSTALL_DIR}
+ExecStart=${INSTALL_DIR}/venv/bin/python3 -m tools.synthetic_feeder.serve \\
+    --host 127.0.0.1 \\
+    --port 8080 \\
+    --visible 50 \\
+    --home-lat ${HOME_LAT} \\
+    --home-lon ${HOME_LON} \\
+    --seed 1903
+Restart=on-failure
+RestartSec=15
+StandardOutput=journal
+StandardError=journal
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target
+FEEDEREOF
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable ${FEEDER_SERVICE_NAME}
+    echo -e "  ${GREEN}✓${RESET} ${FEEDER_SERVICE_NAME} installed and enabled"
+fi
+
 # Grant the service user passwordless permission for two scoped things:
 #   1. Restarting the aerodrome service (for the "Restart now" UI button
 #      and post-update restarts).
@@ -149,7 +282,7 @@ echo -e "  ${GREEN}✓${RESET} Service installed and enabled"
 SUDOERS_FILE="/etc/sudoers.d/aerodrome"
 echo -e "  Creating sudoers rule for in-UI restart button + ntfy installer..."
 sudo tee "${SUDOERS_FILE}" > /dev/null << SUDOEOF
-# SUDOERS_VERSION: 3
+# SUDOERS_VERSION: 4
 # Aerodrome sudoers rule — machine-readable.
 # The SUDOERS_VERSION comment above is read by the updater to detect when
 # a newer release requires this file to be refreshed. If you see a
@@ -196,6 +329,23 @@ ${USER} ALL=(ALL) NOPASSWD: /bin/systemctl restart ntfy, /usr/bin/systemctl rest
 # verify the live SUDOERS_VERSION against the staged release's marker.
 # Read-only — sudoers does not grant write.
 ${USER} ALL=(ALL) NOPASSWD: /bin/cat /etc/sudoers.d/aerodrome, /usr/bin/cat /etc/sudoers.d/aerodrome
+
+# v3.1.0: synthetic-feeder service lifecycle. Demo-mode installs need
+# the switch-to-real wizard to be able to stop, disable, and remove
+# the feeder service without a password. The rule is unconditional in
+# the sudoers file (rather than gated on DEMO_MODE) because:
+#   1. The feeder service file simply may not exist on real installs,
+#      so these commands fail harmlessly there.
+#   2. Keeping the sudoers rule consistent across real and demo installs
+#      means the SUDOERS_VERSION marker doesn't need a demo-mode branch.
+#   3. The aerodrome-synthetic-feeder unit name is exact (no wildcards)
+#      so this can't be leveraged into broader privileges.
+${USER} ALL=(ALL) NOPASSWD: /bin/systemctl stop aerodrome-synthetic-feeder, /usr/bin/systemctl stop aerodrome-synthetic-feeder
+${USER} ALL=(ALL) NOPASSWD: /bin/systemctl start aerodrome-synthetic-feeder, /usr/bin/systemctl start aerodrome-synthetic-feeder
+${USER} ALL=(ALL) NOPASSWD: /bin/systemctl restart aerodrome-synthetic-feeder, /usr/bin/systemctl restart aerodrome-synthetic-feeder
+${USER} ALL=(ALL) NOPASSWD: /bin/systemctl enable aerodrome-synthetic-feeder, /usr/bin/systemctl enable aerodrome-synthetic-feeder
+${USER} ALL=(ALL) NOPASSWD: /bin/systemctl disable aerodrome-synthetic-feeder, /usr/bin/systemctl disable aerodrome-synthetic-feeder
+${USER} ALL=(ALL) NOPASSWD: /bin/rm -f /etc/systemd/system/aerodrome-synthetic-feeder.service
 SUDOEOF
 sudo chmod 0440 "${SUDOERS_FILE}"
 if sudo visudo -cf "${SUDOERS_FILE}" >/dev/null 2>&1; then
@@ -207,7 +357,27 @@ else
     echo -e "     You can still use 'sudo systemctl restart aerodrome' manually."
 fi
 
+# v3.1.0: in demo mode, seed a small starter watchlist so the user
+# sees watchlist hits trigger during their first exploration session.
+# The 8 ICAOs are computed deterministically from seed=1903 + the
+# user's home coords — same generation the running feeder uses, so
+# the watchlisted aircraft are the actual "regulars" they'll see.
+# Idempotent (script bails if watchlist is already populated).
+if [ "$DEMO_MODE" = "true" ]; then
+    echo -e "  ${YELLOW}·${RESET}  Seeding demo watchlist..."
+    if "${INSTALL_DIR}/venv/bin/python3" -m tools.synthetic_feeder.seed_watchlist \
+        "${INSTALL_DIR}/config.yaml" "${HOME_LAT}" "${HOME_LON}"; then
+        echo -e "  ${GREEN}✓${RESET} Demo watchlist seeded"
+    else
+        echo -e "  ${YELLOW}⚠${RESET}  Demo watchlist seeding failed (non-fatal — you can add"
+        echo -e "     watchlist entries from the Watchlist tab in the web UI)."
+    fi
+fi
+
 echo -e "${CYAN}[5/5]${RESET} Starting the tracker..."
+if [ "$DEMO_MODE" = "true" ]; then
+    sudo systemctl start ${FEEDER_SERVICE_NAME}
+fi
 sudo systemctl start ${SERVICE_NAME}
 sleep 3
 
@@ -226,11 +396,24 @@ echo -e "${GREEN}═════════════════════
 echo ""
 echo "  Web UI:  http://${SERVER_IP}:8000"
 echo ""
+if [ "$DEMO_MODE" = "true" ]; then
+    echo -e "  ${YELLOW}Demo mode is on.${RESET}"
+    echo "  · You'll see a yellow 'Demo mode' banner across every page."
+    echo "  · The feeder serves 50 simulated aircraft at (${HOME_LAT}, ${HOME_LON})."
+    echo "  · 8 starter watchlist entries are seeded for you."
+    echo "  · When you're ready to connect a real receiver, use the"
+    echo "    'Switch to real receiver' wizard at Configuration → Demo."
+    echo ""
+fi
 echo "  Commands:"
 echo "    sudo systemctl status ${SERVICE_NAME}"
 echo "    sudo systemctl restart ${SERVICE_NAME}"
 echo "    sudo systemctl stop ${SERVICE_NAME}"
 echo "    sudo journalctl -u ${SERVICE_NAME} -f"
+if [ "$DEMO_MODE" = "true" ]; then
+    echo "    sudo systemctl status ${FEEDER_SERVICE_NAME}"
+    echo "    sudo journalctl -u ${FEEDER_SERVICE_NAME} -f"
+fi
 echo ""
 echo "  Config:  ${INSTALL_DIR}/config.yaml"
 echo "  Logs:    ${INSTALL_DIR}/logs/tracker.log"

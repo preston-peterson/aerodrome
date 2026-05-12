@@ -1,4 +1,4 @@
-<!-- Version: 3.0.17 -->
+<!-- Version: 3.1.0 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2549,7 +2549,7 @@ function trackLink(icao){
     // hex/reg which are constrained to alphanumerics. But escaping
     // here costs nothing and protects against any future template
     // value or registration string with attribute-breaking chars.
-    return `<a class="link" href="${escapeHtml(url)}" target="_blank" rel="noopener">Track ↗</a>`;
+    return `<a class="link track-external-link" href="${escapeHtml(url)}" target="_blank" rel="noopener" data-icao="${escapeHtml(icao.toUpperCase())}">Track ↗</a>`;
 }
 
 // v2.59.0: returns just the inner button (no <td> wrapper) for the
@@ -5647,6 +5647,12 @@ async function _pollSystemStatus(){
         if (sr.ok) {
             const sj = await sr.json();
             rollupState = sj?.hourly_rollup || null;
+            // v3.1.0: demo flag is also surfaced as window.aerodromeDemoMode
+            // by static/theme.js's banner module (which handles the
+            // banner display centrally). Mirror it here for any
+            // index.html code that needs to gate on demo mode without
+            // depending on the theme.js load order.
+            window.aerodromeDemoMode = !!sj?.demo_enabled;
         }
     } catch (_) { /* non-fatal */ }
     const banner = document.getElementById('systemBanner');

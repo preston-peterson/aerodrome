@@ -134,16 +134,24 @@ def _to_latin1_safe(s: str) -> str:
 
 class Notifier:
     def __init__(self, config: Optional[Dict[str, Any]] = None,
-                 stats_timezone: Optional[str] = None):
+                 stats_timezone: Optional[str] = None,
+                 demo_enabled: bool = False):
         """Build from a config dict matching the notifications: block in
         config.yaml. Unknown/missing values fall back to sensible defaults.
 
         stats_timezone is passed separately because quiet-hours windows
         evaluate in the same timezone users see on the Stats page.
+
+        demo_enabled (v3.1.0): when true, all outgoing notification
+        titles are prefixed with "[DEMO] " so push messages announce
+        themselves as simulated data. Flag flips to false (and the
+        prefix disappears) when the switch-to-real wizard transitions
+        the install to real-receiver mode.
         """
         self._lock = threading.Lock()
         self._cfg: Dict[str, Any] = {}
         self._stats_tz: Optional[ZoneInfo] = None
+        self._demo_enabled: bool = False
         # Per-aircraft cooldown state: key = (event, icao), value = unix_ts
         # of last notify. Look up before sending to decide whether to skip.
         self._cooldowns: Dict[Tuple[str, str], float] = {}
@@ -168,17 +176,22 @@ class Notifier:
         import time as _t
         self._stats_started_at: float = _t.time()
 
-        self.update_config(config or {}, stats_timezone)
+        self.update_config(config or {}, stats_timezone, demo_enabled=demo_enabled)
 
     # ---------------------------------------------------------------
     # Config
     # ---------------------------------------------------------------
 
     def update_config(self, config: Dict[str, Any],
-                      stats_timezone: Optional[str] = None) -> None:
+                      stats_timezone: Optional[str] = None,
+                      demo_enabled: Optional[bool] = None) -> None:
         """Apply a new config dict live. Safe to call from the server's
         config-reload path. Does NOT reset cooldowns or the recent log —
         those are runtime state, not config.
+
+        demo_enabled (v3.1.0): if provided, updates the demo-mode flag
+        live. The flag controls the [DEMO] notification-title prefix
+        and is flipped by the switch-to-real wizard.
         """
         with self._lock:
             self._cfg = dict(config or {})
@@ -189,6 +202,8 @@ class Notifier:
                     log.warning("Unknown timezone %r, falling back to system tz",
                                 stats_timezone)
                     self._stats_tz = None
+            if demo_enabled is not None:
+                self._demo_enabled = bool(demo_enabled)
 
     def _enabled(self) -> bool:
         return bool(self._cfg.get("enabled", False)) and bool(self._cfg.get("url"))
@@ -316,6 +331,15 @@ class Notifier:
         if event not in KNOWN_EVENTS:
             log.warning("notify() called with unknown event %r", event)
             return False
+
+        # v3.1.0: prefix titles with [DEMO] when running in demo mode so
+        # push notifications announce themselves as simulated. Applied at
+        # the top of notify() so the records buffer, the drop log, and the
+        # actual ntfy POST all see the prefixed form. Flag flips to false
+        # in real mode (post switch-to-real wizard) and the prefix disappears
+        # automatically — no code change, no notifier reload.
+        if self._demo_enabled and not title.startswith("[DEMO] "):
+            title = "[DEMO] " + title
 
         with self._lock:
             # Gate 1: notifications disabled entirely
@@ -580,9 +604,17 @@ class Notifier:
         # get a Click header, which matches pre-v2.47.2 behavior.
         click_url = f"{public_url}/notification-test-ok" if public_url else None
 
+        # v3.1.0: [DEMO] prefix in demo mode. send_test bypasses notify()
+        # for the event-gate-bypass reasons documented above, so the
+        # prefix has to be applied at this call site directly. Keeps
+        # demo-mode push titles consistent across every notification path.
+        test_title = "Aerodrome test notification"
+        if self._demo_enabled:
+            test_title = "[DEMO] " + test_title
+
         ok, code, err = self._post_ntfy(
             test_url,
-            "Aerodrome test notification",
+            test_title,
             ("If you received this, push notifications are working."
              if not click_url else
              "If you received this, push notifications are working. "

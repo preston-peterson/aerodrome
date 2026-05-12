@@ -78,6 +78,8 @@ Four long-running background threads, each with a single responsibility:
 
 All four threads are daemons (process exit doesn't wait for them). The FastAPI server runs in the foreground on uvicorn. Its endpoints are mostly `async def` but do blocking SQLite reads inside — FastAPI's thread pool handles this. The trade-off is fine for a personal-scale project: SQLite read latency on a warm page cache is sub-millisecond, and the WAL mode means reads never block writes.
 
+On demo-mode installs (v3.1.0), a *separate process* — `aerodrome-synthetic-feeder.service` — runs alongside `aerodrome.service`. It binds to `127.0.0.1:8080` and serves a synthetic `/data/aircraft.json`. From the collector's perspective there's no difference between this and a real ADS-B receiver; the data-plane stays oblivious to demo mode. See *Demo mode* below.
+
 Shared state between threads is SQLite and **nothing else** (with one small exception: the tail-resolve worker has an in-memory queue of pending ICAOs that the collector enqueues into). There is no in-process queue for the dashboard, no global dict of "current aircraft," no shared memory. Every API call hits the database.
 
 ## The data model
@@ -143,6 +145,16 @@ A few invariants worth knowing because violating them breaks things in non-obvio
 - **No new config keys without updating `config_validator.py` and `config.yaml.example`.** The validator runs at startup and refuses to boot with an unknown or malformed config key. It is strict on purpose. See `CONTRIBUTING.md` for the doc-update rules.
 - **Template changes need matching screenshot updates under some rules.** See CONTRIBUTING.md.
 - **The schema migration path is versioned.** New schema changes for existing installs go through `schema_migrations.py`, which runs versioned `_migration_NN_*` functions in order against the `schema_version` table. Each migration step must be idempotent (safe to re-run) and forward-only (never drop a column; add a new one). `init_db()` in `collector.py` handles fresh installs by creating the current schema directly. Together they must be safe to run against any prior database version and a fresh empty file. Pre-v2.50.x changes were handled inline in `init_db()` via `CREATE TABLE IF NOT EXISTS` / `ALTER TABLE ADD COLUMN` inside try/except — that path is preserved for the migrations already there, but new schema changes go through the versioned framework.
+
+## Demo mode (v3.1.0)
+
+A small but architecturally distinct mode for users who don't have a real ADS-B receiver yet. Two design choices make it worth understanding:
+
+**The synthetic feeder is a separate process, not in-process.** `tools/synthetic_feeder/` bundles a tiny zero-dependency HTTP server (`serve.py`) that holds a deterministic fleet (`generator.py`) and serves `/data/aircraft.json` on a local port. On demo installs, `install.sh --demo` writes a second systemd unit (`aerodrome-synthetic-feeder.service`) that runs alongside `aerodrome.service`. The main collector polls `127.0.0.1:8080` exactly as it would poll a real receiver — it has no idea the data is synthetic. This was deliberate: keeping the collector ignorant of demo mode means no demo-specific branches in the data-plane code, no dual code paths to maintain, and the entire receiver-to-dashboard pipeline gets exercised end-to-end on demo installs the same way it does on real ones.
+
+**Demo state is gated by a single config flag, surfaced in three places.** `demo.enabled` (top-level, default false) drives: (1) the persistent yellow banner on every page, injected centrally by `static/theme.js`, (2) the `[DEMO]` prefix on outgoing notifications, applied at the top of `Notifier.notify()`, and (3) the external-link guard that intercepts "Track ↗" clicks. All three read the flag via `/api/status.demo_enabled` (or directly from CONFIG on the server side), so flipping the flag in the switch-to-real wizard takes effect within one status-poll cycle (~30s) without a service restart. The fleet seed is locked to `1903` so every demo install everywhere sees the same simulated aircraft, and a small starter watchlist is seeded at install time from the same generator to ensure watchlist hits actually trigger during a demo session.
+
+The switch-to-real wizard at `/setup/switch-to-real` handles the destructive transition: tests reachability of the user's real receiver first (refuses to proceed on typo'd IPs), then stops + disables + removes the feeder service, nukes the demo database (synthetic sightings polluting all-time stats forever is the failure mode this avoids), clears the demo watchlist, updates `config.yaml`, and restarts aerodrome. The route lives at its own URL rather than inside `/config` so the browser back button does the right thing during a multi-step destructive flow.
 
 ## Where the surprises hide
 

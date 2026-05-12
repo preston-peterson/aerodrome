@@ -1,4 +1,4 @@
-# Version: 3.0.17
+# Version: 3.1.0
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -158,7 +158,8 @@ def _build_notifier():
     from notifier import Notifier
     nt_cfg = CONFIG.get("notifications") or {}
     stats_tz = (CONFIG.get("stats") or {}).get("timezone") or None
-    return Notifier(nt_cfg, stats_timezone=stats_tz)
+    demo_enabled = bool((CONFIG.get("demo") or {}).get("enabled", False))
+    return Notifier(nt_cfg, stats_timezone=stats_tz, demo_enabled=demo_enabled)
 
 
 def _refresh_notifier_config():
@@ -170,7 +171,9 @@ def _refresh_notifier_config():
     else:
         nt_cfg = CONFIG.get("notifications") or {}
         stats_tz = (CONFIG.get("stats") or {}).get("timezone") or None
-        _NOTIFIER.update_config(nt_cfg, stats_timezone=stats_tz)
+        demo_enabled = bool((CONFIG.get("demo") or {}).get("enabled", False))
+        _NOTIFIER.update_config(nt_cfg, stats_timezone=stats_tz,
+                                demo_enabled=demo_enabled)
     # Always keep collector pointed at the current notifier. Cheap, idempotent.
     try:
         import collector as _collector_mod
@@ -3081,6 +3084,12 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             },
             "system": system_info,
             "retention": CONFIG["retention"],
+            # v3.1.0: demo mode flag. Every admin page polls /api/status
+            # on load (v2.49.3), so the dashboard banner JS reads demoMode
+            # from here without needing a separate API call. False on
+            # real installs; flips to true when --demo was passed at
+            # install time. Flips back to false post-switch-to-real-wizard.
+            "demo_enabled": bool((CONFIG.get("demo") or {}).get("enabled", False)),
             # v2.41.2: include cached sudoers drift state so the header
             # badge can reflect it without a separate API call. May be
             # None if the startup check hasn't populated yet.
@@ -8789,6 +8798,195 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         from the /diagnostics hub. The page itself is unchanged; only the
         navigation path to it changed."""
         return _serve_template("performance.html")
+
+    # v3.1.0: switch-to-real wizard. Multi-step page that walks demo-mode
+    # users through transitioning to a real receiver. Lives at its own
+    # URL (not embedded in /config) so the browser back button does the
+    # right thing (returns to /config, doesn't unwind half a wizard).
+    @app.get("/setup/switch-to-real", response_class=HTMLResponse)
+    async def switch_to_real_page():
+        return _serve_template("switch-to-real.html")
+
+    @app.post("/api/setup/switch-to-real")
+    async def switch_to_real_execute(request: Request):
+        """Execute the demo→real transition.
+
+        Step 0 — reachability test on the new receiver. If unreachable,
+            abort without touching anything (defends against typo'd IPs
+            taking the install offline).
+        Step 1 — stop + disable + remove the synthetic-feeder service.
+        Step 2 — nuke aircraft_history.db (+ -wal, -shm) to clear demo
+            sightings from stats forever.
+        Step 3 — update config.yaml: watchlist=[], receiver.* to the
+            new values, demo.enabled=false, hexdb.enabled=true.
+        Step 4 — restart aerodrome.service via sudo.
+
+        Returns {ok: bool, error: str|None, steps: [...]} so the wizard
+        can advance or display the failure point.
+        """
+        import os as _os
+        import subprocess as _subprocess
+        import requests as _req
+        import yaml as _yaml
+
+        # Refuse if not actually in demo mode — defensive guard against
+        # accidental nukes via stale browser state or scripted retries.
+        if not bool((CONFIG.get("demo") or {}).get("enabled", False)):
+            return {
+                "ok": False,
+                "error": "Refusing to run switch-to-real on a non-demo install.",
+                "steps": [],
+            }
+
+        try:
+            body = await request.json()
+        except Exception:
+            return {"ok": False, "error": "Invalid JSON body.", "steps": []}
+
+        new_ip = (body.get("receiver_ip") or "").strip()
+        new_port = body.get("receiver_port")
+        new_lat = body.get("latitude")
+        new_lon = body.get("longitude")
+        new_path = (body.get("receiver_path") or "/data/aircraft.json").strip()
+
+        if not new_ip:
+            return {"ok": False, "error": "receiver_ip is required.", "steps": []}
+        try:
+            new_port = int(new_port) if new_port is not None else 8080
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "receiver_port must be an integer.",
+                    "steps": []}
+
+        steps = []
+
+        def _step(name, ok, detail=""):
+            steps.append({"name": name, "ok": ok, "detail": detail})
+
+        # ----- Step 0: reachability test on the new receiver -----
+        # Catches typo'd IPs / wrong ports BEFORE we destroy anything.
+        # 5s timeout is generous; a healthy receiver responds in ms.
+        try:
+            test_url = f"http://{new_ip}:{new_port}{new_path}"
+            r = _req.get(test_url, timeout=5)
+            if r.status_code != 200:
+                _step("reachability", False,
+                      f"HTTP {r.status_code} from {test_url}")
+                return {"ok": False,
+                        "error": (f"Could not reach the new receiver "
+                                  f"({test_url} returned HTTP "
+                                  f"{r.status_code}). Double-check the "
+                                  f"IP, port, and path."),
+                        "steps": steps}
+            _step("reachability", True, f"Reached {test_url}")
+        except _req.ConnectionError:
+            _step("reachability", False, "Connection refused")
+            return {"ok": False,
+                    "error": (f"Could not connect to {new_ip}:{new_port}. "
+                              f"Check that the receiver is running and "
+                              f"reachable from this server."),
+                    "steps": steps}
+        except _req.Timeout:
+            _step("reachability", False, "Timed out after 5s")
+            return {"ok": False,
+                    "error": (f"Timed out waiting for {new_ip}:{new_port}. "
+                              f"Check that the receiver is reachable "
+                              f"from this server."),
+                    "steps": steps}
+        except Exception as e:
+            _step("reachability", False, str(e))
+            return {"ok": False,
+                    "error": f"Reachability test failed: {e}",
+                    "steps": steps}
+
+        # ----- Step 1: stop + disable + remove the feeder service -----
+        feeder_unit = "aerodrome-synthetic-feeder"
+        try:
+            _subprocess.run(["sudo", "-n", "systemctl", "stop", feeder_unit],
+                            check=False, capture_output=True, timeout=15)
+            _subprocess.run(["sudo", "-n", "systemctl", "disable", feeder_unit],
+                            check=False, capture_output=True, timeout=15)
+            _subprocess.run(["sudo", "-n", "rm", "-f",
+                             f"/etc/systemd/system/{feeder_unit}.service"],
+                            check=False, capture_output=True, timeout=15)
+            _subprocess.run(["sudo", "-n", "systemctl", "daemon-reload"],
+                            check=False, capture_output=True, timeout=15)
+            _step("stop_feeder_service", True,
+                  "Synthetic feeder stopped, disabled, and removed.")
+        except Exception as e:
+            _step("stop_feeder_service", False, str(e))
+            return {"ok": False,
+                    "error": "Failed to remove feeder service.",
+                    "steps": steps}
+
+        # ----- Step 2: nuke the demo aircraft_history database -----
+        # Per design: option A (nuke). The demo DB is full of synthetic
+        # sightings; carrying them into real-receiver mode would pollute
+        # all-time stats forever. Delete the DB and its WAL/SHM siblings;
+        # the collector will recreate on first poll.
+        try:
+            db_path = (CONFIG.get("database") or {}).get(
+                "path", "aircraft_history.db")
+            removed = []
+            for suffix in ["", "-wal", "-shm"]:
+                p = db_path + suffix
+                if _os.path.exists(p):
+                    _os.remove(p)
+                    removed.append(p)
+            _step("nuke_demo_db", True,
+                  f"Removed: {', '.join(removed) if removed else '(nothing to remove)'}")
+        except Exception as e:
+            _step("nuke_demo_db", False, str(e))
+            return {"ok": False,
+                    "error": "Failed to clear demo database.",
+                    "steps": steps}
+
+        # ----- Step 3: clear watchlist + update config -----
+        try:
+            config_path = "config.yaml"
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = _yaml.safe_load(f) or {}
+            cfg["watchlist"] = []
+            cfg.setdefault("receiver", {})["ip"] = new_ip
+            cfg["receiver"]["port"] = new_port
+            cfg["receiver"]["path"] = new_path
+            if new_lat is not None:
+                try:
+                    cfg["receiver"]["latitude"] = float(new_lat)
+                except (TypeError, ValueError):
+                    pass
+            if new_lon is not None:
+                try:
+                    cfg["receiver"]["longitude"] = float(new_lon)
+                except (TypeError, ValueError):
+                    pass
+            cfg.setdefault("demo", {})["enabled"] = False
+            cfg.setdefault("hexdb", {})["enabled"] = True
+            with open(config_path, "w", encoding="utf-8") as f:
+                _yaml.safe_dump(cfg, f, default_flow_style=False, sort_keys=False)
+            _step("update_config", True,
+                  "Receiver pointed at real address, demo flag off, watchlist cleared.")
+        except Exception as e:
+            _step("update_config", False, str(e))
+            return {"ok": False,
+                    "error": "Failed to update config.yaml.",
+                    "steps": steps}
+
+        # ----- Step 4: restart aerodrome.service -----
+        try:
+            _subprocess.run(
+                ["sudo", "-n", "systemctl", "restart", "--no-block", "aerodrome"],
+                check=False, capture_output=True, timeout=15,
+            )
+            _step("restart_aerodrome", True,
+                  "Aerodrome service restart requested.")
+        except Exception as e:
+            _step("restart_aerodrome", False, str(e))
+            return {"ok": False,
+                    "error": ("Config updated but service restart failed. "
+                              "Run `sudo systemctl restart aerodrome` manually."),
+                    "steps": steps}
+
+        return {"ok": True, "error": None, "steps": steps}
 
     # v2.53.0: dedicated aircraft detail page. URL pattern is path-based
     # (`/aircraft/{ICAO}`) so it's bookmarkable and shareable. Inline

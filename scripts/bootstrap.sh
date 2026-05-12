@@ -67,6 +67,7 @@ DIST_UNIT="mi"
 TIMEZONE=""
 FORCE=false
 ASSUME_YES=false
+DEMO_MODE=false
 
 # Track whether each value was supplied as a flag (skip the prompt) vs. left
 # at default (still prompt, with the default offered).
@@ -76,6 +77,7 @@ LAT_SET=false
 LON_SET=false
 DIST_UNIT_SET=false
 TIMEZONE_SET=false
+DEMO_MODE_SET=false
 
 show_help() {
     # v3.0.3: literal heredoc instead of `sed "$0"`. The previous
@@ -102,6 +104,8 @@ Flags:
   --prefix <path>        Install directory (default: ~/aerodrome)
   --version <vX.Y.Z>     Pin to a specific release (default: latest)
   --from-zip <path>      Skip GitHub fetch; install from a local zip
+  --demo                 Install in demo mode with simulated aircraft data
+                         (skips receiver prompts; uses synthetic feeder)
   --receiver-ip <ip>     ADS-B receiver IP (skips prompt)
   --receiver-port <n>    ADS-B receiver port (skips prompt; default 8080)
   --lat <n>              Receiver latitude (skips prompt)
@@ -130,6 +134,17 @@ while [ $# -gt 0 ]; do
         --prefix)         PREFIX="$2"; shift 2 ;;
         --version)        VERSION="$2"; shift 2 ;;
         --from-zip)       FROM_ZIP="$2"; shift 2 ;;
+        --demo)
+            DEMO_MODE=true
+            DEMO_MODE_SET=true
+            # In demo mode, the receiver IP/port are the local synthetic
+            # feeder. Set them now so the prompt-skip flags below are
+            # already true; the user only gets asked for lat/lon.
+            RECV_IP="127.0.0.1"
+            RECV_IP_SET=true
+            RECV_PORT="8080"
+            RECV_PORT_SET=true
+            shift ;;
         --receiver-ip)    RECV_IP="$2"; RECV_IP_SET=true; shift 2 ;;
         --receiver-port)  RECV_PORT="$2"; RECV_PORT_SET=true; shift 2 ;;
         --lat)            LAT="$2"; LAT_SET=true; shift 2 ;;
@@ -534,6 +549,51 @@ elif command -v timedatectl >/dev/null 2>&1; then
 fi
 [ -z "$detected_tz" ] && detected_tz="UTC"
 
+# v3.1.0: demo-mode prompt. If --demo wasn't already passed on the
+# command line, ask whether the user has a real receiver or wants to
+# explore Aerodrome with simulated data. Picking demo mode skips the
+# receiver IP/port prompts (uses 127.0.0.1:8080 — the synthetic feeder)
+# but still prompts for lat/lon since those become the simulated
+# receiver's home coordinates.
+if [ "$DEMO_MODE_SET" = false ] && [ "$RECV_IP_SET" = false ]; then
+    echo ""
+    echo "  Real receiver or demo mode?"
+    echo ""
+    echo "  Aerodrome needs an ADS-B receiver on your network to track real"
+    echo "  aircraft — typically readsb, dump1090-fa, tar1090, or PiAware. If"
+    echo "  you don't have one yet, you can install in demo mode and explore"
+    echo "  Aerodrome with simulated data."
+    echo ""
+    echo "  In demo mode:"
+    echo "    · 50 simulated aircraft visible at a time, with realistic motion"
+    echo "    · ~5% in the US military hex range so military detection demos"
+    echo "    · Occasional emergency squawks and watchlist hits"
+    echo "    · A small starter watchlist so you can see hits trigger"
+    echo "    · Stable across restarts (same simulated aircraft each session)"
+    echo "    · Switch to a real receiver anytime via Configuration → Demo"
+    echo ""
+    echo "  [1] I have a receiver  (default — enter receiver details next)"
+    echo "  [2] Demo mode          (skip receiver prompts, install synthetic feeder)"
+    echo ""
+    DEMO_CHOICE=""
+    ask_default "Choice" "1" DEMO_CHOICE
+    case "$DEMO_CHOICE" in
+        2|d|D|demo|DEMO)
+            DEMO_MODE=true
+            DEMO_MODE_SET=true
+            RECV_IP="127.0.0.1"
+            RECV_IP_SET=true
+            RECV_PORT="8080"
+            RECV_PORT_SET=true
+            log_info "Demo mode selected — synthetic feeder will be installed."
+            ;;
+        *)
+            : # real install, proceed with normal prompts
+            ;;
+    esac
+    echo ""
+fi
+
 # Receiver IP (required)
 if [ "$RECV_IP_SET" = false ]; then
     while [ -z "$RECV_IP" ]; do
@@ -551,8 +611,14 @@ fi
 
 # Lat/lon (optional, with hint)
 echo ""
-echo "  Receiver location enables the Distance column."
-echo "  Find your coords at https://www.latlong.net/"
+if [ "$DEMO_MODE" = "true" ]; then
+    echo "  Latitude/longitude become the simulated receiver's home position."
+    echo "  Aircraft will be generated within ~250km of these coords."
+    echo "  Defaults to 40N 75W if you skip. Find your coords at https://www.latlong.net/"
+else
+    echo "  Receiver location enables the Distance column."
+    echo "  Find your coords at https://www.latlong.net/"
+fi
 echo ""
 
 if [ "$LAT_SET" = false ]; then
@@ -597,7 +663,7 @@ cp "$PREFIX/config.yaml.example" "$PREFIX/config.yaml"
 
 # Use python3 for YAML-safe substitution (we know it's installed by now)
 RECV_IP="$RECV_IP" RECV_PORT="$RECV_PORT" LAT="$LAT" LON="$LON" \
-DIST_UNIT="$DIST_UNIT" TIMEZONE="$TIMEZONE" \
+DIST_UNIT="$DIST_UNIT" TIMEZONE="$TIMEZONE" DEMO_MODE="$DEMO_MODE" \
 python3 - "$PREFIX/config.yaml" <<'PYEOF'
 import os, re, sys
 path = sys.argv[1]
@@ -607,6 +673,7 @@ lat = os.environ["LAT"].strip()
 lon = os.environ["LON"].strip()
 dist_unit = os.environ["DIST_UNIT"]
 tz = os.environ["TIMEZONE"]
+demo_mode = os.environ.get("DEMO_MODE", "false") == "true"
 
 with open(path) as f:
     text = f.read()
@@ -646,6 +713,21 @@ text = re.sub(r'^(\s*distance_unit:\s*)"[^"]*"(.*)$',
 text = re.sub(r'^(\s*timezone:\s*)"[^"]*"(.*)$',
               rf'\1"{tz}"\2', text, count=1, flags=re.M)
 
+# v3.1.0: demo.enabled — flip to true if --demo. The demo: section
+# in config.yaml.example sits at the file's end with `enabled: false`
+# directly under the `demo:` header. We find the section first, then
+# patch its enabled line — pattern is narrow enough that it won't
+# accidentally match other `enabled:` keys elsewhere in the file.
+if demo_mode:
+    demo_section = re.search(r"^demo:\s*\n", text, re.M)
+    if demo_section:
+        # Find the next `enabled:` line after the demo header
+        after = text[demo_section.end():]
+        m = re.search(r"^(\s*enabled:\s*)false(.*)$", after, re.M)
+        if m:
+            new_after = after[:m.start()] + m.group(1) + "true" + m.group(2) + after[m.end():]
+            text = text[:demo_section.end()] + new_after
+
 with open(path, "w") as f:
     f.write(text)
 PYEOF
@@ -657,7 +739,17 @@ log_ok "config.yaml written"
 log_step "7/7" "Running install.sh..."
 echo ""
 chmod +x "$PREFIX/install.sh"
-( cd "$PREFIX" && ./install.sh )
+
+# v3.1.0: pass demo flags to install.sh when in demo mode. The home
+# coords mirror what the bootstrap wrote into config.yaml so the
+# feeder service + the seed_watchlist script agree on geometry.
+INSTALL_ARGS=()
+if [ "$DEMO_MODE" = "true" ]; then
+    INSTALL_ARGS+=("--demo")
+    INSTALL_ARGS+=("--home-lat" "${LAT:-40.0}")
+    INSTALL_ARGS+=("--home-lon" "${LON:--75.0}")
+fi
+( cd "$PREFIX" && ./install.sh "${INSTALL_ARGS[@]}" )
 
 # ---------------------------------------------------------------------------
 # Done
@@ -671,12 +763,25 @@ echo -e "${GREEN}═════════════════════
 echo ""
 echo -e "  Aerodrome is running at: ${CYAN}http://${SERVER_IP}:8000${RESET}"
 echo ""
-echo -e "  ${YELLOW}Next step:${RESET} open the URL above, then visit"
-echo -e "  ${CYAN}gear menu → Configuration${RESET} to review and adjust settings"
-echo "  (timezone, watchlist, notifications, retention, display preferences,"
-echo "  and more). The install picked sensible defaults but most users will"
-echo "  want to customize at least a few of them."
-echo ""
+if [ "$DEMO_MODE" = "true" ]; then
+    echo -e "  ${YELLOW}Demo mode is on.${RESET}"
+    echo "  · You'll see a yellow 'Demo mode' banner across every page."
+    echo "  · 50 simulated aircraft are visible, with a starter watchlist."
+    echo "  · Notifications (if configured) are prefixed with [DEMO]."
+    echo ""
+    echo -e "  ${YELLOW}When you're ready for a real receiver:${RESET}"
+    echo -e "  visit ${CYAN}gear menu → Configuration → Demo${RESET} and use the"
+    echo "  'Switch to real receiver' wizard. It will stop the synthetic feeder,"
+    echo "  clear demo data, and set up Aerodrome to poll your real receiver."
+    echo ""
+else
+    echo -e "  ${YELLOW}Next step:${RESET} open the URL above, then visit"
+    echo -e "  ${CYAN}gear menu → Configuration${RESET} to review and adjust settings"
+    echo "  (timezone, watchlist, notifications, retention, display preferences,"
+    echo "  and more). The install picked sensible defaults but most users will"
+    echo "  want to customize at least a few of them."
+    echo ""
+fi
 echo "  Service:  sudo systemctl status aerodrome"
 echo "  Logs:     sudo journalctl -u aerodrome -f"
 echo "  Config:   $PREFIX/config.yaml"

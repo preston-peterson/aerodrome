@@ -1,5 +1,5 @@
 # =============================================================================
-# Version: 3.0.17
+# Version: 3.1.0
 # Aerodrome — Example/Reference Configuration
 # =============================================================================
 # This is the canonical default config shipped with each Aerodrome release.
@@ -513,3 +513,39 @@ updates:
                                # all ntfy events use). Default OFF — opt in
                                # explicitly. Cooldown is 24h by default; tune
                                # via notifications.cooldown_minutes.update_available.
+
+# ---------------------------------------------------------------------------
+# Demo mode (v3.1.0)
+# ---------------------------------------------------------------------------
+# Demo mode lets users explore Aerodrome with simulated aircraft data when
+# they don't have a real ADS-B receiver to connect to. When enabled:
+#
+#   - A separate `aerodrome-synthetic-feeder` systemd service runs alongside
+#     the main aerodrome service and serves a synthetic /data/aircraft.json
+#     on the same port the main service polls. The collector cannot tell
+#     the difference between this and a real receiver — same JSON shape,
+#     same fields, same poll cadence.
+#
+#   - A persistent yellow banner across every page reminds users they're
+#     looking at simulated data and links them to the switch-to-real wizard.
+#
+#   - All notifications are prefixed with `[DEMO]` so push messages
+#     announce themselves as simulated rather than appearing as real
+#     alerts. The prefix is removed automatically when demo.enabled is
+#     flipped to false.
+#
+#   - A small starter watchlist (8 deterministic ICAOs) is pre-populated
+#     at install time so the watchlist feature is exercised right away.
+#
+# Demo mode is set at install time by the bootstrap (`--demo` flag or the
+# interactive "Do you have a receiver?" prompt). To leave demo mode, use
+# the in-app switch-to-real wizard at Configuration → Demo tab — it stops
+# the synthetic feeder service, nukes the demo database, clears the demo
+# watchlist, and updates this config with your real receiver details.
+# Editing this flag in YAML alone is NOT sufficient — the running service
+# would still poll the synthetic feeder, and the demo DB rows would
+# pollute your real stats forever. Always go through the wizard.
+demo:
+  enabled: false             # true on demo-mode installs; flipped to false
+                             # by the switch-to-real wizard. Do not edit
+                             # by hand — use the wizard.

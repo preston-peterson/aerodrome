@@ -1,5 +1,5 @@
 # Aerodrome
-<!-- Version: 3.0.17 -->
+<!-- Version: 3.1.0 -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -130,6 +130,12 @@ aerodrome/
 │   ├── build_overview_pdf.py     rebuilds docs/Aerodrome_Overview.pdf
 │   ├── screenshots.py            Playwright harness for docs/*.png
 │   └── check_docs.py             advisory drift detector
+├── tools/
+│   └── synthetic_feeder/         demo-mode synthetic ADS-B feeder (v3.1.0)
+│       ├── generator.py          fleet simulation — deterministic ICAOs, motion model
+│       ├── serve.py              HTTP server — serves /data/aircraft.json
+│       ├── seed_watchlist.py     install-time demo-watchlist seeder
+│       └── backfill.py           generate historical sightings for testing
 ├── docs/                         user-facing documentation, screenshots, PDF
 ├── .github/                      issue templates, PR template, repo-setup guide
 ├── test_categorize.py            unit tests — military/civil classification
@@ -158,6 +164,16 @@ You need:
   (readsb, dump1090-fa, tar1090, PiAware — anything compatible)
 - A Linux host (Ubuntu 22.04+ or Debian 12+ recommended)
 - Python 3.10+ (installed automatically by the bootstrap if missing)
+
+Don't have a receiver yet but want to see what Aerodrome looks like
+populated? Pass `--demo` to the bootstrap and it installs a small
+synthetic feeder alongside Aerodrome itself, so the dashboard comes
+alive with 50 simulated aircraft, watchlist hits, and the occasional
+emergency squawk. When you're ready for the real thing, an in-app
+wizard at **Configuration → Demo → Switch to real receiver** walks
+through the transition. See the
+[Demo mode](docs/INSTALL.md#demo-mode-v310) section in INSTALL.md for
+details.
 
 One command:
 

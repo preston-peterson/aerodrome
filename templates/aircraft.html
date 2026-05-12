@@ -1,4 +1,4 @@
-<!-- Version: 3.0.17 -->
+<!-- Version: 3.1.0 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -788,7 +788,7 @@ function renderDetail(d) {
             ${operator ? `<span class="sep">·</span><span class="meta-text">${escapeHtml(operator)}</span>` : ''}
             ${country ? `<span class="sep">·</span><span class="meta-text">${escapeHtml(country)}</span>` : ''}
             ${registration ? `<span class="sep">·</span><span class="meta-text">${escapeHtml(registration)}</span>` : ''}
-            <a href="javascript:void(0)" class="track-link" id="trackLink">Track ↗</a>
+            <a href="javascript:void(0)" class="track-link track-external-link" id="trackLink" data-icao="${escapeHtml((d.icao || '').toUpperCase())}">Track ↗</a>
         </div>
 
         <div class="subtitle">

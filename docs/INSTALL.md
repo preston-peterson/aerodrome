@@ -14,6 +14,7 @@ something specific, the table of contents below has direct links.
 - [Hardware sizing](#hardware-sizing)
 - [Capacity planning](#capacity-planning)
 - [Installation](#installation)
+- [Demo mode (v3.1.0)](#demo-mode-v310)
 - [Remote access (optional)](#remote-access-optional)
 - [Managing the service](#managing-the-service)
 - [Updating](#updating)
@@ -256,6 +257,114 @@ bash scripts/bootstrap.sh --from-zip ~/Downloads/aerodrome-vX.Y.Z.zip
 
 This is the same flow as the curl one-liner but installs from your local
 zip instead of downloading from GitHub. Useful for air-gapped installs.
+
+## Demo mode (v3.1.0)
+
+Demo mode lets you install and explore Aerodrome with simulated aircraft
+data when you don't have a real ADS-B receiver to connect to yet. The
+dashboard comes alive with 50 simulated aircraft, watchlist hits,
+occasional military traffic (the simulated fleet keeps ~5% in the US
+military hex range), and occasional emergency squawks — so you can see
+every part of the UI exercised before committing real hardware.
+
+### Installing in demo mode
+
+Three paths, depending on how you're installing:
+
+**Via the curl one-liner — interactive:**
+
+```bash
+bash <(curl -fsSL https://install.aerodromeadsb.com)
+```
+
+The bootstrap will ask whether you have a real receiver or want demo
+mode. Pick option 2 — it skips the receiver IP/port prompts but still
+asks for latitude/longitude (those become the simulated receiver's home
+position; aircraft cluster around them).
+
+**Via the curl one-liner — non-interactive:**
+
+```bash
+bash <(curl -fsSL https://install.aerodromeadsb.com) \
+    --demo --lat 44.84 --lon -88.23
+```
+
+**Via a manually-downloaded release zip:**
+
+```bash
+unzip aerodrome-vX.Y.Z.zip
+cd aerodrome-vX.Y.Z/
+chmod +x install.sh
+./install.sh --demo --home-lat 44.84 --home-lon -88.23
+```
+
+This third path is independent of the bootstrap — useful for air-gapped
+installs or when you want to inspect the install script before running
+it. `install.sh --demo` patches `config.yaml` automatically, runs the
+demo-watchlist seeder, and installs the synthetic-feeder systemd unit.
+
+### What's running on a demo install
+
+Two systemd services side by side:
+
+- **`aerodrome.service`** — the main tracker. Reads `config.yaml` (which
+  has `receiver.ip: 127.0.0.1` and `receiver.port: 8080` in demo mode)
+  and polls the synthetic feeder at the same URL it would poll a real
+  receiver.
+- **`aerodrome-synthetic-feeder.service`** — the simulator. Serves
+  `/data/aircraft.json` on `127.0.0.1:8080` with a deterministic fleet
+  of 50 aircraft (seed locked to `1903`, so the same simulated aircraft
+  appear on every demo install everywhere and persist across restarts).
+
+The feeder is bundled as `tools/synthetic_feeder/` in the release zip,
+so demo installs don't need additional downloads.
+
+### What you see in demo mode
+
+- **A yellow banner** across every page reading "Demo mode — showing
+  simulated data. Configure real receiver" with a link to the switch-to-real
+  wizard.
+- **A `[DEMO]` prefix on every push notification** — so if you've
+  configured ntfy, messages arrive as "[DEMO] Military aircraft spotted"
+  rather than alarming you with what looks like a real alert.
+- **A confirmation dialog when you click "Track ↗"** on any aircraft,
+  explaining that the ICAO is simulated and external trackers won't
+  find it. "Continue anyway" still opens the link if you want to see
+  what FlightAware/airplanes.live returns; "Cancel" closes the dialog.
+- **An 8-aircraft starter watchlist** seeded at install time. The
+  entries are labelled "Demo: regular #1" through "#8" so they're easy
+  to identify (and easy to clear when you switch to real mode).
+
+### Switching to a real receiver
+
+When you have an ADS-B receiver ready, the in-app switch-to-real wizard
+handles the transition cleanly. Visit **gear menu → Configuration →
+Demo tab → Switch to real receiver →**, or go directly to
+`/setup/switch-to-real`.
+
+The wizard is a 4-step flow:
+
+1. **Confirm intent.** With an explicit warning that the demo database,
+   demo watchlist, and any accumulated stats will be permanently
+   deleted — switching to real mode is destructive of demo state.
+2. **Enter real receiver details.** IP, port, optional latitude and
+   longitude, optional path override.
+3. **Execute.** The server tests reachability of the new receiver first
+   (catches typo'd IPs before destroying anything), then stops and
+   removes the synthetic-feeder service, deletes the demo database,
+   clears the watchlist, updates `config.yaml`, and restarts the
+   aerodrome service. Live progress shows each step.
+4. **Confirmation.** Your real receiver should start populating the
+   dashboard within ~60 seconds. The yellow demo banner disappears on
+   the next status poll; the `[DEMO]` prefix drops off notifications
+   automatically.
+
+### Uninstalling a demo install
+
+`./uninstall.sh` removes both services (`aerodrome.service` and
+`aerodrome-synthetic-feeder.service`) the same way it removes a real
+install. The synthetic feeder is detected and cleaned up automatically;
+no special demo-mode uninstall flag is needed.
 
 ## Remote access (optional)
 

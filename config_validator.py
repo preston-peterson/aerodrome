@@ -10,7 +10,7 @@ Usage:
         # each error: {"path": "receiver.port", "message": "Must be 1-65535"}
         return error_response(errors)
 """
-# Version: 3.0.17
+# Version: 3.1.0
 
 import re
 from typing import Any, List, Tuple
@@ -819,9 +819,25 @@ def validate_config(cfg: Any) -> Errors:
                         f": {what}."
                     ))
 
-    return errs
+    # --- demo (v3.1.0: demo mode with synthetic feeder) ---
+    # Optional section. demo.enabled defaults to false at read-time, so
+    # existing configs without the section validate cleanly. The flag is
+    # set by the bootstrap when --demo is chosen at install time, and
+    # flipped to false by the switch-to-real wizard. Users shouldn't edit
+    # this in YAML — the wizard handles the full transition including
+    # stopping the feeder service, clearing the demo DB, and clearing the
+    # demo watchlist (see CHANGELOG and config.yaml.example commentary).
+    demo = cfg.get("demo")
+    if demo is not None:
+        if not isinstance(demo, dict):
+            errs.append(("demo", "Must be a mapping"))
+        else:
+            en = demo.get("enabled")
+            if en is not None and not isinstance(en, bool):
+                errs.append(("demo.enabled",
+                             "Must be a boolean (true or false)"))
 
-# These keys can be saved and picked up without restarting the service.
+    return errs
 # The collector re-reads these from CONFIG on each poll interval.
 LIVE_KEYS = {
     "retention.military_days",

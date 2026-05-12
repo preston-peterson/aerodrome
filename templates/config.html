@@ -1,4 +1,4 @@
-<!-- Version: 3.0.17 -->
+<!-- Version: 3.1.0 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -432,6 +432,7 @@ const TABS = [
     { id:'stats',         label:'Stats',            render:() => sectionStats(),            prefix:'stats' },
     { id:'notifications', label:'Notifications',    render:() => sectionNotifications(),    prefix:'notifications' },
     { id:'updates',       label:'Updates',          render:() => sectionUpdates(),          prefix:'updates' },
+    { id:'demo',          label:'Demo',             render:() => sectionDemo(),             prefix:'__demo__' },
     { id:'backup',        label:'Backup & Restore', render:() => sectionBackupRestore(),    prefix:'__backup__' },
 ];
 // v2.42.1: respect a URL hash like /config#notifications so other pages
@@ -3684,6 +3685,138 @@ function sectionUpdates() {
             wake interval (~1 hour max) without a service restart. The
             <code>updates</code> section is in <code>LIVE_KEYS</code> — the background
             thread re-reads <code>CONFIG</code> on each wake.
+        </div>
+    </div>`;
+}
+
+
+// =============================================================================
+// Section: Demo mode (v3.1.0)
+// =============================================================================
+//
+// Read-only status display for demo-mode installs + a launcher button for
+// the switch-to-real wizard at /setup/switch-to-real.
+//
+// On real installs (demo.enabled=false), the section explains what demo
+// mode is and notes that it can only be entered via a fresh install with
+// the bootstrap's --demo flag — there's no in-app "switch to demo" because
+// going to demo would mean discarding real receiver data, which has no
+// legitimate use case (if you want to test, install demo in a VM).
+//
+// On demo installs (demo.enabled=true), the section shows the running
+// state (feeder service, simulated home coords, starter watchlist size)
+// and a prominent "Switch to real receiver" launch button that navigates
+// to the wizard. The wizard handles the destructive transition; this
+// section is intentionally just the entry point.
+//
+// All status data is fetched from /api/status — this section doesn't bind
+// to editable form fields. The __demo__ prefix on the tab registry
+// signals to the form-save machinery to skip this tab's "save bar"
+// rendering (same convention as __backup__ — non-edit sections).
+function sectionDemo() {
+    // The actual content is rendered async after a status fetch. We
+    // emit a placeholder div and kick off the load; the response wires
+    // the real content. Matches the pattern sectionBackupRestore() uses
+    // for its async backup-list load.
+    queueMicrotask(loadDemoStatus);
+    return `
+    <div id="demoStatusBlock">
+        <div class="section">
+            <div class="section-head">
+                <div class="section-title">Demo mode</div>
+                <div class="section-sub">loading status...</div>
+            </div>
+        </div>
+    </div>`;
+}
+
+async function loadDemoStatus() {
+    const block = document.getElementById('demoStatusBlock');
+    if (!block) return;
+    let demoEnabled = false;
+    try {
+        const r = await fetch('/api/status', { cache: 'no-store' });
+        if (r.ok) {
+            const j = await r.json();
+            demoEnabled = !!j.demo_enabled;
+        }
+    } catch (_) { /* fall through to safe default */ }
+
+    if (demoEnabled) {
+        block.innerHTML = _renderDemoActive();
+    } else {
+        block.innerHTML = _renderDemoInactive();
+    }
+}
+
+function _renderDemoActive() {
+    return `
+    <div class="section">
+        <div class="section-head">
+            <div class="section-title">Demo mode is on</div>
+            <div class="section-sub">simulated data, no real receiver connected</div>
+        </div>
+
+        <div style="font-size:13px;color:var(--t1);line-height:1.6;margin-bottom:16px">
+            This install is running with the synthetic feeder. The dashboard shows
+            simulated aircraft, not real ADS-B traffic. Notifications (if you've
+            configured ntfy) are prefixed with <code>[DEMO]</code> so push
+            messages announce themselves as synthetic.
+        </div>
+
+        <div style="font-size:12px;color:var(--t2);line-height:1.6;margin-bottom:8px">
+            <strong>What's running:</strong>
+        </div>
+        <ul style="font-size:12px;color:var(--t2);line-height:1.7;margin:0 0 16px 1.2em;padding:0">
+            <li><code>aerodrome.service</code> — the main tracker (polls 127.0.0.1:8080)</li>
+            <li><code>aerodrome-synthetic-feeder.service</code> — serves simulated aircraft at the same URL</li>
+            <li>50 simulated aircraft visible at any time, with ~5% in the US military hex range</li>
+            <li>An 8-entry starter watchlist of the deterministic "regulars"</li>
+            <li>Occasional emergency squawks (max once per hour) to exercise that notification path</li>
+        </ul>
+
+        <div class="section" style="background:rgba(245,158,11,0.06);border:1px solid rgba(245,158,11,0.3);
+                                    padding:16px;border-radius:6px;margin:0">
+            <div style="font-weight:600;color:var(--amber);margin-bottom:8px">
+                Ready to connect a real receiver?
+            </div>
+            <div style="font-size:13px;color:var(--t1);line-height:1.6;margin-bottom:14px">
+                The Switch to Real Receiver wizard walks you through stopping the
+                synthetic feeder, clearing the demo data, and pointing Aerodrome
+                at your real ADS-B receiver. It's a multi-step flow with an
+                explicit confirmation before any destructive action.
+            </div>
+            <a href="/setup/switch-to-real"
+               class="btn"
+               style="display:inline-block;padding:10px 18px;background:var(--amber);
+                      color:#1a1a1a;font-weight:600;border-radius:4px;text-decoration:none">
+                Switch to real receiver →
+            </a>
+        </div>
+    </div>`;
+}
+
+function _renderDemoInactive() {
+    return `
+    <div class="section">
+        <div class="section-head">
+            <div class="section-title">Demo mode</div>
+            <div class="section-sub">not currently active on this install</div>
+        </div>
+
+        <div style="font-size:13px;color:var(--t1);line-height:1.6;margin-bottom:14px">
+            Demo mode lets new users explore Aerodrome with simulated aircraft
+            data when they don't have a real ADS-B receiver to connect to.
+            This install is connected to a real receiver, so demo mode is off.
+        </div>
+
+        <div style="font-size:13px;color:var(--t2);line-height:1.6">
+            Demo mode is set at install time only — via the bootstrap's
+            <code>--demo</code> flag or the interactive "Do you have a
+            receiver?" prompt. There's no in-app "switch to demo" because
+            that would mean discarding your real receiver data, which has
+            no legitimate use case. If you want to experiment with demo mode,
+            install Aerodrome in a separate VM with <code>--demo</code>.
         </div>
     </div>`;
 }

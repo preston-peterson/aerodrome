@@ -1,0 +1,403 @@
+<!-- Version: 3.1.0 -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <script>
+(function(){
+    try {
+        var saved = localStorage.getItem('aerodrome-theme') || 'auto';
+        var applied = saved;
+        if (saved === 'auto') {
+            applied = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+        }
+        document.documentElement.setAttribute('data-theme', applied);
+    } catch (e) { /* default-dark is fine */ }
+})();
+</script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Switch to real receiver — Aerodrome</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="/static/theme.css">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-height:100vh; }
+
+.hdr { background:var(--bg1); border-bottom:1px solid var(--bdr); padding:12px 24px;
+       display:flex; align-items:center; justify-content:space-between; }
+.hdr-left { display:flex; align-items:center; gap:8px; }
+.hdr h1 { font-size:18px; font-weight:600; letter-spacing:-0.02em; }
+.hdr h1 span { color:var(--cyan); }
+.home-link { display:flex; align-items:center; gap:8px; text-decoration:none; color:inherit; }
+.brand-mark { flex-shrink:0; }
+.hdr-right { display:flex; align-items:center; gap:14px; }
+
+.wrap { max-width:780px; margin:0 auto; padding:24px; }
+.page-title { font-size:22px; font-weight:600; margin-bottom:4px; }
+.page-sub { color:var(--t2); font-size:13px; font-family:var(--mono); margin-bottom:24px; }
+
+/* Progress dots — show 4 steps with current highlighted */
+.steps { display:flex; align-items:center; gap:6px; margin-bottom:24px; }
+.step-dot { width:28px; height:28px; border-radius:50%; background:var(--bg2);
+            border:1px solid var(--bdr); display:flex; align-items:center;
+            justify-content:center; font-size:12px; font-family:var(--mono);
+            color:var(--t3); font-weight:600; }
+.step-dot.active { background:var(--cyan); color:#0a0a0a; border-color:var(--cyan); }
+.step-dot.done { background:rgba(34,197,94,0.15); color:var(--green); border-color:rgba(34,197,94,0.4); }
+.step-line { flex:1; height:1px; background:var(--bdr); }
+.step-line.done { background:rgba(34,197,94,0.4); }
+
+.card { background:var(--bg2); border:1px solid var(--bdr); border-radius:8px;
+        padding:24px; margin-bottom:16px; }
+.card-title { font-size:17px; font-weight:600; margin-bottom:6px; }
+.card-sub { color:var(--t2); font-size:13px; margin-bottom:18px; }
+
+.danger-box { background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.35);
+              border-radius:6px; padding:16px 18px; margin:16px 0; }
+.danger-box-title { font-weight:600; color:var(--red); margin-bottom:8px; font-size:14px; }
+.danger-box-body { font-size:13px; color:var(--t1); line-height:1.6; }
+.danger-box-body strong { color:var(--red); }
+
+.form-grid { display:grid; grid-template-columns:160px 1fr; gap:14px 18px;
+             align-items:center; margin:16px 0; }
+.form-label { font-size:13px; color:var(--t2); font-family:var(--mono); }
+.form-input { background:var(--bg1); border:1px solid var(--bdr); border-radius:4px;
+              padding:8px 12px; color:var(--t1); font-family:var(--mono); font-size:13px;
+              width:100%; }
+.form-input:focus { outline:none; border-color:var(--cyan); }
+.form-hint { font-size:11px; color:var(--t3); margin-top:4px; }
+
+.btn-row { display:flex; gap:12px; margin-top:20px; }
+.btn { padding:10px 20px; border-radius:4px; font-size:13px; font-weight:600;
+       cursor:pointer; border:1px solid var(--bdr); text-decoration:none;
+       display:inline-block; }
+.btn-primary { background:var(--cyan); color:#0a0a0a; border-color:var(--cyan); }
+.btn-primary:hover { filter:brightness(1.1); }
+.btn-danger { background:var(--red); color:#fff; border-color:var(--red); }
+.btn-danger:hover { filter:brightness(1.1); }
+.btn-secondary { background:transparent; color:var(--t2); }
+.btn-secondary:hover { color:var(--t1); border-color:var(--t2); }
+.btn:disabled { opacity:0.5; cursor:not-allowed; }
+
+.progress-list { list-style:none; margin:16px 0; padding:0; }
+.progress-list li { padding:10px 14px; background:var(--bg1); border:1px solid var(--bdr);
+                    border-radius:4px; margin-bottom:6px; font-size:13px;
+                    display:flex; align-items:center; gap:10px; }
+.progress-list li.pending { color:var(--t3); }
+.progress-list li.running { color:var(--cyan); border-color:var(--cyan); }
+.progress-list li.done { color:var(--green); border-color:rgba(34,197,94,0.4); }
+.progress-list li.failed { color:var(--red); border-color:rgba(239,68,68,0.4); }
+.progress-icon { width:16px; flex-shrink:0; text-align:center; }
+
+.error-box { background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.35);
+             border-radius:6px; padding:14px 16px; margin-top:14px; color:var(--red);
+             font-size:13px; line-height:1.5; }
+
+.hidden { display:none !important; }
+</style>
+</head>
+<body>
+
+<div class="hdr">
+    <div class="hdr-left">
+        <a href="/" class="home-link"><svg class="brand-mark" width="32" height="32" viewBox="0 0 64 64" aria-hidden="true">
+            <circle cx="32" cy="32" r="28" fill="none" stroke="#06b6d4" stroke-width="3" opacity="0.3"/>
+            <circle cx="32" cy="32" r="20" fill="none" stroke="#06b6d4" stroke-width="3" opacity="0.55"/>
+            <circle cx="32" cy="32" r="12" fill="none" stroke="#06b6d4" stroke-width="3" opacity="0.8"/>
+            <circle cx="32" cy="32" r="4" fill="#06b6d4"/>
+            <line x1="32" y1="32" x2="52" y2="12" stroke="#06b6d4" stroke-width="3" stroke-linecap="round"/>
+        </svg><h1><span>Aerodrome</span></h1></a>
+    </div>
+    <div class="hdr-right">
+        <a href="/config#demo" class="btn btn-secondary" style="padding:6px 14px">← Back to Configuration</a>
+    </div>
+</div>
+
+<div class="wrap">
+    <div class="page-title">Switch to real receiver</div>
+    <div class="page-sub">leave demo mode and connect Aerodrome to your real ADS-B receiver</div>
+
+    <div class="steps" id="stepIndicator">
+        <div class="step-dot active" data-step="1">1</div>
+        <div class="step-line"></div>
+        <div class="step-dot" data-step="2">2</div>
+        <div class="step-line"></div>
+        <div class="step-dot" data-step="3">3</div>
+        <div class="step-line"></div>
+        <div class="step-dot" data-step="4">4</div>
+    </div>
+
+    <!-- Step 1 — confirm intent + data-loss warning -->
+    <div class="card" id="step1">
+        <div class="card-title">Confirm intent</div>
+        <div class="card-sub">You're about to transition this install from demo mode to real-receiver mode.</div>
+
+        <p style="font-size:14px; line-height:1.7; color:var(--t1); margin-bottom:14px">
+            This is the right move when you have an ADS-B receiver on your network
+            (readsb, dump1090-fa, tar1090, PiAware, or any compatible source) that
+            you're ready to connect to. Aerodrome will stop the synthetic feeder,
+            clear out the simulated data, and start polling your real receiver
+            within about a minute.
+        </p>
+
+        <div class="danger-box">
+            <div class="danger-box-title">⚠ This will permanently delete the demo database, watchlist entries, and stats.</div>
+            <div class="danger-box-body">
+                The simulated aircraft history, the auto-seeded demo watchlist, and any
+                stats records that accumulated during your demo session will be removed.
+                <strong>This cannot be undone.</strong> After this, the dashboard will be
+                empty until your real receiver starts reporting aircraft (typically
+                within one poll cycle, ~60 seconds).
+            </div>
+        </div>
+
+        <p style="font-size:13px; color:var(--t2); line-height:1.6">
+            If you're not ready, click "Back to Configuration" in the header — your
+            demo session keeps running until you complete this wizard.
+        </p>
+
+        <div class="btn-row">
+            <button class="btn btn-primary" onclick="goToStep(2)">I understand, continue →</button>
+            <a class="btn btn-secondary" href="/config#demo">Cancel</a>
+        </div>
+    </div>
+
+    <!-- Step 2 — enter receiver details -->
+    <div class="card hidden" id="step2">
+        <div class="card-title">Real receiver details</div>
+        <div class="card-sub">Where can Aerodrome reach your ADS-B receiver?</div>
+
+        <p style="font-size:13px; color:var(--t2); line-height:1.6; margin-bottom:8px">
+            Enter the IP address and port of your receiver's aircraft-data endpoint.
+            Most readsb / dump1090-fa / tar1090 setups serve at <code>/data/aircraft.json</code>
+            on port <code>8080</code>.
+        </p>
+
+        <div class="form-grid">
+            <label class="form-label" for="recvIp">IP address</label>
+            <div>
+                <input class="form-input" id="recvIp" type="text" placeholder="e.g. 192.168.1.50">
+                <div class="form-hint">The IP of the host running readsb / dump1090 / tar1090 / PiAware.</div>
+            </div>
+
+            <label class="form-label" for="recvPort">Port</label>
+            <div>
+                <input class="form-input" id="recvPort" type="number" value="8080">
+                <div class="form-hint">Default 8080. Some setups use 8754 or 30053.</div>
+            </div>
+
+            <label class="form-label" for="recvPath">Path</label>
+            <div>
+                <input class="form-input" id="recvPath" type="text" value="/data/aircraft.json">
+                <div class="form-hint">Usually /data/aircraft.json. tar1090 sometimes uses /tar1090/data/aircraft.json.</div>
+            </div>
+
+            <label class="form-label" for="recvLat">Latitude</label>
+            <div>
+                <input class="form-input" id="recvLat" type="number" step="any" placeholder="optional, e.g. 44.84">
+                <div class="form-hint">Your receiver's latitude. Enables the Distance column. Find at latlong.net.</div>
+            </div>
+
+            <label class="form-label" for="recvLon">Longitude</label>
+            <div>
+                <input class="form-input" id="recvLon" type="number" step="any" placeholder="optional, e.g. -88.23">
+                <div class="form-hint">Your receiver's longitude. Optional but recommended.</div>
+            </div>
+        </div>
+
+        <div class="btn-row">
+            <button class="btn btn-danger" onclick="executeTransition()">Switch to real receiver →</button>
+            <button class="btn btn-secondary" onclick="goToStep(1)">Back</button>
+        </div>
+    </div>
+
+    <!-- Step 3 — execute transition (live progress) -->
+    <div class="card hidden" id="step3">
+        <div class="card-title">Switching to real-receiver mode</div>
+        <div class="card-sub" id="step3Status">Working — this typically takes 5-10 seconds.</div>
+
+        <ul class="progress-list" id="progressList">
+            <li class="pending" data-step="reachability"><span class="progress-icon">○</span> Testing reachability of your receiver</li>
+            <li class="pending" data-step="stop_feeder_service"><span class="progress-icon">○</span> Stopping the synthetic feeder service</li>
+            <li class="pending" data-step="nuke_demo_db"><span class="progress-icon">○</span> Clearing the demo database</li>
+            <li class="pending" data-step="update_config"><span class="progress-icon">○</span> Updating configuration</li>
+            <li class="pending" data-step="restart_aerodrome"><span class="progress-icon">○</span> Restarting the aerodrome service</li>
+        </ul>
+
+        <div class="error-box hidden" id="errorBox"></div>
+
+        <div class="btn-row hidden" id="step3ErrorButtons">
+            <button class="btn btn-secondary" onclick="goToStep(2)">Back to receiver details</button>
+            <a class="btn btn-secondary" href="/config#demo">Cancel and return to Configuration</a>
+        </div>
+    </div>
+
+    <!-- Step 4 — confirmation -->
+    <div class="card hidden" id="step4">
+        <div class="card-title" style="color:var(--green)">✓ You're now in real-receiver mode</div>
+        <div class="card-sub">Aerodrome is polling your real ADS-B receiver.</div>
+
+        <p style="font-size:14px; line-height:1.7; color:var(--t1); margin-bottom:14px">
+            The synthetic feeder has been removed, the demo database has been cleared,
+            and Aerodrome is restarting with your real receiver address. The first
+            real aircraft should appear on the dashboard within about a minute (one
+            poll cycle).
+        </p>
+
+        <p style="font-size:13px; color:var(--t2); line-height:1.6; margin-bottom:18px">
+            The yellow demo banner will disappear within ~30 seconds as the dashboard's
+            next status poll picks up the new state. The <code>[DEMO]</code> prefix
+            on notifications will also drop off automatically.
+        </p>
+
+        <div class="btn-row">
+            <a class="btn btn-primary" href="/">Open the dashboard →</a>
+            <a class="btn btn-secondary" href="/config">Configuration</a>
+        </div>
+    </div>
+</div>
+
+<script>
+// Wizard state machine. Each step is a card; goToStep hides the others
+// and shows the target. Progress-dot indicator reflects the current step.
+
+function goToStep(n) {
+    [1,2,3,4].forEach(function(i){
+        var el = document.getElementById('step' + i);
+        if (el) el.classList.toggle('hidden', i !== n);
+    });
+    var dots = document.querySelectorAll('#stepIndicator .step-dot');
+    var lines = document.querySelectorAll('#stepIndicator .step-line');
+    dots.forEach(function(d){
+        var step = parseInt(d.getAttribute('data-step'), 10);
+        d.classList.toggle('active', step === n);
+        d.classList.toggle('done', step < n);
+    });
+    lines.forEach(function(l, idx){
+        l.classList.toggle('done', (idx + 1) < n);
+    });
+    window.scrollTo({top:0, behavior:'smooth'});
+}
+
+function _setProgressState(stepName, state) {
+    // state: 'pending' | 'running' | 'done' | 'failed'
+    var li = document.querySelector(
+        '#progressList li[data-step="' + stepName + '"]'
+    );
+    if (!li) return;
+    li.classList.remove('pending', 'running', 'done', 'failed');
+    li.classList.add(state);
+    var icon = li.querySelector('.progress-icon');
+    if (icon) {
+        if (state === 'pending') icon.textContent = '○';
+        else if (state === 'running') icon.textContent = '⟳';
+        else if (state === 'done') icon.textContent = '✓';
+        else if (state === 'failed') icon.textContent = '✗';
+    }
+}
+
+function _showError(msg) {
+    var box = document.getElementById('errorBox');
+    var btns = document.getElementById('step3ErrorButtons');
+    var status = document.getElementById('step3Status');
+    if (box) {
+        box.textContent = msg;
+        box.classList.remove('hidden');
+    }
+    if (btns) btns.classList.remove('hidden');
+    if (status) status.textContent = 'Switch aborted. Your demo install is unchanged.';
+}
+
+async function executeTransition() {
+    // Validate inputs first — server validates too but giving the user
+    // immediate feedback for the obvious case is friendlier.
+    var ip = document.getElementById('recvIp').value.trim();
+    var portStr = document.getElementById('recvPort').value.trim();
+    var path = document.getElementById('recvPath').value.trim();
+    var latStr = document.getElementById('recvLat').value.trim();
+    var lonStr = document.getElementById('recvLon').value.trim();
+
+    if (!ip) {
+        alert('IP address is required.');
+        return;
+    }
+    var port = portStr ? parseInt(portStr, 10) : 8080;
+    if (isNaN(port) || port < 1 || port > 65535) {
+        alert('Port must be a number between 1 and 65535.');
+        return;
+    }
+    var lat = latStr ? parseFloat(latStr) : null;
+    var lon = lonStr ? parseFloat(lonStr) : null;
+    if (latStr && isNaN(lat)) { alert('Latitude must be a number.'); return; }
+    if (lonStr && isNaN(lon)) { alert('Longitude must be a number.'); return; }
+
+    goToStep(3);
+
+    // Reset progress list state (in case the user came back from an
+    // earlier failed attempt).
+    document.querySelectorAll('#progressList li').forEach(function(li){
+        _setProgressState(li.getAttribute('data-step'), 'pending');
+    });
+    var box = document.getElementById('errorBox');
+    if (box) box.classList.add('hidden');
+    var btns = document.getElementById('step3ErrorButtons');
+    if (btns) btns.classList.add('hidden');
+
+    // Mark the first step running for visual feedback during the wait.
+    _setProgressState('reachability', 'running');
+
+    var payload = {
+        receiver_ip: ip,
+        receiver_port: port,
+        receiver_path: path || '/data/aircraft.json',
+        latitude: lat,
+        longitude: lon,
+    };
+
+    var resp;
+    try {
+        resp = await fetch('/api/setup/switch-to-real', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload),
+        });
+    } catch (e) {
+        _setProgressState('reachability', 'failed');
+        _showError('Network error contacting the server: ' + e.message);
+        return;
+    }
+
+    var data;
+    try {
+        data = await resp.json();
+    } catch (e) {
+        _showError('Server returned an unparseable response. Check the logs.');
+        return;
+    }
+
+    // Apply step results from the server's response. Each completed
+    // step gets its ✓; the failing one gets ✗ + an error message.
+    var seenFailed = false;
+    (data.steps || []).forEach(function(s){
+        if (s.ok) {
+            _setProgressState(s.name, 'done');
+        } else {
+            _setProgressState(s.name, 'failed');
+            seenFailed = true;
+        }
+    });
+
+    if (data.ok && !seenFailed) {
+        goToStep(4);
+    } else {
+        _showError(data.error || 'Transition failed at an unknown step.');
+    }
+}
+</script>
+
+</body>
+</html>

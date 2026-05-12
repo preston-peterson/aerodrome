@@ -91,5 +91,15 @@ Go ahead. The MIT license has you covered. Two practical pointers:
   in `server.py` and the `DOCS` array in `templates/docs.html`. If
   you add or rename docs, update both registries to keep the in-app
   viewer correct.
+- **Demo mode** (v3.1.0) lives in `tools/synthetic_feeder/`. It's
+  opt-in at install time (`./install.sh --demo` or the bootstrap's
+  interactive prompt) and runs as a separate systemd service alongside
+  `aerodrome.service`. The fleet seed is locked to `1903` so every
+  demo install shows the same simulated aircraft — change the seed
+  in `install.sh` and `tools/synthetic_feeder/seed_watchlist.py` if
+  you want a different deterministic fleet for your fork. The data
+  plane (collector, server, notifier) is intentionally ignorant of
+  demo mode; only the UX layer (banner, notification prefix,
+  Track-link guard) reads `demo.enabled`.
 
 Good luck, and have fun with it.

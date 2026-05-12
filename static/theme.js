@@ -126,3 +126,121 @@
         document.fonts.ready.then(measureHeader).catch(function(){});
     }
 })();
+
+/* =============================================================================
+   v3.1.0: Demo-mode banner — shared injection across all admin pages.
+   =============================================================================
+   On demo-mode installs, every page shows a persistent yellow banner that
+   says "Demo mode — showing simulated data. [Configure real receiver]"
+   with the bracket as a link to /config#demo (the Demo tab in
+   Configuration, which houses the switch-to-real wizard launcher).
+
+   The banner is created by JS rather than duplicating HTML across every
+   admin template — eleven copies of the same markup would be eleven
+   places to forget. theme.js loads on every admin page, so this module
+   self-installs everywhere automatically.
+
+   The banner is also injected into templates/index.html as inline HTML
+   (the #demoBanner element) — when the inline element exists, this
+   module finds and toggles it; otherwise it creates and prepends one.
+   Either way, the per-page behavior is the same.
+
+   Also exposes window.aerodromeDemoMode (read-only boolean) so other
+   feature code — most importantly the external-link "Track it"
+   confirmation guard — can read demo state without its own status
+   fetch. Refreshed every 30s via the same poll cycle.
+   ============================================================================= */
+(function(){
+    window.aerodromeDemoMode = false;  // updated by polls
+
+    function ensureBanner() {
+        var existing = document.getElementById('demoBanner');
+        if (existing) return existing;
+        var el = document.createElement('div');
+        el.id = 'demoBanner';
+        // Inline styles so the banner renders correctly even before any
+        // page-specific CSS has loaded. Matches the inline styling used
+        // by the existing systemBanner pattern in templates/index.html.
+        el.style.cssText =
+            'display:none; margin: 8px 12px 0; padding:10px 14px; ' +
+            'background:rgba(245,158,11,0.13); border:1px solid rgba(245,158,11,0.45); ' +
+            'border-radius:6px; color:var(--amber); font-size:13px;';
+        el.innerHTML = 'Demo mode — showing simulated data. ' +
+            '<a href="/config#demo" style="color:var(--amber); ' +
+            'text-decoration:underline; font-weight:600;">Configure real receiver</a>';
+        // Inject above the header so it doesn't push content down within
+        // the main content area. document.body's first child is the
+        // safest universal position — works regardless of whether the
+        // page has .hdr, .tabs-wrap, or its own layout root.
+        if (document.body.firstChild) {
+            document.body.insertBefore(el, document.body.firstChild);
+        } else {
+            document.body.appendChild(el);
+        }
+        return el;
+    }
+
+    function refresh() {
+        fetch('/api/status', { cache: 'no-store' })
+            .then(function(r) { return r.ok ? r.json() : null; })
+            .then(function(j) {
+                if (!j) return;
+                var on = !!j.demo_enabled;
+                window.aerodromeDemoMode = on;
+                var el = ensureBanner();
+                el.style.display = on ? 'block' : 'none';
+            })
+            .catch(function(){ /* non-fatal — leave banner state alone */ });
+    }
+
+    // First call as soon as DOM is ready so the banner appears on the
+    // initial render. Then refresh every 30s to pick up demo.enabled
+    // flips from the switch-to-real wizard within one cycle.
+    document.addEventListener('DOMContentLoaded', function(){
+        refresh();
+        setInterval(refresh, 30000);
+    });
+})();
+
+/* =============================================================================
+   v3.1.0: External "Track ↗" link guard for demo mode.
+   =============================================================================
+   When demo.enabled=true, clicking any external-tracker link (Track ↗ on
+   tab rows or on the aircraft detail page) shows a confirmation dialog
+   explaining that the ICAO is simulated and won't be found by the
+   external tracker. "Continue anyway" still opens the link (respects
+   the user's curiosity to see what the tracker returns); "Cancel"
+   does nothing.
+
+   Targets are anchors with class .track-external-link. Both
+   templates/index.html (table-cell Track links via trackLink()) and
+   templates/aircraft.html (#trackLink on the detail page) emit this
+   class so the same delegation handles both. data-icao attribute on
+   the anchor is included in the dialog so the user can see which
+   aircraft they're trying to track.
+
+   On real installs (window.aerodromeDemoMode === false), the click
+   passes through untouched — zero behavior change for non-demo users.
+   ============================================================================= */
+(function(){
+    document.addEventListener('click', function(e){
+        if (!window.aerodromeDemoMode) return;
+        // Walk up the event path looking for a track-external-link
+        // anchor. Closest() handles cases where the click target is
+        // nested inside the anchor (e.g. clicking the ↗ glyph).
+        var a = e.target.closest ? e.target.closest('a.track-external-link') : null;
+        if (!a) return;
+        var icao = a.getAttribute('data-icao') || '?';
+        var ok = window.confirm(
+            'This is a simulated aircraft.\n\n' +
+            'Demo mode shows synthetic data. ICAO ' + icao +
+            ' doesn\u2019t correspond to a real aircraft, so the ' +
+            'external tracker won\u2019t find it.\n\n' +
+            'Continue anyway?'
+        );
+        if (!ok) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+    }, true);  // capture-phase so we run before any other handlers
+})();

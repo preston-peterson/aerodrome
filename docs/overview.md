@@ -224,6 +224,8 @@ A host to run Aerodrome: Ubuntu 22.04+ or Debian 12+ recommended. Hardware depen
 
 One command on a fresh Ubuntu 22.04+ or Debian 12+ host: `bash <(curl -fsSL https://install.aerodromeadsb.com)`. The bootstrap detects your platform, installs prerequisites, downloads the latest release with SHA256 verification, prompts for the bare minimum config (receiver IP, optional latitude/longitude), and hands off to the bundled install script which creates a Python virtualenv, writes the systemd unit, sets up the scoped sudoers rule, and starts the service. Open `http://your-host:8000/` and visit the gear menu's Configuration page to adjust settings — auto-detected timezone, watchlist, notifications, retention, display preferences. The manual install path (download zip, edit `config.yaml`, run `./install.sh`) remains supported for offline installs, version-pinning, and git-checkout workflows.
 
+Don't have a real ADS-B receiver yet? Add `--demo` to the install command and Aerodrome installs in demo mode with a small synthetic feeder running alongside it — the dashboard fills with 50 simulated aircraft, a starter watchlist, occasional military traffic and emergency squawks. An in-app wizard at Configuration → Demo handles the transition to your real receiver when you're ready. See the *Demo mode* section in `docs/INSTALL.md` for details.
+
 The first minute of data will populate as the collector polls the receiver. Watchlist and notifications can be configured through the web UI — no YAML editing required after initial setup.
 
 ## Tech stack

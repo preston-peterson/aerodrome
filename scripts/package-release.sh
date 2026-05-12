@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.0.17
+# Version: 3.1.0
 # =============================================================================
 # package-release.sh — Build the release zip + SHA256 for the current VERSION
 # =============================================================================
@@ -104,17 +104,19 @@ find "$RELEASE_DIR" -name '*.pyc' -delete 2>/dev/null || true
 #   venv     — created by install.sh, not part of the source tree
 #   .git     — we're shipping a zip, not a clone
 #   .backups — live install snapshots
-#   tools    — maintainer dev-tooling (synthetic_feeder, etc.); shipped
-#              separately as paired archive artifacts, not in the public
-#              release zip (v2.98.2 forward — see HANDOFF for the
-#              maintainer-only-docs convention)
 #   update   — staging area for the in-app updater (live-install local state)
 #   *.bak.*  — config backups created by the auto-merge on startup
 #   .tracker.pid, *.db, *.db-wal, *.db-shm — runtime files
+#
+# v3.1.0 note: `tools/` used to be excluded here (maintainer-only
+# dev-tooling, shipped as the separate -synthetic-feeder.zip artifact).
+# Demo mode runs the synthetic feeder as a real service at install
+# time, so tools/synthetic_feeder/ now needs to be inside the release
+# zip — the install.sh --demo branch references it from the install
+# tree at runtime. The exclusion has been removed.
 rm -rf "$RELEASE_DIR/venv" \
        "$RELEASE_DIR/.git" \
-       "$RELEASE_DIR/.backups" \
-       "$RELEASE_DIR/tools" 2>/dev/null || true
+       "$RELEASE_DIR/.backups" 2>/dev/null || true
 # Also strip any runtime DB / pid / config-backup files that may be present
 # if package-release.sh is run on a live install rather than a clean tree.
 find "$RELEASE_DIR" -maxdepth 1 \

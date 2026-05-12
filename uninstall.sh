@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.0.17
+# Version: 3.1.0
 # =============================================================================
 # Aerodrome — Uninstall Script
 # =============================================================================
@@ -95,6 +95,21 @@ if sudo systemctl list-unit-files 2>/dev/null | grep -q "^${SERVICE_NAME}.servic
     echo -e "  ${GREEN}✓${RESET} Service stopped, disabled, and removed"
 else
     echo -e "  ${YELLOW}·${RESET} No systemd service found (already removed or never installed)"
+fi
+
+# v3.1.0: also remove the synthetic-feeder service if present.
+# Demo-mode installs include this as a sibling unit; non-demo installs
+# won't have it, so the detection-then-remove pattern keeps the
+# output clean either way. Same operations as the main service:
+# stop, disable, remove unit file, daemon-reload.
+FEEDER_SERVICE_NAME="aerodrome-synthetic-feeder"
+if sudo systemctl list-unit-files 2>/dev/null | grep -q "^${FEEDER_SERVICE_NAME}.service"; then
+    sudo systemctl stop ${FEEDER_SERVICE_NAME} 2>/dev/null || true
+    sudo systemctl disable ${FEEDER_SERVICE_NAME} 2>/dev/null || true
+    sudo rm -f /etc/systemd/system/${FEEDER_SERVICE_NAME}.service
+    sudo systemctl daemon-reload
+    sudo systemctl reset-failed 2>/dev/null || true
+    echo -e "  ${GREEN}✓${RESET} Synthetic-feeder service stopped, disabled, and removed (demo mode)"
 fi
 
 # Remove sudoers rule for in-UI restart button (if present)
