@@ -1,4 +1,4 @@
-# Version: 3.4.5
+# Version: 3.4.6
 """
 collector.py — ADS-B data fetcher and classifier.
 
@@ -1258,6 +1258,74 @@ def init_db(db_path: str):
     # the wrong-shape penalty was the cause.
     conn.execute("CREATE INDEX IF NOT EXISTS idx_hourly_bucket_icao ON sightings_hourly(hour_bucket, icao)")
 
+    # --- v3.4.6: military_hourly + watchlist_hourly rollup tables ---
+    # Same shape and purpose as sightings_hourly but tracking the
+    # military and watchlist Stats card paths. Reason: the v3.4.3
+    # diagnostic on a 5.1 GB / 29M-row install showed military_count
+    # 365d running at 483 ms (slowest hot-path query in the set) and
+    # watchlist_count 365d at 223 ms. Both are COUNT(DISTINCT icao)
+    # over a date range on the raw per-poll tables; both benefit from
+    # the same rollup pattern that v2.50.0 applied to all_sightings.
+    #
+    # Populated two ways (same as sightings_hourly):
+    #   1. Online by the collector on every poll that's military/watchlist
+    #   2. Backfilled at startup from existing rows, once per install
+    #      (idempotent — uses _aerodrome_meta to mark done)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS military_hourly (
+            icao            TEXT    NOT NULL,
+            hour_bucket     INTEGER NOT NULL,
+            callsign        TEXT    DEFAULT '',
+            aircraft_type   TEXT    DEFAULT '',
+            type_desc       TEXT    DEFAULT '',
+            special_label   TEXT    DEFAULT '',
+            sighting_count  INTEGER NOT NULL,
+            first_seen_at   INTEGER NOT NULL,
+            last_seen_at    INTEGER NOT NULL,
+            PRIMARY KEY (icao, hour_bucket)
+        )
+    """)
+    # Covering index for the military_count Stats card path: same shape
+    # as idx_hourly_bucket_icao on sightings_hourly. With (hour_bucket,
+    # icao) the COUNT(DISTINCT icao) WHERE hour_bucket BETWEEN ? AND ?
+    # query plan becomes "SEARCH military_hourly USING COVERING INDEX",
+    # zero table fetches.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mil_hourly_bucket_icao ON military_hourly(hour_bucket, icao)")
+    # Specials breakdown query (Stats card: top 5 named specials seen
+    # in the window) does GROUP BY (icao, special_label) ORDER BY
+    # last_seen_at DESC LIMIT 5. A separate index on
+    # (hour_bucket, special_label) helps the GROUP BY when
+    # special_label is non-empty (the common filter case for the
+    # specials card).
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mil_hourly_bucket_special ON military_hourly(hour_bucket, special_label)")
+
+    # watchlist_hourly. PK is THREE-way (icao, hour_bucket, watchlist_label)
+    # rather than two-way like military_hourly. Reason: the
+    # watchlist_count Stats card query returns BOTH COUNT(DISTINCT icao)
+    # AND COUNT(DISTINCT watchlist_label). With a two-way PK we'd lose
+    # which labels each ICAO hit across the window. Three-way captures
+    # the full cardinality. Row count is bounded by (ICAOs × hours ×
+    # labels-per-ICAO) — still ~70× smaller than per-poll raw rows on
+    # typical traffic patterns where most aircraft hit one rule.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS watchlist_hourly (
+            icao            TEXT    NOT NULL,
+            hour_bucket     INTEGER NOT NULL,
+            watchlist_label TEXT    NOT NULL,
+            callsign        TEXT    DEFAULT '',
+            aircraft_type   TEXT    DEFAULT '',
+            type_desc       TEXT    DEFAULT '',
+            sighting_count  INTEGER NOT NULL,
+            first_seen_at   INTEGER NOT NULL,
+            last_seen_at    INTEGER NOT NULL,
+            PRIMARY KEY (icao, hour_bucket, watchlist_label)
+        )
+    """)
+    # Covering index for the watchlist_count Stats card path.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_watch_hourly_bucket_icao ON watchlist_hourly(hour_bucket, icao)")
+    # Covering index for the COUNT(DISTINCT watchlist_label) variant.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_watch_hourly_bucket_label ON watchlist_hourly(hour_bucket, watchlist_label)")
+
     conn.execute("CREATE INDEX IF NOT EXISTS idx_all_seen ON all_sightings(seen_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_all_icao ON all_sightings(icao)")
     # v2.50.17: covering indexes for the military_count and watchlist_count
@@ -1676,6 +1744,15 @@ def init_db(db_path: str):
     # migration completes, those queries switch to the fast rollup.
     _start_hourly_backfill_if_needed(db_path)
 
+    # v3.4.6: start the parallel military_hourly + watchlist_hourly
+    # backfills. Same pattern, same fallback behavior: while a backfill
+    # is running, the corresponding Stats card queries fall back to
+    # the raw per-poll tables (slower but correct). When the backfill
+    # completes, queries automatically switch to the fast rollup via
+    # the get_*_backfill_status() check in server.py.
+    _start_military_backfill_if_needed(db_path)
+    _start_watchlist_backfill_if_needed(db_path)
+
     logger.info(f"Database initialized at {db_path}")
 
 
@@ -1886,6 +1963,336 @@ def _run_hourly_backfill(db_path: str, n_rows: int) -> None:
             })
 
 
+# --- v3.4.6: military_hourly + watchlist_hourly backfill machinery ---
+# Same pattern as the v2.50.0 hourly_backfill above, applied to the
+# two new rollup tables. Each backfill runs in its own daemon thread,
+# tracks its own state, marks completion in _aerodrome_meta with its
+# own key. All three can run concurrently (touching different source
+# and target tables).
+
+_military_backfill_state = {
+    "phase": "unknown",
+    "started_at": None,
+    "finished_at": None,
+    "rows_processed": 0,
+    "rows_total": None,
+    "error": None,
+}
+_military_backfill_lock = threading.Lock()
+
+_watchlist_backfill_state = {
+    "phase": "unknown",
+    "started_at": None,
+    "finished_at": None,
+    "rows_processed": 0,
+    "rows_total": None,
+    "error": None,
+}
+_watchlist_backfill_lock = threading.Lock()
+
+
+def get_military_backfill_status() -> Dict[str, Any]:
+    """Snapshot of the military_hourly backfill state."""
+    with _military_backfill_lock:
+        return dict(_military_backfill_state)
+
+
+def get_watchlist_backfill_status() -> Dict[str, Any]:
+    """Snapshot of the watchlist_hourly backfill state."""
+    with _watchlist_backfill_lock:
+        return dict(_watchlist_backfill_state)
+
+
+def _start_military_backfill_if_needed(db_path: str) -> None:
+    """Decide whether to run the military_hourly backfill, and if so
+    kick off a background thread. Idempotent — checks _aerodrome_meta."""
+    global _military_backfill_state
+
+    try:
+        conn = _open_db_conn(db_path)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS _aerodrome_meta (
+                key TEXT PRIMARY KEY, value TEXT NOT NULL
+            )
+        """)
+        row = conn.execute(
+            "SELECT value FROM _aerodrome_meta WHERE key = 'military_hourly_backfilled'"
+        ).fetchone()
+        if row and row[0] == "1":
+            with _military_backfill_lock:
+                _military_backfill_state.update({"phase": "complete"})
+            conn.close()
+            return
+
+        try:
+            n_rows = conn.execute("SELECT COUNT(*) FROM military_sightings").fetchone()[0]
+        except sqlite3.OperationalError:
+            n_rows = None
+        conn.close()
+    except Exception as e:
+        logger.warning(f"Could not check military_hourly_backfilled state: {e}")
+        with _military_backfill_lock:
+            _military_backfill_state.update({"phase": "error", "error": str(e)})
+        return
+
+    # Fresh install — no rows to backfill, just mark done so the
+    # online write path is the sole writer going forward.
+    if not n_rows:
+        try:
+            conn = _open_db_conn(db_path)
+            conn.execute(
+                "INSERT OR REPLACE INTO _aerodrome_meta (key, value) VALUES (?, ?)",
+                ("military_hourly_backfilled", "1"),
+            )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.warning(f"Could not mark fresh-install military backfill complete: {e}")
+        with _military_backfill_lock:
+            _military_backfill_state.update({"phase": "complete", "rows_total": 0})
+        return
+
+    with _military_backfill_lock:
+        _military_backfill_state.update({
+            "phase": "running",
+            "started_at": int(time.time()),
+            "rows_total": n_rows,
+        })
+    t = threading.Thread(
+        target=_run_military_backfill,
+        args=(db_path, n_rows),
+        name="aerodrome-military-backfill",
+        daemon=True,
+    )
+    t.start()
+    logger.info(
+        f"Started military_hourly backfill in background thread "
+        f"(estimated {n_rows:,} source rows to process)"
+    )
+
+
+def _start_watchlist_backfill_if_needed(db_path: str) -> None:
+    """Decide whether to run the watchlist_hourly backfill. Same shape
+    as the military version above."""
+    global _watchlist_backfill_state
+
+    try:
+        conn = _open_db_conn(db_path)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS _aerodrome_meta (
+                key TEXT PRIMARY KEY, value TEXT NOT NULL
+            )
+        """)
+        row = conn.execute(
+            "SELECT value FROM _aerodrome_meta WHERE key = 'watchlist_hourly_backfilled'"
+        ).fetchone()
+        if row and row[0] == "1":
+            with _watchlist_backfill_lock:
+                _watchlist_backfill_state.update({"phase": "complete"})
+            conn.close()
+            return
+
+        try:
+            n_rows = conn.execute("SELECT COUNT(*) FROM watchlist_sightings").fetchone()[0]
+        except sqlite3.OperationalError:
+            n_rows = None
+        conn.close()
+    except Exception as e:
+        logger.warning(f"Could not check watchlist_hourly_backfilled state: {e}")
+        with _watchlist_backfill_lock:
+            _watchlist_backfill_state.update({"phase": "error", "error": str(e)})
+        return
+
+    if not n_rows:
+        try:
+            conn = _open_db_conn(db_path)
+            conn.execute(
+                "INSERT OR REPLACE INTO _aerodrome_meta (key, value) VALUES (?, ?)",
+                ("watchlist_hourly_backfilled", "1"),
+            )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.warning(f"Could not mark fresh-install watchlist backfill complete: {e}")
+        with _watchlist_backfill_lock:
+            _watchlist_backfill_state.update({"phase": "complete", "rows_total": 0})
+        return
+
+    with _watchlist_backfill_lock:
+        _watchlist_backfill_state.update({
+            "phase": "running",
+            "started_at": int(time.time()),
+            "rows_total": n_rows,
+        })
+    t = threading.Thread(
+        target=_run_watchlist_backfill,
+        args=(db_path, n_rows),
+        name="aerodrome-watchlist-backfill",
+        daemon=True,
+    )
+    t.start()
+    logger.info(
+        f"Started watchlist_hourly backfill in background thread "
+        f"(estimated {n_rows:,} source rows to process)"
+    )
+
+
+def _run_military_backfill(db_path: str, n_rows: int) -> None:
+    """Backfill military_hourly from existing military_sightings rows.
+    Runs in a daemon thread. Single-pass aggregate query, same
+    window-function shape as _run_hourly_backfill but with the
+    military-specific columns (no last_lat/lon/altitude/speed/min/max,
+    PLUS special_label preserved from the most-recent row in each bucket
+    via the rn=1 window). Idempotent via _aerodrome_meta marker."""
+    global _military_backfill_state
+    try:
+        conn = _open_db_conn(db_path)
+        t0 = time.time()
+        conn.execute("BEGIN")
+        conn.execute("""
+            INSERT OR REPLACE INTO military_hourly (
+                icao, hour_bucket, callsign, aircraft_type, type_desc,
+                special_label, sighting_count, first_seen_at, last_seen_at
+            )
+            WITH ranked AS (
+                SELECT
+                    icao,
+                    (seen_at / 3600) * 3600 AS hour_bucket,
+                    callsign, aircraft_type, type_desc, special_label,
+                    seen_at,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY icao, (seen_at / 3600) * 3600
+                        ORDER BY seen_at DESC
+                    ) AS rn,
+                    COUNT(*) OVER (
+                        PARTITION BY icao, (seen_at / 3600) * 3600
+                    ) AS bucket_count,
+                    MIN(seen_at) OVER (
+                        PARTITION BY icao, (seen_at / 3600) * 3600
+                    ) AS bucket_first,
+                    MAX(seen_at) OVER (
+                        PARTITION BY icao, (seen_at / 3600) * 3600
+                    ) AS bucket_last
+                FROM military_sightings
+            )
+            SELECT
+                icao, hour_bucket,
+                COALESCE(callsign, '')      AS callsign,
+                COALESCE(aircraft_type, '') AS aircraft_type,
+                COALESCE(type_desc, '')     AS type_desc,
+                COALESCE(special_label, '') AS special_label,
+                bucket_count, bucket_first, bucket_last
+            FROM ranked
+            WHERE rn = 1
+        """)
+        rows_inserted = conn.execute(
+            "SELECT COUNT(*) FROM military_hourly"
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT OR REPLACE INTO _aerodrome_meta (key, value) VALUES (?, ?)",
+            ("military_hourly_backfilled", "1"),
+        )
+        conn.commit()
+        conn.close()
+        elapsed = time.time() - t0
+        with _military_backfill_lock:
+            _military_backfill_state.update({
+                "phase": "complete",
+                "finished_at": int(time.time()),
+                "rows_processed": rows_inserted,
+            })
+        logger.info(
+            f"military_hourly backfill complete: {rows_inserted:,} rollup rows "
+            f"from {n_rows:,} source sightings in {elapsed:.1f}s"
+        )
+    except Exception as e:
+        logger.error(f"military_hourly backfill failed: {e}")
+        with _military_backfill_lock:
+            _military_backfill_state.update({
+                "phase": "error",
+                "finished_at": int(time.time()),
+                "error": str(e),
+            })
+
+
+def _run_watchlist_backfill(db_path: str, n_rows: int) -> None:
+    """Backfill watchlist_hourly from existing watchlist_sightings rows.
+    PK is THREE-way (icao, hour_bucket, watchlist_label), so the
+    PARTITION BY in the window function is three columns, not two.
+    Otherwise same shape as the military backfill. Idempotent."""
+    global _watchlist_backfill_state
+    try:
+        conn = _open_db_conn(db_path)
+        t0 = time.time()
+        conn.execute("BEGIN")
+        conn.execute("""
+            INSERT OR REPLACE INTO watchlist_hourly (
+                icao, hour_bucket, watchlist_label, callsign,
+                aircraft_type, type_desc, sighting_count,
+                first_seen_at, last_seen_at
+            )
+            WITH ranked AS (
+                SELECT
+                    icao,
+                    (seen_at / 3600) * 3600 AS hour_bucket,
+                    watchlist_label,
+                    callsign, aircraft_type, type_desc,
+                    seen_at,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY icao, (seen_at / 3600) * 3600, watchlist_label
+                        ORDER BY seen_at DESC
+                    ) AS rn,
+                    COUNT(*) OVER (
+                        PARTITION BY icao, (seen_at / 3600) * 3600, watchlist_label
+                    ) AS bucket_count,
+                    MIN(seen_at) OVER (
+                        PARTITION BY icao, (seen_at / 3600) * 3600, watchlist_label
+                    ) AS bucket_first,
+                    MAX(seen_at) OVER (
+                        PARTITION BY icao, (seen_at / 3600) * 3600, watchlist_label
+                    ) AS bucket_last
+                FROM watchlist_sightings
+                WHERE watchlist_label IS NOT NULL AND watchlist_label != ''
+            )
+            SELECT
+                icao, hour_bucket, watchlist_label,
+                COALESCE(callsign, '')      AS callsign,
+                COALESCE(aircraft_type, '') AS aircraft_type,
+                COALESCE(type_desc, '')     AS type_desc,
+                bucket_count, bucket_first, bucket_last
+            FROM ranked
+            WHERE rn = 1
+        """)
+        rows_inserted = conn.execute(
+            "SELECT COUNT(*) FROM watchlist_hourly"
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT OR REPLACE INTO _aerodrome_meta (key, value) VALUES (?, ?)",
+            ("watchlist_hourly_backfilled", "1"),
+        )
+        conn.commit()
+        conn.close()
+        elapsed = time.time() - t0
+        with _watchlist_backfill_lock:
+            _watchlist_backfill_state.update({
+                "phase": "complete",
+                "finished_at": int(time.time()),
+                "rows_processed": rows_inserted,
+            })
+        logger.info(
+            f"watchlist_hourly backfill complete: {rows_inserted:,} rollup rows "
+            f"from {n_rows:,} source sightings in {elapsed:.1f}s"
+        )
+    except Exception as e:
+        logger.error(f"watchlist_hourly backfill failed: {e}")
+        with _watchlist_backfill_lock:
+            _watchlist_backfill_state.update({
+                "phase": "error",
+                "finished_at": int(time.time()),
+                "error": str(e),
+            })
+
+
 def cleanup_old_data(db_path: str, retention: dict):
     """Remove data older than each tab's retention window."""
     now = int(time.time())
@@ -1898,6 +2305,22 @@ def cleanup_old_data(db_path: str, retention: dict):
     d1 = conn.execute("DELETE FROM military_sightings WHERE seen_at < ?", (mil_cutoff,)).rowcount
     d2 = conn.execute("DELETE FROM watchlist_sightings WHERE seen_at < ?", (watch_cutoff,)).rowcount
     d3 = conn.execute("DELETE FROM all_sightings WHERE seen_at < ?", (all_cutoff,)).rowcount
+
+    # v3.4.6: prune the military_hourly and watchlist_hourly rollups
+    # in parallel with their raw parent tables. Same cutoff each so
+    # the rollup retention always matches what its count queries see
+    # — no orphaned rollup rows past the raw retention boundary.
+    # last_seen_at is used as the cutoff key (mirrors how the raw
+    # tables use seen_at) so a bucket's most-recent observation
+    # determines whether the bucket survives.
+    try:
+        d1b = conn.execute("DELETE FROM military_hourly WHERE last_seen_at < ?", (mil_cutoff,)).rowcount
+    except sqlite3.OperationalError:
+        d1b = 0  # table doesn't exist on truly pre-v3.4.6 installs
+    try:
+        d2b = conn.execute("DELETE FROM watchlist_hourly WHERE last_seen_at < ?", (watch_cutoff,)).rowcount
+    except sqlite3.OperationalError:
+        d2b = 0
 
     # v2.49.0: prune hexdb_events to keep the rolling log bounded. Cache
     # entries in hexdb_cache are NOT pruned here — they expire by TTL via
@@ -1922,8 +2345,12 @@ def cleanup_old_data(db_path: str, retention: dict):
     conn.commit()
     conn.close()
 
-    if d1 or d2 or d3 or d4 or d5:
-        logger.info(f"Cleanup: removed {d1} military, {d2} watchlist, {d3} all, {d4} hexdb-events, {d5} concurrent-minute old entries")
+    if d1 or d2 or d3 or d4 or d5 or d1b or d2b:
+        logger.info(
+            f"Cleanup: removed {d1} military ({d1b} rollup), "
+            f"{d2} watchlist ({d2b} rollup), {d3} all, "
+            f"{d4} hexdb-events, {d5} concurrent-minute old entries"
+        )
 
 
 # =============================================================================
@@ -2626,6 +3053,31 @@ def fetch_and_store(config: Dict, watchlist_lookup: Dict):
             """, (ac["hex"], ac["callsign"], ac["speed"], ac["lat"], ac["lon"],
                   ac["altitude"], ac["aircraft_type"], ac["type_desc"], now, special_label, ac["squawk"]))
             mil_count += 1
+            # v3.4.6: keep military_hourly rollup current. Same shape as
+            # the sightings_hourly upsert above. PK (icao, hour_bucket)
+            # collapses repeat polls within an hour into one row;
+            # special_label / callsign / aircraft_type are preserved
+            # via COALESCE so a later non-empty value updates the row
+            # but a NULL/empty value doesn't wipe out an earlier
+            # populated one.
+            conn.execute("""
+                INSERT INTO military_hourly (
+                    icao, hour_bucket, callsign, aircraft_type, type_desc,
+                    special_label, sighting_count, first_seen_at, last_seen_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                ON CONFLICT (icao, hour_bucket) DO UPDATE SET
+                    callsign       = COALESCE(NULLIF(excluded.callsign, ''),       military_hourly.callsign),
+                    aircraft_type  = COALESCE(NULLIF(excluded.aircraft_type, ''),  military_hourly.aircraft_type),
+                    type_desc      = COALESCE(NULLIF(excluded.type_desc, ''),      military_hourly.type_desc),
+                    special_label  = COALESCE(NULLIF(excluded.special_label, ''),  military_hourly.special_label),
+                    sighting_count = military_hourly.sighting_count + 1,
+                    last_seen_at   = excluded.last_seen_at
+            """, (
+                ac["hex"], hour_bucket, ac["callsign"] or "",
+                ac["aircraft_type"] or "", ac["type_desc"] or "",
+                special_label or "",
+                now, now,
+            ))
             # Special aircraft notification. Only fires for aircraft listed in
             # military.special_aircraft (the ones with custom labels like
             # "Air Force 1"), not every generic military contact. Cooldown per
@@ -2658,6 +3110,29 @@ def fetch_and_store(config: Dict, watchlist_lookup: Dict):
             """, (ac["hex"], ac["callsign"], ac["speed"], ac["lat"], ac["lon"],
                   ac["altitude"], ac["aircraft_type"], ac["type_desc"], now, watch_label, ac["squawk"]))
             watch_count += 1
+            # v3.4.6: keep watchlist_hourly rollup current. PK is THREE-way
+            # (icao, hour_bucket, watchlist_label) because we need to
+            # COUNT(DISTINCT watchlist_label) from the rollup for the
+            # watchlist_rules_hit Stats card. Same callsign/type
+            # COALESCE preservation as the military path.
+            conn.execute("""
+                INSERT INTO watchlist_hourly (
+                    icao, hour_bucket, watchlist_label, callsign,
+                    aircraft_type, type_desc, sighting_count,
+                    first_seen_at, last_seen_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                ON CONFLICT (icao, hour_bucket, watchlist_label) DO UPDATE SET
+                    callsign       = COALESCE(NULLIF(excluded.callsign, ''),       watchlist_hourly.callsign),
+                    aircraft_type  = COALESCE(NULLIF(excluded.aircraft_type, ''),  watchlist_hourly.aircraft_type),
+                    type_desc      = COALESCE(NULLIF(excluded.type_desc, ''),      watchlist_hourly.type_desc),
+                    sighting_count = watchlist_hourly.sighting_count + 1,
+                    last_seen_at   = excluded.last_seen_at
+            """, (
+                ac["hex"], hour_bucket, watch_label,
+                ac["callsign"] or "",
+                ac["aircraft_type"] or "", ac["type_desc"] or "",
+                now, now,
+            ))
             # Watchlist hit notification. Cooldown per ICAO (default 10 min)
             # prevents a plane circling in range from firing every poll.
             _safe_notify(

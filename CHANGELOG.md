@@ -19,6 +19,68 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.6] — 2026-05-12
+
+### Added
+- **Two new hourly rollup tables for the military and watchlist Stats card paths — closing the perf gap that the v3.4.3 diagnostic surfaced on production-scale databases.** The v3.4.3 test-box diagnostic measured `military_count` over the last 365 days at 483 ms and `watchlist_count` at 223 ms on a 5.1 GB / 29M-row database. Both queries are `COUNT(DISTINCT icao)` over a long date range against the raw per-poll tables; both were the slowest hot-path queries remaining after the v2.50.0 sightings_hourly rollup retired the equivalent perf problem for the All tab and Search. v3.4.6 applies the same proven pattern to military and watchlist.
+
+  **What changed:**
+
+  Two new tables added to the schema, both following the `sightings_hourly` shape:
+
+  - **`military_hourly`** — primary key `(icao, hour_bucket)`. Columns: `icao, hour_bucket, callsign, aircraft_type, type_desc, special_label, sighting_count, first_seen_at, last_seen_at`. Indexes: PK plus a covering `(hour_bucket, icao)` for the `COUNT(DISTINCT icao)` Stats card path and a `(hour_bucket, special_label)` for the Specials breakdown card.
+  - **`watchlist_hourly`** — primary key `(icao, hour_bucket, watchlist_label)`, **three-way** instead of two-way. The reason: the `watchlist_count` Stats card returns both `COUNT(DISTINCT icao)` AND `COUNT(DISTINCT watchlist_label)` in the same query. A two-way PK would collapse repeat (icao, hour) pairs but lose which labels each aircraft hit, breaking the rules-hit count. Three-way captures the full (icao × hour × label) cardinality cleanly. Row count is bounded by ICAOs × hours × labels-per-ICAO — still ~70× smaller than per-poll raw rows on typical traffic where most aircraft hit one rule. Indexes: PK plus `(hour_bucket, icao)` and `(hour_bucket, watchlist_label)` covering indexes for the two distinct-count variants.
+
+  **Online write path.** The collector's `record_aircraft_batch` already iterates each aircraft once per poll. Inside the existing `if is_mil:` and `if watch_label:` blocks, v3.4.6 adds an `INSERT ... ON CONFLICT DO UPDATE` to the rollup with the same `COALESCE(NULLIF, existing)` preservation pattern that `sightings_hourly` uses — non-empty values from later polls update the row, but empty/NULL values don't wipe out an earlier populated field. `sighting_count` increments by 1 per poll, `last_seen_at` always updates to the most recent observation. One additional SQL statement per military/watchlist hit per poll. Negligible write overhead — military hits are rare, watchlist hits proportional to configured rules.
+
+  **Backfill on first start after upgrade.** Existing installs with accumulated military/watchlist data get the rollups populated automatically by two new daemon-threaded backfills that mirror the v2.50.0 `_run_hourly_backfill` pattern. Each backfill uses a CTE-with-window-function single-pass aggregate query (PARTITION BY (icao, hour_bucket) for military, three-column for watchlist; ROW_NUMBER ordered by `seen_at DESC` picks the latest sighting per bucket to provide the snapshot fields). Both backfills run concurrently with each other and with the existing `sightings_hourly` backfill — they touch different source and target tables, so no contention. Service startup isn't blocked; the dashboard works normally while backfills run, just with the raw-table fallback queries (slower but correct) until completion. Each backfill marks itself done in `_aerodrome_meta` with its own key (`military_hourly_backfilled`, `watchlist_hourly_backfilled`); subsequent service restarts see the marker and skip re-running. Fresh installs (zero existing rows) mark the backfill complete immediately, so the online write path is the sole writer going forward.
+
+  **Query rewrites.** The five hot-path queries that previously scanned the raw tables now use the rollups, each with a backfill-aware dual-path that falls back to the raw table while migration is in progress:
+  - `military_count` (Stats card "Military: N aircraft")
+  - `military_breakdown` (top types/specials shown alongside the count)
+  - `specials` (Stats card top-5 named specials)
+  - `watchlist_count` + `watchlist_rules_hit` (Stats card "Watchlist: N aircraft, M rules hit")
+  - `military_today` + `watchlist_hits` (per-card filter variant in a different code path)
+
+  The fallback decision reads `collector.get_military_backfill_status()` / `collector.get_watchlist_backfill_status()` and routes to `military_hourly` / `watchlist_hourly` only when `phase == "complete"`. Otherwise the original queries against `military_sightings` / `watchlist_sightings` run unchanged. Same pattern as the v2.50.0 sightings_hourly rollout — installs see a working (slower) dashboard during the migration window, and queries automatically switch to the fast rollup the moment backfill completes.
+
+  **Detail-page queries unchanged.** The Military and Watchlist tab list endpoints (which show the full per-poll sighting details with lat/lon/altitude/speed/callsign per row) continue to query the raw `military_sightings` and `watchlist_sightings` tables. Same for all DELETE/manage operations (rule removal, retention pruning, "purge all"). The rollup is only the right answer for aggregate count queries; the raw tables are still the source of truth for per-sighting detail.
+
+  **Retention parity.** `cleanup_old_data` now prunes the rollup tables in parallel with their raw parents using the same `military_days` / `watchlist_days` cutoff. The cutoff is applied against `last_seen_at` on the rollup (mirrors how the raw tables use `seen_at`) so a bucket survives if its most-recent observation falls within retention. No orphaned rollup rows past the raw retention boundary.
+
+  **Status surface.** The `/api/status` endpoint payload now includes `military_rollup` and `watchlist_rollup` keys alongside the existing `hourly_rollup` — same shape (`phase`, `started_at`, `finished_at`, `rows_processed`, `rows_total`, `error`). The Status page's existing migration-progress banner can show these alongside `hourly_rollup` for installs upgrading with substantial existing data.
+
+  **Perf diagnostic.** The Performance page's diagnostic gets two new probe pairs (`military_count_rollup` + `military_count_raw_fallback`, `watchlist_count_rollup` + `watchlist_count_raw_fallback`) so operators can measure both paths' performance and compare against the backfill state to know which one their install is using right now. The diagnostic Tables section also now lists `military_hourly` and `watchlist_hourly` with their row counts and timestamp spans.
+
+  **Expected perf impact.** Based on the v3.4.3 diagnostic and the v2.50.0 rollup precedent (which reduced the equivalent All-tab query from ~150 ms on a similar dataset to single-digit ms via the rollup), the expected after-upgrade perf:
+  - `military_count` (365d, post-backfill): roughly 5-15 ms (down from 483 ms — a ~30-100× win)
+  - `watchlist_count` (365d, post-backfill): roughly 5-15 ms (down from 223 ms)
+  - `specials` Stats card: noticeable improvement on installs with many specials in the window
+  - `military_today` / `watchlist_hits` per-card paths: also benefit, though they were already faster on the shorter day-scoped window
+
+  Real perf-test against the v3.4.3 5.1 GB dataset will confirm the actual numbers — they should hit single-digit ms based on the underlying row counts (military_hourly will be ~545K source → ~20K rollup rows; watchlist_hourly ~782K → ~30K rollup rows).
+
+  **Scope:**
+  - `collector.py` — two new `CREATE TABLE` statements + four new indexes in `init_db` (~70 lines). Two new `INSERT ... ON CONFLICT DO UPDATE` upserts inside `record_aircraft_batch` (~50 lines). Two new daemon-threaded backfill function pairs (`_start_*_backfill_if_needed` + `_run_*_backfill`) plus their state dicts + locks + getters (~340 lines, modeled directly on `_run_hourly_backfill`). Two new lines invoking the backfill starters at startup. New rollup pruning in `cleanup_old_data` (~25 lines). Total new code: ~485 lines.
+  - `server.py` — five query rewrites with dual-path fallback (~120 lines net), two new status-payload keys, four new perf-diagnostic probes, two new entries in the diagnostic Tables list.
+  - **No schema additions to existing tables, no config changes, no API endpoint additions or removals, no UI flow changes.** 88 endpoints unchanged. SUDOERS_VERSION unchanged at 4.
+
+  **Test contract for v3.4.6:**
+
+  1. **Fresh install path** — install v3.4.6 on a clean box. Rollups should be created empty, backfills marked complete immediately, online write path populates them as polls come in. After a few hours of real traffic, Stats card numbers should match what the raw tables would say.
+
+  2. **Existing-install backfill path** — deploy v3.4.6 to the test box (5.1 GB / 29M raw, ~545K military, ~782K watchlist rows). Watch `sudo journalctl -u aerodrome -f` for the backfill start/complete log lines. Backfills should complete in seconds to a couple minutes for these sizes (the sightings_hourly equivalent processed 7.4M rows in ~2 minutes). After completion, Stats tab should render with the same numbers as before but faster.
+
+  3. **Perf measurement** — run the Performance page diagnostic. Compare `military_count_rollup` vs `military_count_raw_fallback` timings — rollup should be 30-100× faster. Same for watchlist.
+
+  4. **Dual-path correctness** — Stats card numbers should be identical whether served from rollup or raw fallback. Easy check: before backfill completes vs after backfill completes, the displayed counts should match (within the boundary-effect tolerance of one hour at each end, well within Stats-card resolution).
+
+  5. **Retention parity** — after a `cleanup_old_data` cycle, the rollup tables should have no rows whose `last_seen_at` predates the corresponding retention cutoff. Manual check: `SELECT MIN(last_seen_at) FROM military_hourly` should be roughly `now - military_days * 86400`.
+
+  **Operational note for upgrades.** During the first ~minutes after upgrading from v3.4.5 or earlier with substantial existing military/watchlist data, the Stats cards continue to work via raw-table fallback but at the old (slow) performance characteristics. Once both backfills log "complete" (visible in journalctl), the cards switch to the fast rollup automatically — no service restart needed. The Status page exposes the backfill state for visibility.
+
+  **Why this matters long-term.** Aerodrome's retention model means data accumulates indefinitely up to the configured per-tab retention (default 365 days). The v2.50.0 rollup was the architectural decision that made the All tab viable at 365-day retention. v3.4.6 extends that same architecture to Military and Watchlist, closing the perf gap so all three tabs scale identically. With v3.4.6, the only remaining hot-path query that scales with raw row count rather than rollup row count is `seen_aircraft_total` (10.4 ms in the diagnostic, fast enough to not matter), and the FTS5 search path (which uses its own index, not raw scans). The hot-path perf model is now consistent across the dashboard.
+
 ## [3.4.5] — 2026-05-12
 
 ### Fixed

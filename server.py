@@ -1,4 +1,4 @@
-# Version: 3.4.5
+# Version: 3.4.6
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -831,46 +831,105 @@ def compose_daily_summary_data(db_path: str, config: dict,
             }
 
         # Military totals
+        # v3.4.6: query the military_hourly rollup when backfill is complete,
+        # fall back to raw military_sightings while backfill is in progress.
+        # Same dual-path pattern as the v2.50.0 sightings_hourly rollout.
+        # The rollup's hour_bucket is unix-seconds-at-top-of-hour, so the
+        # start_ts/end_ts comparison works identically. Bucket boundary
+        # semantics shift slightly: a bucket survives the WHERE filter if
+        # ANY of its sightings fall within the window. For the 24h+ windows
+        # the Stats cards display, the boundary effect is at most one extra
+        # hour at each end — well within tolerance for these aggregates.
         try:
-            r = c.execute(
-                "SELECT COUNT(DISTINCT icao) AS n FROM military_sightings "
-                "WHERE seen_at >= ? AND seen_at <= ?",
-                (start_ts, end_ts)
-            ).fetchone()
+            _mil_backfill = __import__("collector").get_military_backfill_status()
+            _mil_use_rollup = (_mil_backfill.get("phase") == "complete")
+        except Exception:
+            _mil_use_rollup = False
+        try:
+            if _mil_use_rollup:
+                r = c.execute(
+                    "SELECT COUNT(DISTINCT icao) AS n FROM military_hourly "
+                    "WHERE hour_bucket >= ? AND hour_bucket <= ?",
+                    (start_ts, end_ts)
+                ).fetchone()
+            else:
+                r = c.execute(
+                    "SELECT COUNT(DISTINCT icao) AS n FROM military_sightings "
+                    "WHERE seen_at >= ? AND seen_at <= ?",
+                    (start_ts, end_ts)
+                ).fetchone()
             result["military_count"] = r["n"] if r else 0
 
             # Breakdown — group by aircraft_type (fall back to special_label
-            # if type is blank, since specials often have sparse type info)
-            rows = c.execute("""
-                SELECT
-                    CASE
-                        WHEN special_label IS NOT NULL AND special_label != ''
-                            THEN special_label
-                        WHEN aircraft_type IS NOT NULL AND aircraft_type != ''
-                            THEN aircraft_type
-                        ELSE '(unknown)'
-                    END AS label,
-                    COUNT(DISTINCT icao) AS n
-                FROM military_sightings
-                WHERE seen_at >= ? AND seen_at <= ?
-                GROUP BY label
-                ORDER BY n DESC
-                LIMIT 6
-            """, (start_ts, end_ts)).fetchall()
+            # if type is blank, since specials often have sparse type info).
+            # Same source-table decision as the count above.
+            if _mil_use_rollup:
+                rows = c.execute("""
+                    SELECT
+                        CASE
+                            WHEN special_label IS NOT NULL AND special_label != ''
+                                THEN special_label
+                            WHEN aircraft_type IS NOT NULL AND aircraft_type != ''
+                                THEN aircraft_type
+                            ELSE '(unknown)'
+                        END AS label,
+                        COUNT(DISTINCT icao) AS n
+                    FROM military_hourly
+                    WHERE hour_bucket >= ? AND hour_bucket <= ?
+                    GROUP BY label
+                    ORDER BY n DESC
+                    LIMIT 6
+                """, (start_ts, end_ts)).fetchall()
+            else:
+                rows = c.execute("""
+                    SELECT
+                        CASE
+                            WHEN special_label IS NOT NULL AND special_label != ''
+                                THEN special_label
+                            WHEN aircraft_type IS NOT NULL AND aircraft_type != ''
+                                THEN aircraft_type
+                            ELSE '(unknown)'
+                        END AS label,
+                        COUNT(DISTINCT icao) AS n
+                    FROM military_sightings
+                    WHERE seen_at >= ? AND seen_at <= ?
+                    GROUP BY label
+                    ORDER BY n DESC
+                    LIMIT 6
+                """, (start_ts, end_ts)).fetchall()
             result["military_breakdown"] = [(r["label"], r["n"]) for r in rows]
         except sqlite3.OperationalError:
-            # military_sightings table missing on very old DBs — not fatal
+            # military_sightings or military_hourly missing on very old DBs — not fatal
             pass
 
         # Watchlist
+        # v3.4.6: same dual-path pattern as the military block above.
+        # The three-way PK on watchlist_hourly (icao, hour_bucket,
+        # watchlist_label) is what makes COUNT(DISTINCT watchlist_label)
+        # work correctly on the rollup — see watchlist_hourly schema
+        # comment in collector.py for the rationale.
         try:
-            r = c.execute(
-                "SELECT COUNT(DISTINCT icao) AS n, "
-                "       COUNT(DISTINCT watchlist_label) AS rules "
-                "FROM watchlist_sightings "
-                "WHERE seen_at >= ? AND seen_at <= ?",
-                (start_ts, end_ts)
-            ).fetchone()
+            _watch_backfill = __import__("collector").get_watchlist_backfill_status()
+            _watch_use_rollup = (_watch_backfill.get("phase") == "complete")
+        except Exception:
+            _watch_use_rollup = False
+        try:
+            if _watch_use_rollup:
+                r = c.execute(
+                    "SELECT COUNT(DISTINCT icao) AS n, "
+                    "       COUNT(DISTINCT watchlist_label) AS rules "
+                    "FROM watchlist_hourly "
+                    "WHERE hour_bucket >= ? AND hour_bucket <= ?",
+                    (start_ts, end_ts)
+                ).fetchone()
+            else:
+                r = c.execute(
+                    "SELECT COUNT(DISTINCT icao) AS n, "
+                    "       COUNT(DISTINCT watchlist_label) AS rules "
+                    "FROM watchlist_sightings "
+                    "WHERE seen_at >= ? AND seen_at <= ?",
+                    (start_ts, end_ts)
+                ).fetchone()
             if r:
                 result["watchlist_count"]     = r["n"] or 0
                 result["watchlist_rules_hit"] = r["rules"] or 0
@@ -890,19 +949,36 @@ def compose_daily_summary_data(db_path: str, config: dict,
             # stats_records didn't exist pre-Wave-3
             pass
 
-        # Specials — distinct named special aircraft seen in the window
+        # Specials — distinct named special aircraft seen in the window.
+        # v3.4.6: dual-path same as the military_count block. The rollup
+        # already stores special_label per (icao, hour_bucket), so the
+        # GROUP BY (icao, special_label) maps cleanly to either table.
+        # Reuses _mil_use_rollup decision from the count block above.
         try:
-            rows = c.execute("""
-                SELECT icao, special_label,
-                       MAX(callsign)  AS callsign,
-                       MAX(seen_at)   AS last_seen_at
-                FROM military_sightings
-                WHERE seen_at >= ? AND seen_at <= ?
-                  AND special_label IS NOT NULL AND special_label != ''
-                GROUP BY icao, special_label
-                ORDER BY last_seen_at DESC
-                LIMIT 5
-            """, (start_ts, end_ts)).fetchall()
+            if _mil_use_rollup:
+                rows = c.execute("""
+                    SELECT icao, special_label,
+                           MAX(callsign)       AS callsign,
+                           MAX(last_seen_at)   AS last_seen_at
+                    FROM military_hourly
+                    WHERE hour_bucket >= ? AND hour_bucket <= ?
+                      AND special_label IS NOT NULL AND special_label != ''
+                    GROUP BY icao, special_label
+                    ORDER BY last_seen_at DESC
+                    LIMIT 5
+                """, (start_ts, end_ts)).fetchall()
+            else:
+                rows = c.execute("""
+                    SELECT icao, special_label,
+                           MAX(callsign)  AS callsign,
+                           MAX(seen_at)   AS last_seen_at
+                    FROM military_sightings
+                    WHERE seen_at >= ? AND seen_at <= ?
+                      AND special_label IS NOT NULL AND special_label != ''
+                    GROUP BY icao, special_label
+                    ORDER BY last_seen_at DESC
+                    LIMIT 5
+                """, (start_ts, end_ts)).fetchall()
             result["specials"] = [dict(r) for r in rows]
         except sqlite3.OperationalError:
             pass
@@ -3101,6 +3177,15 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             "hourly_rollup": (lambda: (
                 __import__("collector").get_hourly_backfill_status()
             ))(),
+            # v3.4.6: surface the new military_hourly + watchlist_hourly
+            # backfill states alongside hourly_rollup. Same shape, used
+            # by the same migration-in-progress banner.
+            "military_rollup": (lambda: (
+                __import__("collector").get_military_backfill_status()
+            ))(),
+            "watchlist_rollup": (lambda: (
+                __import__("collector").get_watchlist_backfill_status()
+            ))(),
         }
 
     # --- CSV Export (all sightings for a given tab) ---
@@ -3553,11 +3638,40 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 result["cards"]["average_concurrent"] = round(val, 1)
 
             if card_check("military_today"):
-                row = q("SELECT COUNT(DISTINCT icao) AS n FROM military_sightings WHERE seen_at >= ?", (start_ts,))
+                # v3.4.6: dual-path rollup-or-raw same as the Stats card
+                # block above.
+                try:
+                    _mil_phase = __import__("collector").get_military_backfill_status().get("phase")
+                except Exception:
+                    _mil_phase = None
+                if _mil_phase == "complete":
+                    row = q(
+                        "SELECT COUNT(DISTINCT icao) AS n FROM military_hourly "
+                        "WHERE hour_bucket >= ?",
+                        (start_ts,))
+                else:
+                    row = q(
+                        "SELECT COUNT(DISTINCT icao) AS n FROM military_sightings "
+                        "WHERE seen_at >= ?",
+                        (start_ts,))
                 result["cards"]["military_today"] = row[0]["n"] if row else 0
 
             if card_check("watchlist_hits"):
-                row = q("SELECT COUNT(DISTINCT icao) AS n FROM watchlist_sightings WHERE seen_at >= ?", (start_ts,))
+                # v3.4.6: dual-path rollup-or-raw.
+                try:
+                    _watch_phase = __import__("collector").get_watchlist_backfill_status().get("phase")
+                except Exception:
+                    _watch_phase = None
+                if _watch_phase == "complete":
+                    row = q(
+                        "SELECT COUNT(DISTINCT icao) AS n FROM watchlist_hourly "
+                        "WHERE hour_bucket >= ?",
+                        (start_ts,))
+                else:
+                    row = q(
+                        "SELECT COUNT(DISTINCT icao) AS n FROM watchlist_sightings "
+                        "WHERE seen_at >= ?",
+                        (start_ts,))
                 result["cards"]["watchlist_hits"] = row[0]["n"] if row else 0
 
             if card_check("first_last_contact"):
@@ -7314,6 +7428,9 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 ("watchlist_sightings", "seen_at",       False),
                 ("seen_aircraft",       "first_seen_at", False),
                 ("sightings_hourly",    "hour_bucket",   True),
+                # v3.4.6: parallel rollup tables for military and watchlist
+                ("military_hourly",     "hour_bucket",   True),
+                ("watchlist_hourly",    "hour_bucket",   True),
                 ("hexdb_cache",         "resolved_at",   False),
                 ("hexdb_events",        "ts",            False),
                 ("stats_records",       None,            False),
@@ -7551,16 +7668,35 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 ))
 
             # Q3: Military tab count
+            # v3.4.6: paired probes — rollup path (post-backfill) and
+            # raw fallback (during backfill or on errored installs).
+            # Same pattern as the unique_aircraft probes. Compare
+            # against report["military_rollup"]["phase"] to know
+            # which one matches your production right now.
             queries.append(_time_query(
-                f"military_count (over last {mil_days}d)",
-                "SELECT COUNT(DISTINCT icao) FROM military_sightings WHERE seen_at >= ? AND seen_at <= ?",
+                f"military_count_rollup (military_hourly, last {mil_days}d)",
+                "SELECT COUNT(DISTINCT icao) FROM military_hourly "
+                "WHERE hour_bucket >= ? AND hour_bucket <= ?",
+                (now - mil_days * 86400, now),
+            ))
+            queries.append(_time_query(
+                f"military_count_raw_fallback (military_sightings, last {mil_days}d)",
+                "SELECT COUNT(DISTINCT icao) FROM military_sightings "
+                "WHERE seen_at >= ? AND seen_at <= ?",
                 (now - mil_days * 86400, now),
             ))
 
             # Q4: Watchlist tab count
             queries.append(_time_query(
-                f"watchlist_count (over last {watch_days}d)",
-                "SELECT COUNT(DISTINCT icao) FROM watchlist_sightings WHERE seen_at >= ? AND seen_at <= ?",
+                f"watchlist_count_rollup (watchlist_hourly, last {watch_days}d)",
+                "SELECT COUNT(DISTINCT icao) FROM watchlist_hourly "
+                "WHERE hour_bucket >= ? AND hour_bucket <= ?",
+                (now - watch_days * 86400, now),
+            ))
+            queries.append(_time_query(
+                f"watchlist_count_raw_fallback (watchlist_sightings, last {watch_days}d)",
+                "SELECT COUNT(DISTINCT icao) FROM watchlist_sightings "
+                "WHERE seen_at >= ? AND seen_at <= ?",
                 (now - watch_days * 86400, now),
             ))
 
