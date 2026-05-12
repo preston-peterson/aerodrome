@@ -1,9 +1,9 @@
 # Aerodrome
-<!-- Version: 3.4.3 -->
+<!-- Version: 3.4.4 -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Platform: Ubuntu](https://img.shields.io/badge/platform-Ubuntu-orange.svg)](https://ubuntu.com/)
+[![Platform: Linux (Debian, Fedora, Arch, openSUSE)](https://img.shields.io/badge/platform-Linux-orange.svg)](https://www.linux.org/)
 
 Aerodrome turns your home ADS-B receiver into a dashboard you'd actually
 leave open. It's not a replacement for FlightAware — it shows you _your_

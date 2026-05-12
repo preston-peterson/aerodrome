@@ -19,6 +19,31 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.4] — 2026-05-12
+
+### Fixed
+- **Continuing the v3.4.3 docs-accuracy work — three more multi-distro staleness misses from v3.2.0 that the v3.4.3 pass didn't catch.** v3.2.0 expanded tier-1 support from Debian/Ubuntu alone to Debian, Fedora, Arch, and openSUSE; v3.3.0 added universal `/opt/aerodrome` and firewalld awareness; v3.4.3 corrected most user-facing references. But a screenshot of `docs/INSTALL.md` surfaced that the Curl Install walkthrough still described the bootstrap as if Debian were the only target — explicitly saying *"fresh Ubuntu 22.04+ or Debian 12+ host"* and *"confirms a recognized Debian-family system"* and *"apt-installs unzip and python3-venv"*. None of those have been accurate since v3.2.0. v3.4.4 corrects them, plus two adjacent misses found in the same audit.
+
+  **What changed:**
+  - **`docs/INSTALL.md` — Curl Install walkthrough (Option 1).** Step 1 *"Platform check — confirms a recognized Debian-family system"* rewritten to describe what the bootstrap actually does: *"detects the distro family from `/etc/os-release` (Debian, Fedora, Arch, or openSUSE) and selects the matching package manager (apt, dnf, pacman, or zypper)."* Step 3 *"apt-installs `unzip` and `python3-venv`"* rewritten to *"installs `unzip` and Python's venv module via the detected package manager,"* with the explanatory note that the venv module is bundled into `python3` on Fedora/Arch/openSUSE rather than separately packaged. Step 6 expanded to include the interactive *"Real receiver or demo mode?"* menu prompt (v3.1.0 feature, never documented in this section). Step 8 expanded to mention the firewalld port-8000 prompt on Fedora/openSUSE. Opening paragraph *"On a fresh Ubuntu 22.04+ or Debian 12+ host"* changed to *"On a fresh host running any tier-1 distro (see Requirements above)"* — the Requirements section already lists all four families accurately, so referring back is correct and avoids duplicating the list.
+  - **`docs/INSTALL.md` — Self-hosted ntfy section.** *"Self-hosted — runs on the same Ubuntu server as Aerodrome"* changed to *"Self-hosted — runs on the same host as Aerodrome (any tier-1 distro)."* ntfy's one-click installer has worked on all four tier-1 families since v3.2.0; the Ubuntu-only assertion was just leftover phrasing.
+  - **`README.md` — Platform badge.** The shields.io badge at the top of the README said *"Platform: Ubuntu"* with an Ubuntu link. Replaced with a Linux-generic badge that names all four tier-1 families in its alt text. The badge is the first impression for anyone landing on the GitHub repo and saying "Ubuntu" when we mean "any of four families" was actively misleading.
+
+  **What was left alone (intentional):**
+  - `docs/INSTALL.md:46` Requirements section listing Ubuntu as a Debian-family example — accurate, intentional.
+  - `docs/INSTALL.md:458, 494` references to "Debian/Ubuntu and Arch don't enable firewalld by default" — accurate technical statement, not misleading scope claim.
+  - `README.md:165` Requirements list of `apt-get (Debian/Ubuntu/Raspberry Pi OS), dnf (Fedora/RHEL/Rocky/Alma), pacman (Arch/Manjaro), or zypper (openSUSE)` — accurate, intentional.
+  - `DEVELOPMENT.md:33` reference to Ubuntu/Debian's PEP 668 protected-Python behavior — accurate technical statement specific to that distro family.
+
+  **The retrospective lesson, filed forward.** v3.4.3 was specifically a "post-v3.3.0 path-references audit." But the audit was scoped to path references (`~/aerodrome` vs `/opt/aerodrome`) and missed the parallel staleness in distro-support references that v3.2.0 introduced. The pattern is the same: a release expands scope (v3.2.0 to four distro families, v3.3.0 to /opt), the docs get partially updated, and stale assertions persist in surfaces nobody checks until a user happens to read them. **The cleaner discipline going forward: when running a docs-accuracy pass after a scope change, grep for the OLD scope's distinctive vocabulary, not just the OLD path strings.** For multi-distro this means: "Debian-family", "Ubuntu 22", "apt install", "python3-venv" — those are the fingerprints of the pre-v3.2.0 single-distro phrasing.
+
+  **Scope:**
+  - `docs/INSTALL.md` — Curl Install walkthrough (8 steps + opening paragraph) rewritten for multi-distro accuracy + demo-mode prompt + firewalld step (~25 lines net). Self-hosted ntfy section's "same Ubuntu server" corrected (~1 line).
+  - `README.md` — Platform badge replaced with Linux-generic badge naming all four tier-1 families (~1 line).
+  - **No code-behavior changes, no schema changes, no API changes, no UI flow changes.** Strictly text accuracy. 88 endpoints unchanged. SUDOERS_VERSION unchanged at 4.
+
+  **Operational note:** users already on v3.4.x see no functional difference. The Curl Install instructions now match what the bootstrap actually does on Fedora/Arch/openSUSE; the README badge stops implying Ubuntu-only support; the ntfy self-hosted section accurately describes any-tier-1-distro support. Pure docs-quality release.
+
 ## [3.4.3] — 2026-05-12
 
 ### Fixed

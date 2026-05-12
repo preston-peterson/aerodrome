@@ -127,7 +127,8 @@ git checkout.
 
 ### Option 1 — Curl install (recommended)
 
-On a fresh Ubuntu 22.04+ or Debian 12+ host with no Aerodrome installed:
+On a fresh host running any tier-1 distro (see Requirements above) with no
+Aerodrome installed:
 
 ```bash
 bash <(curl -fsSL https://install.aerodromeadsb.com)
@@ -135,29 +136,37 @@ bash <(curl -fsSL https://install.aerodromeadsb.com)
 
 That's it. The bootstrap walks through eight steps:
 
-1. **Platform check** — confirms a recognized Debian-family system. On
-   unrecognized distros, prints a warning and requires `--force` to
-   proceed.
+1. **Platform check** — detects the distro family from `/etc/os-release`
+   (Debian, Fedora, Arch, or openSUSE) and selects the matching package
+   manager (apt, dnf, pacman, or zypper). On unrecognized distros, prints
+   a warning and requires `--force` to proceed.
 2. **Existing-install check** — refuses to overwrite an existing install
    and points you at the in-app updater instead.
-3. **Prerequisites** — `apt`-installs `unzip` and `python3-venv` if
-   they're missing.
+3. **Prerequisites** — installs `unzip` and Python's venv module via the
+   detected package manager if they're missing. (On Debian-family this is
+   the separate `python3-venv` package; on Fedora, Arch, and openSUSE the
+   venv module is bundled into the main `python3` package, so no separate
+   install is needed.)
 4. **Release resolution** — queries the GitHub Releases API for the
    latest release tag (or accepts `--version vX.Y.Z` to pin).
 5. **Download + verify** — pulls `aerodrome-vX.Y.Z.zip` and the matching
    `.sha256` file from the GitHub Releases page, verifies the checksum,
    and refuses to proceed if it doesn't match.
-6. **Initial configuration** — interactive prompts for the bare minimum:
-   receiver IP/port, optional receiver latitude/longitude (enables the
-   Distance column), and distance unit. Time zone is auto-detected from
-   `/etc/timezone` or `timedatectl` and used silently — change it later
-   in the web UI's Configuration page.
+6. **Mode + initial configuration** — first asks **Real receiver or
+   demo mode?** (interactive menu — pick [1] for a real receiver, [2]
+   to install a synthetic feeder alongside Aerodrome for testing). Then
+   prompts for the bare minimum: receiver IP/port (skipped in demo mode),
+   optional receiver latitude/longitude (enables the Distance column),
+   and distance unit. Time zone is auto-detected from `/etc/timezone`
+   or `timedatectl` and used silently — change it later in the web UI's
+   Configuration page.
 7. **Extract + handoff** — extracts to `/opt/aerodrome` (configurable with
    `--prefix`), patches `config.yaml` with the prompted values, and
    hands off to the bundled `install.sh`.
 8. **install.sh runs** — creates a Python venv, installs dependencies,
    writes the systemd unit, installs a scoped `sudoers.d` rule for the
-   in-UI restart button, and starts the service.
+   in-UI restart button, opens port 8000 on firewalld-managed hosts
+   (Fedora, openSUSE), and starts the service.
 
 When complete, open `http://your-host:8000/` and visit the gear menu →
 Configuration to adjust the auto-detected timezone, set up a watchlist,
@@ -1058,8 +1067,8 @@ notifications:
    it private. Public ntfy.sh has generous free-tier limits — more
    than enough for personal use.
 
-2. **Self-hosted** — runs on the same Ubuntu server as Aerodrome. The
-   Notifications tab has a one-click installer that downloads the
+2. **Self-hosted** — runs on the same host as Aerodrome (any tier-1 distro).
+   The Notifications tab has a one-click installer that downloads the
    ntfy binary from GitHub (verified by SHA256), installs it as a
    systemd service, and auto-fills your subscription URL. Default
    port 2586, bind 0.0.0.0 so your phone on the same LAN can
