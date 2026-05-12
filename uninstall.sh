@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.3.0
+# Version: 3.3.1
 # =============================================================================
 # Aerodrome — Uninstall Script
 # =============================================================================
@@ -119,7 +119,7 @@ if [ -f /etc/sudoers.d/aerodrome ]; then
 fi
 
 # --- Step 2: Remove virtual environment ---
-echo -e "${CYAN}[2/5]${RESET} Removing Python virtual environment..."
+echo -e "${CYAN}[2/6]${RESET} Removing Python virtual environment..."
 if [ -d "${INSTALL_DIR}/venv" ]; then
     rm -rf "${INSTALL_DIR}/venv"
     echo -e "  ${GREEN}✓${RESET} venv/ removed"
@@ -128,14 +128,14 @@ else
 fi
 
 # --- Step 3: Remove PID file ---
-echo -e "${CYAN}[3/5]${RESET} Removing runtime files..."
+echo -e "${CYAN}[3/6]${RESET} Removing runtime files..."
 rm -f "${INSTALL_DIR}/.tracker.pid"
 find "${INSTALL_DIR}" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 find "${INSTALL_DIR}" -name "*.pyc" -delete 2>/dev/null || true
 echo -e "  ${GREEN}✓${RESET} PID file and Python caches removed"
 
 # --- Step 4: Handle data files (prompt or flag-driven) ---
-echo -e "${CYAN}[4/5]${RESET} Handling data files..."
+echo -e "${CYAN}[4/6]${RESET} Handling data files..."
 
 remove_or_keep() {
     local path="$1"

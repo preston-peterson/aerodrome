@@ -1,4 +1,4 @@
-# Version: 3.3.0
+# Version: 3.3.1
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -5659,6 +5659,50 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 },
             )
 
+        # v3.3.1: post-validation runtime check — reject configs that
+        # would put notifications into a silent-failure state. The
+        # scenario: notifications.enabled=true with notifications.url
+        # pointing at localhost, but no local ntfy server is installed.
+        # The client-side gate disables the checkbox in this state, but
+        # a raw API caller (or a stale browser tab) could still POST it.
+        # Defense in depth.
+        nt = (new_cfg.get("notifications") or {})
+        if nt.get("enabled") is True:
+            url = (nt.get("url") or "").strip().lower()
+            is_local_url = (
+                url.startswith("http://localhost") or
+                url.startswith("http://127.0.0.1") or
+                url.startswith("https://localhost") or
+                url.startswith("https://127.0.0.1")
+            )
+            if is_local_url:
+                try:
+                    from ntfy_installer import install_status
+                    ns = install_status()
+                    if ns.get("state") in ("not_installed", "partial"):
+                        return JSONResponse(
+                            status_code=400,
+                            content={
+                                "ok": False,
+                                "errors": [{
+                                    "path": "notifications.enabled",
+                                    "message": (
+                                        "Local ntfy server is not installed, "
+                                        "but notifications.url points at "
+                                        "localhost. Notifications would "
+                                        "silently fail. Install ntfy via "
+                                        "Configuration → Notifications → "
+                                        "'Install local ntfy', or change "
+                                        "the URL to an external ntfy server."
+                                    ),
+                                }],
+                            },
+                        )
+                except ImportError:
+                    pass  # ntfy_installer unavailable; let it through
+                except Exception:
+                    pass  # don't block config save on a check failure
+
         # Diff against current config to determine what changed
         changed_paths = diff_keys(CONFIG, new_cfg)
         needs_restart = requires_restart(changed_paths)
@@ -6371,10 +6415,62 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             # Only restore if ntfy is actually installed here AND managed
             # by Aerodrome (same gate as export). Otherwise save the bytes
             # to the install dir so the user can manually move them later.
+            #
+            # v3.3.1: NEW behavior for state == 'not_installed' — if the
+            # backup contains an ntfy config, the user previously had an
+            # Aerodrome-managed ntfy here, so auto-install ntfy first and
+            # then restore the config over it. The user gets back to
+            # functional parity without having to know about service-level
+            # state. Other non-managed states (external, system_managed)
+            # still stash the file because we never take over a user's
+            # own ntfy install.
             try:
-                from ntfy_installer import install_status, CONFIG_FILE as NTFY_CONFIG_FILE, _sudo_run
+                from ntfy_installer import (
+                    install_status, install as ntfy_install,
+                    CONFIG_FILE as NTFY_CONFIG_FILE, _sudo_run,
+                )
                 ns = install_status()
-                if ns.get("state") == "aerodrome_managed":
+
+                # v3.3.1 auto-install branch
+                if ns.get("state") == "not_installed":
+                    try:
+                        install_result = ntfy_install()
+                        if install_result.get("ok"):
+                            warnings.append(
+                                "Re-installed Aerodrome-managed ntfy server "
+                                "(was not present in the new install — restored "
+                                "from backup automatically)."
+                            )
+                            ns = install_status()  # re-check; should be aerodrome_managed
+                        else:
+                            # install() refused (probably external-managed
+                            # race or sudoers issue) — stash and continue
+                            stash_path = install_dir / f"ntfy-server.yml.from-backup.{ts}"
+                            stash_path.write_bytes(ntfy_bytes)
+                            skipped.append({
+                                "file": "ntfy/server.yml",
+                                "reason": f"Auto-install of ntfy failed: "
+                                          f"{install_result.get('message', 'unknown error')}. "
+                                          f"Saved to {stash_path.name}; install ntfy "
+                                          f"manually via the Notifications tab if you "
+                                          f"want notifications restored.",
+                            })
+                            ns = None  # signal "don't try to restore config below"
+                    except Exception as e:
+                        stash_path = install_dir / f"ntfy-server.yml.from-backup.{ts}"
+                        stash_path.write_bytes(ntfy_bytes)
+                        skipped.append({
+                            "file": "ntfy/server.yml",
+                            "reason": f"ntfy auto-install failed: {e}. Saved to "
+                                      f"{stash_path.name}; install manually via "
+                                      f"the Notifications tab.",
+                        })
+                        ns = None
+
+                # Restore config — covers both the original aerodrome_managed
+                # case AND the v3.3.1 auto-install case (which transitions to
+                # aerodrome_managed after a successful install).
+                if ns is not None and ns.get("state") == "aerodrome_managed":
                     # Write through sudo — same path the installer uses
                     _sudo_run(["tee", str(NTFY_CONFIG_FILE)],
                               input_text=ntfy_bytes.decode("utf-8"))
@@ -6389,9 +6485,8 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                         "server's LAN IP. Check it in the Notifications tab if your "
                         "phones can't reach ntfy after restore."
                     )
-                else:
-                    # ntfy not aerodrome-managed — save bytes to install dir
-                    # for the user to apply manually later
+                elif ns is not None:
+                    # External or system-managed ntfy — never take over
                     stash_path = install_dir / f"ntfy-server.yml.from-backup.{ts}"
                     stash_path.write_bytes(ntfy_bytes)
                     skipped.append({

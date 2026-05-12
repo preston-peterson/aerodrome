@@ -1,4 +1,4 @@
-<!-- Version: 3.3.0 -->
+<!-- Version: 3.3.1 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2809,10 +2809,84 @@ async function loadNtfyStatus() {
             const showLogs = state === 'aerodrome_managed' || state === 'external';
             logsCard.style.display = showLogs ? '' : 'none';
         }
+
+        // v3.3.1: gate the "Notifications enabled" checkbox. When
+        // notifications.url points at localhost/127.0.0.1 AND ntfy
+        // isn't installed locally, enabling notifications would
+        // silently fail. Disable the checkbox + show an inline warning
+        // with an "Install local ntfy" pointer. Users with external
+        // ntfy URLs (ntfy.sh, custom servers, Tailscale tunnels) are
+        // unaffected — we trust the URL they provided.
+        _updateNotificationsEnabledGate();
     } catch (e) {
         panel.innerHTML = `<span style="color:var(--red)">Error: ${escapeAttr(e.message)}</span>`;
     }
 }
+
+// v3.3.1: helper for the notifications-enabled gate. Called whenever
+// either the URL field changes or ntfy status reloads, so the gate
+// stays in sync as the user edits config.
+function _updateNotificationsEnabledGate() {
+    const enabledCb = document.querySelector('input[data-path="notifications.enabled"]');
+    const urlInput = document.querySelector('input[data-path="notifications.url"]');
+    if (!enabledCb) return;
+
+    const url = (urlInput?.value || '').trim();
+    const state = nfNtfyStatus?.status?.state;
+
+    // Conditions that block enable:
+    //   1. URL points at localhost/127.0.0.1 (so we need a local ntfy), AND
+    //   2. Local ntfy is not_installed (or partial — installed binary but
+    //      no working service)
+    const isLocalUrl = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(url);
+    const needsLocalNtfy = isLocalUrl &&
+        (state === 'not_installed' || state === 'partial');
+
+    // Remove any prior warning element
+    const wrapper = enabledCb.closest('.form-row, .form-grid > div, label, div');
+    let warningEl = document.getElementById('nfEnabledGateWarning');
+    if (warningEl) warningEl.remove();
+
+    if (needsLocalNtfy) {
+        // Disable the checkbox; if it was checked, uncheck it (so the
+        // user can't save a config that'd silently fail).
+        enabledCb.disabled = true;
+        enabledCb.title = 'Install local ntfy first — the URL points at '
+                        + 'localhost but no local ntfy server is running';
+        if (enabledCb.checked) {
+            enabledCb.checked = false;
+            enabledCb.dispatchEvent(new Event('change', {bubbles: true}));
+        }
+        // Inline warning next to the checkbox label
+        warningEl = document.createElement('div');
+        warningEl.id = 'nfEnabledGateWarning';
+        warningEl.style.cssText = 'grid-column:1/-1;padding:8px 12px;'
+            + 'margin-top:6px;background:rgba(251,191,36,0.08);'
+            + 'border:1px solid rgba(251,191,36,0.4);border-radius:6px;'
+            + 'font-size:13px;line-height:1.5;color:var(--t1)';
+        warningEl.innerHTML =
+            '<span style="color:#fbbf24;font-weight:600">⚠ Local ntfy not installed.</span> '
+            + 'Notifications would silently fail with this URL. '
+            + 'Install local ntfy below, then re-check this box.';
+        // Insert directly after the checkbox's parent grid cell
+        if (enabledCb.parentElement) {
+            enabledCb.parentElement.insertAdjacentElement('afterend', warningEl);
+        }
+    } else {
+        // Conditions cleared — re-enable the checkbox
+        enabledCb.disabled = false;
+        enabledCb.title = '';
+    }
+}
+
+// v3.3.1: re-run the gate whenever the URL field changes so the user
+// sees the gate update live (e.g. switching from localhost:2586 to
+// ntfy.sh should immediately re-enable the checkbox).
+document.addEventListener('input', function(e) {
+    if (e.target && e.target.matches('input[data-path="notifications.url"]')) {
+        _updateNotificationsEnabledGate();
+    }
+});
 
 function _renderNtfyPanel(statusPayload) {
     const s = statusPayload.status || {};

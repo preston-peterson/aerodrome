@@ -476,12 +476,44 @@ else
 fi
 
 # Python version check (need 3.10+)
-PY_OK=$(python3 -c 'import sys; print("yes" if sys.version_info >= (3,10) else "no")' 2>/dev/null || echo "no")
-if [ "$PY_OK" != "yes" ]; then
-    log_err "Python 3.10+ required; found $(python3 --version 2>&1 || echo 'none')"
-    echo ""
-    echo "  On older Ubuntu/Debian releases you may need a newer python3 from"
-    echo "  the deadsnakes PPA or a backport. See docs/INSTALL.md."
+# v3.3.1: capture both stdout and stderr so we can show real errors
+# when the interpreter is broken (not just "old"). Common case: a
+# distro Python install with corrupt bytecode or broken site hooks
+# fails every -c invocation, which previously surfaced as a
+# misleading "version too old" message pointing at deadsnakes.
+_py_check_out=$(python3 -c 'import sys; print("yes" if sys.version_info >= (3,10) else "no")' 2>&1)
+_py_check_rc=$?
+if [ "$_py_check_rc" -ne 0 ] || [ "$_py_check_out" != "yes" ]; then
+    # Two distinct failure modes:
+    #   1. python3 -c failed entirely (broken install, stale bytecode,
+    #      bad site-packages hook) — stderr probably has a traceback
+    #   2. python3 -c succeeded but reported the wrong version
+    _py_version_str=$(python3 --version 2>&1 || echo 'none')
+    _py_version_works=false
+    if [ "$_py_check_rc" -eq 0 ] && [ "$_py_check_out" = "no" ]; then
+        # Case 2: interpreter ran fine, version is genuinely too old
+        log_err "Python 3.10+ required; found $_py_version_str"
+        echo ""
+        echo "  On older Ubuntu/Debian releases you may need a newer python3 from"
+        echo "  the deadsnakes PPA or a backport. See docs/INSTALL.md."
+    else
+        # Case 1: interpreter is broken (or python3 doesn't exist at all)
+        log_err "Python interpreter is not working correctly"
+        echo "  Reports version: $_py_version_str"
+        echo ""
+        echo "  Output from 'python3 -c ...':"
+        echo "$_py_check_out" | sed 's/^/    /'
+        echo ""
+        echo "  This usually means a broken Python install — try reinstalling"
+        echo "  Python via your distro's package manager. For example:"
+        case "$PKG_FAMILY" in
+            debian)   echo "    sudo apt-get install --reinstall python3" ;;
+            fedora)   echo "    sudo dnf reinstall python3" ;;
+            arch)     echo "    sudo pacman -S python" ;;
+            opensuse) echo "    sudo zypper install --force python3" ;;
+            *)        echo "    (use your distro's package manager to reinstall python3)" ;;
+        esac
+    fi
     exit 1
 fi
 log_ok "Python $(python3 --version | cut -d' ' -f2)"
