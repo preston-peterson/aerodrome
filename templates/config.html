@@ -1,4 +1,4 @@
-<!-- Version: 3.3.1 -->
+<!-- Version: 3.4.0 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -3910,6 +3910,7 @@ function sectionBackupRestore() {
     queueMicrotask(loadBackupList);
     queueMicrotask(loadFullBackupPreview);
     queueMicrotask(loadPreRestoreList);
+    queueMicrotask(loadServerSideBackups);  // v3.4.0
 
     return `
     <div class="section">
@@ -3961,6 +3962,79 @@ function sectionBackupRestore() {
                         Restore &amp; restart
                     </button>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-head">
+            <div class="section-title">Server-side backup</div>
+            <div class="section-sub">create and restore backups without going through the browser — needed for large databases</div>
+        </div>
+
+        <div style="padding:14px;background:var(--bg1);border:1px solid var(--bdr);border-radius:6px;margin-bottom:16px;">
+            <div style="font-size:11px;color:var(--t2);line-height:1.6;margin-bottom:12px">
+                Server-side backup writes a complete backup zip directly to
+                <code id="ssBackupsDir">&lt;install_dir&gt;/.backups/</code> on this host,
+                with no browser transfer. For large databases (multi-GB) this is the
+                only practical option — browser uploads stop working reliably above
+                ~2 GB regardless of cap settings. Move the file off this host with
+                <code>scp</code> or <code>rsync</code> for safekeeping (the
+                <em>Copy command</em> button gives you the right command).
+            </div>
+
+            <!-- Create server-side backup -->
+            <div style="border-top:1px solid var(--bdr);padding-top:14px;margin-top:4px;margin-bottom:14px">
+                <div style="font-size:13px;font-weight:500;color:var(--t1);margin-bottom:6px;">
+                    Create new server-side backup
+                </div>
+                <div style="font-size:11px;color:var(--t3);font-family:var(--mono);margin-bottom:10px;">
+                    Writes <code>aerodrome-backup-&lt;timestamp&gt;.zip</code> to
+                    <code>.backups/</code>. Uses SQLite's online backup API so the
+                    service keeps running while the backup is built.
+                </div>
+                <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center">
+                    <button class="btn btn-primary" id="ssCreateBtn" onclick="createServerSideBackup()">
+                        Create server-side backup
+                    </button>
+                    <div id="ssProgress" style="font-size:11px;color:var(--t2);font-family:var(--mono);display:none">
+                        Starting…
+                    </div>
+                </div>
+            </div>
+
+            <!-- List existing server-side backups -->
+            <div style="border-top:1px solid var(--bdr);padding-top:14px;margin-top:4px;margin-bottom:14px">
+                <div style="font-size:13px;font-weight:500;color:var(--t1);margin-bottom:6px;">
+                    Existing server-side backups
+                </div>
+                <div id="ssBackupsSummary" style="font-size:11px;color:var(--t2);font-family:var(--mono);margin-bottom:10px">
+                    Loading…
+                </div>
+                <div id="ssBackupsList" class="br-list" style="margin-bottom:10px"></div>
+                <button class="btn btn-ghost" onclick="loadServerSideBackups()" style="font-size:11px">↻ Refresh</button>
+            </div>
+
+            <!-- Restore from path (advanced) -->
+            <div style="border-top:1px solid var(--bdr);padding-top:14px;margin-top:4px">
+                <div style="font-size:13px;font-weight:500;color:var(--t1);margin-bottom:6px;">
+                    Restore from a path on disk
+                </div>
+                <div style="font-size:11px;color:var(--t3);font-family:var(--mono);margin-bottom:10px;">
+                    Restore from a backup zip you scp'd onto this host. The path must
+                    be inside <code>.backups/</code>; if your file is elsewhere,
+                    move it there first. This is destructive — the existing
+                    <code>config.yaml</code>, database, and ntfy config will be
+                    replaced. A <code>.pre-restore</code> safety snapshot is
+                    created first.
+                </div>
+                <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:8px">
+                    <input type="text" id="ssRestorePath" class="input" style="flex:1;min-width:280px;font-family:var(--mono);font-size:12px"
+                           placeholder="/opt/aerodrome/.backups/aerodrome-backup-20260512-150658.zip">
+                </div>
+                <button class="btn btn-red" id="ssRestoreBtn" onclick="restoreFromServerPath()">
+                    Restore &amp; restart
+                </button>
             </div>
         </div>
     </div>
@@ -4397,6 +4471,210 @@ function downloadConfig(){
     a.href = '/api/config/export';
     a.click();
     toast('Downloading...', 'ok');
+}
+
+// =============================================================================
+// v3.4.0: Server-side backup UI
+// =============================================================================
+//
+// Mirrors the browser-mediated backup/restore but writes the zip directly
+// to disk in .backups/ rather than streaming it through the browser. Needed
+// for databases larger than ~2 GB where the browser becomes the bottleneck.
+
+let ssCreatePollInterval = null;
+
+async function createServerSideBackup() {
+    const btn = document.getElementById('ssCreateBtn');
+    const prog = document.getElementById('ssProgress');
+    btn.disabled = true;
+    btn.textContent = 'Creating…';
+    prog.style.display = '';
+    prog.textContent = 'Starting backup…';
+
+    // Start polling for progress before the POST resolves — the
+    // backup runs synchronously server-side but can take a long time,
+    // so the user wants to see live progress.
+    ssCreatePollInterval = setInterval(async () => {
+        try {
+            const r = await fetch('/api/backup/create-server-side/progress');
+            const j = await r.json();
+            if (j.ok && j.running) {
+                const mb = (j.bytes_written / (1024*1024)).toFixed(1);
+                prog.textContent = `${j.phase} (${j.percent}%, ${mb} MB written)`;
+            }
+        } catch (e) { /* network blip — keep polling */ }
+    }, 1000);
+
+    try {
+        const r = await fetch('/api/backup/create-server-side', {method: 'POST'});
+        const j = await r.json();
+        clearInterval(ssCreatePollInterval);
+        ssCreatePollInterval = null;
+
+        if (!r.ok || !j.ok) {
+            prog.style.display = 'none';
+            await alertModal('Backup failed',
+                j.message || 'Server returned an error.', 'error');
+            return;
+        }
+
+        const mb = (j.bytes / (1024*1024)).toFixed(1);
+        const sha = j.sha256 ? j.sha256.slice(0, 12) + '…' : '(not computed)';
+        prog.textContent = `✓ Backup created (${mb} MB, sha256: ${sha}, ${j.duration_seconds}s)`;
+        toast('Server-side backup created', 'ok');
+        await loadServerSideBackups();  // refresh the list
+    } catch (e) {
+        clearInterval(ssCreatePollInterval);
+        ssCreatePollInterval = null;
+        prog.style.display = 'none';
+        await alertModal('Backup failed', 'Network error: ' + e.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Create server-side backup';
+    }
+}
+
+async function loadServerSideBackups() {
+    const list = document.getElementById('ssBackupsList');
+    const summary = document.getElementById('ssBackupsSummary');
+    if (!list) return;
+    try {
+        const r = await fetch('/api/backup/list-server-side');
+        const j = await r.json();
+        if (!j.ok) throw new Error(j.message || 'Failed to load backups');
+
+        if (j.count === 0) {
+            summary.textContent = 'No server-side backups yet.';
+            list.innerHTML = '';
+            return;
+        }
+        const totalMb = (j.total_bytes / (1024*1024)).toFixed(1);
+        summary.textContent = `${j.count} backup(s), ${totalMb} MB total`;
+
+        list.innerHTML = j.backups.map(b => {
+            const mb = (b.bytes / (1024*1024)).toFixed(1);
+            const dt = new Date(b.mtime * 1000).toLocaleString();
+            const sha = b.sha256 ? b.sha256.slice(0, 12) + '…' : '(no sidecar)';
+            return `
+                <div style="padding:10px 12px;background:var(--bg0);border:1px solid var(--bdr);border-radius:4px;margin-bottom:8px">
+                    <div style="font-family:var(--mono);font-size:12px;color:var(--t1);margin-bottom:4px">
+                        ${escapeAttr(b.filename)}
+                    </div>
+                    <div style="font-family:var(--mono);font-size:11px;color:var(--t3);margin-bottom:8px">
+                        ${mb} MB · ${escapeAttr(dt)} · sha256: ${escapeAttr(sha)}
+                    </div>
+                    <div style="display:flex;flex-wrap:wrap;gap:8px">
+                        <button class="btn btn-primary" style="font-size:11px;padding:4px 10px"
+                                onclick='restoreFromServerPathDirect(${JSON.stringify(b.path)})'>
+                            Restore from this
+                        </button>
+                        <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px"
+                                onclick='copyScpCommand(${JSON.stringify(b.filename)})'>
+                            Copy scp command
+                        </button>
+                        <button class="btn btn-red" style="font-size:11px;padding:4px 10px"
+                                onclick='deleteServerSideBackup(${JSON.stringify(b.filename)})'>
+                            Delete
+                        </button>
+                    </div>
+                </div>`;
+        }).join('');
+    } catch (e) {
+        summary.textContent = 'Error: ' + e.message;
+        list.innerHTML = '';
+    }
+}
+
+function copyScpCommand(filename) {
+    // Template the scp invocation from the user's perspective —
+    // they're sitting at their laptop pulling FROM this Aerodrome host.
+    // We don't know their user/host, so use placeholder text they can
+    // edit. window.location.hostname is the right host name from their
+    // viewpoint since that's how they reached us.
+    const host = window.location.hostname || 'aerodrome-host';
+    const remoteUser = 'user';  // generic placeholder; user will edit to their actual SSH login
+    // We don't reliably know the install_dir from the client, so use
+    // .backups/ relative — most users have install_dir aliased in their
+    // shell or can complete the path. Show full absolute path in a hint.
+    const cmd = `scp ${remoteUser}@${host}:/opt/aerodrome/.backups/${filename} ./`;
+    navigator.clipboard.writeText(cmd).then(() => {
+        toast('scp command copied — edit username if needed', 'ok');
+    }, (err) => {
+        // Fallback: prompt
+        prompt('Copy this scp command:', cmd);
+    });
+}
+
+async function restoreFromServerPathDirect(path) {
+    document.getElementById('ssRestorePath').value = path;
+    await restoreFromServerPath();
+}
+
+async function restoreFromServerPath() {
+    const path = document.getElementById('ssRestorePath').value.trim();
+    if (!path) {
+        await alertModal('No path', 'Enter a path to a backup file.', 'error');
+        return;
+    }
+    if (!confirm(
+        `Restore from this backup?\n\n${path}\n\n` +
+        `This is DESTRUCTIVE — current config.yaml, database, and ntfy config will be replaced. ` +
+        `A .pre-restore safety snapshot will be created first. The service will restart.`
+    )) return;
+
+    const btn = document.getElementById('ssRestoreBtn');
+    btn.disabled = true;
+    btn.textContent = 'Restoring…';
+
+    try {
+        const r = await fetch('/api/backup/restore-from-path', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({path: path}),
+        });
+        const j = await r.json();
+        if (!r.ok || !j.ok) {
+            await alertModal('Restore failed',
+                j.message || 'Server returned an error.', 'error');
+            return;
+        }
+
+        const restoredLines = Object.entries(j.restored || {}).map(([k, v]) =>
+            `✓ ${k}: ${v.bytes ? (v.bytes/1024).toFixed(1) + ' KB' : 'restored'}` +
+            (v.prior_backup ? ` (prior saved as ${v.prior_backup})` : ''));
+        const skippedLines = (j.skipped || []).map(s => `· ${s.file}: ${s.reason}`);
+        const warningLines = (j.warnings || []).map(w => `⚠ ${w}`);
+        const allLines = [...restoredLines, ...skippedLines, ...warningLines];
+
+        await alertModal('Restore complete — service restarting',
+            'The backup has been applied. The page will reload in a few seconds.\n\n' +
+            allLines.join('\n'), 'success');
+        setTimeout(() => window.location.reload(), 5000);
+    } catch (e) {
+        await alertModal('Restore failed', 'Network error: ' + e.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Restore & restart';
+    }
+}
+
+async function deleteServerSideBackup(filename) {
+    if (!confirm(`Delete this backup permanently?\n\n${filename}\n\nThis cannot be undone.`)) {
+        return;
+    }
+    try {
+        const r = await fetch(`/api/backup/server-side/${encodeURIComponent(filename)}`,
+                              {method: 'DELETE'});
+        const j = await r.json();
+        if (!r.ok || !j.ok) {
+            await alertModal('Delete failed', j.message || 'Server error', 'error');
+            return;
+        }
+        toast(`Deleted ${filename}`, 'ok');
+        await loadServerSideBackups();
+    } catch (e) {
+        await alertModal('Delete failed', 'Network error: ' + e.message, 'error');
+    }
 }
 
 function onUploadFileChosen(input){

@@ -1198,6 +1198,62 @@ is running the same Aerodrome version or a newer one. Different
 Aerodrome versions handle config auto-migration the same way they
 do on an in-place upgrade.
 
+### Server-side backup (v3.4.0)
+
+The browser-mediated Full backup flow works well for small databases
+but becomes impractical above a few GB — the browser becomes the
+bottleneck. v3.4.0 introduces a server-side flow that writes the
+backup directly to `<install_dir>/.backups/` on the host, then leaves
+the off-host transfer to `scp` or `rsync`. This is the right model
+for production-scale databases where the history is hundreds of MB
+per day and retention is months or years.
+
+**Creating a server-side backup:** open Configuration → Backup &
+Restore → Server-side backup → "Create server-side backup". The
+backup writes to `<install_dir>/.backups/aerodrome-backup-<timestamp>.zip`
+with a sidecar `.sha256` file. Uses the same SQLite online-backup API
+as the browser flow, so the service keeps running. The UI shows live
+progress; on a busy host with 50 GB of history, expect 10–20 minutes.
+
+**Moving the backup off-host:** click the "Copy scp command" button
+next to any backup in the list — it copies a templated `scp` command
+to your clipboard:
+
+```bash
+scp user@aerodrome-host:/opt/aerodrome/.backups/aerodrome-backup-20260512-150658.zip ./
+```
+
+Edit the username if needed, then paste-and-run from your laptop or
+backup destination. For routine off-host backup, set up rsync from
+cron on a separate host:
+
+```bash
+# On the backup destination, daily:
+rsync -avP user@aerodrome-host:/opt/aerodrome/.backups/ ./aerodrome-backups/
+```
+
+**Restoring from a server-side backup:** copy the zip back onto the
+host's `.backups/` directory (via scp or `cp` if it's already on the
+machine), then in the UI use Configuration → Backup & Restore →
+Server-side backup → "Restore from a path on disk" with the full path.
+The destructive-confirm modal shows what will be replaced and a
+`.pre-restore` safety snapshot is created first, same as any other
+restore.
+
+**Which flow to use:**
+
+| Database size | Recommended flow |
+|---|---|
+| Under ~500 MB | Browser-mediated Full backup is fastest |
+| ~500 MB – 2 GB | Either works; browser upload may need patience |
+| Over 2 GB | Server-side backup — browser uploads stop working reliably above this |
+| Over 50 GB | Server-side backup + filesystem snapshot considerations |
+
+At very large scale (hundreds of GB), the right pattern shifts again
+to filesystem-level snapshots (ZFS, btrfs, LVM) or WAL shipping;
+those are out of scope for Aerodrome itself but the server-side
+flow gives you the building block.
+
 ## Project structure
 
 ```

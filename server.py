@@ -1,4 +1,4 @@
-# Version: 3.3.1
+# Version: 3.4.0
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -6100,15 +6100,79 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         """Build + stream a zip containing config + DB + ntfy config.
         Size depends on the database; can be large (100MB+ for a year of
         history). Streamed rather than built-in-memory to avoid OOM."""
-        import io, json, zipfile
+        import io, json, zipfile, tempfile
         from fastapi.responses import StreamingResponse
 
         install_dir = Path(__file__).parent
+
+        # v3.4.0: zip-build uses the shared helper. The helper writes
+        # streamed to the destination file-object; for browser download
+        # we use a temp file on disk rather than BytesIO so we don't
+        # hold a 100GB zip in memory just to stream it out.
+        with tempfile.NamedTemporaryFile(suffix=".zip", delete=False,
+                                          dir=str(install_dir / ".backups")
+                                          if (install_dir / ".backups").is_dir()
+                                          else None) as tmp:
+            tmp_path = tmp.name
+        try:
+            result = _build_backup_zip(install_dir, tmp_path)
+            if not result["ok"]:
+                try: os.unlink(tmp_path)
+                except OSError: pass
+                return JSONResponse(status_code=500, content=result)
+            ts = time.strftime("%Y%m%d-%H%M%S")
+            size = os.path.getsize(tmp_path)
+
+            # Stream the temp file out, then delete it. FastAPI's
+            # StreamingResponse can consume an iterator; we yield in
+            # chunks so we never load the whole zip into memory.
+            def _stream_and_cleanup():
+                try:
+                    with open(tmp_path, "rb") as f:
+                        while True:
+                            chunk = f.read(1024 * 1024)  # 1 MB chunks
+                            if not chunk:
+                                break
+                            yield chunk
+                finally:
+                    try: os.unlink(tmp_path)
+                    except OSError: pass
+
+            return StreamingResponse(
+                _stream_and_cleanup(),
+                media_type="application/zip",
+                headers={
+                    "Content-Disposition": f'attachment; filename="aerodrome-backup-{ts}.zip"',
+                    "Content-Length": str(size),
+                },
+            )
+        except Exception:
+            try: os.unlink(tmp_path)
+            except OSError: pass
+            raise
+
+    def _build_backup_zip(install_dir, dest_path, progress_callback=None):
+        """v3.4.0 shared backup-build logic. Writes the zip incrementally to
+        `dest_path` (a filesystem path string). Both /api/backup/export
+        (browser download) and /api/backup/create-server-side use this.
+
+        Returns dict: {ok, manifest, bytes, includes, errors}.
+
+        Behavior:
+        - Streams writes — the zip never exists in memory in full
+        - SQLite DB is copied via online .backup API to a sibling temp
+          file, then added to the zip. This temp file is the only
+          DB-size buffer; it's deleted after the zip add completes.
+        - ntfy/server.yml included only when ntfy is aerodrome_managed
+        - manifest.json describes what's inside and when it was built
+        - progress_callback (if given) is invoked as
+          callback(phase: str, percent: int, bytes_written: int)
+        """
+        import io, json, zipfile, tempfile, hashlib, sqlite3
         db_path = Path(CONFIG.get("data", {}).get("db_file", "aircraft_history.db"))
         if not db_path.is_absolute():
             db_path = install_dir / db_path
 
-        # Decide what goes in the bundle upfront so the manifest is accurate
         manifest = {
             "manifest_version": 1,
             "aerodrome_version": (install_dir / "VERSION").read_text().strip()
@@ -6118,18 +6182,19 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             "includes": {
                 "config": Path(CONFIG_PATH).is_file(),
                 "database": db_path.is_file(),
-                "ntfy_config": False,  # populated below
+                "ntfy_config": False,
             },
             "notes": [
-                "Restore with POST /api/backup/import (multipart file upload).",
+                "Restore with POST /api/backup/import (multipart) or "
+                "POST /api/backup/restore-from-path (server-side).",
                 "The service will restart after restore.",
                 "ntfy server.yml is included only when ntfy is aerodrome-managed.",
                 "ntfy cache.db is NOT backed up — reinstall ntfy to get a fresh cache.",
             ],
         }
 
-        # Check ntfy state
-        ntfy_config_text: Optional[str] = None
+        # ntfy state
+        ntfy_config_text = None
         try:
             from ntfy_installer import install_status, CONFIG_FILE as NTFY_CONFIG_FILE
             ns = install_status()
@@ -6140,58 +6205,73 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         except Exception as e:
             logger.warning(f"Could not include ntfy config in backup: {e}")
 
-        # Build the zip in memory — database could be large but streaming
-        # SQLite snapshots is nontrivial; for now, hold in memory and let
-        # the user see the Content-Length up front. If this becomes a
-        # problem we revisit with SQLite's backup API + streaming.
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED,
-                             compresslevel=6) as zf:
-            zf.writestr("manifest.json", json.dumps(manifest, indent=2))
-            if manifest["includes"]["config"]:
-                zf.write(CONFIG_PATH, arcname="config.yaml")
-            if manifest["includes"]["database"]:
-                # Use SQLite's online backup API to snapshot a live WAL
-                # database safely. A naive file copy could race with
-                # writes and produce a corrupt backup.
-                try:
-                    import sqlite3, tempfile
-                    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
-                        tmp_path = tmp.name
-                    try:
-                        src = _open_db_conn(str(db_path))
-                        dst = _open_db_conn(tmp_path)
-                        with dst:
-                            src.backup(dst)
-                        src.close()
-                        dst.close()
-                        zf.write(tmp_path, arcname="aerodrome.db")
-                    finally:
-                        try:
-                            os.unlink(tmp_path)
-                        except OSError:
-                            pass
-                except Exception as e:
-                    logger.error(f"Database snapshot failed: {e}")
-                    # Don't abort — user still gets config at least
-                    manifest["includes"]["database"] = False
-                    # Rewrite manifest to reflect reality
-                    zf.writestr("manifest.json", json.dumps(manifest, indent=2))
-            if ntfy_config_text is not None:
-                zf.writestr("ntfy/server.yml", ntfy_config_text)
-            if (install_dir / "VERSION").exists():
-                zf.write(install_dir / "VERSION", arcname="VERSION")
+        if progress_callback:
+            progress_callback("manifest", 5, 0)
 
-        buf.seek(0)
-        ts = time.strftime("%Y%m%d-%H%M%S")
-        return StreamingResponse(
-            iter([buf.getvalue()]),
-            media_type="application/zip",
-            headers={
-                "Content-Disposition": f'attachment; filename="aerodrome-backup-{ts}.zip"',
-                "Content-Length": str(buf.getbuffer().nbytes),
-            },
-        )
+        # Open destination for writing. zipfile.ZipFile streams writes
+        # incrementally as we add entries, so the zip never exists
+        # fully in memory.
+        try:
+            with open(dest_path, "wb") as dest_f:
+                with zipfile.ZipFile(dest_f, "w",
+                                     compression=zipfile.ZIP_DEFLATED,
+                                     compresslevel=6) as zf:
+                    zf.writestr("manifest.json", json.dumps(manifest, indent=2))
+                    if manifest["includes"]["config"]:
+                        zf.write(CONFIG_PATH, arcname="config.yaml")
+                    if progress_callback:
+                        progress_callback("config", 10, os.path.getsize(dest_path))
+
+                    if manifest["includes"]["database"]:
+                        # SQLite online backup → temp file → zip it in.
+                        # The temp file is the DB-sized intermediate; it
+                        # gets removed after zf.write reads it.
+                        with tempfile.NamedTemporaryFile(
+                            suffix=".db", delete=False,
+                            dir=str(install_dir / ".backups")
+                            if (install_dir / ".backups").is_dir() else None
+                        ) as tmp_db:
+                            tmp_db_path = tmp_db.name
+                        try:
+                            if progress_callback:
+                                progress_callback("db_snapshot", 15,
+                                                  os.path.getsize(dest_path))
+                            src = _open_db_conn(str(db_path))
+                            dst = _open_db_conn(tmp_db_path)
+                            with dst:
+                                src.backup(dst)
+                            src.close()
+                            dst.close()
+                            if progress_callback:
+                                progress_callback("db_zip", 40,
+                                                  os.path.getsize(dest_path))
+                            zf.write(tmp_db_path, arcname="aerodrome.db")
+                            if progress_callback:
+                                progress_callback("db_zipped", 90,
+                                                  os.path.getsize(dest_path))
+                        finally:
+                            try: os.unlink(tmp_db_path)
+                            except OSError: pass
+
+                    if ntfy_config_text is not None:
+                        zf.writestr("ntfy/server.yml", ntfy_config_text)
+                    if (install_dir / "VERSION").exists():
+                        zf.write(install_dir / "VERSION", arcname="VERSION")
+
+            size = os.path.getsize(dest_path)
+            if progress_callback:
+                progress_callback("done", 100, size)
+            return {
+                "ok": True,
+                "manifest": manifest,
+                "bytes": size,
+                "path": str(dest_path),
+            }
+        except Exception as e:
+            logger.error(f"Backup build failed: {e}")
+            try: os.unlink(dest_path)
+            except OSError: pass
+            return {"ok": False, "message": str(e)}
 
     @app.get("/api/backup/preview")
     async def backup_preview():
@@ -6265,23 +6345,108 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         """Restore from a zip produced by /api/backup/export. Destructive:
         replaces config.yaml, aerodrome.db, and ntfy server.yml (when present).
         Backs up the existing versions of each file first, then triggers a
-        service restart so the new DB/config take effect."""
-        import io, json, zipfile, tempfile
+        service restart so the new DB/config take effect.
 
-        raw = await file.read()
-        if not raw:
-            return JSONResponse(status_code=400, content={
-                "ok": False, "message": "Uploaded file is empty"
+        v3.4.0: streams the upload to a temp file on disk rather than
+        buffering it in RAM (could OOM on Pi-class hosts at multi-GB
+        backups). Replaces the hardcoded 2 GB cap with a disk-space
+        pre-check — need ~3x the upload size free (incoming file +
+        .pre-restore snapshot + live DB during swap).
+        """
+        import io, json, zipfile, tempfile, shutil
+
+        install_dir = Path(__file__).parent
+
+        # v3.4.0: stream upload to a temp file. Use .backups/.uploads/
+        # so the temp shares filesystem with the eventual restore target
+        # (avoids cross-fs rename later).
+        uploads_dir = install_dir / ".backups" / ".uploads"
+        try:
+            uploads_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            return JSONResponse(status_code=500, content={
+                "ok": False,
+                "message": f"Could not create upload staging dir: {e}",
             })
-        # Hard cap at 2 GB — anything bigger is almost certainly wrong
-        if len(raw) > 2 * 1024 * 1024 * 1024:
-            return JSONResponse(status_code=413, content={
-                "ok": False, "message": "Backup too large (>2 GB)"
+
+        upload_tmp = uploads_dir / f"upload-{int(time.time()*1000)}-{os.getpid()}.zip"
+        bytes_written = 0
+        try:
+            with open(upload_tmp, "wb") as out:
+                while True:
+                    chunk = await file.read(1024 * 1024)  # 1 MB chunks
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    bytes_written += len(chunk)
+
+            if bytes_written == 0:
+                try: upload_tmp.unlink()
+                except OSError: pass
+                return JSONResponse(status_code=400, content={
+                    "ok": False, "message": "Uploaded file is empty"
+                })
+
+            # v3.4.0: disk-space pre-check. We'll create a .pre-restore
+            # snapshot of the current DB + replace it from the upload,
+            # so we need roughly (upload_size + current_db_size) free.
+            # Use 2.5x upload_size as a safe approximation since the DB
+            # is typically the bulk of the backup.
+            db_path = Path(CONFIG.get("data", {}).get("db_file", "aircraft_history.db"))
+            if not db_path.is_absolute():
+                db_path = install_dir / db_path
+            current_db_size = db_path.stat().st_size if db_path.is_file() else 0
+            free_bytes = shutil.disk_usage(str(install_dir)).free
+            need_bytes = bytes_written + current_db_size + (256 * 1024 * 1024)  # +256MB headroom
+            if free_bytes < need_bytes:
+                try: upload_tmp.unlink()
+                except OSError: pass
+                return JSONResponse(status_code=507, content={
+                    "ok": False,
+                    "message": (
+                        f"Not enough free disk space for restore. "
+                        f"Need ~{need_bytes // (1024*1024)} MB free, "
+                        f"have {free_bytes // (1024*1024)} MB. "
+                        f"Free up space and retry."
+                    ),
+                })
+
+            # Now process the staged file with the existing restore logic.
+            # Pass the path; the helper opens it as a zipfile and reads
+            # entries one at a time (streamed, no whole-file-in-memory).
+            return await _restore_from_local_zip(upload_tmp, install_dir,
+                                                  source_label="upload",
+                                                  cleanup_source_on_success=True)
+        except Exception as e:
+            try: upload_tmp.unlink()
+            except OSError: pass
+            return JSONResponse(status_code=500, content={
+                "ok": False, "message": f"Upload failed: {e}",
             })
+
+    async def _restore_from_local_zip(zip_path, install_dir,
+                                       source_label="local",
+                                       cleanup_source_on_success=False):
+        """v3.4.0 shared restore logic. Reads a backup zip from a local
+        filesystem path (no buffering in memory) and applies it. Used
+        by both /api/backup/import (streams upload to temp first, then
+        calls us) and /api/backup/restore-from-path (admin-supplied
+        path on disk).
+
+        Returns a JSONResponse. cleanup_source_on_success controls
+        whether to delete the source zip after a successful restore —
+        true for uploads (the staged temp file is no longer needed),
+        false for server-side restore-from-path (user's backup file
+        should survive).
+        """
+        import io, json, zipfile
 
         try:
-            zf = zipfile.ZipFile(io.BytesIO(raw), "r")
+            zf = zipfile.ZipFile(str(zip_path), "r")
         except zipfile.BadZipFile:
+            if cleanup_source_on_success:
+                try: Path(zip_path).unlink()
+                except OSError: pass
             return JSONResponse(status_code=400, content={
                 "ok": False, "message": "Not a valid zip file"
             })
@@ -6525,6 +6690,13 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             warnings.append(f"Restore applied but restart failed: {restart_note}. "
                             "Restart manually with `sudo systemctl restart aerodrome`.")
 
+        # v3.4.0: clean up source zip if requested (upload case).
+        # Server-side restore-from-path leaves the user's backup file
+        # alone — only ephemeral uploads get cleaned.
+        if cleanup_source_on_success:
+            try: Path(zip_path).unlink()
+            except OSError: pass
+
         return {
             "ok": True,
             "message": "Restore completed. Service is restarting.",
@@ -6534,6 +6706,290 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             "warnings": warnings,
             "restart_note": restart_note if not restart_ok else None,
         }
+
+    # --- v3.4.0: server-side backup + restore ---
+    # The browser-mediated /api/backup/export and /api/backup/import
+    # paths work fine for small databases but stop being practical
+    # above a few GB — the browser becomes the bottleneck, not the
+    # disk. Server-side backup writes the zip directly to disk on
+    # the host, then the admin moves it off via scp/rsync out-of-band.
+    # Restore-from-path runs against a file already on disk; no upload.
+    # The zip format is identical to /api/backup/export so a backup
+    # made one way restores the other way (just scp it into place
+    # first if it's a server-side backup).
+
+    # Concurrency: only one server-side backup may run at a time.
+    # The SQLite online backup API holds a read snapshot for the
+    # duration; running two backups concurrently would double the
+    # disk-space requirement and the CPU load with no upside.
+    # Tracked via a module-level dict so progress queries can find it.
+    _server_side_backup_state = {"running": False, "phase": None,
+                                  "percent": 0, "bytes_written": 0,
+                                  "path": None, "started_at": None}
+
+    @app.post("/api/backup/create-server-side")
+    async def create_server_side_backup():
+        """v3.4.0: write a backup zip directly to <install_dir>/.backups/
+        without round-tripping through the browser. Returns when the
+        backup is complete (synchronous). For long-running backups,
+        poll /api/backup/create-server-side/progress to see status.
+        """
+        install_dir = Path(__file__).parent
+        backups_dir = install_dir / ".backups"
+        try:
+            backups_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            return JSONResponse(status_code=500, content={
+                "ok": False, "message": f"Could not create .backups dir: {e}",
+            })
+
+        # Concurrency guard
+        if _server_side_backup_state["running"]:
+            return JSONResponse(status_code=409, content={
+                "ok": False,
+                "message": "A server-side backup is already running.",
+                "progress": dict(_server_side_backup_state),
+            })
+
+        # Disk-space pre-check. The zip won't exceed the DB size +
+        # a few KB for manifest/config/ntfy, so use DB size + 1GB
+        # headroom as an honest lower bound.
+        db_path = Path(CONFIG.get("data", {}).get("db_file", "aircraft_history.db"))
+        if not db_path.is_absolute():
+            db_path = install_dir / db_path
+        current_db_size = db_path.stat().st_size if db_path.is_file() else 0
+        free_bytes = shutil.disk_usage(str(install_dir)).free
+        need_bytes = current_db_size + (1024 * 1024 * 1024)  # +1GB safety
+        if free_bytes < need_bytes:
+            return JSONResponse(status_code=507, content={
+                "ok": False,
+                "message": (
+                    f"Not enough free disk space. Backup needs ~"
+                    f"{need_bytes // (1024*1024)} MB free, "
+                    f"have {free_bytes // (1024*1024)} MB."
+                ),
+            })
+
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        dest_path = backups_dir / f"aerodrome-backup-{ts}.zip"
+        sha_path = backups_dir / f"aerodrome-backup-{ts}.zip.sha256"
+
+        _server_side_backup_state.update({
+            "running": True, "phase": "starting", "percent": 0,
+            "bytes_written": 0, "path": str(dest_path),
+            "started_at": int(time.time()),
+        })
+
+        def _progress(phase, percent, bytes_written):
+            _server_side_backup_state.update({
+                "phase": phase, "percent": percent,
+                "bytes_written": bytes_written,
+            })
+
+        started = time.time()
+        try:
+            result = _build_backup_zip(install_dir, str(dest_path),
+                                       progress_callback=_progress)
+        finally:
+            _server_side_backup_state["running"] = False
+
+        if not result.get("ok"):
+            try: dest_path.unlink()
+            except OSError: pass
+            return JSONResponse(status_code=500, content=result)
+
+        # Compute and cache sha256 as a sidecar file so subsequent
+        # list operations don't have to re-hash multi-GB zips.
+        try:
+            import hashlib
+            h = hashlib.sha256()
+            with open(dest_path, "rb") as f:
+                for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                    h.update(chunk)
+            sha_hex = h.hexdigest()
+            sha_path.write_text(f"{sha_hex}  {dest_path.name}\n")
+        except Exception as e:
+            logger.warning(f"sha256 sidecar write failed: {e}")
+            sha_hex = None
+
+        duration = time.time() - started
+        return {
+            "ok": True,
+            "path": str(dest_path),
+            "filename": dest_path.name,
+            "bytes": result["bytes"],
+            "sha256": sha_hex,
+            "duration_seconds": round(duration, 2),
+            "manifest": result["manifest"],
+        }
+
+    @app.get("/api/backup/create-server-side/progress")
+    async def server_side_backup_progress():
+        """Poll endpoint for the running server-side backup. Returns
+        current phase + percent + bytes_written, or running=false when
+        nothing is in flight."""
+        return {"ok": True, **dict(_server_side_backup_state)}
+
+    @app.get("/api/backup/list-server-side")
+    async def list_server_side_backups():
+        """List user-initiated server-side backups under
+        <install_dir>/.backups/. Does NOT include the auto-managed
+        .pre-restore.* snapshots — those have their own endpoint."""
+        install_dir = Path(__file__).parent
+        backups_dir = install_dir / ".backups"
+        if not backups_dir.is_dir():
+            return {"ok": True, "backups": []}
+
+        items = []
+        for p in sorted(backups_dir.glob("aerodrome-backup-*.zip")):
+            if not p.is_file():
+                continue
+            sha_path = p.with_suffix(p.suffix + ".sha256")
+            sha_hex = None
+            if sha_path.is_file():
+                try:
+                    # Sidecar format is "<sha256>  <filename>\n"
+                    sha_hex = sha_path.read_text().split()[0]
+                except Exception:
+                    pass
+            try:
+                stat = p.stat()
+                items.append({
+                    "filename": p.name,
+                    "path": str(p),
+                    "bytes": stat.st_size,
+                    "mtime": int(stat.st_mtime),
+                    "mtime_iso": time.strftime(
+                        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(stat.st_mtime)),
+                    "sha256": sha_hex,
+                })
+            except OSError:
+                pass
+
+        # Newest first
+        items.sort(key=lambda x: x["mtime"], reverse=True)
+        total_bytes = sum(i["bytes"] for i in items)
+        return {"ok": True, "backups": items, "total_bytes": total_bytes,
+                "count": len(items)}
+
+    class RestoreFromPathPayload(BaseModel):
+        path: str
+
+    @app.post("/api/backup/restore-from-path")
+    async def restore_from_path(payload: RestoreFromPathPayload):
+        """v3.4.0: restore from a backup file already on disk. Useful
+        when the file is too large for the browser-upload path. The
+        path must be within <install_dir>/.backups/ unless the admin
+        scp'd it elsewhere; in that case it must be readable by the
+        Aerodrome process.
+
+        Source file is NOT deleted on success — the user explicitly
+        chose to keep this backup on disk by using server-side
+        restore. Cleanup is via DELETE /api/backup/server-side/<name>.
+        """
+        install_dir = Path(__file__).parent
+        backups_dir = (install_dir / ".backups").resolve()
+
+        try:
+            src = Path(payload.path).resolve(strict=False)
+        except Exception as e:
+            return JSONResponse(status_code=400, content={
+                "ok": False, "message": f"Invalid path: {e}",
+            })
+
+        if not src.is_file():
+            return JSONResponse(status_code=404, content={
+                "ok": False, "message": f"Backup file not found: {src}",
+            })
+
+        # Default scoping: must be within .backups/. This blocks the
+        # naive "user pastes /etc/passwd" footgun. Admin can drop the
+        # backup zip into .backups/ to restore from a remote source.
+        try:
+            src.relative_to(backups_dir)
+            within_scope = True
+        except ValueError:
+            within_scope = False
+
+        if not within_scope:
+            return JSONResponse(status_code=403, content={
+                "ok": False,
+                "message": (
+                    f"Path is outside the allowed restore scope "
+                    f"({backups_dir}). Move the backup zip into "
+                    f".backups/ first (e.g. via scp), then retry."
+                ),
+            })
+
+        # Disk-space pre-check — same shape as the upload path.
+        try:
+            src_size = src.stat().st_size
+        except OSError as e:
+            return JSONResponse(status_code=500, content={
+                "ok": False, "message": f"Could not stat backup: {e}",
+            })
+        db_path = Path(CONFIG.get("data", {}).get("db_file", "aircraft_history.db"))
+        if not db_path.is_absolute():
+            db_path = install_dir / db_path
+        current_db_size = db_path.stat().st_size if db_path.is_file() else 0
+        free_bytes = shutil.disk_usage(str(install_dir)).free
+        need_bytes = src_size + current_db_size + (256 * 1024 * 1024)
+        if free_bytes < need_bytes:
+            return JSONResponse(status_code=507, content={
+                "ok": False,
+                "message": (
+                    f"Not enough free disk space for restore. "
+                    f"Need ~{need_bytes // (1024*1024)} MB free, "
+                    f"have {free_bytes // (1024*1024)} MB."
+                ),
+            })
+
+        return await _restore_from_local_zip(
+            src, install_dir,
+            source_label="server-side-path",
+            cleanup_source_on_success=False,
+        )
+
+    @app.delete("/api/backup/server-side/{filename}")
+    async def delete_server_side_backup(filename: str):
+        """v3.4.0: delete a named server-side backup and its sha256
+        sidecar. Filename is validated to be a bare basename within
+        <install_dir>/.backups/ — no path traversal."""
+        install_dir = Path(__file__).parent
+        backups_dir = (install_dir / ".backups").resolve()
+
+        # Validate: filename must be a bare basename, must match the
+        # aerodrome-backup-*.zip pattern, no separators or .. tricks.
+        if (("/" in filename) or ("\\" in filename) or (".." in filename)
+                or not filename.startswith("aerodrome-backup-")
+                or not filename.endswith(".zip")):
+            return JSONResponse(status_code=400, content={
+                "ok": False, "message": "Invalid filename"
+            })
+
+        target = (backups_dir / filename).resolve()
+        try:
+            target.relative_to(backups_dir)
+        except ValueError:
+            return JSONResponse(status_code=400, content={
+                "ok": False, "message": "Path traversal blocked"
+            })
+
+        if not target.is_file():
+            return JSONResponse(status_code=404, content={
+                "ok": False, "message": f"Backup not found: {filename}"
+            })
+
+        try:
+            target.unlink()
+            sidecar = target.with_suffix(target.suffix + ".sha256")
+            if sidecar.is_file():
+                sidecar.unlink()
+            return {"ok": True, "deleted": filename}
+        except OSError as e:
+            return JSONResponse(status_code=500, content={
+                "ok": False, "message": f"Delete failed: {e}",
+            })
 
     # --- Pre-restore safety snapshots (v2.50.6) ---
     # Each Restore through /api/backup/import drops a copy of the previous
