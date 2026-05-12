@@ -1,4 +1,4 @@
-# Version: 3.4.8
+# Version: 3.4.9
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -6186,21 +6186,51 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
         return payload
 
+    # v3.4.9: helper for size-bounded UploadFile reads. The previous
+    # pattern was `raw = await file.read(); if len(raw) > MAX: reject`,
+    # which loads the ENTIRE upload into memory before the size check
+    # fires — a malicious 100GB upload to a 256KB-limit endpoint
+    # allocates 100GB of RAM before rejection. Same class of bug as
+    # the v3.4.0 OOM-kill on large restore uploads, just smaller in
+    # absolute terms because the endpoints have lower limits.
+    #
+    # This helper streams the upload in chunks and aborts as soon as
+    # cumulative size exceeds max_bytes — a too-large upload allocates
+    # at most max_bytes + one chunk, not the full malicious size.
+    # Returns (bytes, None) on success or (None, error_message) on
+    # size-exceeded / read failure. Caller still handles the response.
+    #
+    # Use for small bounded uploads where we want the bytes in
+    # memory (config.yaml at <256KB, update zip at <50MB). For
+    # larger uploads (restore backups up to 2GB), keep using the
+    # stream-to-temp-file pattern from /api/backup/import.
+    async def _read_upload_bounded(file: UploadFile, max_bytes: int):
+        CHUNK = 64 * 1024  # 64 KB — small enough to bound overshoot
+        total = 0
+        chunks: List[bytes] = []
+        try:
+            while True:
+                chunk = await file.read(CHUNK)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    return None, f"Upload exceeds size limit ({max_bytes} bytes)"
+                chunks.append(chunk)
+        except Exception as e:
+            return None, f"Upload read failed: {e}"
+        return b"".join(chunks), None
+
     @app.post("/api/config/import")
     async def import_config(file: UploadFile = File(...)):
         """Upload a user-supplied config.yaml, validate, back up current, replace, restart."""
-        try:
-            raw = await file.read()
-            text = raw.decode("utf-8", errors="replace")
-        except Exception as e:
-            return JSONResponse(status_code=400, content={"ok": False, "error": f"Upload read failed: {e}"})
-
-        # Sanity: reject very large files (>256 KB is plenty for a config)
-        if len(raw) > 256 * 1024:
-            return JSONResponse(status_code=413, content={
-                "ok": False,
-                "error": "Uploaded file is too large (limit: 256 KB)"
-            })
+        # v3.4.9: size-bounded stream-read. Was unbounded `await file.read()`
+        # followed by post-hoc len() check, which allocated full upload
+        # before rejection. Now aborts as soon as the 256 KB cap is hit.
+        raw, err = await _read_upload_bounded(file, 256 * 1024)
+        if err is not None:
+            return JSONResponse(status_code=413, content={"ok": False, "error": err})
+        text = raw.decode("utf-8", errors="replace")
 
         ok, payload = _apply_config_from_text(text, f"upload {file.filename!r}")
         if not ok:
@@ -6669,6 +6699,22 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         # Read + validate manifest first — we refuse to apply a backup
         # from a wildly different manifest version we don't understand.
         try:
+            # v3.4.9: defense-in-depth size check on the zip entry
+            # before zf.read(). ZipInfo.file_size is free metadata
+            # from the zip's central directory — bounding manifest.json
+            # at 64 KB catches the "small outer zip containing a giant
+            # inner entry" zip-bomb pattern. The restore upload itself
+            # is already capped at 2 GB (v3.4.0/v3.4.1) so this is
+            # belt-and-suspenders, but the cost is one if-statement
+            # and the upside is no OOM path through this route.
+            manifest_info = zf.getinfo(manifest_path)
+            if manifest_info.file_size > 64 * 1024:
+                return JSONResponse(status_code=400, content={
+                    "ok": False,
+                    "message": (f"manifest.json is improbably large "
+                                f"({manifest_info.file_size} bytes; "
+                                f"expected <64 KB). Refusing to read."),
+                })
             manifest_bytes = zf.read(manifest_path)
             manifest = json.loads(manifest_bytes.decode("utf-8"))
         except (KeyError, json.JSONDecodeError, UnicodeDecodeError) as e:
@@ -6697,6 +6743,16 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
         # --- 1. config.yaml ---
         try:
+            # v3.4.9: defense-in-depth size check on zip entry.
+            # Same 256 KB limit as /api/config/import accepts on upload.
+            cfg_info = zf.getinfo(prefix + "config.yaml")
+            if cfg_info.file_size > 256 * 1024:
+                skipped.append({
+                    "file": "config.yaml",
+                    "reason": (f"improbably large ({cfg_info.file_size} bytes; "
+                               f"expected <256 KB); skipped to avoid OOM"),
+                })
+                raise KeyError("config.yaml size exceeds limit")
             cfg_bytes = zf.read(prefix + "config.yaml")
             cfg_text = cfg_bytes.decode("utf-8")
             # Back up the current config before overwriting
@@ -6817,6 +6873,17 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
         # --- 3. ntfy/server.yml ---
         try:
+            # v3.4.9: defense-in-depth size check on zip entry.
+            # ntfy server.yml is typically a few hundred bytes to a
+            # few KB; 256 KB is enormously generous.
+            ntfy_info = zf.getinfo(prefix + "ntfy/server.yml")
+            if ntfy_info.file_size > 256 * 1024:
+                skipped.append({
+                    "file": "ntfy/server.yml",
+                    "reason": (f"improbably large ({ntfy_info.file_size} bytes; "
+                               f"expected <256 KB); skipped to avoid OOM"),
+                })
+                raise KeyError("ntfy/server.yml size exceeds limit")
             ntfy_bytes = zf.read(prefix + "ntfy/server.yml")
             # Only restore if ntfy is actually installed here AND managed
             # by Aerodrome (same gate as export). Otherwise save the bytes
@@ -8466,16 +8533,19 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         update_dir = install_dir / "update"
         MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
 
-        raw = await file.read()
+        # v3.4.9: size-bounded stream-read. Was unbounded `await file.read()`
+        # followed by post-hoc len() check, which allocated full upload
+        # before rejection. Now aborts as soon as the 50 MB cap is hit.
+        raw, err = await _read_upload_bounded(file, MAX_UPLOAD_BYTES)
+        if err is not None:
+            return JSONResponse(status_code=413, content={
+                "ok": False,
+                "error": (f"{err}. Aerodrome release zips are a few MB; "
+                          f"did you upload a full backup?")
+            })
         if not raw:
             return JSONResponse(status_code=400, content={
                 "ok": False, "error": "Uploaded file is empty"
-            })
-        if len(raw) > MAX_UPLOAD_BYTES:
-            return JSONResponse(status_code=413, content={
-                "ok": False,
-                "error": f"Upload too large ({len(raw)} bytes). "
-                         f"Aerodrome release zips are a few MB; did you upload a full backup?"
             })
 
         # Validate zip format

@@ -19,6 +19,68 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.9] — 2026-05-12
+
+### Fixed
+- **Closes the Tier 1 whole-file-in-memory audit that v3.4.2 left scoped to one site.** v3.4.2 fixed the original OOM-kill bug where `zf.read("aerodrome.db")` loaded a 5.4 GB database file into memory during restore, but it was scoped specifically to that one site — the explicit follow-up question of "where else does this pattern exist?" was filed as Tier 1 work for later. v3.4.9 is the audit. Two real bugs were found and fixed; three additional defense-in-depth checks were added on zip entries in the restore flow; three sites were confirmed already-safe; one site was confirmed safe-by-source. The audit is now closed.
+
+  **Audit methodology:** systematic grep across the codebase for every shape of unbounded read — `zf.read()`, `Path.read_bytes()`, `await file.read()`, `requests.get().content`, `open().read()`, `urlopen().read()` — followed by per-site triage. Every match was classified as: (a) real bug needing fix, (b) bounded by a downstream constraint making it defensible-but-not-urgent, (c) already-safe (streaming or chunked), or (d) safe by source (bounded by external system).
+
+  **Two real bugs fixed — `await file.read()` followed by post-hoc size check:**
+
+  **1. `/api/config/import` (server.py:6190)** — The endpoint accepted a `UploadFile`, read the entire upload into memory with `raw = await file.read()`, and only then checked `if len(raw) > 256 * 1024` to enforce the 256 KB cap. A malicious 100 GB upload to this endpoint would allocate 100 GB of RAM before the rejection fired. Worst-case ratio: 400,000× the intended limit, easily enough to OOM-kill aerodrome.service and possibly take down the entire host depending on swap configuration. Fixed by streaming the upload in 64 KB chunks via the new `_read_upload_bounded` helper, aborting as soon as cumulative size exceeds the cap. A too-large upload now allocates at most 256 KB + 64 KB (limit + one chunk = 320 KB) before being rejected with HTTP 413.
+
+  **2. `/api/updates/local/upload` (server.py:8459)** — Same exact pattern: `raw = await file.read()` followed by `if len(raw) > MAX_UPLOAD_BYTES` (50 MB). Less catastrophic in absolute terms because the limit is much higher (50 MB vs 256 KB), but the same shape of bug: a 10 GB upload would allocate 10 GB before rejection. Same fix applied via the shared helper.
+
+  **New helper: `_read_upload_bounded(file, max_bytes)`.** Returns `(bytes, None)` on success or `(None, error_message)` on size-exceeded or read failure. Used by both fixed endpoints. The chunk size is 64 KB — small enough to bound the overshoot (a too-large upload allocates at most `max_bytes + 64 KB`) but large enough to avoid per-chunk overhead dominating throughput on small legitimate uploads. The helper is defined inside `create_app` next to the first endpoint that uses it, so it has access to the same `UploadFile` type in scope. This is for small bounded uploads where we genuinely want the bytes in memory (config <256 KB, update zip <50 MB). For larger uploads (the restore endpoint accepting up to 2 GB backups), the existing stream-to-temp-file pattern from v3.4.0/v3.4.1 continues to be the right choice — that path doesn't need the bytes in memory at all.
+
+  **Three defense-in-depth additions — `zf.read()` on zip entries with implicit size trust:**
+
+  The restore flow at `/api/backup/import` correctly streams the uploaded zip to disk in 1 MB chunks (the v3.4.0/v3.4.1 fix). But after the zip lands on disk and `zipfile.ZipFile` opens it, the small-file reads inside the restore loop — `zf.read(manifest_path)`, `zf.read(prefix + "config.yaml")`, `zf.read(prefix + "ntfy/server.yml")` — trust the zip producer to keep those entries small. A malicious sub-2-GB outer zip containing a giant inner entry (the classic zip-bomb shape) would slip through the outer 2 GB upload cap and then OOM on `zf.read()` of the inner entry. The attack ceiling is 2 GB because the outer zip is capped, but 2 GB of allocation is still enough to OOM most reasonable hosts running with their other workload alongside.
+
+  **Three new defense-in-depth size checks** were added — one per `zf.read()` call site — that consult `zf.getinfo(entry_name).file_size` (free metadata from the zip's central directory, available without reading any content) and reject the entry if it exceeds an entry-appropriate bound:
+  - **manifest.json: 64 KB ceiling.** Real manifests are a few hundred bytes of JSON. 64 KB is absurdly generous and definitely catches the zip-bomb pattern.
+  - **config.yaml: 256 KB ceiling.** Same limit as `/api/config/import` enforces on upload. A config that has somehow grown beyond 256 KB inside a backup is almost certainly malicious or corrupt.
+  - **ntfy/server.yml: 256 KB ceiling.** Ntfy server.yml is typically a few hundred bytes; 256 KB is enormously generous.
+
+  Verified via test harness: a malicious zip with a 200 KB manifest.json that compresses to 215 bytes (well within any plausible outer-size cap) is correctly rejected by the `file_size > 64 KB` check before `zf.read()` ever touches the data. The compression ratio of a zip bomb is irrelevant to the defense because `file_size` is the uncompressed size from the central directory.
+
+  **Three sites confirmed already-safe (no changes needed):**
+  - **`/api/backup/export` streaming response (server.py:6269)** — explicit 1 MB chunked streaming with comment documenting the intent. Was already correct.
+  - **sha256 sidecar computation (server.py:7063)** — explicit 1 MB chunked iteration via `iter(lambda: f.read(CHUNK), b"")`. Was already correct.
+  - **`/api/backup/import` upload reception (server.py:6531)** — explicit 1 MB chunked stream-to-temp-file with progressive 2 GB cap check. The v3.4.0/v3.4.1 fix that closed the original OOM-kill bug.
+
+  **One site confirmed safe by source:**
+  - **GitHub Releases API response (server.py:2382)** — `response.read()` on a `urlopen` to `api.github.com/repos/.../releases/latest`. Bounded by GitHub's response size (a few KB of JSON). No fix needed; GitHub's API is the source of truth on its own response size.
+
+  **Other reads triaged as safe by shape:**
+  - `main.py` config-file opens (lines 106, 113, 135, 150, 157, 177, 204) — all read `config.yaml` or `config.example.yaml`, both bounded by the 256 KB import limit on the way in.
+  - `ntfy_installer.py` ntfy server.yml opens (lines 243, 816, 835, 853) — same reasoning, ntfy server.yml is small by Aerodrome convention.
+  - `/proc/meminfo` reads (collector.py:238, server.py:6057) — kernel-pseudo-file, always tiny.
+  - `tools/synthetic_feeder/*` — developer tooling, not server runtime. Not in scope for a security-shaped audit.
+
+  **Audit yield:**
+  - **5 fix sites** (2 real bugs + 3 defense-in-depth)
+  - **3 confirmed-safe sites** (already streaming correctly)
+  - **1 safe-by-source site** (GitHub API)
+  - **~12 sites triaged as safe-by-shape** (config files, ntfy configs, /proc/meminfo)
+  - **0 sites left as open questions**
+
+  **The original Tier 1 deliverable framing was "the audit's output is either 'clean, no other sites' or 'found N more, fix bundle for v3.4.9'."** v3.4.9 is the fix bundle. N = 2 real bugs, plus 3 defense-in-depth additions to harden the restore flow against zip bombs.
+
+  **Scope:**
+  - `server.py` — one new helper function (`_read_upload_bounded`, ~30 lines including docstring), two endpoint fixes (replace `await file.read()` + post-hoc check with helper call, ~5-10 lines net each), three defense-in-depth size checks (~10 lines each for the manifest/config/ntfy zip entries)
+  - **No new endpoints, no schema changes, no API behavior changes for legitimate clients, no UI changes.** Behavior change for malicious clients only: faster rejection with HTTP 413 instead of unbounded RAM allocation followed by OOM.
+  - 88 endpoints unchanged. SUDOERS_VERSION unchanged at 4.
+
+  **Test contract for v3.4.9:**
+  1. **Normal upload to `/api/config/import`** — a legitimate `config.yaml` under 256 KB succeeds as before. No behavior change for normal use.
+  2. **Oversized upload to `/api/config/import`** — a 300 KB or larger upload rejects with HTTP 413 *immediately* (after reading ≤320 KB), not after fully buffering. Memory usage during rejection should be bounded — observable via a separate top/htop session during a deliberately-large curl post.
+  3. **Normal restore from backup** — a legitimate backup zip with normal-sized manifest.json + config.yaml + ntfy/server.yml + aerodrome.db restores as before. No behavior change for normal use.
+  4. **Zip-bombed restore** — a backup zip whose internal manifest.json or config.yaml exceeds the respective per-entry limit rejects with a clear "improbably large" message and does not OOM.
+
+  **Pattern check note**: this is the kind of audit that, in retrospect, should probably have been part of the v3.4.2 release itself rather than filed forward as Tier 1 work. The original v3.4.2 fix was tightly scoped and intentional (don't expand scope), but the scope-limit decision did mean the related sites stayed exposed for a few weeks. v3.4.9 is the cleanup. The HANDOFF section 4 keeps lesson 4.2 ("when claiming streaming end-to-end, audit every read() call site, not just the obvious ones") as a forward-looking discipline, now backed by the v3.4.9 audit as a concrete example of doing the work.
+
 ## [3.4.8] — 2026-05-12
 
 ### Fixed
