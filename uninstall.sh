@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.2.0
+# Version: 3.3.0
 # =============================================================================
 # Aerodrome — Uninstall Script
 # =============================================================================
@@ -276,11 +276,19 @@ fi
 # --- Step 6: Offer to remove the install directory itself ---
 echo -e "${CYAN}[6/6]${RESET} Project directory..."
 
+# v3.3.0: if INSTALL_DIR is outside the user's home, the user can't
+# remove its parent-directory entry without root — so emit the
+# correct sudo'd command. Inside the home, no sudo needed.
+case "$INSTALL_DIR" in
+    "$HOME"/*|"$HOME") _rm_cmd="rm -rf ${INSTALL_DIR}" ;;
+    *)                 _rm_cmd="sudo rm -rf ${INSTALL_DIR}" ;;
+esac
+
 # Don't remove the directory if we're running from inside it
 # (We can remove it, but it'll be weird to leave the user sitting in a deleted cwd)
 if [ "$PURGE" = true ]; then
     echo -e "  ${YELLOW}!${RESET} To remove the project directory itself, run from elsewhere:"
-    echo "      cd / && rm -rf ${INSTALL_DIR}"
+    echo "      cd / && ${_rm_cmd}"
 elif [ "$KEEP" = true ]; then
     echo -e "  ${YELLOW}·${RESET} Project directory kept at ${INSTALL_DIR}"
 else
@@ -289,7 +297,7 @@ else
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         echo ""
         echo "  Run from outside the directory:"
-        echo -e "      ${CYAN}cd / && rm -rf ${INSTALL_DIR}${RESET}"
+        echo -e "      ${CYAN}cd / && ${_rm_cmd}${RESET}"
     fi
 fi
 
@@ -335,5 +343,33 @@ echo "  NOT removed (intentional):"
 echo "    - System packages ($_uninstall_pkg_list)"
 echo "      Remove manually if desired: $_uninstall_pkg_remove"
 echo ""
+
+# v3.3.0: if firewalld is active and port 8000 is open, offer to close
+# it. The bootstrap opens this port on Fedora/openSUSE Tumbleweed
+# during install; pairing the close at uninstall keeps the firewall
+# state symmetric. Skip silently on systems without firewalld
+# (Debian/Ubuntu/Arch in their default state).
+if command -v firewall-cmd >/dev/null 2>&1 && \
+        systemctl is-active firewalld --quiet 2>/dev/null; then
+    if sudo firewall-cmd --list-ports 2>/dev/null | grep -qw "8000/tcp"; then
+        echo "  firewalld has port 8000/tcp open (opened during Aerodrome install)."
+        read -p "  Close port 8000 now? [Y/n] " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+            if sudo firewall-cmd --remove-port=8000/tcp --permanent >/dev/null 2>&1 \
+                    && sudo firewall-cmd --reload >/dev/null 2>&1; then
+                echo -e "  ${GREEN}✓${RESET} Closed port 8000/tcp on the public zone"
+            else
+                echo -e "  ${YELLOW}!${RESET} Could not close port 8000 — run manually:"
+                echo "      sudo firewall-cmd --remove-port=8000/tcp --permanent && sudo firewall-cmd --reload"
+            fi
+        else
+            echo "  Port 8000 left open. To close later:"
+            echo "      sudo firewall-cmd --remove-port=8000/tcp --permanent && sudo firewall-cmd --reload"
+        fi
+        echo ""
+    fi
+fi
+
 echo "  If you ever want to reinstall, just run ./install.sh again."
 echo ""

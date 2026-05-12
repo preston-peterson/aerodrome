@@ -11,7 +11,7 @@
 #   bash scripts/bootstrap.sh --from-zip ~/Downloads/aerodrome-v3.0.12.zip --prefix /tmp/ad
 #
 # Flags:
-#   --prefix <path>        Install directory (default: ~/aerodrome)
+#   --prefix <path>        Install directory (default: /opt/aerodrome)
 #   --version <vX.Y.Z>     Pin to a specific release (default: latest)
 #   --from-zip <path>      Skip GitHub fetch; install from a local zip
 #   --receiver-ip <ip>     ADS-B receiver IP (skips prompt)
@@ -56,7 +56,7 @@ API_BASE="https://api.github.com/repos/${REPO}"
 # ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
-PREFIX="${HOME}/aerodrome"
+PREFIX="/opt/aerodrome"
 VERSION="latest"
 FROM_ZIP=""
 RECV_IP=""
@@ -101,7 +101,9 @@ Local testing:
   bash scripts/bootstrap.sh --from-zip ~/Downloads/aerodrome-vX.Y.Z.zip --prefix /tmp/ad
 
 Flags:
-  --prefix <path>        Install directory (default: ~/aerodrome)
+  --prefix <path>        Install directory (default: /opt/aerodrome).
+                         Pre-v3.3.0 default was ~/aerodrome; override
+                         with --prefix ~/aerodrome to restore that layout.
   --version <vX.Y.Z>     Pin to a specific release (default: latest)
   --from-zip <path>      Skip GitHub fetch; install from a local zip
   --demo                 Install in demo mode with simulated aircraft data
@@ -569,9 +571,17 @@ fi
 # ---------------------------------------------------------------------------
 log_step "5/7" "Setting up install directory..."
 
-# If PREFIX exists and isn't empty, ask before clobbering
-if [ -d "$PREFIX" ] && [ -n "$(ls -A "$PREFIX" 2>/dev/null)" ]; then
-    log_warn "Directory $PREFIX already exists and is not empty."
+# v3.3.0: detect whether we're upgrading an existing install at this
+# location vs. doing a fresh install. An existing install is identified
+# by the presence of VERSION + main.py; if found we proceed in upgrade
+# mode and don't touch the directory permissions.
+EXISTING_INSTALL=false
+if [ -f "$PREFIX/VERSION" ] && [ -f "$PREFIX/main.py" ]; then
+    EXISTING_INSTALL=true
+    log_info "Existing install detected at $PREFIX — upgrading in place"
+elif [ -d "$PREFIX" ] && [ -n "$(ls -A "$PREFIX" 2>/dev/null)" ]; then
+    log_warn "Directory $PREFIX already exists and is not empty,"
+    log_warn "but doesn't look like an Aerodrome install (no VERSION/main.py)."
     if [ "$ASSUME_YES" = true ]; then
         log_err "Refusing to overwrite (would need interactive confirmation)."
         exit 1
@@ -581,11 +591,33 @@ if [ -d "$PREFIX" ] && [ -n "$(ls -A "$PREFIX" 2>/dev/null)" ]; then
         echo "Aborted."
         exit 0
     fi
-    rm -rf "$PREFIX"
+    # Need sudo if outside the user's home
+    case "$PREFIX" in
+        "$HOME"/*|"$HOME") rm -rf "$PREFIX" ;;
+        *)                 sudo rm -rf "$PREFIX" ;;
+    esac
 fi
 
-mkdir -p "$PREFIX"
-INSTALL_CREATED_BY_US=true
+# Determine whether PREFIX is inside the user's home (no sudo needed for
+# mkdir) or outside (need sudo to create + chown to user afterwards).
+NEED_SUDO_FOR_PREFIX=false
+case "$PREFIX" in
+    "$HOME"/*|"$HOME") ;;
+    *) NEED_SUDO_FOR_PREFIX=true ;;
+esac
+
+if [ "$EXISTING_INSTALL" = false ]; then
+    if [ "$NEED_SUDO_FOR_PREFIX" = true ]; then
+        log_info "Creating $PREFIX (requires sudo since it's outside your home)..."
+        sudo mkdir -p "$PREFIX"
+        # chown so the user can write release files, config.yaml, etc.
+        # without sudo for the rest of this script and for in-app updates.
+        sudo chown "$USER:$USER" "$PREFIX"
+    else
+        mkdir -p "$PREFIX"
+    fi
+    INSTALL_CREATED_BY_US=true
+fi
 
 # Extract — accept either "aerodrome-vX.Y.Z/..." wrapper or flat layout
 log_info "Extracting to $PREFIX..."
@@ -834,10 +866,54 @@ fi
 ( cd "$PREFIX" && ./install.sh "${INSTALL_ARGS[@]}" )
 
 # ---------------------------------------------------------------------------
+# Optional: open the web UI port in firewalld
+# ---------------------------------------------------------------------------
+# Several distros (Fedora, openSUSE Tumbleweed, RHEL family) enable
+# firewalld by default with a restrictive "public" zone. Port 8000 is
+# closed there, which makes the web UI reachable from localhost only —
+# not what a user wants in the typical "view the dashboard from my
+# laptop" scenario. Offer to open it persistently. Skip silently on
+# systems without firewalld (Debian/Ubuntu/Arch in their default state).
+if command -v firewall-cmd >/dev/null 2>&1 && \
+        systemctl is-active firewalld --quiet 2>/dev/null; then
+    # Only offer if port 8000 isn't already open on the default zone.
+    if ! sudo firewall-cmd --list-ports 2>/dev/null | grep -qw "8000/tcp"; then
+        echo ""
+        log_info "firewalld is active. Port 8000 (the web UI) is currently closed."
+        do_open=false
+        if [ "$ASSUME_YES" = true ] || [ "$FORCE" = true ]; then
+            do_open=true
+            log_info "Opening port 8000 automatically (per --yes/--force)"
+        else
+            read -r -p "  Open port 8000 in firewalld so you can reach the dashboard? [Y/n] " reply
+            if [[ ! "$reply" =~ ^[Nn]$ ]]; then
+                do_open=true
+            fi
+        fi
+        if [ "$do_open" = true ]; then
+            if sudo firewall-cmd --add-port=8000/tcp --permanent >/dev/null 2>&1 \
+                    && sudo firewall-cmd --reload >/dev/null 2>&1; then
+                log_ok "Opened port 8000/tcp permanently on the public zone"
+            else
+                log_warn "Could not open port 8000 — run manually:"
+                echo "    sudo firewall-cmd --add-port=8000/tcp --permanent && sudo firewall-cmd --reload"
+            fi
+        else
+            log_info "Port 8000 left closed. To open later:"
+            echo "    sudo firewall-cmd --add-port=8000/tcp --permanent && sudo firewall-cmd --reload"
+        fi
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # Done
 # ---------------------------------------------------------------------------
 COMPLETED=true
-SERVER_IP="$(hostname -I | awk '{print $1}')"
+# v3.2.1: cross-distro server IP detection — see install.sh for rationale.
+SERVER_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '/src/{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')"
+[ -z "$SERVER_IP" ] && SERVER_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+[ -z "$SERVER_IP" ] && SERVER_IP="$(hostname -i 2>/dev/null | awk '{print $1}')"
+[ -z "$SERVER_IP" ] && SERVER_IP="localhost"
 echo ""
 echo -e "${GREEN}══════════════════════════════════════════════${RESET}"
 echo -e "${GREEN}  Bootstrap complete!${RESET}"

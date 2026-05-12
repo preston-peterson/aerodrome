@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.2.0
+# Version: 3.3.0
 # =============================================================================
 # Aerodrome — Server Install Script
 # =============================================================================
@@ -496,7 +496,17 @@ else
     exit 1
 fi
 
-SERVER_IP=$(hostname -I | awk '{print $1}')
+# v3.2.1: cross-distro server IP detection. The previous `hostname -I`
+# is a Debian extension — on Arch (which uses inetutils' hostname) it
+# fails silently and SERVER_IP ends up empty, rendering the welcome
+# URL as "http://:8000". `ip route get` is the universal approach
+# (iproute2 is on every modern Linux with systemd); it consults the
+# routing table without actually sending packets. Layered fallbacks
+# cover minimal containers and old systems.
+SERVER_IP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '/src/{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')
+[ -z "$SERVER_IP" ] && SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+[ -z "$SERVER_IP" ] && SERVER_IP=$(hostname -i 2>/dev/null | awk '{print $1}')
+[ -z "$SERVER_IP" ] && SERVER_IP="localhost"
 echo ""
 echo -e "${GREEN}══════════════════════════════════════════════${RESET}"
 echo -e "${GREEN}  Install complete!${RESET}"

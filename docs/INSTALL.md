@@ -152,7 +152,7 @@ That's it. The bootstrap walks through eight steps:
    Distance column), and distance unit. Time zone is auto-detected from
    `/etc/timezone` or `timedatectl` and used silently — change it later
    in the web UI's Configuration page.
-7. **Extract + handoff** — extracts to `~/aerodrome` (configurable with
+7. **Extract + handoff** — extracts to `/opt/aerodrome` (configurable with
    `--prefix`), patches `config.yaml` with the prompted values, and
    hands off to the bundled `install.sh`.
 8. **install.sh runs** — creates a Python venv, installs dependencies,
@@ -166,7 +166,7 @@ enable push notifications, and configure the rest.
 **Useful bootstrap flags:**
 
 ```
---prefix <path>        Install directory (default: ~/aerodrome)
+--prefix <path>        Install directory (default: /opt/aerodrome)
 --version <vX.Y.Z>     Pin to a specific release (default: latest)
 --from-zip <path>      Skip the GitHub fetch and install from a local zip
 --receiver-ip <ip>     ADS-B receiver IP (skips prompt)
@@ -221,9 +221,9 @@ If running on the same machine, skip to step 4. Otherwise, copy to your
 server:
 
 ```bash
-rsync -av aerodrome/ user@your-server:~/aerodrome/
+rsync -av aerodrome/ user@your-server:/opt/aerodrome/
 ssh user@your-server
-cd ~/aerodrome
+cd /opt/aerodrome
 ```
 
 #### 4. Install
@@ -237,7 +237,7 @@ cd ~/aerodrome
 > `sudo bash install.sh` — `bash` doesn't care about the execute bit.
 > Both forms work identically; pick whichever you prefer.
 
-On the server, in your `~/aerodrome` directory:
+On the server, in your `/opt/aerodrome` directory:
 
 ```bash
 chmod +x install.sh uninstall.sh
@@ -412,6 +412,84 @@ On Arch and Arch derivatives the Python package is `python` (not
 `python3`) and pip is `python-pip`. Everything else is identical across
 families.
 
+### Install location (v3.3.0)
+
+Starting with v3.3.0, fresh installs default to `/opt/aerodrome` on
+every distro. This is the FHS-blessed location for "add-on application
+software packages" and matches the convention every other major
+third-party Linux service uses. Three reasons it's the default:
+
+1. **Works on every distro out of the box.** SELinux's targeted policy
+   (Fedora, RHEL, openSUSE Tumbleweed) and AppArmor are both permissive
+   in `/opt/`. Installing under `/home/` on SELinux-enforcing systems
+   doesn't work — systemd can't `ExecStart` a binary in a user's home
+   because the targeted policy denies it. `/opt/` avoids that entirely.
+2. **One mental model.** All docs, scripts, examples, and support
+   troubleshooting say `/opt/aerodrome`. No "your install location
+   depends on your distro" footnotes.
+3. **Cleaner backups.** Sysadmin convention: back up `/opt` and `/etc`,
+   leave `/home` to user-managed sync. Aerodrome data lands in the
+   right pile by default.
+
+The bootstrap creates `/opt/aerodrome` via `sudo mkdir` and then chowns
+it to the install user, so the rest of the install runs unprivileged
+just like before. The systemd unit still runs as your regular user (not
+root), the config file is still user-owned and editable, and the in-app
+updater still works without needing sudo for file operations.
+
+**Override:** Pass `--prefix <path>` to the bootstrap to install
+anywhere else:
+
+```bash
+bash <(curl -fsSL https://install.aerodromeadsb.com) --prefix ~/aerodrome
+```
+
+This restores the pre-v3.3.0 layout if you have a strong preference.
+It'll only work cleanly on distros without SELinux enforcement
+(Debian/Ubuntu/Arch/openSUSE-Leap).
+
+**Existing installs at `~/aerodrome`:** keep working untouched. The
+bootstrap detects an existing install at any `--prefix` location
+(VERSION + main.py present) and upgrades it in place rather than
+treating it as a fresh install. No forced migration. If you ever want
+to move an existing install to `/opt/aerodrome`, the procedure is:
+uninstall (keeping data), reinstall to `/opt/aerodrome`, copy your old
+`config.yaml` + `aircraft_history.db` over. The web UI's
+*Configuration → Backup & Restore* page does that copy step for you
+via a full backup/restore.
+
+### Firewall handling
+
+On Fedora, RHEL family, and openSUSE Tumbleweed, `firewalld` is active
+by default with a restrictive `public` zone that blocks port 8000.
+Aerodrome would be reachable from the install host (`localhost:8000`)
+but not from other devices on the network. The bootstrap detects this
+state and prompts to open port 8000 persistently on the public zone:
+
+```
+firewalld is active. Port 8000 (the web UI) is currently closed.
+  Open port 8000 in firewalld so you can reach the dashboard? [Y/n]
+```
+
+Default answer is yes — almost every Aerodrome install wants the
+dashboard reachable from a laptop on the same network. Say no if you
+have a more restrictive zone setup or want to handle firewall rules
+yourself. The exact commands the bootstrap runs are:
+
+```bash
+sudo firewall-cmd --add-port=8000/tcp --permanent
+sudo firewall-cmd --reload
+```
+
+These are also printed if you decline the prompt, so you can run them
+later. Debian/Ubuntu and Arch don't enable firewalld by default and
+will skip this step silently.
+
+`uninstall.sh` mirrors the install side: on firewalld-active hosts
+where port 8000 is currently open, it prompts to close it during
+uninstall. The state stays symmetric — what the install opens, the
+uninstall closes.
+
 ### Best-effort tier (tier-2)
 
 If your distro isn't in the tier-1 list but has both `systemctl` AND one
@@ -446,17 +524,17 @@ to run Aerodrome:
    module, curl, unzip. The exact package names depend on your distro.
 2. **Download the release zip**: from
    `https://github.com/preston-peterson/aerodrome/releases/latest`.
-3. **Extract it** to a directory like `~/aerodrome`.
+3. **Extract it** to a directory like `/opt/aerodrome`.
 4. **Set up the virtualenv manually**:
    ```bash
-   cd ~/aerodrome
+   cd /opt/aerodrome
    python3 -m venv venv
    source venv/bin/activate
    pip install -r requirements.txt
    ```
 5. **Write your own service script** for your init system (OpenRC,
    runit, etc.). The command Aerodrome's service needs to run is:
-   `~/aerodrome/venv/bin/python3 ~/aerodrome/main.py start`. The
+   `/opt/aerodrome/venv/bin/python3 /opt/aerodrome/main.py start`. The
    service should run as a non-root user, restart on failure, and have
    network access.
 6. **Edit `config.yaml`** to point at your receiver, and start your
@@ -595,10 +673,10 @@ release. No SSH required.
 
 That's it. If you'd rather stage updates from the command line (handy
 for scripted workflows or quick dev iteration), you can drop the
-unpacked release into `~/aerodrome/update/` via rsync or scp:
+unpacked release into `/opt/aerodrome/update/` via rsync or scp:
 
 ```bash
-rsync -av aerodrome/ user@your-server:~/aerodrome/update/
+rsync -av aerodrome/ user@your-server:/opt/aerodrome/update/
 ```
 
 Either staging path (UI upload or rsync) ends up in the same place;
@@ -619,7 +697,7 @@ rsync -av \
   --exclude='config.yaml' \
   --exclude='.backups' \
   --exclude='update' \
-  aerodrome/ user@your-server:~/aerodrome/
+  aerodrome/ user@your-server:/opt/aerodrome/
 
 ssh user@your-server "sudo systemctl restart aerodrome"
 ```
@@ -627,7 +705,7 @@ ssh user@your-server "sudo systemctl restart aerodrome"
 Single-line version for terminals that mangle line continuations:
 
 ```bash
-rsync -av --exclude='aircraft_history.db' --exclude='logs' --exclude='venv' --exclude='.tracker.pid' --exclude='config.yaml' --exclude='.backups' --exclude='update' aerodrome/ user@your-server:~/aerodrome/
+rsync -av --exclude='aircraft_history.db' --exclude='logs' --exclude='venv' --exclude='.tracker.pid' --exclude='config.yaml' --exclude='.backups' --exclude='update' aerodrome/ user@your-server:/opt/aerodrome/
 ```
 
 ### Config auto-migration (all paths)
@@ -656,7 +734,7 @@ previous source files in `.backups/<timestamp>/`. To roll back:
 
 ```bash
 ssh user@your-server
-cd ~/aerodrome
+cd /opt/aerodrome
 # List available snapshots
 ls -1 .backups/
 # Restore (replace TIMESTAMP with the folder name)
@@ -690,7 +768,7 @@ the install script:
 
 ```bash
 ssh user@your-server
-cd ~/aerodrome
+cd /opt/aerodrome
 sudo bash install.sh
 ```
 
@@ -717,7 +795,7 @@ To remove Aerodrome completely:
 
 ```bash
 ssh user@your-server
-cd ~/aerodrome
+cd /opt/aerodrome
 chmod +x uninstall.sh
 ./uninstall.sh
 ```
