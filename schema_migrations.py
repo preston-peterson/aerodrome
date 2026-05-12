@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 # Current schema version. Bump whenever a new migration is added.
 # v2.51.0 introduces schema version 1 (the search-feature schema).
 # Any DB without a schema_version table is implicitly at version 0.
-CURRENT_SCHEMA_VERSION = 8
+CURRENT_SCHEMA_VERSION = 9
 
 
 # A migration is a (target_version, description, callable) tuple.
@@ -247,35 +247,6 @@ def _migration_v1_search_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             f"CREATE INDEX IF NOT EXISTS {idx_name} ON seen_aircraft({col})"
         )
-
-    # v3.4.7: covering index for stats_furthest_prerank.
-    # The Stats card "furthest aircraft" pre-rank query is:
-    #   SELECT icao, (computed_distance) AS dist_proxy
-    #   FROM seen_aircraft
-    #   WHERE last_lat IS NOT NULL AND last_lon IS NOT NULL
-    #     AND last_seen_at >= ?
-    #   ORDER BY dist_proxy DESC LIMIT 100
-    # With idx_seen_last alone (single column on last_seen_at), the
-    # planner does a range scan but then table-fetches each matching
-    # row to read last_lat / last_lon / icao. At 170K seen_aircraft
-    # rows on cold cache, that's ~170K disk reads. The v3.4.6
-    # cross-RAM benchmark showed this query at 226 ms (4 GB), 130 ms
-    # (6 GB), 49 ms (8 GB) — clearly disk-I/O bound on those table
-    # fetches.
-    # With (last_seen_at, last_lat, last_lon, icao) as a covering
-    # index, the planner satisfies both the range filter AND reads
-    # all selected columns directly from index leaves — no table
-    # fetch. icao is included because it's TEXT PRIMARY KEY (not
-    # INTEGER PRIMARY KEY), so it's stored in the table, not as
-    # the rowid; the index has to carry it explicitly for full
-    # coverage. The ORDER BY temp B-tree on the computed
-    # dist_proxy still has to happen (computed expressions can't
-    # be indexed) but that's CPU on the narrowed result, not disk
-    # I/O. Index size: ~38 bytes/row × ~170K rows ≈ 6.5 MB. Tiny.
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_seen_last_latlon "
-        "ON seen_aircraft(last_seen_at, last_lat, last_lon, icao)"
-    )
 
     # v2.51.0 Flavor C: partial index on fts_dirty makes the cycle-end
     # batch flush O(dirty rows) rather than O(table). Without this,
@@ -1204,6 +1175,60 @@ def _migration_v8_update_state(conn: sqlite3.Connection) -> None:
     logger.info("Migration v8: created update_state table (single-row, empty)")
 
 
+def _migration_v9_seen_furthest_covering_index(conn: sqlite3.Connection) -> None:
+    """v9 (v3.4.8): covering index for stats_furthest_prerank.
+
+    Context: v3.4.7 originally added this index inside
+    _migration_v1_search_schema. That was wrong — modifying an
+    already-run migration is a silent no-op on existing installs
+    (the registry sees "v1 already applied" and skips it). Fresh
+    installs got the index; everyone upgrading didn't. v3.4.8
+    moves the index to a proper new migration so existing installs
+    actually receive it.
+
+    The Stats card "furthest aircraft" pre-rank query is:
+      SELECT icao, (computed_distance) AS dist_proxy
+      FROM seen_aircraft
+      WHERE last_lat IS NOT NULL AND last_lon IS NOT NULL
+        AND last_seen_at >= ?
+      ORDER BY dist_proxy DESC LIMIT 100
+
+    With idx_seen_last alone (single column on last_seen_at), the
+    planner does a range scan but then table-fetches each matching
+    row to read last_lat / last_lon / icao. At 170K seen_aircraft
+    rows on cold cache, that's ~170K disk reads. The v3.4.6
+    cross-RAM benchmark showed this query at 226 ms (4 GB), 130 ms
+    (6 GB), 49 ms (8 GB) — clearly disk-I/O bound on those table
+    fetches.
+
+    With (last_seen_at, last_lat, last_lon, icao) as a covering
+    index, the planner satisfies both the range filter AND reads
+    all selected columns directly from index leaves — no table
+    fetch. icao is included because seen_aircraft uses TEXT
+    PRIMARY KEY (not INTEGER PRIMARY KEY), so icao is stored in
+    the table, not as the rowid; without including it the index
+    isn't fully covering and the planner correctly declines to
+    pick it.
+
+    The ORDER BY temp B-tree on the computed dist_proxy still has
+    to happen (computed expressions can't be indexed) but that's
+    CPU on the narrowed result, not disk I/O.
+
+    Index size: ~38 bytes/row × ~170K rows ≈ 6.5 MB on a typical
+    heavy-tier install. One-time build cost during this migration
+    proportional to seen_aircraft row count — well under a second
+    for typical sizes.
+    """
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_seen_last_latlon "
+        "ON seen_aircraft(last_seen_at, last_lat, last_lon, icao)"
+    )
+    logger.info(
+        "Migration v9: created idx_seen_last_latlon covering index "
+        "for stats_furthest_prerank"
+    )
+
+
 # Ordered list of all migrations. NEVER edit a shipped migration —
 # always add a new one. The list is the source of truth for what
 # CURRENT_SCHEMA_VERSION should be.
@@ -1224,6 +1249,8 @@ MIGRATIONS: List[Migration] = [
      _migration_v7_category_column),
     (8, "update_state table: single-row state for GitHub-update-channel cache (v3.0.0)",
      _migration_v8_update_state),
+    (9, "seen_aircraft covering index for stats_furthest_prerank (v3.4.8 — corrects v3.4.7's mis-placed index)",
+     _migration_v9_seen_furthest_covering_index),
 ]
 
 

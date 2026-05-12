@@ -19,6 +19,44 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.8] — 2026-05-12
+
+### Fixed
+- **Corrects a release bug in v3.4.7: the covering index that release advertised was only created on fresh installs, not on existing installs upgrading from v3.4.7 or earlier.** v3.4.7 added the `idx_seen_last_latlon` covering index inside `_migration_v1_search_schema` in `schema_migrations.py`. The intent was right (a covering index for the Stats `stats_furthest_prerank` query); the placement was wrong. Numbered schema migrations run exactly once per install: the registry sees "v1 already applied at schema_version=1" and skips the migration body on every subsequent service start. Adding CREATE INDEX statements inside an already-run migration is a silent no-op on every existing install in the wild. Fresh installs got the index (because they run all migrations from v0); every existing install upgrading to v3.4.7 got the new code but not the actual index. v3.4.8 moves the index to a proper new migration v9.
+
+  **How v3.4.7 perf testing missed it.** The test box was running the synthetic feeder on a pre-v3.4.7 install that had been running through multiple v3.4.x deploys. When v3.4.7 deployed, `_migration_v1_search_schema` was already at schema_version=1, so the new CREATE INDEX line inside it never executed. The diagnostic correctly reported `stats_furthest_prerank` still using the old `idx_seen_last` single-column index — but the v3.4.7 retrospective initially interpreted that as "the synthetic test was unrepresentative of real install behavior" rather than "the migration system silently rejected the new code." The actual debugging surface — `idx_seen_last_latlon` is missing from the diagnostic's index list, even though v3.4.7 supposedly created it — was visible in the perf-diag output the whole time. The lesson: when a migration "doesn't seem to work," the first hypothesis should be "the migration system isn't running my code," not "my code doesn't work."
+
+  **What changed:**
+
+  **`schema_migrations.py`** — three coordinated edits:
+  - **Reverted the v3.4.7 edit inside `_migration_v1_search_schema`.** That migration is now back to its pre-v3.4.7 shape (search-schema setup, denormalized columns, indexes, FTS5 + triggers, backfill).
+  - **Added `_migration_v9_seen_furthest_covering_index`.** New function, new migration, registered in the `MIGRATIONS` list as version 9 with the description *"seen_aircraft covering index for stats_furthest_prerank (v3.4.8 — corrects v3.4.7's mis-placed index)"*. Body is a single `CREATE INDEX IF NOT EXISTS idx_seen_last_latlon ON seen_aircraft(last_seen_at, last_lat, last_lon, icao)` with the full explanatory docstring preserved (the rationale for including icao despite it being PRIMARY KEY, the index size estimate, the explanation of why the ORDER BY temp B-tree is unavoidable). `CREATE INDEX IF NOT EXISTS` makes it idempotent on the rare fresh install that got the index via the v3.4.7 path AND on re-runs.
+  - **Bumped `CURRENT_SCHEMA_VERSION` from 8 to 9.** The build-time assertion at module load that `CURRENT_SCHEMA_VERSION == max(MIGRATIONS[i][0])` would have failed otherwise — a small belt-and-suspenders check that catches "added a migration, forgot to bump the constant."
+
+  **Migration behavior matrix (verified via test harness):**
+  - Fresh v3.4.8 install → runs migrations v1-v9, gets covering index via v9 ✓
+  - Upgrading from any pre-v3.4.7 install → schema starts at some v < 9, runs v(current+1) through v9, gets covering index via v9 ✓
+  - Upgrading from v3.4.7 → schema starts at v8 (v3.4.7 was still at v8 since it never bumped the constant), runs only v9, gets covering index via v9 ✓
+  - Upgrading from v3.4.8 to itself / restart → zero migrations run, no-op ✓
+
+  **Operational impact for users currently on v3.4.7:** Stats card "furthest aircraft" pre-rank queries continue to use the old `idx_seen_last` single-column index — same performance as v3.4.6. No actual regression vs v3.4.6, just no improvement vs what was promised. Upgrading to v3.4.8 runs migration v9 at startup (one-time index build, proportional to seen_aircraft row count — sub-second for typical sizes, under 5 seconds even at multi-year retention on heavy traffic) and the planner immediately starts using the covering index.
+
+  **Honest disclosure.** v3.4.7's CHANGELOG and HANDOFF claimed perf improvements that, on existing installs, didn't materialize. The architecture and the SQL were correct; the migration plumbing wasn't. This is the third release in the v3.4.x line where a claim in the CHANGELOG didn't match what users actually got — v3.4.0 silently removed the 2 GB cap, v3.4.0/v3.4.1 silently OOM-killed on large restores, and now v3.4.7 silently skipped the covering-index migration on existing installs. Each was the same shape of mistake: code that looked correct in isolation but interacted with a system constraint that wasn't checked. The HANDOFF now captures this as **Lesson 4.13 — Modifying a shipped migration is a silent no-op on existing installs.**
+
+  **Scope:**
+  - `schema_migrations.py` — revert one CREATE INDEX block from `_migration_v1_search_schema`, add `_migration_v9_seen_furthest_covering_index` function, register in `MIGRATIONS`, bump `CURRENT_SCHEMA_VERSION` to 9 (~70 lines net)
+  - **No code-behavior changes outside schema_migrations.py.** No schema changes to existing tables, no API changes, no UI changes. 88 endpoints unchanged. SUDOERS_VERSION unchanged at 4.
+
+  **Test contract for v3.4.8:**
+  1. **Upgrade from v3.4.7 on the test box** — service restart triggers migration v9. Watch journalctl for the "Migration v9: created idx_seen_last_latlon" log line. Run the perf diagnostic and verify:
+     - `idx_seen_last_latlon` now appears in the Indexes list
+     - `stats_furthest_prerank` plan line now says `USING COVERING INDEX idx_seen_last_latlon` (not `USING INDEX idx_seen_last`)
+     - Cold-cache timing improves materially vs v3.4.7's 47-226 ms range (depending on RAM tier)
+  2. **Fresh install of v3.4.8** — schema migrations run end-to-end through v9. Index present from first boot.
+  3. **Idempotency** — restart the service repeatedly; no migrations should re-run after the first deploy.
+
+  **The bigger lesson, filed forward as 4.13 in the HANDOFF:** SQLite schema migrations in this codebase are a write-once, never-edit registry. The architecture is sound — it guarantees consistent migration application across all installs — but the failure mode is that edits to shipped migration code are silently ignored on existing installs. **Adding a new behavior to schema requires a new migration function, never an edit to an existing one.** v3.4.8 captures this in code (the migration v9 function has a top-line comment "v3.4.7 originally added this index inside _migration_v1_search_schema. That was wrong") and in the HANDOFF (Section 4 lesson 4.13).
+
 ## [3.4.7] — 2026-05-12
 
 ### Added
