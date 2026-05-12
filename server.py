@@ -1,4 +1,4 @@
-# Version: 3.4.10
+# Version: 3.4.11
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -10241,7 +10241,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         return {"ok": True}
 
     @app.get("/api/diagnostics/slow-queries/explain")
-    async def explain_query_plan(query: str = Query(..., regex=r"^[a-z_]+$")):
+    async def explain_query_plan(query: str = Query(..., pattern=r"^[a-z_]+$")):
         """Run EXPLAIN QUERY PLAN against a known query shape with a
         representative parameter value drawn from the user's actual data.
         `query` is a label naming one of the canonical shapes, NOT raw

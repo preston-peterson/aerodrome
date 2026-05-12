@@ -100,9 +100,40 @@ def count_api_endpoints() -> int:
 
 
 def count_sqlite_tables() -> int:
-    """Count CREATE TABLE statements in collector.py (schema lives there)."""
-    text = (REPO_ROOT / "collector.py").read_text()
-    return len(re.findall(r"CREATE TABLE IF NOT EXISTS", text))
+    """Count unique SQLite tables defined across all source files.
+
+    v3.4.11: rewritten to actually be correct. The previous version
+    counted bare matches of `CREATE TABLE IF NOT EXISTS` in collector.py
+    only, which had two off-by-each-other bugs that masked the
+    miscount: (a) collector.py creates _aerodrome_meta defensively in
+    5 places (each migration helper does its own CREATE TABLE IF NOT
+    EXISTS before reading the meta table, for safety against
+    out-of-order execution), so the same table was counted 5 times;
+    and (b) schema_migrations.py creates 3 more tables that the old
+    function didn't look at (concurrent_minute, aircraft_track_daily,
+    update_state) plus schema_version from the migration framework
+    itself. 5 - 4 = 1 accidental cancellation, so the function
+    returned 15 — which happens to be the right answer for the
+    wrong reason. A future change that adds a migration table OR
+    removes a defensive _aerodrome_meta create would have made the
+    miscount visible.
+    """
+    sources = ["collector.py", "schema_migrations.py"]
+    names: set[str] = set()
+    for src in sources:
+        text = (REPO_ROOT / src).read_text()
+        # Match CREATE TABLE IF NOT EXISTS <name> ( — the trailing
+        # `(` rules out docstring matches that read like prose,
+        # e.g. "CREATE TABLE IF NOT EXISTS handles the table" in a
+        # migration's docstring. Real DDL is always followed by a
+        # column list in parens, possibly across a newline.
+        for match in re.finditer(
+            r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+[`\"]?(\w+)[`\"]?\s*\(",
+            text,
+            re.IGNORECASE,
+        ):
+            names.add(match.group(1))
+    return len(names)
 
 
 # Gather stats once, log them so the bump log shows what went into the doc.

@@ -10,7 +10,7 @@ Usage:
         # each error: {"path": "receiver.port", "message": "Must be 1-65535"}
         return error_response(errors)
 """
-# Version: 3.4.10
+# Version: 3.4.11
 
 import re
 from typing import Any, List, Tuple
@@ -311,6 +311,36 @@ def validate_config(cfg: Any) -> Errors:
     else:
         for key in ("military_days", "watchlist_days", "all_days"):
             errs += _validate_retention_days(ret.get(key), f"retention.{key}")
+
+        # v3.4.11 cross-field: military_days and watchlist_days must
+        # each be <= all_days. The military_sightings and
+        # watchlist_sightings tables are filtered subsets of the
+        # broader all_sightings stream, retained from the same data —
+        # a longer military setting can't be honored because no
+        # military data exists past all_days. We only check this
+        # when all three values are individually valid integers,
+        # otherwise we'd compound a field error with a cross-field
+        # error and the message would be confusing.
+        ad = ret.get("all_days")
+        md = ret.get("military_days")
+        wd = ret.get("watchlist_days")
+        if _is_int(ad) and ad > 0:
+            if _is_int(md) and md > 0 and md > ad:
+                errs.append((
+                    "retention.military_days",
+                    f"Must be ≤ retention.all_days ({ad}). "
+                    f"Military sightings are filtered from the broader "
+                    f"data stream — a longer retention isn't honored "
+                    f"because the underlying data ages out at all_days."
+                ))
+            if _is_int(wd) and wd > 0 and wd > ad:
+                errs.append((
+                    "retention.watchlist_days",
+                    f"Must be ≤ retention.all_days ({ad}). "
+                    f"Watchlist sightings are filtered from the broader "
+                    f"data stream — a longer retention isn't honored "
+                    f"because the underlying data ages out at all_days."
+                ))
 
     # --- data ---
     d = cfg.get("data")

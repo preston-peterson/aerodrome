@@ -1,4 +1,4 @@
-<!-- Version: 3.4.10 -->
+<!-- Version: 3.4.11 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1705,7 +1705,15 @@ function updateSaveBar() {
     } else {
         const hasErrors = Object.keys(validationErrors).length > 0;
         if (hasErrors) {
-            status.textContent = `${Object.keys(validationErrors).length} validation error(s)`;
+            // v3.4.11: show the first error's path+message inline so the
+            // user knows what to fix at a glance, instead of just the count
+            // which forces them to hunt across tabs. With N>1 errors, append
+            // "(+N more)" so they know there are others to find.
+            const errPaths = Object.keys(validationErrors);
+            const firstPath = errPaths[0];
+            const firstMsg = validationErrors[firstPath];
+            const more = errPaths.length > 1 ? ` (+${errPaths.length - 1} more)` : '';
+            status.textContent = `${errPaths.length} error${errPaths.length === 1 ? '' : 's'} — ${firstPath}: ${firstMsg}${more}`;
             status.style.color = 'var(--red)';
         } else {
             status.textContent = 'Unsaved changes';

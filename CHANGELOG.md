@@ -19,6 +19,32 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.11] — 2026-05-12
+
+### Fixed
+- **Tier 2 bundle release — four small polish items that closed out the Tier 2 queue.** None of these individually justify a dedicated release; together they're a meaningful sweep of long-accumulating papercuts that the v3.4.x perf-and-bug arc kept passing through without fixing. All four are filed in the HANDOFF queue going back to v3.0.x.
+
+  **1. PDF `count_sqlite_tables()` rewritten** (`scripts/build_overview_pdf.py`). The function had been computing table count via `len(re.findall(r"CREATE TABLE IF NOT EXISTS", text))` against `collector.py` only. That had two off-by-each-other bugs masking each other: (a) `collector.py` creates `_aerodrome_meta` defensively in 5 separate places (each migration helper does its own `CREATE TABLE IF NOT EXISTS` before reading the meta table, for safety against out-of-order execution), so the same logical table was counted 5 times; and (b) `schema_migrations.py` creates 3 more tables (`concurrent_minute`, `aircraft_track_daily`, `update_state`) plus `schema_version` from the migration framework that the old function never looked at. The 5 extra counts and the 4 missing tables happened to cancel into the right number (15) at the moment v3.4.6 added military_hourly and watchlist_hourly — purely by coincidence. A future change adding a migration table OR removing a defensive `_aerodrome_meta` create would have made the miscount visible. New version parses both source files, captures table names via a tightened regex that requires the trailing `(` (rules out docstring matches like *"CREATE TABLE IF NOT EXISTS handles the table"* in migration explanatory comments), dedupes via set, returns the correct unique count. Verified: returns 15 with the right set of names — `_aerodrome_meta, aircraft_track_daily, all_sightings, concurrent_minute, hexdb_cache, hexdb_events, military_hourly, military_sightings, schema_version, seen_aircraft, sightings_hourly, stats_records, update_state, watchlist_hourly, watchlist_sightings`.
+
+  **2. FastAPI `regex=` → `pattern=` deprecation cleaned up** (`server.py:10244`). The `/api/diagnostics/slow-queries/explain` endpoint had `Query(..., regex=r"^[a-z_]+$")`. FastAPI deprecated `regex=` in favor of `pattern=` several versions back; the alias still works today but will eventually be removed. Mechanical one-character rename. Same validation behavior, zero risk.
+
+  **3. Validation status bar now previews the first error inline** (`templates/config.html`). The Config page already had reasonably good validation UX — per-field inline error messages in red below each field, per-tab dirty/error dots, auto-switch to the first tab with errors on save-failure. The status bar at the bottom of the page, though, was just a count: *"3 validation error(s)"*. Useful but not actionable — the user still had to hunt across tabs to find what was wrong. New behavior: status bar now shows count plus the first error's path-and-message inline, e.g., *"3 errors — receiver.port: Must be between 1 and 65535 (+2 more)"*. Users see exactly what needs fixing at a glance. For the single-error case the "(+0 more)" suffix is omitted and "error" is singular for grammatical correctness. The auto-switch-to-first-error-tab behavior is preserved unchanged, so the first error is also visible inline next to its field once the user lands on the right tab.
+
+  **4. Cross-field retention validation** (`config_validator.py`). Added a check that `retention.military_days` and `retention.watchlist_days` must each be ≤ `retention.all_days`. Rationale: the `military_sightings` and `watchlist_sightings` tables are filtered subsets of the broader `all_sightings` stream, retained from the same data — a longer military or watchlist setting can't actually be honored because there's no military data older than `all_days` to retain. Setting `military_days=90` with `all_days=30` would be a config typo at best, a misunderstanding at worst. Pre-v3.4.11 the misconfiguration would silently fail (the longer setting was technically valid syntax, but the retention loop never had data to operate on past `all_days`). Now it's caught at save time with an explanatory message: *"Must be ≤ retention.all_days (30). Military sightings are filtered from the broader data stream — a longer retention isn't honored because the underlying data ages out at all_days."*
+
+     **The cross-field rule has a guard against compound errors.** If `all_days` itself is invalid (negative, non-integer, etc.), the cross-field check is skipped — otherwise we'd compound a field-level error with a cross-field error referencing a value that's already known-bad, and the cross-field message would be confusing. Equal values (e.g., `military_days = all_days = 30`) are accepted as the boundary case. This pattern (cross-field rule + guard against compound errors) is the model for future cross-field validations the Tier 4 backlog might surface.
+
+  **Smoke tests verified** five test cases for the cross-field rule and the new count_sqlite_tables on the actual codebase. The two mechanical fixes (PDF regex, FastAPI rename) are tight enough to verify by inspection.
+
+  **Scope:**
+  - `scripts/build_overview_pdf.py` — `count_sqlite_tables` function rewrite (~25 lines including docstring)
+  - `server.py` — single-line FastAPI regex → pattern rename at line 10244
+  - `templates/config.html` — status bar template expansion (~10 lines net)
+  - `config_validator.py` — cross-field block inside the existing retention validation (~30 lines including docstring)
+  - **No schema changes, no API changes, no migration.** 89 endpoints unchanged. SUDOERS_VERSION unchanged at 4.
+
+  **Tier 2 queue is now empty.** v3.4.11 closes out the four polish items that had been carried forward through v3.0.8, v3.0.10, v3.0.17, and the FastAPI deprecation since around v3.0.x. Next forward-looking work moves to Tier 3 (features — first-time setup wizard, /about page, map dot crispness) or Tier 4 (architectural deferred — streaming backup format, stats_furthest rollup, unique_aircraft_count rollup). See HANDOFF Section 6.
+
 ## [3.4.10] — 2026-05-12
 
 ### Fixed
