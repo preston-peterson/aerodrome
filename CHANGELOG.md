@@ -19,6 +19,55 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.10] — 2026-05-12
+
+### Fixed
+- **Fixes the post-apply "this site can't be reached" dead-page that the Updates page would show after applying an update on heavy installs.** Reported in v3.4.x: applying an update on the 5.1 GB / 29M-row test box would frequently land the user on the browser's connection-refused error page, not on a freshly-reloaded dashboard. Manually waiting a minute and refreshing always worked. The service was healthy; the Updates page was just reloading at the wrong moment.
+
+  **Root cause**: the apply-poll state machine was using `/api/version` as the readiness signal, which is a *liveness* probe, not a *readiness* probe. `/api/version` returns a cached version string the moment FastAPI binds the listening port — which happens seconds before the service is actually ready to serve heavy requests. On a heavy install, the gap between "FastAPI is listening" and "the service can answer dashboard requests" is real and measurable:
+
+  - **Rollup backfill threads run AFTER FastAPI starts serving.** v3.4.6 added two new daemon-thread backfills (military_hourly + watchlist_hourly) on top of the existing sightings_hourly backfill from v2.50.0. On the test box's 5.1 GB dataset, these can run for tens of seconds while competing with dashboard requests for SQLite I/O.
+  - **SQLite's page cache is cold after restart.** The first dashboard render hits Stats queries that scan ~30M rows; on cold cache, these can take seconds. The covering index work in v3.4.8 helped, but cold cache still makes the first render slow.
+  - **A subtle cross-restart-gap race**: if the apply orchestrator triggers two sequential restarts (e.g., systemd's notify-reload, or a deferred config reload), the poll might catch the brief window where the first process answers `/api/version` and then the second restart kicks in. The poll triggers a reload in that gap → browser connection refused.
+
+  Any of these alone could produce the symptom; in production they probably combined.
+
+  **What changed:**
+
+  **New endpoint: `GET /api/ready`** (server.py:2758). Returns 200 with `{"ready": true, "version": ..., "db_probe_ms": N}` only when the service is genuinely ready. Returns 503 with `{"ready": false, "version": ..., "reason": ..., "pending": ...}` when something is still in flight. Readiness checks:
+  1. All three rollup backfills (`hourly_rollup`, `military_rollup`, `watchlist_rollup`) report phase ∈ {`complete`, `skipped`, `error`}. The `running` and `unknown` phases count as not-ready. The `error` phase counts as ready — an errored backfill won't fix itself by waiting, and blocking the apply-flow indefinitely on a recoverable error would be worse than letting the user reload to a still-functional dashboard with one degraded card.
+  2. A trivial DB probe (`SELECT COUNT(*) FROM stats_records`, a 5-row table) completes in under 500 ms. This signals that SQLite's page cache and planner are responsive enough to serve real queries. If the probe takes longer, the cache is still warming and dashboard requests will likely time out.
+
+  **Rewritten apply-poll state machine** (templates/updates.html). Now polls `/api/ready` instead of `/api/version`, recognizes the 503-with-pending response as a real intermediate state ("Service up on X.Y.Z; finishing post-restart work: rollup backfill(s) in progress"), and requires **two consecutive successful ready=true polls** before triggering the reload. The two-consecutive-polls rule defends against the cross-restart-gap race: even if the poll briefly catches one process answering 200, the second poll has to also succeed before reload fires. With the 2-second poll interval, that's at least 2 seconds of continuous readiness before reload. The bump from a 1-second to 2-second poll interval is intentional — slower polls reduce the chance of catching transient up-then-down windows.
+
+  **User-visible behavior:**
+  - **Normal-tier installs** (rural / suburban): no perceptible change. Rollup backfills complete in subsecond, DB probe is fast, two consecutive polls succeed quickly, reload happens within a few seconds of apply as before.
+  - **Heavy installs** (major-airport, 5+ GB DB, year+ retention): the apply now waits visibly through the rollup-backfill window before reloading. The status text shows "Service up on 3.4.10; finishing post-restart work: rollup backfill(s) in progress" with elapsed-time counter, so the user knows it's not stuck. When backfills complete and the DB probe is fast and two polls succeed in a row, reload fires and the dashboard renders against a warm-enough cache. No more dead-page.
+
+  **Why not just bump systemd's `TimeoutStartSec`**: that would address only the cross-restart-gap race, not the rollup-backfill or cold-cache windows. And the reported symptom was specifically "wait longer, manual refresh works" — which means the service WAS coming up successfully, just slower than the poll's patience. Bumping systemd's timeout would help with a different failure mode (systemd killing the service mid-startup) that didn't appear to be the actual problem.
+
+  **Liveness vs readiness — standard k8s distinction.** The two endpoints now have clear, distinct semantics:
+  - `/api/version` — liveness. "Is the process responding?" Used by anything that needs to know the server is alive: build dashboards, generic health checks, `curl` smoke tests.
+  - `/api/ready` — readiness. "Is the process ready to serve real work?" Used by the apply-poll state machine and anything else that needs to coordinate against a fully-warm server.
+
+  This matches the k8s livenessProbe / readinessProbe pattern. Aerodrome doesn't run in k8s, but the conceptual split is the right one regardless of deployment surface.
+
+  **Scope:**
+  - `server.py` — one new endpoint `/api/ready` (~70 lines including docstring). Existing `/api/version` updated only to clarify in its docstring that it's the liveness probe and `/api/ready` exists for readiness.
+  - `templates/updates.html` — apply-poll state machine rewrite (~50 lines net: new `consecutiveReady` counter state, new `backfilling` state with status text, fetch URL change, poll interval 1s → 2s).
+  - No schema changes, no migration, no config changes. 88 endpoints → 89 (one new). SUDOERS_VERSION unchanged at 4.
+
+  **Test contract for v3.4.10:**
+  1. **Direct probe of `/api/ready`** in a fully-warm steady-state install:
+     ```
+     curl -s http://localhost:8000/api/ready | jq
+     ```
+     should return `{"ready": true, "version": "3.4.10", "db_probe_ms": <small>}`.
+  2. **Direct probe of `/api/ready` during a backfill**: stop the service, drop the rollup-completed markers from `_aerodrome_meta`, restart, and immediately curl `/api/ready`. Should return 503 with `pending.hourly_rollup.phase == "running"` (or similar for whichever backfill is in flight).
+  3. **End-to-end apply test on the heavy test box**: trigger an apply via the Updates page. Status text should show "finishing post-restart work" during rollup-backfill window. Reload should happen only after backfills complete and DB probe is fast. Browser should land on a working dashboard, not the connection-refused error page.
+
+  **HANDOFF lesson** (filed forward in Section 4): **4.14 — Liveness is not readiness, especially on heavy installs.** The Aerodrome service's startup has nontrivial post-bind work (rollup backfills, page cache warmup, initial poll cycle) that's invisible to a "is the port answering?" probe. Anything downstream that needs "the server is ready to serve real work" should poll a readiness endpoint, not just a liveness one. The cost of conflating them is exactly the dead-page-after-update symptom that v3.4.10 fixes.
+
 ## [3.4.9] — 2026-05-12
 
 ### Fixed

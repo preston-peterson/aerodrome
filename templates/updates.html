@@ -1,4 +1,4 @@
-<!-- Version: 3.4.9 -->
+<!-- Version: 3.4.10 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -959,11 +959,27 @@ async function applyLocal(version){
         applyError = e;
     }
 
-    // v2.87.2: state machine that polls /api/version until the service
-    // comes back up running new code. Replaces the v2.41.x
-    // setTimeout(reload, 3500) hack which produced a dead browser tab
-    // when the migration took longer than 3.5 seconds (which became
-    // routine once schema migrations started doing real work).
+    // v2.87.2: state machine that polls the service until it comes
+    // back up running new code.
+    //
+    // v3.4.10: poll /api/ready (readiness) instead of /api/version
+    // (liveness). /api/version answers as soon as FastAPI binds the
+    // port — which is seconds before rollup backfills complete and
+    // before the SQLite page cache is warm enough for the dashboard.
+    // Reloading at /api/version-up was triggering a "this site can't
+    // be reached" dead-page error on heavy installs because the
+    // reload's dashboard requests would race against a service that
+    // was technically alive but not yet ready, OR because we caught
+    // the gap between two sequential restarts. /api/ready returns
+    // 200 only when the service is genuinely ready to serve heavy
+    // requests; 503 with details when something is still in flight.
+    //
+    // ALSO new in v3.4.10: require TWO consecutive successful
+    // /api/ready polls before declaring complete. Defends against
+    // the cross-restart-gap race where /api/ready briefly answers
+    // 200 from one process before another restart kicks in. With
+    // the 2-second poll interval, this means at least 2 seconds of
+    // continuous readiness before we reload.
     //
     // States, in roughly the order they're observed:
     //   sent      — apply request just sent; service likely still up
@@ -975,11 +991,13 @@ async function applyLocal(version){
     //                apply silently rolled back, OR we're in a tiny
     //                window where the old process is still answering.
     //                Keep waiting up to the timeout.
-    //   complete  — poll returned the NEW version. Apply succeeded.
-    //                Reload the page so the user gets the new HTML/JS.
-    //   timeout   — 240s elapsed without seeing the new version.
-    //                Surface as an error; the user can SSH in to
-    //                investigate or just reload manually.
+    //   backfilling — /api/ready returned 503 with rollup pending.
+    //                 Service alive but doing post-startup work. Show
+    //                 progress so the user knows it's not stuck.
+    //   complete  — TWO consecutive /api/ready returned 200 with NEW
+    //                version. Apply succeeded. Reload.
+    //   timeout   — 240s elapsed without seeing two consecutive ready
+    //                polls on the new version. Surface as an error.
     //
     //                v2.89.1: bumped from 120s after the initial
     //                v2.89.0 deploy hit the timeout while migration v7
@@ -988,11 +1006,12 @@ async function applyLocal(version){
     //                with a year of data could see future migrations
     //                push 2-3 minutes; 240s leaves comfortable
     //                headroom without changing the underlying flow.
-    const POLL_INTERVAL_MS = 1000;
+    const POLL_INTERVAL_MS = 2000;
     const TIMEOUT_MS = 240_000;
+    const REQUIRED_CONSECUTIVE_READY = 2;
     const startTime = Date.now();
     let pollCount = 0;
-    let lastFailureTime = null;
+    let consecutiveReady = 0;
 
     while (true) {
         const elapsed = Date.now() - startTime;
@@ -1011,43 +1030,52 @@ async function applyLocal(version){
             return;
         }
 
+        let ready = false;
         let liveVersion = null;
+        let backfillReason = null;
+        let backfillPending = null;
         try {
             // Short timeout per poll so we don't get stuck if a
             // half-restarted service hangs the request.
             const ctrl = new AbortController();
             const tid = setTimeout(() => ctrl.abort(), 2500);
-            const r = await fetch('/api/version', { signal: ctrl.signal });
+            const r = await fetch('/api/ready', { signal: ctrl.signal });
             clearTimeout(tid);
-            if (r.ok) {
-                const j = await r.json();
-                liveVersion = j.version || null;
+            // 200 = ready; 503 = alive but not ready (backfill etc.);
+            // anything else = treat as unreachable
+            if (r.ok || r.status === 503) {
+                try {
+                    const j = await r.json();
+                    liveVersion = j.version || null;
+                    ready = !!j.ready;
+                    if (!ready) {
+                        backfillReason = j.reason || 'not ready';
+                        backfillPending = j.pending || null;
+                    }
+                } catch (_e) {
+                    // JSON parse failed — treat as not ready, keep polling
+                }
             }
-        } catch (e) {
+        } catch (_e) {
             // Expected — service is down or coming up. Fall through to
             // the "restarting" state below.
-            lastFailureTime = Date.now();
         }
         pollCount++;
 
         if (liveVersion === null) {
-            // Poll failed → service is between shutdown and ready.
-            // Show "restarting" with elapsed time so the user has a
-            // sense of progress (long migrations on Pi can take 30+s).
+            // Poll failed entirely → service is between shutdown and
+            // listening. Reset consecutive-ready counter.
+            consecutiveReady = 0;
             renderStatus(
                 `<span class="spinner"></span>` +
-                `Service is restarting and applying migrations. ` +
+                `Service is restarting. ` +
                 `Elapsed: ${Math.round(elapsed/1000)}s.`,
                 'info'
             );
         } else if (_oldVersion && liveVersion === _oldVersion) {
-            // Service answered, but with the OLD version. Two
-            // possibilities: (a) we polled before the restart actually
-            // happened (rare; the apply does file-copy-then-restart,
-            // so any answer should be from the new process), or (b)
-            // the apply silently failed and the service stayed on the
-            // old version. Keep polling — if (b), we'll hit the
-            // timeout and surface that.
+            // Service answered, but with the OLD version. Reset
+            // consecutive-ready counter — old version doesn't count.
+            consecutiveReady = 0;
             renderStatus(
                 `<span class="spinner"></span>` +
                 `Service is up but still on ${_esc(_oldVersion)}. ` +
@@ -1055,23 +1083,47 @@ async function applyLocal(version){
                 `Elapsed: ${Math.round(elapsed/1000)}s.`,
                 'info'
             );
-        } else {
-            // Live version differs from the version we started at,
-            // or we never knew the start version. Either way, the
-            // service is back and responding. Reload the page so the
-            // user gets the freshly-served HTML/JS that matches the
-            // running backend.
+        } else if (!ready) {
+            // New version is running, but post-startup work is still
+            // in flight (rollup backfill, DB cache warmup). Show
+            // progress with the reason. Reset consecutive-ready
+            // counter — we need TWO consecutive 200 ready=true polls.
+            consecutiveReady = 0;
+            const reasonText = backfillReason
+                ? `: ${_esc(backfillReason)}`
+                : '';
             renderStatus(
-                `<span style="color:var(--green)">✓</span> ` +
-                `Update complete — now running ${_esc(liveVersion)}. ` +
-                `Reloading page…`,
-                'ready'
+                `<span class="spinner"></span>` +
+                `Service up on ${_esc(liveVersion)}; finishing post-restart work${reasonText}. ` +
+                `Elapsed: ${Math.round(elapsed/1000)}s.`,
+                'info'
             );
-            setBadge('ok', '');
-            toast('Update applied', 'ok');
-            // Brief delay so the success message is visible.
-            setTimeout(() => window.location.reload(), 800);
-            return;
+        } else {
+            // Live version differs from start version AND ready=true.
+            // This is a candidate for "complete" — but require TWO
+            // consecutive such polls before reloading, to defend
+            // against the cross-restart-gap race.
+            consecutiveReady++;
+            if (consecutiveReady < REQUIRED_CONSECUTIVE_READY) {
+                renderStatus(
+                    `<span class="spinner"></span>` +
+                    `Service ready on ${_esc(liveVersion)}; verifying stability… ` +
+                    `Elapsed: ${Math.round(elapsed/1000)}s.`,
+                    'info'
+                );
+            } else {
+                renderStatus(
+                    `<span style="color:var(--green)">✓</span> ` +
+                    `Update complete — now running ${_esc(liveVersion)} and fully ready. ` +
+                    `Reloading page…`,
+                    'ready'
+                );
+                setBadge('ok', '');
+                toast('Update applied', 'ok');
+                // Brief delay so the success message is visible.
+                setTimeout(() => window.location.reload(), 800);
+                return;
+            }
         }
 
         await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));

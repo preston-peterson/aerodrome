@@ -1,4 +1,4 @@
-# Version: 3.4.9
+# Version: 3.4.10
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -2752,8 +2752,106 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         is mid-migration with the service just barely back up. No
         DB access, no config-dependent computation; just the version
         string the server has cached in memory.
+
+        This is a LIVENESS probe — answers as soon as FastAPI is
+        listening on the port. Not the same as readiness (rollup
+        backfills, page cache warmup, etc.) — for that see
+        /api/ready below.
         """
         return {"version": _aerodrome_version}
+
+    @app.get("/api/ready")
+    async def get_ready():
+        """v3.4.10: readiness probe, distinct from /api/version's
+        liveness probe. Returns 200 only when the service is ready
+        to serve heavy requests (Stats tab, dashboard pages, etc.).
+        Returns 503 with a JSON body explaining what's still in
+        flight when it isn't.
+
+        Why this exists: /api/version answers as soon as FastAPI
+        binds the port, which on a heavy install (5+ GB DB, 30M+
+        rows, 4 GB RAM) happens seconds before the rollup-backfill
+        daemon threads finish and seconds before the SQLite page
+        cache is warm enough to serve Stats queries quickly. The
+        Updates page used to poll /api/version, detect "service is
+        alive!" the moment FastAPI bound, then reload the dashboard
+        — which would fire heavier requests against a service that
+        was technically up but not ready. Result: connection-refused
+        or hung-request "dead page" appearance until the backend
+        caught up.
+
+        Readiness checks (all must be true for 200):
+          1. Schema migrations complete (always true here — server
+             only starts after migrations succeed)
+          2. hourly_rollup backfill complete or skipped
+          3. military_rollup backfill complete or skipped
+          4. watchlist_rollup backfill complete or skipped
+          5. Trivial DB read succeeds in <500ms (probes the SQLite
+             page cache + planner basic responsiveness)
+
+        Conservative on failure: any subsystem returning an
+        unexpected status counts as "not ready" rather than
+        "ready, ignore." Better to make the user wait an extra few
+        seconds than to reload into a half-broken page.
+        """
+        import collector as _coll
+        try:
+            backfill_states = {
+                "hourly_rollup":    _coll.get_hourly_backfill_status(),
+                "military_rollup":  _coll.get_military_backfill_status(),
+                "watchlist_rollup": _coll.get_watchlist_backfill_status(),
+            }
+        except Exception as e:
+            return JSONResponse(status_code=503, content={
+                "ready": False,
+                "version": _aerodrome_version,
+                "reason": f"backfill-state probe failed: {e}",
+            })
+
+        pending = {}
+        for key, state in backfill_states.items():
+            phase = (state or {}).get("phase", "unknown")
+            if phase in ("running", "unknown"):
+                pending[key] = state
+        if pending:
+            return JSONResponse(status_code=503, content={
+                "ready": False,
+                "version": _aerodrome_version,
+                "reason": "rollup backfill(s) in progress",
+                "pending": pending,
+            })
+
+        # DB probe — confirms the page cache + planner are
+        # responsive enough to serve heavy requests. Tiny query
+        # against a small table to avoid skewing the measurement.
+        try:
+            t0 = time.time()
+            db_path = CONFIG["data"]["db_file"]
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2.0)
+            try:
+                conn.execute("SELECT COUNT(*) FROM stats_records").fetchone()
+            finally:
+                conn.close()
+            db_ms = (time.time() - t0) * 1000
+            if db_ms > 500:
+                return JSONResponse(status_code=503, content={
+                    "ready": False,
+                    "version": _aerodrome_version,
+                    "reason": f"db probe slow ({int(db_ms)}ms); cache likely cold",
+                    "db_probe_ms": int(db_ms),
+                })
+        except Exception as e:
+            return JSONResponse(status_code=503, content={
+                "ready": False,
+                "version": _aerodrome_version,
+                "reason": f"db probe failed: {e}",
+            })
+
+        return {
+            "ready": True,
+            "version": _aerodrome_version,
+            "db_probe_ms": int(db_ms),
+        }
 
     @app.get("/api/status")
     async def get_status():
