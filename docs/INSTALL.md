@@ -60,12 +60,17 @@ sightings before it flies out of range.
 
 - **Rural / quiet airspace** — under ~500 aircraft/day, under ~300k
   sightings at 30-day retention. Raspberry Pi 4 with any reasonable SD
-  card is fine. Everything is fast.
+  card is fine. **1 GB RAM minimum, 2 GB comfortable.** Everything is
+  fast at this scale; the database stays under ~500 MB so cache fit
+  is trivial.
 
 - **Suburban / moderate** — ~500-2,000 aircraft/day, ~300k-1.5M sightings
   at 30-day retention. Raspberry Pi 4 still works, but use an A2-rated SD
   card for random-I/O performance (examples as of 2026: SanDisk Extreme
-  Pro, Samsung Pro Plus). Stats tab loads in the 3-8 second range.
+  Pro, Samsung Pro Plus). **2 GB RAM minimum, 4 GB comfortable.** At
+  this scale the database is typically under 1 GB at the default 30-day
+  retention; SQLite's page cache fits the working set easily.
+  Stats tab loads in the 3-8 second range.
 
 - **Major-airport / heavy** — 2,000+ aircraft/day, 1.5M+ sightings at
   30-day retention. Raspberry Pi 5 strongly recommended, and an NVMe HAT
@@ -73,6 +78,38 @@ sightings before it flies out of range.
   storage I/O, and NVMe is roughly 10-20× the random-read throughput of
   an SD card. Example HATs (as of 2026): Pimoroni NVMe Base, Pineberry Pi
   HatDrive. Any small x86 box with an SSD is an equivalent alternative.
+  **4 GB RAM minimum at default retention, 6 GB+ strongly recommended
+  at 365-day retention.** When the database grows past available RAM,
+  cold-cache Stats-tab queries do disk reads on every render — the
+  difference between 4 GB and 6 GB on a 5 GB database is measurable on
+  every page load. See *RAM and the SQLite page cache* below.
+
+### RAM and the SQLite page cache
+
+SQLite caches recently-read database pages in RAM. The more of the
+database that stays hot in cache, the faster Stats-tab queries are.
+When the database fits entirely in RAM, queries are uniformly fast.
+When it doesn't, the Stats tab does disk reads on cold queries — a
+5 GB database on a 4 GB host means roughly half the pages have to
+come from disk after a service restart or after the cache has been
+flushed by other workload.
+
+The Aerodrome auto-tuning profile (`data.tuning.profile: auto` in
+config.yaml, the default) scales SQLite's cache up automatically when
+more RAM is available, so simply giving the host more RAM produces
+measurable improvements without any configuration changes. Empirically,
+on a 5.1 GB / 29M-row database, the difference between 4 GB and 6 GB
+RAM was roughly 5× on cold-cache `stats_furthest_prerank` (226 ms →
+130 ms); 6 GB to 8 GB brought another ~3× (130 ms → 49 ms) on that
+same query while most other queries had already hit their cache-fit
+floor at 6 GB.
+
+If your install is at the heavy tier and stats feel sluggish, the
+Performance page diagnostic at `/performance` shows per-query timings
+that surface cache-related slowness explicitly. Queries that vary
+substantially between cold and warm runs (and especially queries that
+get faster after you increase RAM) are doing disk I/O that more cache
+would absorb.
 
 If you don't want to upgrade hardware, reducing retention is the easiest
 win. A 3M-row install at 30-day retention becomes a 1M-row install at

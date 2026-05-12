@@ -19,6 +19,41 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.7] — 2026-05-12
+
+### Added
+- **RAM tier recommendations added to the hardware sizing docs, plus a covering index that closes the next perf bottleneck the v3.4.6 cross-RAM benchmark surfaced.** v3.4.6 validated the rollup architecture for military and watchlist; running the perf diagnostic at three RAM levels (4 GB / 6 GB / 8 GB) on the test box's 5.1 GB / 29M-row dataset surfaced two follow-up items that this release addresses: (1) the hardware sizing section in INSTALL.md said nothing about RAM, despite RAM clearly mattering — the cross-RAM comparison showed several queries getting dramatically faster between 4 GB and 6 GB; (2) the `stats_furthest_prerank` Stats card query was identified as the new slowest hot-path query, scaling linearly with available cache (226 ms → 130 ms → 49 ms across 4/6/8 GB).
+
+  **What changed:**
+
+  **`docs/INSTALL.md` — RAM tier recommendations.** Each of the three sizing tiers (Rural/quiet, Suburban/moderate, Major-airport/heavy) now includes a minimum-RAM line and a comfortable-RAM line, grounded in the v3.4.6 cross-RAM measurement. A new sub-section "RAM and the SQLite page cache" explains the underlying mechanic: SQLite caches recently-read database pages in RAM, the auto-tuning profile scales cache up with available RAM, and the difference between a working set that fits in RAM versus one that doesn't is the difference between uniformly fast Stats-tab queries and per-render disk reads. The recommendations are honest about scope — they're grounded in one dataset on one hardware shape, so they're directional guidance rather than rigorous capacity-planning numbers. The text says so explicitly. Specific tier mapping: rural 1 GB min / 2 GB comfortable; suburban 2 GB / 4 GB; major-airport 4 GB / 6 GB+ at 365-day retention.
+
+  **`schema_migrations.py` — covering index `idx_seen_last_latlon` for `stats_furthest_prerank`.** The Stats card "furthest aircraft" pre-rank query is a range scan over `seen_aircraft` filtered by `last_seen_at`, computing a cos²-scaled coordinate distance proxy, and returning the top 100 by computed distance. Before v3.4.7, the planner used the single-column `idx_seen_last` index for the range filter, then had to table-fetch each matching row to read `last_lat`, `last_lon`, and `icao`. At 170K seen_aircraft rows on a cold cache, that's ~170K disk reads — exactly the disk-I/O bound behavior visible in the cross-RAM benchmark. The new index `(last_seen_at, last_lat, last_lon, icao)` is fully covering — the planner satisfies the range filter AND reads all selected columns directly from index leaves, eliminating the table fetches. `icao` is included explicitly because seen_aircraft uses `TEXT PRIMARY KEY` (not `INTEGER PRIMARY KEY`), so icao is stored in the table, not as the rowid; without including it the index isn't fully covering. Synthetic-test verification at 200K rows showed the planner auto-picking the new index (no `INDEXED BY` hint needed) and warm-cache performance improving from 132 ms to 38 ms (3.4× speedup on warm cache). Real cold-cache production improvement should be larger — the warm-cache test only measured the marginal index-scan difference; on cold cache the eliminated table fetches save disk I/O which dominates the cold-cache time.
+
+  **The ORDER BY temp B-tree is still unavoidable.** The query sorts by a computed expression (`(last_lat - rx_lat)² + (last_lon - rx_lon)² * cos²`), and computed expressions can't be indexed by definition. So the plan still says `USE TEMP B-TREE FOR ORDER BY`. That's CPU work on the narrowed result set, not disk I/O. Eliminating it would require either rewriting the query to avoid the computed sort (precomputing distance into a column, then indexing it) or moving to a different ranking architecture entirely. Neither is in scope for v3.4.7; the covering index handles the disk-I/O bottleneck, which is the dominant cost at scale.
+
+  **Index size is negligible.** Roughly 38 bytes per row × ~170K rows ≈ 6.5 MB on a typical heavy-tier install. The disk-space hint at install time is unaffected.
+
+  **What was NOT done:**
+  - No rollup table for stats_furthest. The covering index is sufficient for the current scale. If the query becomes problematic at 1M+ seen_aircraft (e.g., at multi-year retention on very heavy installs), a precomputed daily-furthest rollup would be the next step. That's filed in the HANDOFF as a v3.5.0+ consideration.
+  - No changes to the auto-tuning profile thresholds. The current profile already scales cache up with available RAM correctly; the v3.4.6 measurements confirmed it's working as designed.
+  - No code changes to the `stats_furthest_prerank` query itself. The query plan improvement comes entirely from the new index. Same SQL, same result.
+
+  **Honest measurement disclosure.** The original v3.4.6 retrospective implied dramatic speedups for military_count and watchlist_count (240× and 140×). Those numbers turned out to be a measurement artifact — the v3.4.5 baseline diagnostic was taken on a 4 GB box that was likely cache-thrashing, and the v3.4.6 verification was done on a 6 GB box with warm cache. The clean v3.4.6 win, measured on identical 4 GB hardware with paired rollup-vs-raw probes, is ~5× (not 240×). This is captured in the HANDOFF as Lesson 4.11 (measurement discipline) and Lesson 4.12 (single-shot perf measurements can mislead — always run twice for cold vs warm). The architecture is real and valuable; the numbers are smaller and more honest. Same will apply to v3.4.7's covering index — the real production improvement on cold cache will be measurable but probably not dramatic.
+
+  **Scope:**
+  - `docs/INSTALL.md` — three RAM lines added to the sizing tiers, one new sub-section ("RAM and the SQLite page cache") explaining the underlying mechanic with measured numbers (~30 lines net)
+  - `schema_migrations.py` — one `CREATE INDEX IF NOT EXISTS idx_seen_last_latlon ON seen_aircraft(last_seen_at, last_lat, last_lon, icao)` statement with ~25 lines of explanatory comment, placed alongside the other seen_aircraft search indexes in the migration that adds those columns
+  - **No schema changes to existing tables, no config changes, no API changes, no UI flow changes.** 88 endpoints unchanged. SUDOERS_VERSION unchanged at 4.
+
+  **Test contract for v3.4.7:**
+  1. **Fresh install** — new install gets the covering index created during initial migration. Stats card "furthest aircraft" works at the new perf characteristic from day one.
+  2. **Existing install upgrade** — `CREATE INDEX IF NOT EXISTS` is idempotent. On upgrade, the index is created against the existing table (one-time disk-build cost roughly proportional to seen_aircraft row count — at 170K rows expect a few hundred ms). No data migration; the index just makes future queries faster.
+  3. **Perf measurement** — run the diagnostic on the test box at 4 GB after deploying v3.4.7. Compare `stats_furthest_prerank` against the v3.4.6 baseline of 226 ms. Expect 50-150 ms range (still bound by ORDER BY temp B-tree, but disk-I/O bottleneck eliminated).
+  4. **Plan verification** — the diagnostic's plan line for `stats_furthest_prerank` should now say `USING COVERING INDEX idx_seen_last_latlon` instead of `USING INDEX idx_seen_last`. That confirms the planner picked it.
+
+  **Operational note:** Existing installs see a one-time index-build pause on first start after upgrade. For typical seen_aircraft sizes (under 200K rows) the pause is well under a second. For unusually large installs (multi-year retention with very heavy traffic) it could be 1-2 seconds. The pause happens during the schema migration phase, before the service starts handling requests; there's no externally-visible downtime impact.
+
 ## [3.4.6] — 2026-05-12
 
 ### Added

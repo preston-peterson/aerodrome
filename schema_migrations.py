@@ -248,6 +248,35 @@ def _migration_v1_search_schema(conn: sqlite3.Connection) -> None:
             f"CREATE INDEX IF NOT EXISTS {idx_name} ON seen_aircraft({col})"
         )
 
+    # v3.4.7: covering index for stats_furthest_prerank.
+    # The Stats card "furthest aircraft" pre-rank query is:
+    #   SELECT icao, (computed_distance) AS dist_proxy
+    #   FROM seen_aircraft
+    #   WHERE last_lat IS NOT NULL AND last_lon IS NOT NULL
+    #     AND last_seen_at >= ?
+    #   ORDER BY dist_proxy DESC LIMIT 100
+    # With idx_seen_last alone (single column on last_seen_at), the
+    # planner does a range scan but then table-fetches each matching
+    # row to read last_lat / last_lon / icao. At 170K seen_aircraft
+    # rows on cold cache, that's ~170K disk reads. The v3.4.6
+    # cross-RAM benchmark showed this query at 226 ms (4 GB), 130 ms
+    # (6 GB), 49 ms (8 GB) — clearly disk-I/O bound on those table
+    # fetches.
+    # With (last_seen_at, last_lat, last_lon, icao) as a covering
+    # index, the planner satisfies both the range filter AND reads
+    # all selected columns directly from index leaves — no table
+    # fetch. icao is included because it's TEXT PRIMARY KEY (not
+    # INTEGER PRIMARY KEY), so it's stored in the table, not as
+    # the rowid; the index has to carry it explicitly for full
+    # coverage. The ORDER BY temp B-tree on the computed
+    # dist_proxy still has to happen (computed expressions can't
+    # be indexed) but that's CPU on the narrowed result, not disk
+    # I/O. Index size: ~38 bytes/row × ~170K rows ≈ 6.5 MB. Tiny.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_seen_last_latlon "
+        "ON seen_aircraft(last_seen_at, last_lat, last_lon, icao)"
+    )
+
     # v2.51.0 Flavor C: partial index on fts_dirty makes the cycle-end
     # batch flush O(dirty rows) rather than O(table). Without this,
     # `WHERE fts_dirty = 1` would scan the whole table. The partial
