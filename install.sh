@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.1.1
+# Version: 3.1.2
 # =============================================================================
 # Aerodrome — Server Install Script
 # =============================================================================
@@ -28,6 +28,35 @@ RESET='\033[0m'
 INSTALL_DIR="$(cd "$(dirname "$0")" && pwd)"
 SERVICE_NAME="aerodrome"
 FEEDER_SERVICE_NAME="aerodrome-synthetic-feeder"
+
+# v3.1.2: refuse to run from inside an existing install's `update/` staging
+# directory. The hazard: if a user unpacks a release zip into ~/aerodrome/
+# update/ (e.g. from the in-app updater's staged upload) and runs
+# `./install.sh` from there, INSTALL_DIR resolves to the staging directory
+# and the systemd unit ends up pointing at /home/user/aerodrome/update/
+# instead of /home/user/aerodrome/. The service then 203/EXEC's because
+# the venv lives in the real install root, not staging.
+#
+# The detection: if INSTALL_DIR's parent has a VERSION file and a main.py,
+# we're sitting in a subdirectory of an existing install. Refuse with a
+# clear pointer at the real install root.
+INSTALL_DIR_PARENT="$(dirname "$INSTALL_DIR")"
+INSTALL_DIR_BASENAME="$(basename "$INSTALL_DIR")"
+if [ "$INSTALL_DIR_BASENAME" = "update" ] \
+        && [ -f "$INSTALL_DIR_PARENT/VERSION" ] \
+        && [ -f "$INSTALL_DIR_PARENT/main.py" ]; then
+    echo -e "\033[31m\033[1mError:\033[0m install.sh is sitting inside an existing install's update/ staging directory:" >&2
+    echo "  Current location: $INSTALL_DIR" >&2
+    echo "  Real install:     $INSTALL_DIR_PARENT" >&2
+    echo "" >&2
+    echo "Running install.sh from here would write a systemd unit pointing at" >&2
+    echo "the staging directory and break your install. Run from the real install" >&2
+    echo "root instead:" >&2
+    echo "" >&2
+    echo "  cd $INSTALL_DIR_PARENT && ./install.sh" >&2
+    echo "" >&2
+    exit 2
+fi
 
 # v3.1.0: --demo flag puts the install into demo mode. The bootstrap
 # passes --demo when the user picks "explore with simulated data" at

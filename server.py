@@ -1,4 +1,4 @@
-# Version: 3.1.1
+# Version: 3.1.2
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -27,7 +27,7 @@ from typing import Optional, Dict, List, Any
 
 import requests as req
 import yaml
-from fastapi import FastAPI, Query, UploadFile, File, HTTPException
+from fastapi import FastAPI, Query, UploadFile, File, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from pydantic import BaseModel
 

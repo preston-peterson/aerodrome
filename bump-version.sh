@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.1.1
+# Version: 3.1.2
 # =============================================================================
 # bump-version.sh — Bump Aerodrome version + auto-update CHANGELOG.md
 # =============================================================================
@@ -22,6 +22,12 @@
 #                                         it's advisory anyway, but this
 #                                         silences the output during rapid
 #                                         iteration)
+#   --skip-name-check                    (skip the static name-resolution
+#                                         check on server.py annotations.
+#                                         The check would have caught the
+#                                         v3.1.0/3.1.1 NameError bug — only
+#                                         skip if you have verified that the
+#                                         flagged name is a false positive)
 #
 # Examples:
 #   ./bump-version.sh patch "Fixed sorting bug on Live tab"
@@ -62,6 +68,7 @@ for arg in "$@"; do
         --yes|-y)            SKIP_DOCS_CHECK=1 ;;
         --skip-pdf)          SKIP_PDF=1 ;;
         --skip-docs-drift)   SKIP_DOCS_DRIFT=1 ;;
+        --skip-name-check)   SKIP_NAME_CHECK=1 ;;
         *) ARGS+=("$arg") ;;
     esac
 done
@@ -383,6 +390,100 @@ if [ "$SKIP_PDF" = "0" ] && [ -f "$PDF_BUILDER" ]; then
         echo "  ! PDF build failed — continuing anyway."
         echo "    Install dev deps:  pip install -r requirements-dev.txt"
         echo "    Or pass --skip-pdf to silence this."
+    fi
+    echo ""
+fi
+
+# =============================================================================
+# Static name-resolution check — required.
+# =============================================================================
+# Walk server.py's function annotations and flag any name referenced in an
+# annotation that isn't defined at module scope or imported. v3.1.0 + v3.1.1
+# both shipped with `async def switch_to_real_execute(request: Request):`
+# but `Request` was never imported from fastapi — every install crashed at
+# startup with NameError. AST-parse only catches syntax, not name resolution.
+# This check would have caught the bug before either release shipped.
+#
+# Unlike check_docs.py which is advisory, this one is REQUIRED: a release
+# that crashes every install at startup is not advisory — it's broken.
+# Pass --skip-name-check to suppress (don't, unless you have a very good
+# reason — like working around a false positive that has been verified).
+NAME_CHECK_PY=$(cat << 'PYEOF'
+import ast, sys, builtins
+src = open('server.py').read()
+tree = ast.parse(src)
+defined = set(dir(builtins))
+defined.update(['__file__', '__name__', '__doc__', '__package__',
+                '__loader__', '__spec__', 'TYPE_CHECKING'])
+# Common Pydantic / typing-stdlib names that ARE defined at the
+# function-scope where they're used (Pydantic BaseModel subclasses
+# defined inside get_app, for example). False-positive on these is
+# OK — the check is conservative and excludes uppercase function-
+# local names that look like nested-class references.
+LOCAL_OK = set()
+class TopCollector(ast.NodeVisitor):
+    def visit_Import(self, n):
+        for a in n.names: defined.add(a.asname or a.name.split('.')[0])
+    def visit_ImportFrom(self, n):
+        for a in n.names: defined.add(a.asname or a.name)
+    def visit_FunctionDef(self, n): defined.add(n.name)
+    def visit_AsyncFunctionDef(self, n): defined.add(n.name)
+    def visit_ClassDef(self, n): defined.add(n.name)
+    def visit_Assign(self, n):
+        for t in n.targets:
+            if isinstance(t, ast.Name): defined.add(t.id)
+    def visit_AnnAssign(self, n):
+        if isinstance(n.target, ast.Name): defined.add(n.target.id)
+TopCollector().visit(tree)
+# Also pick up nested classes anywhere — they may be referenced in
+# sibling-function annotations within the same outer function scope.
+class NestedCollector(ast.NodeVisitor):
+    def visit_ClassDef(self, n):
+        LOCAL_OK.add(n.name)
+        self.generic_visit(n)
+NestedCollector().visit(tree)
+errors = []
+class AnnChecker(ast.NodeVisitor):
+    def _check(self, ann, lineno):
+        for sub in ast.walk(ann):
+            if isinstance(sub, ast.Name):
+                if sub.id in defined or sub.id in LOCAL_OK:
+                    continue
+                errors.append((lineno, sub.id))
+    def visit_FunctionDef(self, n): self._do(n)
+    def visit_AsyncFunctionDef(self, n): self._do(n)
+    def _do(self, n):
+        for a in n.args.args + n.args.kwonlyargs:
+            if a.annotation is not None: self._check(a.annotation, a.lineno)
+        if n.returns is not None: self._check(n.returns, n.lineno)
+        self.generic_visit(n)
+AnnChecker().visit(tree)
+if errors:
+    print(f'  ✗ Found {len(errors)} undefined name(s) in type annotations:')
+    seen = set()
+    for lineno, name in errors:
+        key = (lineno, name)
+        if key in seen: continue
+        seen.add(key)
+        print(f'    server.py:{lineno}  {name!r}')
+    sys.exit(1)
+else:
+    print('  ✓ Static name-resolution check passed (function annotations).')
+PYEOF
+)
+if [ "${SKIP_NAME_CHECK:-0}" = "0" ]; then
+    echo "Static name-resolution check..."
+    if ! (cd "$SCRIPT_DIR" && python3 -c "$NAME_CHECK_PY"); then
+        echo ""
+        echo "  This means a function-annotation references a name that isn't imported"
+        echo "  or defined at module scope. The release would crash at startup with a"
+        echo "  NameError before the service can come up. Fix the missing import or"
+        echo "  remove the annotation before shipping."
+        echo ""
+        echo "  Override with --skip-name-check ONLY if you have verified that the"
+        echo "  flagged name is a false positive (e.g. a Pydantic BaseModel subclass"
+        echo "  defined inside the same outer function)."
+        exit 1
     fi
     echo ""
 fi
