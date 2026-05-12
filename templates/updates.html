@@ -1,4 +1,4 @@
-<!-- Version: 3.1.0 -->
+<!-- Version: 3.1.1 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1633,18 +1633,106 @@ async function applyGithubUpdate(tag){
         // Sudoers-drift gets the same modal treatment as the local-apply path.
         // Inherited automatically because we hand off to apply_local_update().
         if(j.error === 'sudoers_refresh_required' && j.sudoers){
-            // Reuse the existing sudoers-drift modal — _lastSudoersCheck +
-            // _lastUpdateInfo are the inputs.
+            // v3.1.1: render the full actionable instructions inline on
+            // the card rather than relying on a modal alone. The previous
+            // code referenced showSudoersDriftModal() which doesn't exist,
+            // so no modal ever opened — users got the terse error and a
+            // misleading "Try again" button with no path forward.
+            //
+            // The new card-level message stands on its own (clear plain-
+            // language explanation, exact command, copy button, single
+            // clear action button), and offers "Show details" for users
+            // who want the deeper modal experience.
             _lastSudoersCheck = j.sudoers;
-            _lastUpdateInfo = { version: tag, install_dir: null };
-            status.innerHTML = `<div class="status-msg err">
-                The staged release needs a sudoers refresh before it can be applied.
-                See the dialog for the command to run on the server.
-            </div>`;
-            // Trigger the modal the local-update flow uses
-            if(typeof showSudoersDriftModal === 'function'){
-                showSudoersDriftModal();
+            _lastUpdateInfo = { version: tag, install_dir: j.install_dir || null };
+            const installDir = j.install_dir || '~/aerodrome';
+            const cmd = `sudo bash ${installDir}/install.sh`;
+            const stagedV = j.sudoers.staged_version != null ? j.sudoers.staged_version : '?';
+            const liveV = j.sudoers.live_version != null ? j.sudoers.live_version : '(none)';
+            status.innerHTML = `
+                <div class="status-msg warn" style="text-align:left">
+                    <div style="font-weight:600;margin-bottom:8px;font-size:14px;">
+                        One-time setup needed before this update can apply
+                    </div>
+                    <div style="font-size:13px;line-height:1.6;margin-bottom:12px;">
+                        Version <code>${escapeHtml(tag)}</code> adds new system permissions
+                        (so new features can run system commands like restarting the service
+                        or managing optional add-ons). Aerodrome can't grant itself permissions
+                        — it needs you to run one command on the server, then the update will
+                        apply normally.
+                    </div>
+                    <div style="font-size:11px;color:var(--t2);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.05em;">
+                        Run this on your server (over SSH):
+                    </div>
+                    <div style="position:relative;background:var(--bg0);border:1px solid var(--bdr);
+                                border-radius:6px;padding:10px 12px;font-family:var(--mono);font-size:12px;
+                                color:var(--cyan);margin:0 0 6px 0;overflow-x:auto;">
+                        <span id="_ghsu_cmd" style="white-space:nowrap;">${escapeHtml(cmd)}</span>
+                        <button id="_ghsu_copy" style="position:absolute;top:6px;right:6px;
+                                background:var(--bg2);color:var(--t2);border:1px solid var(--bdr);
+                                border-radius:4px;font-size:10px;font-family:var(--font);
+                                padding:3px 10px;cursor:pointer;">Copy</button>
+                    </div>
+                    <div style="font-size:11px;color:var(--t3);margin-bottom:14px;">
+                        It's safe to re-run install.sh on an existing install — it skips
+                        steps that are already done and only refreshes what needs refreshing.
+                    </div>
+                    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                        <button class="btn btn-primary" id="_ghsu_recheck">I ran the command — re-check</button>
+                        <a href="#" id="_ghsu_details" style="font-size:12px;color:var(--cyan);text-decoration:underline;">
+                            Show details (permissions changing: v${escapeHtml(String(liveV))} → v${escapeHtml(String(stagedV))})
+                        </a>
+                    </div>
+                </div>
+            `;
+            // Wire the inline buttons.
+            const copyBtn = document.getElementById('_ghsu_copy');
+            const recheckInline = document.getElementById('_ghsu_recheck');
+            const detailsLink = document.getElementById('_ghsu_details');
+            if(copyBtn){
+                copyBtn.onclick = async () => {
+                    try {
+                        await navigator.clipboard.writeText(cmd);
+                        copyBtn.textContent = 'Copied!';
+                        copyBtn.style.color = 'var(--green)';
+                        setTimeout(() => {
+                            copyBtn.textContent = 'Copy';
+                            copyBtn.style.color = 'var(--t2)';
+                        }, 1500);
+                    } catch (e) {
+                        // Fallback for older browsers / non-secure contexts:
+                        // select the command text so the user can ctrl+c.
+                        const span = document.getElementById('_ghsu_cmd');
+                        if(span && window.getSelection){
+                            const range = document.createRange();
+                            range.selectNodeContents(span);
+                            const sel = window.getSelection();
+                            sel.removeAllRanges();
+                            sel.addRange(range);
+                        }
+                    }
+                };
             }
+            if(recheckInline){
+                recheckInline.onclick = () => applyGithubUpdate(tag);
+            }
+            if(detailsLink){
+                detailsLink.onclick = (e) => {
+                    e.preventDefault();
+                    if(typeof showSudoersRequiredModal === 'function'){
+                        showSudoersRequiredModal({
+                            staged_version: j.sudoers.staged_version,
+                            live_version: j.sudoers.live_version,
+                            install_dir: j.install_dir || null,
+                            update_version: tag,
+                        });
+                    }
+                };
+            }
+            // Don't append the old "Try again" / "Re-check status" buttons —
+            // the inline "I ran the command — re-check" button is the
+            // single clear next action.
+            return;
         } else {
             status.innerHTML = `<div class="status-msg err">
                 <strong>Apply failed:</strong> ${escapeHtml(j.error || 'unknown error')}

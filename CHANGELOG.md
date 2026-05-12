@@ -19,6 +19,28 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.1.1] — 2026-05-12
+
+### Fixed
+- **Sudoers-refresh-required UX cleaned up on the GitHub Apply flow.** When a GitHub update needs a sudoers refresh before it can be applied (because the staged release bumped SUDOERS_VERSION — which v3.1.0 did, going from 3 to 4 to support the new demo-mode feeder-service lifecycle), the user previously saw a confusing card-level error reading *"The staged release needs a sudoers refresh before it can be applied. See the dialog for the command to run on the server."* — but no dialog ever appeared, because the function the code tried to invoke (`showSudoersDriftModal`) doesn't exist anywhere in the codebase. The card's "Try again" button would simply re-trigger the same failed call, and "Re-check status" didn't help either since the live sudoers hadn't been refreshed. There was literally no path forward without SSH-ing to the server and guessing the right command.
+
+  v3.1.1 fixes this end-to-end. The card now renders the full actionable instructions inline rather than gesturing at a missing dialog: a plain-language explanation of *why* permissions need updating ("Version X.Y.Z adds new system permissions so new features can run system commands like restarting the service or managing optional add-ons — Aerodrome can't grant itself permissions, it needs you to run one command on the server"), the exact command to run (with the real install path, not a `/home/<user>/aerodrome` placeholder), a Copy button for the command, a single clear action button reading *"I ran the command — re-check"* (instead of the misleading "Try again"), and a *"Show details"* link that opens the deeper modal for users who want the longer explanation. The modal itself still exists for the local-zip-upload flow and works correctly there.
+
+  **Why the inline card and not just the modal:** the modal can be dismissed; an inline card on the GitHub update card itself is always visible until the user re-checks successfully. Modals are good for first-touch attention but bad for "I dismissed it, now I'm stuck looking at a confusing error." Inline keeps the instructions in front of the user as long as the problem persists.
+
+  **Why the install path matters in the command:** the previous modal would fall back to displaying `sudo bash /home/<user>/aerodrome/install.sh` when it didn't know the real install path. For users on non-default install locations (e.g. `~/git/aerodrome`) that command would fail or run install.sh from the wrong tree. v3.1.1 includes the real `install_dir` in the server's 409 response so the displayed command matches the actual install location every time.
+
+  **Behind the scenes — the bug.** Three things were wrong with the GitHub-apply error path:
+  1. `showSudoersDriftModal()` was called but never defined. The local-update flow uses `showSudoersRequiredModal({opts})` (different name, different signature). The GitHub-update flow's copy-paste at v3.0.0 referenced a function name that never landed. Result: silent no-op, no modal ever appeared.
+  2. The card's error message ("see the dialog") assumed the modal would show. With the modal broken, the message was nonsensical.
+  3. The "Try again" button was misleading — retrying the apply without a sudoers refresh just hits the same 409 again. "Re-check status" was almost-right but didn't tell the user *what* they were supposed to do between checks.
+
+  v3.1.1 fixes all three: the inline card is self-sufficient, names the bug-prone modal function correctly when invoked from the "Show details" link, and replaces "Try again" with "I ran the command — re-check" so the next action is unambiguous.
+
+  **Single file scope.** `templates/updates.html` for the inline card render and the corrected `showSudoersRequiredModal` invocation; `server.py` for the `install_dir` field on the 409 response. ~80 lines of frontend change plus a one-line server addition. No data-plane code touched, no schema changes, no config changes, no sudoers changes (the existing v4 SUDOERS_VERSION from v3.1.0 stays correct).
+
+  **Operational note:** users on v3.0.x trying to apply v3.1.0 today encounter the broken UX because the v3.0.x code is what's running in their browser at apply time. The fix only takes effect once they're on v3.1.1. The shortest path forward is the local-zip update flow: deploy v3.1.1 via `update-from-zip.sh` (or the in-app local-zip upload), re-run `install.sh` once to refresh sudoers to v4, then future GitHub-channel updates will apply with the new corrected UX. v3.1.1 itself, of course, also requires the same sudoers v4 — but it's the *last* release that needs the broken-UX bypass; everything after applies cleanly through the in-app GitHub channel.
+
 ## [3.1.0] — 2026-05-12
 
 ### Added
