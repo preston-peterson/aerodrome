@@ -1,4 +1,4 @@
-<!-- Version: 3.4.0 -->
+<!-- Version: 3.4.1 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -3978,9 +3978,11 @@ function sectionBackupRestore() {
                 <code id="ssBackupsDir">&lt;install_dir&gt;/.backups/</code> on this host,
                 with no browser transfer. For large databases (multi-GB) this is the
                 only practical option — browser uploads stop working reliably above
-                ~2 GB regardless of cap settings. Move the file off this host with
-                <code>scp</code> or <code>rsync</code> for safekeeping (the
-                <em>Copy command</em> button gives you the right command).
+                ~2 GB. Move backups off this host with <code>scp</code> or <code>rsync</code>
+                for safekeeping (the <em>Copy scp command</em> button on each row gives you
+                the right command). To restore from a backup you copied onto this host
+                from elsewhere, place it in <code>.backups/</code> and click <em>Rescan</em>
+                — it will appear in the list below.
             </div>
 
             <!-- Create server-side backup -->
@@ -4012,29 +4014,12 @@ function sectionBackupRestore() {
                     Loading…
                 </div>
                 <div id="ssBackupsList" class="br-list" style="margin-bottom:10px"></div>
-                <button class="btn btn-ghost" onclick="loadServerSideBackups()" style="font-size:11px">↻ Refresh</button>
-            </div>
-
-            <!-- Restore from path (advanced) -->
-            <div style="border-top:1px solid var(--bdr);padding-top:14px;margin-top:4px">
-                <div style="font-size:13px;font-weight:500;color:var(--t1);margin-bottom:6px;">
-                    Restore from a path on disk
+                <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                    <button class="btn btn-ghost" id="ssRescanBtn" onclick="rescanServerSideBackups()" style="font-size:11px">↻ Rescan</button>
+                    <span style="font-size:11px;color:var(--t3);font-family:var(--mono)">
+                        click after copying a new backup zip into <code>.backups/</code> via scp/rsync
+                    </span>
                 </div>
-                <div style="font-size:11px;color:var(--t3);font-family:var(--mono);margin-bottom:10px;">
-                    Restore from a backup zip you scp'd onto this host. The path must
-                    be inside <code>.backups/</code>; if your file is elsewhere,
-                    move it there first. This is destructive — the existing
-                    <code>config.yaml</code>, database, and ntfy config will be
-                    replaced. A <code>.pre-restore</code> safety snapshot is
-                    created first.
-                </div>
-                <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:8px">
-                    <input type="text" id="ssRestorePath" class="input" style="flex:1;min-width:280px;font-family:var(--mono);font-size:12px"
-                           placeholder="/opt/aerodrome/.backups/aerodrome-backup-20260512-150658.zip">
-                </div>
-                <button class="btn btn-red" id="ssRestoreBtn" onclick="restoreFromServerPath()">
-                    Restore &amp; restart
-                </button>
             </div>
         </div>
     </div>
@@ -4565,7 +4550,7 @@ async function loadServerSideBackups() {
                     </div>
                     <div style="display:flex;flex-wrap:wrap;gap:8px">
                         <button class="btn btn-primary" style="font-size:11px;padding:4px 10px"
-                                onclick='restoreFromServerPathDirect(${JSON.stringify(b.path)})'>
+                                onclick='restoreFromServerSideBackup(${JSON.stringify(b.path)}, this)'>
                             Restore from this
                         </button>
                         <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px"
@@ -4605,26 +4590,21 @@ function copyScpCommand(filename) {
     });
 }
 
-async function restoreFromServerPathDirect(path) {
-    document.getElementById('ssRestorePath').value = path;
-    await restoreFromServerPath();
-}
-
-async function restoreFromServerPath() {
-    const path = document.getElementById('ssRestorePath').value.trim();
-    if (!path) {
-        await alertModal('No path', 'Enter a path to a backup file.', 'error');
-        return;
-    }
+// v3.4.1: restore from a server-side backup file (called by per-row
+// "Restore from this" buttons in the Existing server-side backups
+// list). Takes the path and the button element directly so we can
+// always re-enable the button in the finally block — fixes the
+// stuck-button bug where a failed restore left "Restoring…" disabled.
+async function restoreFromServerSideBackup(path, btnEl) {
     if (!confirm(
         `Restore from this backup?\n\n${path}\n\n` +
         `This is DESTRUCTIVE — current config.yaml, database, and ntfy config will be replaced. ` +
-        `A .pre-restore safety snapshot will be created first. The service will restart.`
+        `A .pre-restore safety snapshot will be created first. The service will restart and the page will reload automatically.`
     )) return;
 
-    const btn = document.getElementById('ssRestoreBtn');
-    btn.disabled = true;
-    btn.textContent = 'Restoring…';
+    const originalText = btnEl.textContent;
+    btnEl.disabled = true;
+    btnEl.textContent = 'Restoring…';
 
     try {
         const r = await fetch('/api/backup/restore-from-path', {
@@ -4653,8 +4633,51 @@ async function restoreFromServerPath() {
     } catch (e) {
         await alertModal('Restore failed', 'Network error: ' + e.message, 'error');
     } finally {
-        btn.disabled = false;
-        btn.textContent = 'Restore & restart';
+        // ALWAYS re-enable. This is the fix for the v3.4.0 stuck-button bug.
+        btnEl.disabled = false;
+        btnEl.textContent = originalText;
+    }
+}
+
+// v3.4.1: explicit rescan of .backups/ for users who just scp'd a
+// file into place and want it to appear without waiting for the
+// background poll. Returns a toast with the new-since-last-fetch
+// count so the user knows whether their just-uploaded file landed.
+let _ssLastBackupCount = null;
+async function rescanServerSideBackups() {
+    const btn = document.getElementById('ssRescanBtn');
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = '↻ Rescanning…';
+    }
+    try {
+        const r = await fetch('/api/backup/list-server-side');
+        const j = await r.json();
+        if (!j.ok) throw new Error(j.message || 'Rescan failed');
+
+        const newCount = j.count || 0;
+        let msg;
+        if (_ssLastBackupCount === null) {
+            msg = `Found ${newCount} backup(s)`;
+        } else if (newCount > _ssLastBackupCount) {
+            msg = `Found ${newCount} backup(s) (+${newCount - _ssLastBackupCount} new)`;
+        } else if (newCount < _ssLastBackupCount) {
+            msg = `Found ${newCount} backup(s) (${_ssLastBackupCount - newCount} removed)`;
+        } else {
+            msg = `Found ${newCount} backup(s) (no change)`;
+        }
+        _ssLastBackupCount = newCount;
+        toast(msg, 'ok');
+
+        // Update the list UI too (loadServerSideBackups handles rendering)
+        await loadServerSideBackups();
+    } catch (e) {
+        toast('Rescan failed: ' + e.message, 'error');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = '↻ Rescan';
+        }
     }
 }
 

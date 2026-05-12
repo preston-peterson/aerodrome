@@ -1235,10 +1235,12 @@ rsync -avP user@aerodrome-host:/opt/aerodrome/.backups/ ./aerodrome-backups/
 **Restoring from a server-side backup:** copy the zip back onto the
 host's `.backups/` directory (via scp or `cp` if it's already on the
 machine), then in the UI use Configuration → Backup & Restore →
-Server-side backup → "Restore from a path on disk" with the full path.
-The destructive-confirm modal shows what will be replaced and a
-`.pre-restore` safety snapshot is created first, same as any other
-restore.
+Server-side backup → click **Rescan** so the new file appears in the
+Existing server-side backups list, then click **Restore from this**
+on its row. The destructive-confirm modal shows what will be replaced
+and a `.pre-restore` safety snapshot is created first, same as any
+other restore. Browser uploads above 2 GB are rejected with a message
+pointing here — for large backups, this is the only working transport.
 
 **Which flow to use:**
 

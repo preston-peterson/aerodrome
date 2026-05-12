@@ -1,4 +1,4 @@
-# Version: 3.4.0
+# Version: 3.4.1
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -6349,9 +6349,16 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
         v3.4.0: streams the upload to a temp file on disk rather than
         buffering it in RAM (could OOM on Pi-class hosts at multi-GB
-        backups). Replaces the hardcoded 2 GB cap with a disk-space
-        pre-check — need ~3x the upload size free (incoming file +
-        .pre-restore snapshot + live DB during swap).
+        backups).
+
+        v3.4.1: enforces a 2 GB cap on the browser-upload transport.
+        The cap is a UX guard — past this size browser uploads become
+        unreliable regardless of memory or disk (network timeouts,
+        browser memory pressure, intermediate proxy limits, network
+        interruptions over long transfers). Above the cap, users get
+        a clear rejection message pointing them at the server-side
+        flow (scp the file into .backups/, then restore via the
+        Existing server-side backups list).
         """
         import io, json, zipfile, tempfile, shutil
 
@@ -6369,6 +6376,16 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 "message": f"Could not create upload staging dir: {e}",
             })
 
+        # v3.4.1: hard cap at 2 GB. The streaming refactor handles
+        # arbitrarily large bytes-on-disk, but the browser-network
+        # transport doesn't — and there's no good UX recovery from a
+        # mid-upload network timeout. Above this size, users go
+        # through the server-side flow which uses scp/rsync as the
+        # transport. The cap is checked progressively during the
+        # stream so we abort early rather than after fully receiving
+        # a 50 GB upload that's going to be rejected anyway.
+        MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB
+
         upload_tmp = uploads_dir / f"upload-{int(time.time()*1000)}-{os.getpid()}.zip"
         bytes_written = 0
         try:
@@ -6379,6 +6396,27 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                         break
                     out.write(chunk)
                     bytes_written += len(chunk)
+                    # v3.4.1: progressive cap check — abort early
+                    if bytes_written > MAX_UPLOAD_BYTES:
+                        # Close out cleanly before delete
+                        break
+
+            if bytes_written > MAX_UPLOAD_BYTES:
+                try: upload_tmp.unlink()
+                except OSError: pass
+                return JSONResponse(status_code=413, content={
+                    "ok": False,
+                    "message": (
+                        "Backup is too large for browser upload (>2 GB). "
+                        "Above this size, browser uploads become unreliable "
+                        "(network timeouts, memory pressure, proxy limits). "
+                        "Use the server-side restore flow instead: copy this "
+                        "file into <install_dir>/.backups/ via scp or rsync, "
+                        "then use the Existing server-side backups list "
+                        "below — your backup will appear after clicking "
+                        "Rescan. No browser upload needed."
+                    ),
+                })
 
             if bytes_written == 0:
                 try: upload_tmp.unlink()
@@ -6390,8 +6428,6 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             # v3.4.0: disk-space pre-check. We'll create a .pre-restore
             # snapshot of the current DB + replace it from the upload,
             # so we need roughly (upload_size + current_db_size) free.
-            # Use 2.5x upload_size as a safe approximation since the DB
-            # is typically the bulk of the backup.
             db_path = Path(CONFIG.get("data", {}).get("db_file", "aircraft_history.db"))
             if not db_path.is_absolute():
                 db_path = install_dir / db_path
