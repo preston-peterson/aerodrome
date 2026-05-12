@@ -1,4 +1,4 @@
-# Version: 3.4.1
+# Version: 3.4.2
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -27,7 +27,7 @@ from typing import Optional, Dict, List, Any
 
 import requests as req
 import yaml
-from fastapi import FastAPI, Query, UploadFile, File, HTTPException, Request
+from fastapi import FastAPI, Query, UploadFile, File, HTTPException, Request, BackgroundTasks
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from pydantic import BaseModel
 
@@ -5849,6 +5849,30 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 continue
         return False, last_note
 
+    def _do_restart_after_response(delay_seconds=0.75):
+        """v3.4.2: deferred restart used by destructive endpoints.
+
+        The bug this fixes: even with `systemctl restart --no-block`,
+        the SIGTERM from systemd can land before the FastAPI response
+        bytes have been flushed from the kernel's TCP send buffer to
+        the client. The client then sees a connection-reset
+        NetworkError mid-response and reports "Restore failed" even
+        though the work succeeded server-side.
+
+        The fix: wrap this helper in FastAPI's BackgroundTasks. The
+        ASGI machinery runs background tasks AFTER the response has
+        been fully sent to the client. We then sleep briefly to let
+        TCP fully drain (more headroom for slow client links), then
+        call _do_restart() normally.
+
+        delay_seconds is conservative — 750 ms is plenty for any
+        LAN/wifi client and well within the user's expectation of
+        "service restarting".
+        """
+        import time as _time
+        _time.sleep(delay_seconds)
+        _do_restart()
+
     def _list_config_backups():
         """Return sorted list of backup metadata (newest first)."""
         install_dir = Path(__file__).parent
@@ -6341,7 +6365,8 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         restart_note: Optional[str] = None
 
     @app.post("/api/backup/import")
-    async def backup_import(file: UploadFile = File(...)):
+    async def backup_import(file: UploadFile = File(...),
+                            background_tasks: BackgroundTasks = None):
         """Restore from a zip produced by /api/backup/export. Destructive:
         replaces config.yaml, aerodrome.db, and ntfy server.yml (when present).
         Backs up the existing versions of each file first, then triggers a
@@ -6452,7 +6477,8 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             # entries one at a time (streamed, no whole-file-in-memory).
             return await _restore_from_local_zip(upload_tmp, install_dir,
                                                   source_label="upload",
-                                                  cleanup_source_on_success=True)
+                                                  cleanup_source_on_success=True,
+                                                  background_tasks=background_tasks)
         except Exception as e:
             try: upload_tmp.unlink()
             except OSError: pass
@@ -6462,7 +6488,8 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
     async def _restore_from_local_zip(zip_path, install_dir,
                                        source_label="local",
-                                       cleanup_source_on_success=False):
+                                       cleanup_source_on_success=False,
+                                       background_tasks=None):
         """v3.4.0 shared restore logic. Reads a backup zip from a local
         filesystem path (no buffering in memory) and applies it. Used
         by both /api/backup/import (streams upload to temp first, then
@@ -6583,30 +6610,94 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             skipped.append({"file": "config.yaml", "reason": f"error: {e}"})
 
         # --- 2. aerodrome.db ---
+        # v3.4.2: stream-extract via copyfileobj. Previous versions
+        # called zf.read() which loaded the entire DB into a Python
+        # bytes object — fine for KB-sized files, catastrophic for
+        # GB-sized databases. A 5 GB DB triggered an OOM-kill or
+        # MemoryError, the process died mid-restore, systemd
+        # restarted it, and the user saw a NetworkError with no
+        # data restored. The fix is structural: zip entries get
+        # streamed to disk in 1 MB chunks regardless of size.
         try:
-            db_bytes = zf.read(prefix + "aerodrome.db")
-            # Back up current DB
-            db_backup_path = None
-            if db_path.is_file():
-                db_backup_path = db_path.with_name(
-                    f"{db_path.name}.bak.{ts}.pre-restore")
-                shutil.copy2(db_path, db_backup_path)
-            # Also move any stale WAL/SHM aside so SQLite doesn't mix old
-            # WAL entries into the restored DB.
-            for suffix in ("-wal", "-shm"):
-                sidecar = db_path.with_name(db_path.name + suffix)
-                if sidecar.is_file():
-                    try:
-                        sidecar.unlink()
-                    except OSError:
-                        pass
-            db_path.write_bytes(db_bytes)
-            restored["database"] = {
-                "ok": True, "bytes": len(db_bytes),
-                "previous_backed_up_as": (db_backup_path.name if db_backup_path else None),
-            }
-        except KeyError:
-            skipped.append({"file": "aerodrome.db", "reason": "not in backup"})
+            try:
+                db_info = zf.getinfo(prefix + "aerodrome.db")
+            except KeyError:
+                skipped.append({"file": "aerodrome.db", "reason": "not in backup"})
+                db_info = None
+
+            if db_info is not None:
+                uncompressed_size = db_info.file_size
+
+                # Disk-space pre-check against the UNCOMPRESSED size.
+                # Need: uncompressed_size (new DB written) + current DB
+                # size (the .pre-restore snapshot still on disk) + a
+                # safety margin. Refuse with HTTP 507-equivalent BEFORE
+                # destructive work if insufficient.
+                current_db_size = db_path.stat().st_size if db_path.is_file() else 0
+                free_bytes = shutil.disk_usage(str(install_dir)).free
+                need_bytes = uncompressed_size + current_db_size + (256 * 1024 * 1024)
+                if free_bytes < need_bytes:
+                    zf.close()
+                    if cleanup_source_on_success:
+                        try: Path(zip_path).unlink()
+                        except OSError: pass
+                    return JSONResponse(status_code=507, content={
+                        "ok": False,
+                        "message": (
+                            f"Not enough free disk space to restore database. "
+                            f"Database will be {uncompressed_size // (1024*1024)} MB, "
+                            f"need ~{need_bytes // (1024*1024)} MB free, "
+                            f"have {free_bytes // (1024*1024)} MB. "
+                            f"Free up space and retry."
+                        ),
+                    })
+
+                # Back up current DB before overwriting (.pre-restore
+                # safety snapshot). Same as v3.4.x behavior.
+                db_backup_path = None
+                if db_path.is_file():
+                    db_backup_path = db_path.with_name(
+                        f"{db_path.name}.bak.{ts}.pre-restore")
+                    shutil.copy2(db_path, db_backup_path)
+
+                # Move stale WAL/SHM aside so SQLite doesn't mix old
+                # journal state into the restored DB.
+                for suffix in ("-wal", "-shm"):
+                    sidecar = db_path.with_name(db_path.name + suffix)
+                    if sidecar.is_file():
+                        try:
+                            sidecar.unlink()
+                        except OSError:
+                            pass
+
+                # Stream-extract via copyfileobj. 1 MB buffer keeps
+                # memory bounded regardless of entry size. Verify
+                # bytes_written matches expected at the end so partial
+                # writes don't pass silently.
+                bytes_written = 0
+                BUF_SIZE = 1024 * 1024  # 1 MB
+                with zf.open(prefix + "aerodrome.db") as src, open(db_path, "wb") as dst:
+                    while True:
+                        chunk = src.read(BUF_SIZE)
+                        if not chunk:
+                            break
+                        dst.write(chunk)
+                        bytes_written += len(chunk)
+
+                if bytes_written != uncompressed_size:
+                    # Partial write — surface it loud, leave the
+                    # .pre-restore snapshot in place for recovery.
+                    raise IOError(
+                        f"Partial DB extract: wrote {bytes_written} bytes "
+                        f"but zip entry was {uncompressed_size}. The "
+                        f"previous DB is preserved at "
+                        f"{db_backup_path.name if db_backup_path else '(no prior DB)'}."
+                    )
+
+                restored["database"] = {
+                    "ok": True, "bytes": bytes_written,
+                    "previous_backed_up_as": (db_backup_path.name if db_backup_path else None),
+                }
         except Exception as e:
             skipped.append({"file": "aerodrome.db", "reason": f"error: {e}"})
 
@@ -6721,10 +6812,26 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             )
 
         # --- 4. Trigger restart ---
-        restart_ok, restart_note = _do_restart()
-        if not restart_ok and restart_note:
-            warnings.append(f"Restore applied but restart failed: {restart_note}. "
-                            "Restart manually with `sudo systemctl restart aerodrome`.")
+        # v3.4.2: defer the restart so it runs AFTER the response is
+        # flushed to the client. Without this deferral, systemd's
+        # SIGTERM can land before the FastAPI response bytes have left
+        # the kernel send buffer, and the client sees a NetworkError
+        # mid-response despite the work succeeding server-side. With
+        # BackgroundTasks the restart fires only after the response
+        # is fully sent, with an additional 750ms cushion.
+        restart_ok = True
+        restart_note = ""
+        if background_tasks is not None:
+            background_tasks.add_task(_do_restart_after_response)
+        else:
+            # Backward compat: no BackgroundTasks supplied (e.g. called
+            # from a non-endpoint code path) — fall back to inline
+            # restart, accepting the response-race risk.
+            restart_ok, restart_note = _do_restart()
+            if not restart_ok and restart_note:
+                warnings.append(
+                    f"Restore applied but restart failed: {restart_note}. "
+                    "Restart manually with `sudo systemctl restart aerodrome`.")
 
         # v3.4.0: clean up source zip if requested (upload case).
         # Server-side restore-from-path leaves the user's backup file
@@ -6912,7 +7019,8 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         path: str
 
     @app.post("/api/backup/restore-from-path")
-    async def restore_from_path(payload: RestoreFromPathPayload):
+    async def restore_from_path(payload: RestoreFromPathPayload,
+                                background_tasks: BackgroundTasks = None):
         """v3.4.0: restore from a backup file already on disk. Useful
         when the file is too large for the browser-upload path. The
         path must be within <install_dir>/.backups/ unless the admin
@@ -6984,6 +7092,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             src, install_dir,
             source_label="server-side-path",
             cleanup_source_on_success=False,
+            background_tasks=background_tasks,
         )
 
     @app.delete("/api/backup/server-side/{filename}")

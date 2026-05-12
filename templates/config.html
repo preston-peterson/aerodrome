@@ -1,4 +1,4 @@
-<!-- Version: 3.4.1 -->
+<!-- Version: 3.4.2 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -4442,8 +4442,11 @@ async function fullRestore() {
         // Wait a bit for the restart to take effect, then reload
         setTimeout(() => window.location.reload(), 5000);
     } catch (e) {
-        await alertModal('Restore failed',
-            'Network or server error: ' + e.message, 'error');
+        // v3.4.2: race tolerance — same pattern as the server-side
+        // restore. A response cut off by the post-restore SIGTERM
+        // shows up here as a fetch TypeError. Probe the service to
+        // see if it came back up.
+        await _handleRestoreFetchError(e, btn);
     } finally {
         btn.disabled = false;
         btn.textContent = 'Restore & restart';
@@ -4631,11 +4634,72 @@ async function restoreFromServerSideBackup(path, btnEl) {
             allLines.join('\n'), 'success');
         setTimeout(() => window.location.reload(), 5000);
     } catch (e) {
-        await alertModal('Restore failed', 'Network error: ' + e.message, 'error');
+        // v3.4.2: race tolerance. A long-running restore that triggers
+        // systemctl restart can have its response cut off by the
+        // SIGTERM if the kernel hasn't flushed the TCP buffer yet.
+        // The browser sees a fetch TypeError (NetworkError /
+        // ERR_CONNECTION_RESET). Server-side, the restore likely
+        // succeeded. Probe /api/status to find out: if the service
+        // is back and responding, treat the restore as successful
+        // and reload; if it's flat-out unreachable for >30s, fall
+        // back to the error path.
+        await _handleRestoreFetchError(e, btnEl);
     } finally {
         // ALWAYS re-enable. This is the fix for the v3.4.0 stuck-button bug.
         btnEl.disabled = false;
         btnEl.textContent = originalText;
+    }
+}
+
+// v3.4.2: shared helper for restore-fetch-mid-response failures.
+// Polls /api/status to determine whether the service came back after
+// a restart — if so, the restore succeeded and we reload; if the
+// service stays unreachable, we fall back to the original error.
+async function _handleRestoreFetchError(originalError, btnEl) {
+    btnEl.textContent = 'Verifying restore…';
+
+    const MAX_WAIT_MS = 30000;  // give the service 30s to come back
+    const POLL_INTERVAL_MS = 1000;
+    const start = Date.now();
+    let serviceCameBack = false;
+
+    while (Date.now() - start < MAX_WAIT_MS) {
+        try {
+            const probe = await fetch('/api/status', {
+                method: 'GET',
+                cache: 'no-store',
+            });
+            if (probe.ok) {
+                serviceCameBack = true;
+                break;
+            }
+        } catch (e) {
+            // Service still down, keep polling
+        }
+        await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+    }
+
+    if (serviceCameBack) {
+        await alertModal('Restore complete — service restarting',
+            'The connection was dropped mid-response (this is expected — the ' +
+            'service restarts after restore). Aerodrome is back up; reloading ' +
+            'now to show restored state.\n\nIf data looks wrong, check the ' +
+            '.pre-restore safety snapshots in the Restore safety snapshots ' +
+            'section above for recovery.',
+            'success');
+        setTimeout(() => window.location.reload(), 1500);
+    } else {
+        await alertModal('Restore status unclear',
+            'The restore request failed with: ' + originalError.message + '\n\n' +
+            'After 30 seconds the service still has not responded to status ' +
+            'checks. The restore may have completed but the service has not ' +
+            'restarted, OR the request never reached the server.\n\nNext steps:\n' +
+            '1. Check the .pre-restore safety snapshots above — if they exist, ' +
+            'the restore got at least part-way through.\n' +
+            '2. On the server: `sudo systemctl status aerodrome` and ' +
+            '`sudo journalctl -u aerodrome --since "5 minutes ago"`.\n' +
+            '3. Reload this page once the service is healthy.',
+            'error');
     }
 }
 
