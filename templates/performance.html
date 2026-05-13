@@ -1,4 +1,4 @@
-<!-- Version: 3.4.12 -->
+<!-- Version: 3.4.13 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -55,10 +55,6 @@ a { color:var(--cyan); }
 .page-sub { color:var(--t2); font-size:13px; margin-bottom:20px; }
 
 .toolbar { display:flex; gap:8px; margin-bottom:18px; flex-wrap:wrap; }
-.legacy-toggle { margin-bottom: 12px; font-size: 13px; color: var(--t2); }
-.legacy-toggle label { cursor: pointer; user-select: none; display: inline-flex; align-items: center; gap: 6px; }
-.legacy-toggle input[type=checkbox] { cursor: pointer; }
-.legacy-hint { color: var(--t3); font-family: var(--mono); font-size: 11px; margin-left: 4px; }
 .legacy-skipped-note {
     margin: 12px 0; padding: 10px 14px;
     background: var(--bg1); border: 1px solid var(--bdr); border-radius: 4px;
@@ -165,23 +161,15 @@ a { color:var(--cyan); }
         Running the diagnostic is safe and read-only, but can take a few seconds on large databases.
     </div>
 
-    <!-- v2.50.26: opt-in toggle for the legacy raw-fallback probes.
-         Default is off because on large installs (8M+ rows) the three
-         legacy probes account for ~97% of total perf-diag runtime —
-         turning a 2.5-second snapshot into a 2.5-minute wait. Off-by-
-         default keeps the routine experience fast; users who want the
-         comparison toggle it on. localStorage persists the choice
-         across visits because once you care about the comparison once
-         you usually care about it for the next visit too. The query
-         param ?include_legacy=true also works for direct linking. -->
-    <div class="legacy-toggle">
-        <label>
-            <input type="checkbox" id="includeLegacyChk" onchange="onLegacyToggle()">
-            Include legacy raw-fallback probes
-            <span class="legacy-hint">(adds 2+ minutes on large databases — for comparing rollup vs raw)</span>
-        </label>
-    </div>
-
+    <!-- v3.4.13: removed the legacy-raw-fallback checkbox UI. With the
+         v3.4.6 rollup architecture in place, the rollup vs raw_fallback
+         comparison for military_count and watchlist_count runs by
+         default (those aren't "legacy"). Only one truly-legacy probe
+         remains — unique_aircraft_count_raw_fallback — and it's
+         off-by-default to keep the routine experience fast.
+         Power users / debuggers can still opt in by appending
+         ?include_legacy=true to the URL, which gets a "Legacy
+         raw-fallback probe skipped" note in the output otherwise. -->
     <div class="toolbar">
         <button class="btn btn-primary" onclick="runDiagnostic()" id="runBtn">Run diagnostic</button>
         <button class="btn" onclick="copyReport()" id="copyBtn" disabled>Copy diagnostic report</button>
@@ -243,10 +231,11 @@ async function runDiagnostic() {
     content.innerHTML = `<div class="card"><div class="loading"><span class="spinner"></span>Measuring your system. This can take several seconds on large databases.</div></div>`;
 
     try {
-        // v2.50.26: include_legacy=true skips the raw-fallback and
-        // window-functions reference probes that dominate runtime on
-        // large databases.
-        const includeLegacy = document.getElementById('includeLegacyChk').checked;
+        // v3.4.13: URL param replaces the checkbox UI removed in this
+        // release. Power users who want the legacy raw-fallback probe
+        // included pass ?include_legacy=true; default omits it.
+        const includeLegacy =
+            new URL(window.location.href).searchParams.get('include_legacy') === 'true';
         const url = includeLegacy
             ? '/api/perf/diagnostics?include_legacy=true'
             : '/api/perf/diagnostics';
@@ -262,35 +251,6 @@ async function runDiagnostic() {
         btn.textContent = 'Run diagnostic again';
     }
 }
-
-// v2.50.26: persist the legacy-probe preference across page reloads.
-// Once a user opts in to the comparison they typically want it on for
-// their next visit too — and if they leave it off, default-off
-// continues to be the right behaviour.
-function onLegacyToggle() {
-    try {
-        const checked = document.getElementById('includeLegacyChk').checked;
-        localStorage.setItem('aerodrome-perf-include-legacy', checked ? '1' : '0');
-    } catch (e) { /* localStorage blocked? non-fatal */ }
-}
-
-// Apply saved preference (or URL param override) on first paint, before
-// the user clicks Run. URL ?include_legacy=true takes precedence so a
-// shared link explicitly asking for the comparison wins over local pref.
-(function _initLegacyToggle() {
-    const chk = document.getElementById('includeLegacyChk');
-    if (!chk) return;
-    let initial = false;
-    try {
-        const url = new URL(window.location.href);
-        if (url.searchParams.get('include_legacy') === 'true') {
-            initial = true;
-        } else {
-            initial = localStorage.getItem('aerodrome-perf-include-legacy') === '1';
-        }
-    } catch (e) { /* ignore */ }
-    chk.checked = initial;
-})();
 
 function renderReport(j) {
     const content = document.getElementById('content');

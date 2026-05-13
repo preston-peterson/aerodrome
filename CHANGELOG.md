@@ -19,6 +19,43 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.13] — 2026-05-13
+
+### Fixed
+- **Small Tier 5 cleanup release — closes the cosmetic-cleanup queue.** Wind-down release before stepping away from the codebase for a real-use phase. Four items were on the Tier 5 candidate list; pre-flight audit showed two were already done and two had genuine work. Honest scope: two real edits, two closed-as-stale.
+
+  **What changed:**
+
+  **1. Legacy raw-fallback checkbox removed from the Performance page** (`templates/performance.html`). The checkbox was added in v2.50.26 with localStorage persistence to opt in/out of the legacy `unique_aircraft_count_raw_fallback` probe. The v3.4.6 rollup architecture changed the picture: military_count and watchlist_count now have their own rollup-vs-raw paired probes that run by default (they're not "legacy"). Only one truly-legacy probe remains, and it dominates runtime on large databases (~97% of total diag time when included) — solidly off-by-default territory.
+
+     The checkbox + localStorage state + page-load preference-read was a meaningful chunk of UI complexity for a "you almost certainly don't need this" feature. Removing the UI simplifies the page; the `?include_legacy=true` URL param is preserved as the opt-in mechanism for power users / debuggers / direct-link sharing. The skipped-probe note in the diagnostic output ("Legacy raw-fallback probe skipped — enable in UI or pass ?include_legacy=true") is updated to reflect the URL-only path.
+
+     Removed code: ~50 lines net across the UI block, the CSS rules (`.legacy-toggle`, `.legacy-toggle label`, `.legacy-toggle input[type=checkbox]`, `.legacy-hint`), the `onLegacyToggle()` handler, the page-load IIFE that read localStorage, and the localStorage key `aerodrome-perf-include-legacy`. The localStorage key isn't actively migrated — users who had it set will simply have an orphaned localStorage key that does nothing, which is harmless.
+
+  **2. Two dead CSS selectors removed from `static/theme.css`.** Verified via grep across all templates, JS, and Python source — `.gear-btn` and `.icon-btn` were referenced only in their own definition (a `transition:` rule listing form controls). No `class="gear-btn"`, no `className = 'gear-btn'`, no dynamic application anywhere in the codebase. Their counterparts (`.theme-seg button`, `.tab`, `input`, `button`, etc.) remain in the transition rule. Probably leftover from an earlier UI iteration that defined the classes but never used them, or from a feature that was removed and missed these. Small file size reduction; more importantly, fewer dead selectors to confuse future-readers grepping for usage.
+
+  **What did NOT change (closed-as-stale):**
+
+  **3. theme.css consolidation** — Original ticket from when there were multiple CSS files with overlapping selectors. Those got consolidated into `theme.css` in an earlier release; only one CSS file remains. Within-`theme.css` selector audit found one duplicate (`.ctrl-date` × 2) which appears intentional (different selector contexts) and harmless. The structural concern this ticket originally captured no longer exists. Closed.
+
+  **4. latlong.net hint in receiver-config form** — Original ticket to add a hint pointing users to latlong.net for finding their coordinates. The hint already exists in `templates/config.html` line 1090 as part of the Latitude field's help text: *"Find your coords at <a href='https://www.latlong.net'>latlong.net</a>"*. Implemented at some point between when the ticket was filed and now; the ticket just wasn't marked closed. Closed.
+
+  **Scope:**
+  - `templates/performance.html` — ~50 lines removed (UI block, CSS rules, JS handler, init IIFE). Replaced with a brief explanatory comment about the v3.4.13 transition.
+  - `static/theme.css` — 2 dead selectors removed from a single transition rule
+  - **No code-behavior changes.** No new endpoints, no schema changes, no API changes. 89 endpoints unchanged. SUDOERS_VERSION unchanged at 4.
+
+  **Test contract for v3.4.13:**
+  1. **Performance page renders without errors** — the toolbar's Run button works; the diagnostic runs; output renders. The page should look slightly cleaner without the now-removed checkbox area.
+  2. **URL-param path still works** — visiting `/performance?include_legacy=true` should produce a diagnostic that includes the legacy raw-fallback probe (vs the default which skips it).
+  3. **No visual regressions on form elements** — the transition rule still applies to all the elements it actually styled (form controls, tabs, panels, etc.).
+
+  **Reflection on the v3.4.x bug-and-polish arc.** v3.4.13 closes thirteen releases since the v3.4.0 OOM-kill on large restores started this arc. The work spans real architectural progress (rollup tables, covering index, readiness endpoint), several honest disclosures of broken-on-existing-installs claims (v3.4.0, v3.4.1, v3.4.7 → corrected in v3.4.2, v3.4.8, v3.4.10), and a steady-state finishing pattern of audit-close-audit (Tier 1 security audit in v3.4.9, packaging consistency in v3.4.12, cosmetic cleanup in v3.4.13). Fifteen new HANDOFF lessons (4.1 through 4.15) accumulated alongside; the institutional memory grew faster than the codebase.
+
+  Going forward: Tier 3 features (first-time setup wizard, dedicated /about page, map dot crispness) remain queued for when fresh design energy returns. Tier 4 architectural items (streaming backup format, stats_furthest rollup, unique_aircraft_count rollup) remain genuinely deferred — none are needed at current scale. Tier 5 has three remaining items (timezone config-key rename, operator-helper consolidation, sort:sightings window-aware bug fix) that are behavior-touching and best done after a real-use phase surfaces concrete signal.
+
+  v3.4.13 is a clean resting point.
+
 ## [3.4.12] — 2026-05-13
 
 ### Fixed

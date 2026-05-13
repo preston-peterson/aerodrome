@@ -232,7 +232,7 @@ body .toast {
 /* Smooth cross-theme transitions on color-bearing properties only —
    keep layout properties out so resize/scroll stays snappy. */
 body, .hdr, .tab, .panel, table, th, td, .card, .gear-menu, .theme-seg button,
-.gear-btn, .icon-btn, input, select, textarea, button {
+input, select, textarea, button {
     transition: background-color 160ms ease, color 160ms ease, border-color 160ms ease;
 }
 
