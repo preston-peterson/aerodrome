@@ -1045,6 +1045,13 @@ async def screenshot_docs(browser):
     return await _render(browser, 'docs.html', OUT_DIR / 'screenshot-docs.png',
                          viewport={'width': 1400, 'height': 1100}, ready_fn=ready)
 
+async def screenshot_about(browser):
+    """v3.4.18: dedicated /about page. Static content (project description,
+    license, OSS credits) — no fetched data to wait for beyond the standard
+    header version pill, which the shared _render helper already handles."""
+    return await _render(browser, 'about.html', OUT_DIR / 'screenshot-about.png',
+                         viewport={'width': 1400, 'height': 700})
+
 async def screenshot_logs(browser):
     """Log viewer with the sample tail loaded."""
     async def ready(p):
@@ -1143,6 +1150,7 @@ async def main():
         screenshot_config_notifications,
         screenshot_export,
         screenshot_docs,
+        screenshot_about,
         screenshot_logs,
         screenshot_performance,
         screenshot_diagnostics_hub,

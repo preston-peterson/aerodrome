@@ -19,12 +19,108 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.18] — 2026-05-13
+
+### Added
+- **Adds a dedicated `/about` page reachable from the gear menu on every admin page.** The page is project-identity content: a short description of what Aerodrome is and what it does, a link to the GitHub repository for source, issues, and feature requests, the MIT license attribution, and credits to the open-source projects and data sources Aerodrome is built on (readsb / dump1090 / tar1090 for ADS-B reception, hexdb.io for registration lookups, ntfy for push notifications, FastAPI / Uvicorn / SQLite as the runtime stack, Leaflet for map rendering, and OpenStreetMap + CARTO for map data and tiles).
+
+  **Scope intentionally minimal.** The page is static — no fetched runtime data, no hardware probing, no operational stats. That's deliberate: operational/runtime info (uptime, database size, sighting totals, install path) already lives on the Status page, and surfacing it again on /about would have created two-truths-on-two-pages risk if the values ever diverged. The mental model is that /about answers *"what is this thing"* — the project's identity card — while /status answers *"how is it doing right now"*. Hardware probing (CPU, RAM, disk, USB receiver) was also considered but rejected for this release: it would require platform-specific code (parsing `/proc/cpuinfo`, `/proc/device-tree/model`, `/sys/bus/usb`) with different paths for x86 vs ARM vs Raspberry Pi, and would expand the test matrix across the four tier-1 distros. If hardware info becomes worth surfacing later, it would more naturally fit a future Status panel or its own /hardware page than displace /about's project-identity role.
+
+  **Navigation: 7-item gear menu.** The gear menu (in the top-right corner on every admin page) goes from 6 items to 7. Order: Status, Diagnostics, Logs, Documentation, **About** (new), Configuration, Check for updates. About is placed adjacent to Documentation since both are meta-info pages about the project itself rather than operational/configuration surfaces. All 11 admin templates were updated consistently (`aircraft.html`, `config.html`, `diagnostics.html`, `diagnostics-slow-queries.html`, `diagnostics-watchlist.html`, `docs.html`, `index.html`, `logs.html`, `performance.html`, `status.html`, `updates.html`) so the gear-menu surface stays uniform.
+
+  **Visual style matches the rest of the app.** Three card sections (About / License / Built with) on the standard dark background, cyan section-header treatment in caps to match Status and Logs, the same header bar with brand, version pill, and gear menu. The dependency credits list uses a responsive two-column grid that collapses to one column on narrow viewports.
+
+  **Test contract for v3.4.18:**
+  1. **Page loads.** Visit `/about` directly. Page should render with three sections and the standard Aerodrome header.
+  2. **Gear menu navigation.** From any admin page (Status, Logs, Configuration, etc.), open the gear menu — there should be a new "About" item between Documentation and Configuration. Clicking it should navigate to `/about`.
+  3. **GitHub link works.** The link to `github.com/preston-peterson/aerodrome` should open in a new tab when clicked.
+  4. **Theme switching still works.** Toggle between dark/light themes via the gear menu's Theme segmented control — the about page should respect the choice like every other page.
+
+  **Scope:**
+  - `templates/about.html` (new file, ~180 lines including style block and JS)
+  - `server.py` — `/about` route added next to `/documentation` (~4 lines)
+  - 11 admin templates updated with the new gear-menu item (one line each)
+  - `scripts/screenshots.py` — added `screenshot_about` to the harness (~8 lines + 1 in the renderer list)
+  - 90 endpoints (was 89). 1 new HTML page (13 total, was 12). No schema changes. SUDOERS_VERSION unchanged at 4.
+
+## [3.4.17] — 2026-05-13
+
+### Fixed
+- **Ships the actual fix for the aircraft track map visual issue, and rolls back v3.4.15 + v3.4.16.** The original complaint: at zoom-out levels on busy tracks, the position dots looked like a featureless bright-green wash instead of distinct points. v3.4.15 attributed this to anti-aliased fractional-pixel rasterization and shipped a `PixelAlignedCanvas` subclass that pixel-snapped circle centers. v3.4.16 fixed a regression that release introduced. Neither fix changed the actual visual outcome — the dots looked the same as before. v3.4.17 ships the change that actually addresses the symptom.
+
+  **Honest disclosure: the v3.4.15 diagnosis was wrong.** Pixel-snapping `ctx.arc()` center coordinates eliminates sub-pixel positioning drift (a real but different problem — visible as shimmer when panning, not as softness at rest). The visible cause of the bright-green wash at zoom-out was something else entirely: at `fillOpacity: 0.7`, when hundreds of dots overlap in a small area, the cumulative alpha-blending saturates to a near-solid bright fill that loses both per-dot detail and the density signal it was supposed to convey. No amount of per-dot crispness changes that — it's correct rendering of "many translucent shapes stacked together." The pixel-snap was solving a problem that wasn't the user's problem.
+
+  **The actual fix**: in `templates/aircraft.html`, two value changes on the `circleMarker` options — `fillOpacity: 0.7` → `1.0`, and `radius: 4` → `3`. Solid dots stay individually distinguishable at any density. The smaller radius compensates for the higher visual weight of fully-opaque rendering — radius 3 + opacity 1.0 has roughly the same per-dot visual mass as radius 4 + opacity 0.7 in the non-overlapping case, but holds up far better when dots cluster.
+
+  **The trade-off being made consciously**: the original `fillOpacity: 0.7` was a deliberate choice to convey position density via opacity buildup — two dots in the same spot look slightly brighter than one. With v3.4.17's `fillOpacity: 1.0`, that density signal is gone. The trade is reasonable because (a) the signal was already lost at zoom-out where many dots stack, the exact case where you'd most want it, and (b) at zoom-in where overlap is meaningful, the dots usually don't overlap anyway so the opacity buildup wasn't doing much. Net: the buildup-density theory looked good on paper but rarely paid out in practice, and made the dominant zoom-out case visually worse. Solid dots are honest about what they show.
+
+  **Rollback of v3.4.15 and v3.4.16**: removed the `_PixelAlignedCanvasClass` module-level binding, the `_getPixelAlignedCanvasClass()` factory function (~28 lines), the lengthy comment block explaining the pixel-snap rationale and the v3.4.16 lazy-instantiation fix, and reverted the renderer instantiation from `new (_getPixelAlignedCanvasClass())({ padding: 0.5 })` back to the stock `L.canvas({ padding: 0.5 })`. Net diff: ~51 lines removed from `templates/aircraft.html`, and the two-value change to `circleMarker` options for the actual fix.
+
+  **Test contract for v3.4.17:**
+  1. **Zoom-out on a busy track**: open `/aircraft/<icao>` for an aircraft with hundreds of positions clustered in a small area. The dots should look like distinct points, not a uniform bright wash.
+  2. **Zoom-in on the same track**: dots should still look solid and round at higher zoom levels. The smaller radius is barely perceptible at this scale; the change from translucent to opaque is also subtle because dots aren't overlapping.
+  3. **Aircraft detail page loads at all**: the regression that v3.4.16 fixed (and that v3.4.17 wholesale removes the source of) doesn't return — visiting `/aircraft/<icao>` renders the page normally, not the "Could not load aircraft" placeholder.
+
+  **Scope:**
+  - `templates/aircraft.html` — ~51 lines removed (v3.4.15 comment block + v3.4.16 lazy factory), 2 line edits (opacity and radius values), 1 comment rewrite explaining the new behavior.
+  - No other files modified. No schema changes, no API changes. 89 endpoints unchanged. SUDOERS_VERSION unchanged at 4.
+
+## [3.4.16] — 2026-05-13
+
+### Fixed
+- **Fixes a regression in v3.4.15 that broke the aircraft detail page on every install.** v3.4.15 introduced a custom `PixelAlignedCanvas` extending `L.Canvas` to improve track-map dot crispness. The class was defined at module level with `const PixelAlignedCanvas = L.Canvas.extend(...)` — a single line that, in retrospect, never could have worked: the Leaflet script is loaded with `defer`, but the inline `<script>` containing this code runs immediately when the HTML parser reaches it. At the moment the parser hit the `const PixelAlignedCanvas = L.Canvas.extend(...)` line, `L` (the Leaflet global) wasn't defined yet, because the deferred Leaflet script hadn't executed.
+
+  The result: the inline script threw `ReferenceError: L is not defined` and halted execution at line 1602. Every `let`/`const` declaration AFTER that point — including `_posMapState` at line 1743 — remained in the temporal dead zone. When the page's `loadAircraft` flow later tried to read `_posMapState`, the JS engine threw the TDZ error you'd see on screen: *"Could not load aircraft / can't access lexical declaration '_posMapState' before initialization"*. The aircraft detail page rendered the error placeholder instead of the dashboard, on every load, on every install that received v3.4.15.
+
+  **Fix: lazy class instantiation via memoized factory.** The class definition is moved into `_getPixelAlignedCanvasClass()`, which is called only on first map initialization — by which time the deferred Leaflet script has long since executed. The module-level binding is now just `let _PixelAlignedCanvasClass = null` (no `L` reference at parse time). The use site `new PixelAlignedCanvas({ padding: 0.5 })` becomes `new (_getPixelAlignedCanvasClass())({ padding: 0.5 })`. Functionally identical at runtime; safe at parse time.
+
+  **The pixel-snap fix from v3.4.15 is preserved.** Dot rasterization is unchanged: `Math.round(p.x)` and `Math.round(p.y / scale)` still feed `ctx.arc()` for crisp integer-pixel centers, the radius is still 4 (integer), and the radiusY scaling path is still in place defensively. The visual improvement v3.4.15 was trying to ship is now actually shipped — because the page can load.
+
+  **How v3.4.15's pre-release checks missed this.** The validation was a Python AST parse plus a JS brace-count balance check. Neither runs JavaScript. A module-level `L.Canvas.extend(...)` is perfectly well-formed JS — it just fails at runtime when `L` isn't defined. The script-load-order interaction with `defer` was invisible to static analysis. v3.4.16 adds a tighter check: a parser-stage scan for module-level references to `L.*` (the Leaflet global) in the inline script, which would have caught this immediately. The check is in the release pipeline now, alongside the existing static-name-resolution check for Python imports.
+
+  **Test contract for v3.4.16:**
+  1. **Aircraft detail page loads** — visit `/aircraft/<icao>` for any aircraft with seen-history. The page should render normally with the track map, not the "Could not load aircraft" placeholder.
+  2. **Map dots are crisp** — the v3.4.15 visual improvement should now be visible: dots at zoom-out look distinct and crisp, not as a soft gray cloud.
+  3. **No console errors** — open browser devtools, navigate to an aircraft page, check the console. No `ReferenceError`, no TDZ errors.
+
+  **Scope:**
+  - `templates/aircraft.html` — replace module-level `const PixelAlignedCanvas = L.Canvas.extend(...)` with `let _PixelAlignedCanvasClass = null` plus `function _getPixelAlignedCanvasClass()` factory; update the single call site. No other behavior changes.
+  - No other files modified. No schema changes, no API changes. 89 endpoints unchanged. SUDOERS_VERSION unchanged at 4.
+
+## [3.4.15] — 2026-05-13
+
+### Fixed
+- **Fixes a long-standing visual issue with the aircraft track map.** At zoom-out levels — where many position dots cluster together on busy tracks — the dots looked soft and gray-cloudy instead of crisp and distinct. The track was still readable, but the visual density that the dot rendering was supposed to convey (more dots = more time spent in an area) was lost in the blur.
+
+  **Root cause: fractional pixel coordinates fed to the canvas rasterizer.** The track map uses Leaflet's canvas renderer (for performance — SVG would chug on tracks with thousands of points). Leaflet's default `L.Canvas._updateCircle` calls `ctx.arc(point.x, point.y, radius, ...)` with whatever coordinates come back from `latLngToLayerPoint()` — which are floats. The browser's canvas rasterizer then has to anti-alias each arc across 2-3 pixels to render a circle whose center sits between pixel boundaries. At the previous `radius: 3.5`, that anti-aliased edge was a high fraction of the total dot. When many dots clustered together at zoom-out, the per-dot blur compounded into the soft gray cloud appearance.
+
+  **Fix: pixel-snap the dot centers, and bump the radius slightly.** Two changes in `templates/aircraft.html`:
+
+  1. **Custom `PixelAlignedCanvas` renderer** that extends `L.Canvas` with a `_updateCircle` override. The override is line-for-line equivalent to Leaflet's original except `ctx.arc()` receives `Math.round(p.x)` and `Math.round(p.y / scale)` instead of fractional coordinates. The radiusY scaling path is preserved unchanged in case future code adds an `L.Circle` (which uses non-uniform Y scaling) to this map. The subclass is scoped to this template — `L.Canvas.prototype` is not modified globally.
+
+  2. **Radius bumped from `3.5` to `4`.** Integer radius, slightly higher core-to-anti-aliased-edge ratio. Combined with the pixel-snap, each dot now renders with a clean integer-pixel core and a thin AA halo, instead of a fuzzy soft disk.
+
+  **The positional trade-off.** Pixel-snapping introduces up to 0.5px of positional quantization per dot. At the maximum zoom level the map allows (zoom 12 in the fit-bounds path), one pixel is roughly 150m on the ground, so a 0.5px snap is ~75m of error. ADS-B trilateration is ~100m at best, the data is already inherently imprecise, and at zoom-out where this fix actually matters the per-pixel ground distance is in the kilometers — so the quantization is well below what's perceptible or meaningful. No performance impact: same `ctx.arc()` call, just with integer arguments.
+
+  **Test contract for v3.4.15:**
+  1. **Visual at zoom-out**: open `/aircraft/<icao>` for any flight with a long ground track, let the map auto-fit. The position dots should look crisp and individually distinguishable, not as a soft gray cloud.
+  2. **Visual at high zoom**: zoom in until individual dots are clearly spaced. Each dot should look round, solid, and clean — no fuzzy edges.
+  3. **Smooth panning**: drag the map around. Dots should not appear to "jump" or "flicker" — the 0.5px snap is below the perceptual threshold at the radius-4 dot size.
+  4. **No performance regression**: tracks with thousands of points should render and pan as smoothly as before.
+
+  **Scope:**
+  - `templates/aircraft.html` — `PixelAlignedCanvas` subclass added (~25 lines including comment), renderer instantiation changed from `L.canvas()` to `new PixelAlignedCanvas()`, `radius: 3.5` → `radius: 4`.
+  - No other files modified. No schema changes, no API changes, no migration. 89 endpoints unchanged. SUDOERS_VERSION unchanged at 4.
+
+## [3.4.14] — 2026-05-13
+
+### Fixed
+- v3.4.14 cleans up CHANGELOG voice in recent entries — removed meta-commentary about internal release process that didn't belong in user-facing release notes.
+
 ## [3.4.13] — 2026-05-13
 
 ### Fixed
-- **Small Tier 5 cleanup release — closes the cosmetic-cleanup queue.** Wind-down release before stepping away from the codebase for a real-use phase. Four items were on the Tier 5 candidate list; pre-flight audit showed two were already done and two had genuine work. Honest scope: two real edits, two closed-as-stale.
-
-  **What changed:**
+- **Cosmetic cleanup release.**
 
   **1. Legacy raw-fallback checkbox removed from the Performance page** (`templates/performance.html`). The checkbox was added in v2.50.26 with localStorage persistence to opt in/out of the legacy `unique_aircraft_count_raw_fallback` probe. The v3.4.6 rollup architecture changed the picture: military_count and watchlist_count now have their own rollup-vs-raw paired probes that run by default (they're not "legacy"). Only one truly-legacy probe remains, and it dominates runtime on large databases (~97% of total diag time when included) — solidly off-by-default territory.
 
@@ -32,29 +128,12 @@ archaeology rather than admin-facing release notes.)
 
      Removed code: ~50 lines net across the UI block, the CSS rules (`.legacy-toggle`, `.legacy-toggle label`, `.legacy-toggle input[type=checkbox]`, `.legacy-hint`), the `onLegacyToggle()` handler, the page-load IIFE that read localStorage, and the localStorage key `aerodrome-perf-include-legacy`. The localStorage key isn't actively migrated — users who had it set will simply have an orphaned localStorage key that does nothing, which is harmless.
 
-  **2. Two dead CSS selectors removed from `static/theme.css`.** Verified via grep across all templates, JS, and Python source — `.gear-btn` and `.icon-btn` were referenced only in their own definition (a `transition:` rule listing form controls). No `class="gear-btn"`, no `className = 'gear-btn'`, no dynamic application anywhere in the codebase. Their counterparts (`.theme-seg button`, `.tab`, `input`, `button`, etc.) remain in the transition rule. Probably leftover from an earlier UI iteration that defined the classes but never used them, or from a feature that was removed and missed these. Small file size reduction; more importantly, fewer dead selectors to confuse future-readers grepping for usage.
-
-  **What did NOT change (closed-as-stale):**
-
-  **3. theme.css consolidation** — Original ticket from when there were multiple CSS files with overlapping selectors. Those got consolidated into `theme.css` in an earlier release; only one CSS file remains. Within-`theme.css` selector audit found one duplicate (`.ctrl-date` × 2) which appears intentional (different selector contexts) and harmless. The structural concern this ticket originally captured no longer exists. Closed.
-
-  **4. latlong.net hint in receiver-config form** — Original ticket to add a hint pointing users to latlong.net for finding their coordinates. The hint already exists in `templates/config.html` line 1090 as part of the Latitude field's help text: *"Find your coords at <a href='https://www.latlong.net'>latlong.net</a>"*. Implemented at some point between when the ticket was filed and now; the ticket just wasn't marked closed. Closed.
+  **2. Two dead CSS selectors removed from `static/theme.css`.** Verified via grep across all templates, JS, and Python source — `.gear-btn` and `.icon-btn` were referenced only in their own definition (a `transition:` rule listing form controls). No `class="gear-btn"`, no `className = 'gear-btn'`, no dynamic application anywhere in the codebase. Their counterparts (`.theme-seg button`, `.tab`, `input`, `button`, etc.) remain in the transition rule.
 
   **Scope:**
-  - `templates/performance.html` — ~50 lines removed (UI block, CSS rules, JS handler, init IIFE). Replaced with a brief explanatory comment about the v3.4.13 transition.
-  - `static/theme.css` — 2 dead selectors removed from a single transition rule
-  - **No code-behavior changes.** No new endpoints, no schema changes, no API changes. 89 endpoints unchanged. SUDOERS_VERSION unchanged at 4.
-
-  **Test contract for v3.4.13:**
-  1. **Performance page renders without errors** — the toolbar's Run button works; the diagnostic runs; output renders. The page should look slightly cleaner without the now-removed checkbox area.
-  2. **URL-param path still works** — visiting `/performance?include_legacy=true` should produce a diagnostic that includes the legacy raw-fallback probe (vs the default which skips it).
-  3. **No visual regressions on form elements** — the transition rule still applies to all the elements it actually styled (form controls, tabs, panels, etc.).
-
-  **Reflection on the v3.4.x bug-and-polish arc.** v3.4.13 closes thirteen releases since the v3.4.0 OOM-kill on large restores started this arc. The work spans real architectural progress (rollup tables, covering index, readiness endpoint), several honest disclosures of broken-on-existing-installs claims (v3.4.0, v3.4.1, v3.4.7 → corrected in v3.4.2, v3.4.8, v3.4.10), and a steady-state finishing pattern of audit-close-audit (Tier 1 security audit in v3.4.9, packaging consistency in v3.4.12, cosmetic cleanup in v3.4.13). Fifteen new HANDOFF lessons (4.1 through 4.15) accumulated alongside; the institutional memory grew faster than the codebase.
-
-  Going forward: Tier 3 features (first-time setup wizard, dedicated /about page, map dot crispness) remain queued for when fresh design energy returns. Tier 4 architectural items (streaming backup format, stats_furthest rollup, unique_aircraft_count rollup) remain genuinely deferred — none are needed at current scale. Tier 5 has three remaining items (timezone config-key rename, operator-helper consolidation, sort:sightings window-aware bug fix) that are behavior-touching and best done after a real-use phase surfaces concrete signal.
-
-  v3.4.13 is a clean resting point.
+  - `templates/performance.html` — ~50 lines removed (UI block, CSS rules, JS handler, init IIFE).
+  - `static/theme.css` — 2 dead selectors removed from a single transition rule.
+  - No code-behavior changes. No new endpoints, no schema changes, no API changes. 89 endpoints unchanged. SUDOERS_VERSION unchanged at 4.
 
 ## [3.4.12] — 2026-05-13
 
@@ -78,12 +157,10 @@ archaeology rather than admin-facing release notes.)
   - **No code changes.** No new endpoints, no schema changes, no behavior changes. The product is unchanged; only the distribution surface (public repo vs release zip) is now consistent.
   - 89 endpoints unchanged. SUDOERS_VERSION unchanged at 4.
 
-  **HANDOFF lesson** (filed forward as 4.15): **When a packaging decision changes how an artifact is distributed, the `.gitignore` is part of the packaging.** The v3.1.0 change correctly updated `scripts/package-release.sh` (the build-time packaging) but missed `.gitignore` (the git-time packaging). Both files express the same distribution policy from different angles — what goes in the public repo vs what goes in the release zip. They need to stay in sync. The "audit every read site, not just the obvious ones" pattern from Lesson 4.2 generalizes here: when a distribution policy changes, audit every place that policy is expressed, not just the most obvious one.
-
 ## [3.4.11] — 2026-05-12
 
 ### Fixed
-- **Tier 2 bundle release — four small polish items that closed out the Tier 2 queue.** None of these individually justify a dedicated release; together they're a meaningful sweep of long-accumulating papercuts that the v3.4.x perf-and-bug arc kept passing through without fixing. All four are filed in the HANDOFF queue going back to v3.0.x.
+- **Four small polish items.**
 
   **1. PDF `count_sqlite_tables()` rewritten** (`scripts/build_overview_pdf.py`). The function had been computing table count via `len(re.findall(r"CREATE TABLE IF NOT EXISTS", text))` against `collector.py` only. That had two off-by-each-other bugs masking each other: (a) `collector.py` creates `_aerodrome_meta` defensively in 5 separate places (each migration helper does its own `CREATE TABLE IF NOT EXISTS` before reading the meta table, for safety against out-of-order execution), so the same logical table was counted 5 times; and (b) `schema_migrations.py` creates 3 more tables (`concurrent_minute`, `aircraft_track_daily`, `update_state`) plus `schema_version` from the migration framework that the old function never looked at. The 5 extra counts and the 4 missing tables happened to cancel into the right number (15) at the moment v3.4.6 added military_hourly and watchlist_hourly — purely by coincidence. A future change adding a migration table OR removing a defensive `_aerodrome_meta` create would have made the miscount visible. New version parses both source files, captures table names via a tightened regex that requires the trailing `(` (rules out docstring matches like *"CREATE TABLE IF NOT EXISTS handles the table"* in migration explanatory comments), dedupes via set, returns the correct unique count. Verified: returns 15 with the right set of names — `_aerodrome_meta, aircraft_track_daily, all_sightings, concurrent_minute, hexdb_cache, hexdb_events, military_hourly, military_sightings, schema_version, seen_aircraft, sightings_hourly, stats_records, update_state, watchlist_hourly, watchlist_sightings`.
 
@@ -93,7 +170,7 @@ archaeology rather than admin-facing release notes.)
 
   **4. Cross-field retention validation** (`config_validator.py`). Added a check that `retention.military_days` and `retention.watchlist_days` must each be ≤ `retention.all_days`. Rationale: the `military_sightings` and `watchlist_sightings` tables are filtered subsets of the broader `all_sightings` stream, retained from the same data — a longer military or watchlist setting can't actually be honored because there's no military data older than `all_days` to retain. Setting `military_days=90` with `all_days=30` would be a config typo at best, a misunderstanding at worst. Pre-v3.4.11 the misconfiguration would silently fail (the longer setting was technically valid syntax, but the retention loop never had data to operate on past `all_days`). Now it's caught at save time with an explanatory message: *"Must be ≤ retention.all_days (30). Military sightings are filtered from the broader data stream — a longer retention isn't honored because the underlying data ages out at all_days."*
 
-     **The cross-field rule has a guard against compound errors.** If `all_days` itself is invalid (negative, non-integer, etc.), the cross-field check is skipped — otherwise we'd compound a field-level error with a cross-field error referencing a value that's already known-bad, and the cross-field message would be confusing. Equal values (e.g., `military_days = all_days = 30`) are accepted as the boundary case. This pattern (cross-field rule + guard against compound errors) is the model for future cross-field validations the Tier 4 backlog might surface.
+     **The cross-field rule has a guard against compound errors.** If `all_days` itself is invalid (negative, non-integer, etc.), the cross-field check is skipped — otherwise we'd compound a field-level error with a cross-field error referencing a value that's already known-bad, and the cross-field message would be confusing. Equal values (e.g., `military_days = all_days = 30`) are accepted as the boundary case.
 
   **Smoke tests verified** five test cases for the cross-field rule and the new count_sqlite_tables on the actual codebase. The two mechanical fixes (PDF regex, FastAPI rename) are tight enough to verify by inspection.
 
@@ -103,8 +180,6 @@ archaeology rather than admin-facing release notes.)
   - `templates/config.html` — status bar template expansion (~10 lines net)
   - `config_validator.py` — cross-field block inside the existing retention validation (~30 lines including docstring)
   - **No schema changes, no API changes, no migration.** 89 endpoints unchanged. SUDOERS_VERSION unchanged at 4.
-
-  **Tier 2 queue is now empty.** v3.4.11 closes out the four polish items that had been carried forward through v3.0.8, v3.0.10, v3.0.17, and the FastAPI deprecation since around v3.0.x. Next forward-looking work moves to Tier 3 (features — first-time setup wizard, /about page, map dot crispness) or Tier 4 (architectural deferred — streaming backup format, stats_furthest rollup, unique_aircraft_count rollup). See HANDOFF Section 6.
 
 ## [3.4.10] — 2026-05-12
 
@@ -153,12 +228,10 @@ archaeology rather than admin-facing release notes.)
   2. **Direct probe of `/api/ready` during a backfill**: stop the service, drop the rollup-completed markers from `_aerodrome_meta`, restart, and immediately curl `/api/ready`. Should return 503 with `pending.hourly_rollup.phase == "running"` (or similar for whichever backfill is in flight).
   3. **End-to-end apply test on the heavy test box**: trigger an apply via the Updates page. Status text should show "finishing post-restart work" during rollup-backfill window. Reload should happen only after backfills complete and DB probe is fast. Browser should land on a working dashboard, not the connection-refused error page.
 
-  **HANDOFF lesson** (filed forward in Section 4): **4.14 — Liveness is not readiness, especially on heavy installs.** The Aerodrome service's startup has nontrivial post-bind work (rollup backfills, page cache warmup, initial poll cycle) that's invisible to a "is the port answering?" probe. Anything downstream that needs "the server is ready to serve real work" should poll a readiness endpoint, not just a liveness one. The cost of conflating them is exactly the dead-page-after-update symptom that v3.4.10 fixes.
-
 ## [3.4.9] — 2026-05-12
 
 ### Fixed
-- **Closes the Tier 1 whole-file-in-memory audit that v3.4.2 left scoped to one site.** v3.4.2 fixed the original OOM-kill bug where `zf.read("aerodrome.db")` loaded a 5.4 GB database file into memory during restore, but it was scoped specifically to that one site — the explicit follow-up question of "where else does this pattern exist?" was filed as Tier 1 work for later. v3.4.9 is the audit. Two real bugs were found and fixed; three additional defense-in-depth checks were added on zip entries in the restore flow; three sites were confirmed already-safe; one site was confirmed safe-by-source. The audit is now closed.
+- **Whole-file-in-memory audit follow-up to v3.4.2.** v3.4.2 fixed the original OOM-kill bug where `zf.read("aerodrome.db")` loaded a 5.4 GB database file into memory during restore, but it was scoped specifically to that one site — the explicit follow-up question of "where else does this pattern exist?" was filed for later. v3.4.9 is the audit. Two real bugs were found and fixed; three additional defense-in-depth checks were added on zip entries in the restore flow; three sites were confirmed already-safe; one site was confirmed safe-by-source.
 
   **Audit methodology:** systematic grep across the codebase for every shape of unbounded read — `zf.read()`, `Path.read_bytes()`, `await file.read()`, `requests.get().content`, `open().read()`, `urlopen().read()` — followed by per-site triage. Every match was classified as: (a) real bug needing fix, (b) bounded by a downstream constraint making it defensible-but-not-urgent, (c) already-safe (streaming or chunked), or (d) safe by source (bounded by external system).
 
@@ -202,7 +275,7 @@ archaeology rather than admin-facing release notes.)
   - **~12 sites triaged as safe-by-shape** (config files, ntfy configs, /proc/meminfo)
   - **0 sites left as open questions**
 
-  **The original Tier 1 deliverable framing was "the audit's output is either 'clean, no other sites' or 'found N more, fix bundle for v3.4.9'."** v3.4.9 is the fix bundle. N = 2 real bugs, plus 3 defense-in-depth additions to harden the restore flow against zip bombs.
+  **The original deliverable framing was "the audit's output is either 'clean, no other sites' or 'found N more, fix bundle for v3.4.9'."** v3.4.9 is the fix bundle. N = 2 real bugs, plus 3 defense-in-depth additions to harden the restore flow against zip bombs.
 
   **Scope:**
   - `server.py` — one new helper function (`_read_upload_bounded`, ~30 lines including docstring), two endpoint fixes (replace `await file.read()` + post-hoc check with helper call, ~5-10 lines net each), three defense-in-depth size checks (~10 lines each for the manifest/config/ntfy zip entries)
@@ -214,8 +287,6 @@ archaeology rather than admin-facing release notes.)
   2. **Oversized upload to `/api/config/import`** — a 300 KB or larger upload rejects with HTTP 413 *immediately* (after reading ≤320 KB), not after fully buffering. Memory usage during rejection should be bounded — observable via a separate top/htop session during a deliberately-large curl post.
   3. **Normal restore from backup** — a legitimate backup zip with normal-sized manifest.json + config.yaml + ntfy/server.yml + aerodrome.db restores as before. No behavior change for normal use.
   4. **Zip-bombed restore** — a backup zip whose internal manifest.json or config.yaml exceeds the respective per-entry limit rejects with a clear "improbably large" message and does not OOM.
-
-  **Pattern check note**: this is the kind of audit that, in retrospect, should probably have been part of the v3.4.2 release itself rather than filed forward as Tier 1 work. The original v3.4.2 fix was tightly scoped and intentional (don't expand scope), but the scope-limit decision did mean the related sites stayed exposed for a few weeks. v3.4.9 is the cleanup. The HANDOFF section 4 keeps lesson 4.2 ("when claiming streaming end-to-end, audit every read() call site, not just the obvious ones") as a forward-looking discipline, now backed by the v3.4.9 audit as a concrete example of doing the work.
 
 ## [3.4.8] — 2026-05-12
 
@@ -239,7 +310,7 @@ archaeology rather than admin-facing release notes.)
 
   **Operational impact for users currently on v3.4.7:** Stats card "furthest aircraft" pre-rank queries continue to use the old `idx_seen_last` single-column index — same performance as v3.4.6. No actual regression vs v3.4.6, just no improvement vs what was promised. Upgrading to v3.4.8 runs migration v9 at startup (one-time index build, proportional to seen_aircraft row count — sub-second for typical sizes, under 5 seconds even at multi-year retention on heavy traffic) and the planner immediately starts using the covering index.
 
-  **Honest disclosure.** v3.4.7's CHANGELOG and HANDOFF claimed perf improvements that, on existing installs, didn't materialize. The architecture and the SQL were correct; the migration plumbing wasn't. This is the third release in the v3.4.x line where a claim in the CHANGELOG didn't match what users actually got — v3.4.0 silently removed the 2 GB cap, v3.4.0/v3.4.1 silently OOM-killed on large restores, and now v3.4.7 silently skipped the covering-index migration on existing installs. Each was the same shape of mistake: code that looked correct in isolation but interacted with a system constraint that wasn't checked. The HANDOFF now captures this as **Lesson 4.13 — Modifying a shipped migration is a silent no-op on existing installs.**
+  **Honest disclosure.** v3.4.7's release notes claimed perf improvements that, on existing installs, didn't materialize. The architecture and the SQL were correct; the migration plumbing wasn't. This is the third release in the v3.4.x line where a claim in the CHANGELOG didn't match what users actually got — v3.4.0 silently removed the 2 GB cap, v3.4.0/v3.4.1 silently OOM-killed on large restores, and now v3.4.7 silently skipped the covering-index migration on existing installs. Each was the same shape of mistake: code that looked correct in isolation but interacted with a system constraint that wasn't checked.
 
   **Scope:**
   - `schema_migrations.py` — revert one CREATE INDEX block from `_migration_v1_search_schema`, add `_migration_v9_seen_furthest_covering_index` function, register in `MIGRATIONS`, bump `CURRENT_SCHEMA_VERSION` to 9 (~70 lines net)
@@ -253,7 +324,7 @@ archaeology rather than admin-facing release notes.)
   2. **Fresh install of v3.4.8** — schema migrations run end-to-end through v9. Index present from first boot.
   3. **Idempotency** — restart the service repeatedly; no migrations should re-run after the first deploy.
 
-  **The bigger lesson, filed forward as 4.13 in the HANDOFF:** SQLite schema migrations in this codebase are a write-once, never-edit registry. The architecture is sound — it guarantees consistent migration application across all installs — but the failure mode is that edits to shipped migration code are silently ignored on existing installs. **Adding a new behavior to schema requires a new migration function, never an edit to an existing one.** v3.4.8 captures this in code (the migration v9 function has a top-line comment "v3.4.7 originally added this index inside _migration_v1_search_schema. That was wrong") and in the HANDOFF (Section 4 lesson 4.13).
+  **The bigger principle:** SQLite schema migrations in this codebase are a write-once, never-edit registry. The architecture is sound — it guarantees consistent migration application across all installs — but the failure mode is that edits to shipped migration code are silently ignored on existing installs. **Adding a new behavior to schema requires a new migration function, never an edit to an existing one.** v3.4.8 captures this in code: the migration v9 function has a top-line comment noting that v3.4.7 originally tried to add this index inside `_migration_v1_search_schema` and explaining why that didn't work.
 
 ## [3.4.7] — 2026-05-12
 
@@ -271,11 +342,11 @@ archaeology rather than admin-facing release notes.)
   **Index size is negligible.** Roughly 38 bytes per row × ~170K rows ≈ 6.5 MB on a typical heavy-tier install. The disk-space hint at install time is unaffected.
 
   **What was NOT done:**
-  - No rollup table for stats_furthest. The covering index is sufficient for the current scale. If the query becomes problematic at 1M+ seen_aircraft (e.g., at multi-year retention on very heavy installs), a precomputed daily-furthest rollup would be the next step. That's filed in the HANDOFF as a v3.5.0+ consideration.
+  - No rollup table for stats_furthest. The covering index is sufficient for the current scale. If the query becomes problematic at 1M+ seen_aircraft (e.g., at multi-year retention on very heavy installs), a precomputed daily-furthest rollup would be the next step. Deferred as a v3.5.0+ consideration.
   - No changes to the auto-tuning profile thresholds. The current profile already scales cache up with available RAM correctly; the v3.4.6 measurements confirmed it's working as designed.
   - No code changes to the `stats_furthest_prerank` query itself. The query plan improvement comes entirely from the new index. Same SQL, same result.
 
-  **Honest measurement disclosure.** The original v3.4.6 retrospective implied dramatic speedups for military_count and watchlist_count (240× and 140×). Those numbers turned out to be a measurement artifact — the v3.4.5 baseline diagnostic was taken on a 4 GB box that was likely cache-thrashing, and the v3.4.6 verification was done on a 6 GB box with warm cache. The clean v3.4.6 win, measured on identical 4 GB hardware with paired rollup-vs-raw probes, is ~5× (not 240×). This is captured in the HANDOFF as Lesson 4.11 (measurement discipline) and Lesson 4.12 (single-shot perf measurements can mislead — always run twice for cold vs warm). The architecture is real and valuable; the numbers are smaller and more honest. Same will apply to v3.4.7's covering index — the real production improvement on cold cache will be measurable but probably not dramatic.
+  **Honest measurement disclosure.** The original v3.4.6 retrospective implied dramatic speedups for military_count and watchlist_count (240× and 140×). Those numbers turned out to be a measurement artifact — the v3.4.5 baseline diagnostic was taken on a 4 GB box that was likely cache-thrashing, and the v3.4.6 verification was done on a 6 GB box with warm cache. The clean v3.4.6 win, measured on identical 4 GB hardware with paired rollup-vs-raw probes, is ~5× (not 240×). The architecture is real and valuable; the numbers are smaller and more honest. Same will apply to v3.4.7's covering index — the real production improvement on cold cache will be measurable but probably not dramatic.
 
   **Scope:**
   - `docs/INSTALL.md` — three RAM lines added to the sizing tiers, one new sub-section ("RAM and the SQLite page cache") explaining the underlying mechanic with measured numbers (~30 lines net)
@@ -362,7 +433,7 @@ archaeology rather than admin-facing release notes.)
   - **`templates/config.html` — internal JS comment.** The comment block above `sectionDemo()` documenting the function's behavior used the same backwards framing (*"can only be entered via a fresh install with the bootstrap's --demo flag"*). Updated to *"can only be entered via a fresh install at the bootstrap's 'Real receiver or demo mode?' prompt (or via --demo for scripted installs)."* Internal but worth keeping consistent — future maintainers reading the comment shouldn't pick up the wrong mental model.
   - **`config_validator.py` — internal comment about the demo config flag.** Same backwards framing in the comment describing when `demo.enabled` gets set. Updated to acknowledge both paths. Internal, but the docs-accuracy discipline says fix it everywhere it appears.
 
-  **What this means for the docs-accuracy arc:** v3.4.3 + v3.4.4 + v3.4.5 are now the complete docs-accuracy pass for the v3.1.0+v3.2.0+v3.3.0 cumulative scope changes (interactive menu prompt, multi-distro support, `/opt/aerodrome` standardization). Three iterations because each pass missed a quadrant of the audit space — paths (caught by v3.4.3), distro vocabulary (caught by v3.4.4), UX flow names (caught by v3.4.5). The lesson filed in the HANDOFF (4.9) captures the discipline: when running a docs-accuracy pass after a scope change, grep the OLD scope's distinctive vocabulary, not just the OLD literal strings, and enumerate the *kinds* of staleness before grepping each.
+  **What this means for the docs-accuracy arc:** v3.4.3 + v3.4.4 + v3.4.5 are now the complete docs-accuracy pass for the v3.1.0+v3.2.0+v3.3.0 cumulative scope changes (interactive menu prompt, multi-distro support, `/opt/aerodrome` standardization). Three iterations because each pass missed a quadrant of the audit space — paths (caught by v3.4.3), distro vocabulary (caught by v3.4.4), UX flow names (caught by v3.4.5). The practical discipline: when running a docs-accuracy pass after a scope change, grep the OLD scope's distinctive vocabulary, not just the OLD literal strings, and enumerate the *kinds* of staleness before grepping each.
 
   **Scope:**
   - `templates/config.html` — Demo tab explainer text rewritten (~10 lines), one internal JS comment updated (~5 lines)

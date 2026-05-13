@@ -1,4 +1,4 @@
-<!-- Version: 3.4.13 -->
+<!-- Version: 3.4.18 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -608,6 +608,7 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
                 <a href="/diagnostics" class="menu-item">Diagnostics</a>
                 <a href="/logs" class="menu-item">Logs</a>
                 <a href="/documentation" class="menu-item">Documentation</a>
+                <a href="/about" class="menu-item">About</a>
                 <a href="/config" class="menu-item">Configuration</a>
                 <a href="/updates" class="menu-item">Check for updates</a>
                 <div class="gear-menu-separator"></div>
@@ -1934,8 +1935,16 @@ async function loadPositions(window) {
 
     // Replace dots layer. Remove the previous group (if any), build a
     // fresh one from the new positions, add it. Each position becomes
-    // a small circleMarker rendered on the canvas — radius 3.5 with
-    // 70% opacity so overlapping dots build up density visually.
+    // a small circleMarker rendered on the canvas — radius 3 with
+    // full opacity so dots stay distinct when many cluster together.
+    // v3.4.17: switched from radius 4 / fillOpacity 0.7 to radius 3 /
+    // fillOpacity 1.0. The previous translucent setting was intended
+    // to convey density via opacity buildup, but with hundreds of
+    // overlapping dots at zoom-out the buildup saturated into a
+    // featureless bright wash that lost both per-dot detail AND the
+    // density signal it was supposed to communicate. Solid dots at
+    // smaller radius keep each position individually visible at any
+    // zoom and any density.
     if (_posMapState.dotsLayer) {
         _posMapState.dotsLayer.removeFrom(_posMapState.map);
         _posMapState.dotsLayer = null;
@@ -1945,9 +1954,9 @@ async function loadPositions(window) {
         const [seenAt, lat, lon, alt] = p;
         const dot = L.circleMarker([lat, lon], {
             renderer: _posMapState.canvasRenderer,
-            radius: 3.5,
+            radius: 3,
             fillColor: altToColor(alt),
-            fillOpacity: 0.7,
+            fillOpacity: 1.0,
             stroke: false,
         });
         dots.push(dot);

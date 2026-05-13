@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <!-- theme:inline-fouc-start -->
+    <script>
+// v2.45.0: theme FOUC prevention — applies saved theme pre-paint.
+// Keep this inline and synchronous at the TOP of <head>. Moving it to a
+// deferred module or the body would reintroduce the dark-flash on first
+// load for users with light-mode saved.
+(function(){
+    try {
+        var saved = localStorage.getItem('aerodrome-theme') || 'auto';
+        var applied = saved;
+        if (saved === 'auto') {
+            applied = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+        }
+        document.documentElement.setAttribute('data-theme', applied);
+    } catch (e) { /* localStorage blocked? default-dark is fine */ }
+})();
+</script>
+    <!-- theme:inline-fouc-end -->
+<!-- Version: 3.4.18 -->
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>About — Aerodrome</title>
+<!-- v2.50.2: favicon. SVG for modern browsers (scales perfectly,
+     respects light/dark via the cyan accent), ICO fallback for older
+     browsers, apple-touch-icon for iOS home-screen / bookmarks. -->
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <!-- v2.47.0: theme system extracted to /static/theme.css + theme.js.
+         Palette variables and the gear-menu widget styles both live there. -->
+    <link rel="stylesheet" href="/static/theme.css">
+<style>
+
+* { margin:0; padding:0; box-sizing: border-box; }
+body { background:var(--bg0); color:var(--t1); font-family:var(--font);
+       font-size:14px; line-height:1.5; min-height:100vh; }
+
+/* --- Header (shared with status/config/updates/docs/logs) --- */
+.hdr { background:var(--bg1); border-bottom:1px solid var(--bdr); padding:12px 24px;
+       display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; }
+.hdr-left { display:flex; align-items:center; gap:8px; }
+.hdr h1 { font-size:18px; font-weight:600; letter-spacing:-0.02em; }
+.hdr h1 span { color:var(--cyan); }
+.dot { width:8px; height:8px; border-radius:50%; background:var(--green); animation:pulse 2s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+.hdr-right { display:flex; align-items:center; gap:14px; }
+.hdr-meta { font-size:11px; color:var(--t2); font-family:var(--mono); }
+.settings-wrap { position:relative; }
+.settings-menu { position:absolute; top:calc(100% + 6px); right:0; background:var(--bg2);
+                 border:1px solid var(--bdr); border-radius:8px; min-width:180px;
+                 display:none; z-index:100; overflow:hidden; }
+.settings-menu.open { display:block; }
+
+.page { max-width:760px; margin:0 auto; padding:24px; }
+.page-title { font-size:22px; font-weight:600; margin-bottom:4px; }
+.page-sub { color:var(--t2); font-size:13px; font-family:var(--mono); margin-bottom:24px; }
+
+/* About-specific: sections sit in card-styled blocks matching the
+   look of other admin pages (status, logs, etc). Each section has a
+   small uppercase header in the cyan accent, then prose or a list. */
+.about-section { background:var(--bg2); border:1px solid var(--bdr);
+                 border-radius:8px; padding:18px 22px; margin-bottom:16px; }
+.about-section h2 { font-size:11px; font-weight:600; color:var(--cyan);
+                    letter-spacing:.10em; text-transform:uppercase;
+                    margin-bottom:12px; }
+.about-section p { color:var(--t1); font-size:14px; line-height:1.6; }
+.about-section p + p { margin-top:10px; }
+.about-section a { color:var(--cyan); text-decoration:none; }
+.about-section a:hover { text-decoration:underline; }
+.about-section .muted { color:var(--t2); }
+
+/* Built-with dep list: two-column grid. Each row has the dep name and
+   a short label (role/purpose) — no version numbers, since these come
+   from system packages and frontend bundles that don't have a single
+   source-of-truth version string visible to the template. */
+.deps-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+             gap:8px 24px; }
+.deps-grid .dep { display:flex; justify-content:space-between; align-items:baseline;
+                  gap:12px; padding:4px 0; border-bottom:1px solid var(--bdr-subtle, transparent); }
+.deps-grid .dep .name { color:var(--t1); font-size:14px; }
+.deps-grid .dep .role { color:var(--t3); font-size:11px; font-family:var(--mono);
+                        text-transform:lowercase; }
+
+</style>
+</head>
+<body>
+
+<div class="hdr">
+    <div class="hdr-left">
+        <div class="dot" id="healthDot" title="System status"></div>
+        <a href="/" class="home-link"><svg class="brand-mark" width="32" height="32" viewBox="0 0 64 64" aria-hidden="true">
+                <circle cx="32" cy="32" r="28" fill="none" stroke="#06b6d4" stroke-width="3" opacity="0.3"/>
+                <circle cx="32" cy="32" r="20" fill="none" stroke="#06b6d4" stroke-width="3" opacity="0.55"/>
+                <circle cx="32" cy="32" r="12" fill="none" stroke="#06b6d4" stroke-width="3" opacity="0.8"/>
+                <circle cx="32" cy="32" r="4" fill="#06b6d4"/>
+                <line x1="32" y1="32" x2="52" y2="12" stroke="#06b6d4" stroke-width="3" stroke-linecap="round"/>
+            </svg><h1><span>Aerodrome</span></h1></a>
+    </div>
+    <div class="hdr-right">
+        <span class="hdr-meta">v<span id="appVersion">—</span> &middot; Updated <span id="ts">—</span></span>
+        <div class="settings-wrap">
+            <button class="settings-btn" onclick="toggleMenu(event)" aria-label="Settings" title="Settings">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            </button>
+            <div class="settings-menu" id="settingsMenu">
+                <a href="/status" class="menu-item">Status</a>
+                <a href="/diagnostics" class="menu-item">Diagnostics</a>
+                <a href="/logs" class="menu-item">Logs</a>
+                <a href="/documentation" class="menu-item">Documentation</a>
+                <a href="/about" class="menu-item">About</a>
+                <a href="/config" class="menu-item">Configuration</a>
+                <a href="/updates" class="menu-item">Check for updates</a>
+
+                <div class="gear-menu-separator"></div>
+                <div class="theme-row">
+                    <div class="theme-label">Theme</div>
+                    <div class="theme-seg" role="group" aria-label="Theme preference">
+                        <button type="button" data-theme-choice="auto"  onclick="aerodromeSetTheme('auto')">Auto</button>
+                        <button type="button" data-theme-choice="dark"  onclick="aerodromeSetTheme('dark')">Dark</button>
+                        <button type="button" data-theme-choice="light" onclick="aerodromeSetTheme('light')">Light</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="page">
+    <h1 class="page-title">About Aerodrome</h1>
+    <div class="page-sub">Self-hosted ADS-B aircraft tracker</div>
+
+    <div class="about-section">
+        <h2>About</h2>
+        <p>Aerodrome is a self-hosted ADS-B aircraft tracker. It polls a local
+        receiver, stores sightings in SQLite, and serves a dashboard for live
+        traffic, watchlists, military aircraft, statistics, and historical
+        sightings.</p>
+        <p>Source code, issues, and feature requests:
+        <a href="https://github.com/preston-peterson/aerodrome" target="_blank"
+           rel="noopener noreferrer">github.com/preston-peterson/aerodrome</a>.</p>
+    </div>
+
+    <div class="about-section">
+        <h2>License</h2>
+        <p>Released under the MIT License.</p>
+        <p class="muted">Copyright &copy; 2025&ndash;2026 Preston Peterson. See the
+        <code>LICENSE</code> file included with the source distribution for full terms.</p>
+    </div>
+
+    <div class="about-section">
+        <h2>Built with</h2>
+        <p class="muted" style="margin-bottom:14px;">Aerodrome is built on top of these open-source projects
+        and data sources.</p>
+        <div class="deps-grid">
+            <div class="dep"><span class="name">readsb / dump1090 / tar1090</span><span class="role">adsb receiver</span></div>
+            <div class="dep"><span class="name">hexdb.io</span><span class="role">registration lookup</span></div>
+            <div class="dep"><span class="name">ntfy</span><span class="role">push notifications</span></div>
+            <div class="dep"><span class="name">FastAPI</span><span class="role">backend</span></div>
+            <div class="dep"><span class="name">Uvicorn</span><span class="role">asgi server</span></div>
+            <div class="dep"><span class="name">SQLite</span><span class="role">storage</span></div>
+            <div class="dep"><span class="name">Leaflet</span><span class="role">maps</span></div>
+            <div class="dep"><span class="name">OpenStreetMap</span><span class="role">map data</span></div>
+            <div class="dep"><span class="name">CARTO</span><span class="role">map tiles</span></div>
+        </div>
+        <p class="muted" style="margin-top:14px; font-size:12px;">ntfy by Philipp C. Heckel.
+        See the project's GitHub repository for full attribution and license details of each dependency.</p>
+    </div>
+</div>
+
+<script>
+async function loadVersion() {
+    try {
+        const r = await fetch('/api/status');
+        const j = await r.json();
+        if (j.version) document.getElementById('appVersion').textContent = j.version;
+    } catch (e) { /* ignore — header just shows "v—" */ }
+    // v2.85.12: shared formatter respects display.time_format.
+    const tsEl = document.getElementById('ts');
+    if (tsEl && typeof formatDateTime === 'function') {
+        tsEl.textContent = formatDateTime(new Date());
+    }
+}
+
+document.addEventListener('DOMContentLoaded', loadVersion);
+
+// Gear menu — same behavior as status/config/updates/docs/logs.
+function toggleMenu(e) {
+    e.stopPropagation();
+    document.getElementById('settingsMenu').classList.toggle('open');
+}
+document.addEventListener('click', e => {
+    if (!e.target.closest('.settings-wrap')) {
+        document.getElementById('settingsMenu').classList.remove('open');
+    }
+});
+</script>
+<script src="/static/theme.js"></script>
+<script src="/static/health-indicator.js"></script>
+</body>
+</html>

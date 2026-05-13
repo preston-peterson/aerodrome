@@ -1,4 +1,4 @@
-# Version: 3.4.13
+# Version: 3.4.18
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -9788,6 +9788,10 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     @app.get("/documentation", response_class=HTMLResponse)
     async def docs_page():
         return _serve_template("docs.html")
+
+    @app.get("/about", response_class=HTMLResponse)
+    async def about_page():
+        return _serve_template("about.html")
 
     @app.get("/logs", response_class=HTMLResponse)
     async def logs_page():
