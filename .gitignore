@@ -63,14 +63,21 @@ update/*
 !update/.gitkeep
 !update/UPDATE_README.md
 
-# --- Maintainer-only dev tooling ---
-# tools/ contains development utilities (synthetic_feeder, etc.) that ship
-# as paired archive artifacts alongside releases, not in the public-facing
-# zip or repo. The maintainer's working tree keeps tools/ for development;
-# scripts/package-release.sh excludes it from the zip; this gitignore line
-# excludes it from the public repo on git init. Convention established in
-# v2.98.2 — see HANDOFF for the maintainer-only-docs / dev-tooling pattern.
-tools/
+# --- tools/ is part of the product ---
+# v3.4.12: previously tools/ was excluded here as "maintainer-only dev
+# tooling" — the original v2.98.2 design shipped the synthetic feeder
+# as a paired archive artifact alongside releases. That stopped being
+# true in v3.1.0 when demo mode landed: bootstrap-menu installs that
+# pick demo mode run tools/synthetic_feeder/serve.py as a real
+# service, so the synthetic feeder has to be inside the release zip.
+# scripts/package-release.sh was updated then to include tools/ in
+# the zip, but this gitignore line was left behind, creating a
+# discoverability gap — the public-repo and the release-zip surfaces
+# disagreed about whether the synthetic feeder existed.
+#
+# v3.4.12 removes the exclusion so the public repo matches what
+# users actually get from the release zip. tools/ is now tracked
+# alongside the rest of the codebase.
 
 # --- Editor / IDE clutter ---
 # Personal preferences, not project state.

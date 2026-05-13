@@ -19,6 +19,30 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.12] — 2026-05-13
+
+### Fixed
+- **Fixes a long-standing inconsistency between the public git repo and the release zip surfaces: `tools/` is now tracked in git, matching what every release zip has shipped since v3.1.0.** Caught during a routine question about whether a `.gitignore` comment was still accurate. Audit showed: three of the four claims in the comment were stale.
+
+  **Background.** The v2.98.2 release introduced a "maintainer-only dev tooling" pattern that excluded `tools/` from the release zip and the public git repo, shipping the synthetic feeder as a paired secondary artifact (`aerodrome-vX.Y.Z-synthetic-feeder.zip`). When v3.1.0 added demo mode, the synthetic feeder had to be inside the install tree at runtime — `install.sh --demo` references `tools/synthetic_feeder/serve.py` as a real service. So v3.1.0 updated `scripts/package-release.sh` to include `tools/` in the release zip, AND the v2.98.2 secondary artifact stopped being produced.
+
+  But the `.gitignore` was left behind. The line `tools/` and its explanatory comment continued to assert "tools/ ships as paired archive artifacts alongside releases, not in the public-facing zip or repo" — three statements, all false since v3.1.0. The result: anyone downloading the release zip got `tools/synthetic_feeder/` in their install; anyone cloning the public GitHub repo got nothing under `tools/`. Discoverability gap with no upside — users trying to understand demo mode by browsing the repo would find references to a directory that didn't exist there.
+
+  **What changed:**
+
+  **`.gitignore`** — removed the `tools/` exclusion. Replaced the stale explanatory comment with a brief note that documents the v3.1.0 packaging transition for future-readers: `tools/` is part of the product (demo mode runs the synthetic feeder as a real service), so it's tracked alongside the rest of the codebase.
+
+  **No other source files needed updates.** The README's "Project structure" tree already includes `tools/synthetic_feeder/` (someone fixed that in a prior session). The `scripts/package-release.sh` comment about the v3.1.0 transition is accurate as-is. The historical v2.98.2 CHANGELOG entry that originally documented the maintainer-only pattern is left untouched — historical changelogs are immutable records of what happened, even when later superseded.
+
+  **Downstream maintainer step (one-time, on the working tree, not part of the release zip):** after deploying v3.4.12, the working tree needs `git add tools/` to actually add the ~7 synthetic_feeder files to git history going forward. The first commit will show them as new files in v3.4.12, even though they've existed in releases since v3.1.0. That's a small archaeological wrinkle — the git blame on those files won't reflect their real authorship history through v3.1.x to v3.4.x — but it's correct as far as the public repo is concerned: v3.4.12 is when they entered git, even if not when they entered the product.
+
+  **Scope:**
+  - `.gitignore` — one line removed, ~7 lines of explanatory comment rewritten
+  - **No code changes.** No new endpoints, no schema changes, no behavior changes. The product is unchanged; only the distribution surface (public repo vs release zip) is now consistent.
+  - 89 endpoints unchanged. SUDOERS_VERSION unchanged at 4.
+
+  **HANDOFF lesson** (filed forward as 4.15): **When a packaging decision changes how an artifact is distributed, the `.gitignore` is part of the packaging.** The v3.1.0 change correctly updated `scripts/package-release.sh` (the build-time packaging) but missed `.gitignore` (the git-time packaging). Both files express the same distribution policy from different angles — what goes in the public repo vs what goes in the release zip. They need to stay in sync. The "audit every read site, not just the obvious ones" pattern from Lesson 4.2 generalizes here: when a distribution policy changes, audit every place that policy is expressed, not just the most obvious one.
+
 ## [3.4.11] — 2026-05-12
 
 ### Fixed
