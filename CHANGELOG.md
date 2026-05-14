@@ -19,6 +19,27 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.21] — 2026-05-14
+
+### Changed
+- **Completing the ntfy setup-and-test flow now leaves notifications enabled.** Previously, after installing the ntfy server, configuring it, subscribing your phone, and sending a successful test notification through the Phone setup guide modal, you'd return to the Notifications page and find notifications still *disabled* — you had to separately click Enable, as if you hadn't just verified the entire chain works. v3.4.21 closes that gap: a confirmed-delivered test notification flips `notifications.enabled` on.
+
+  **Why the test-delivery event is the right trigger.** A test notification that comes back confirmed-delivered (HTTP 2xx from ntfy) is proof that the whole chain works — the server is reachable, the topic is correct, and your phone is subscribed. That's the verification event. Reaching it means notifications are genuinely set up, so the system now treats it that way instead of asking you to assert it again with a separate click. Triggering on test-delivery (rather than on the modal's "Done" button) also means it works the same regardless of how you close the modal — Done, the X, or clicking outside — because the enable already happened when the test succeeded.
+
+  **Guardrails:** the flip only happens on *confirmed* delivery — the ambiguous "sent to ntfy but no delivery confirmation within 10 seconds" path does not enable notifications, because if delivery couldn't be verified, the setup isn't proven. It also only fires if notifications weren't already enabled (no-op otherwise). And it's not silent — the modal's success message gains a line telling you notifications were enabled and that you should save changes on the Notifications page to keep it.
+
+  **Persistence:** the `enabled` flag is written to working config, joining the same unsaved-changes batch as the URL the install flow already wrote. One save on the Notifications page persists both together. Nothing auto-saves — that stays consistent with how every other setting on the config page behaves.
+
+  **Scope:**
+  - `templates/config.html` — added the enable-on-confirmed-delivery logic to the setup guide modal's test-success path (~18 lines). Writes `notifications.enabled = true` via `setAt`, refreshes the three-state button row, updates the save bar, and appends a visible confirmation line to the modal's success message.
+  - No server changes. No schema changes. 90 endpoints unchanged. SUDOERS_VERSION unchanged at 4.
+
+  **Test contract for v3.4.21:**
+  1. **Fresh setup flow.** Install local ntfy, go through the setup guide modal, send a test notification, confirm it's delivered. Close the modal. The Notifications page should show the three-state button in the Enabled state (with the save bar showing unsaved changes from the install + enable). Saving persists it.
+  2. **Already-enabled install.** Open the setup guide on an install where notifications are already enabled, send a test. No spurious change — the flip is a no-op when already on.
+  3. **Unconfirmed delivery.** If a test sends to ntfy but delivery can't be confirmed within the polling window, notifications are NOT enabled — the modal shows the "no delivery confirmation" message and the enabled flag is untouched.
+  4. **Failed test.** A test that fails outright (bad URL, unreachable ntfy) does not enable notifications.
+
 ## [3.4.20] — 2026-05-14
 
 ### Fixed

@@ -1,4 +1,4 @@
-<!-- Version: 3.4.20 -->
+<!-- Version: 3.4.21 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -949,6 +949,32 @@ function showOnboardingModal(opts) {
                           + ' (HTTP ' + latest.response_code + ').</div>'
                           + tapHint;
                         testStatus.style.color = 'var(--green, #22c55e)';
+
+                        // v3.4.21: a confirmed-delivered test is the
+                        // verification event for the whole setup chain —
+                        // server reachable, topic correct, phone subscribed.
+                        // Reaching it means notifications are genuinely set
+                        // up, so flip notifications.enabled on rather than
+                        // making the user hunt for a separate Enable control
+                        // after closing the modal. Only on confirmed delivery
+                        // (not the ambiguous "sent but unconfirmed" path),
+                        // only if not already enabled, and we tell the user
+                        // it happened — no silent setting changes. This joins
+                        // the same dirty batch as the install's URL write;
+                        // the existing save bar persists both together.
+                        if (!getAt(workingConfig, 'notifications.enabled')) {
+                            setAt(workingConfig, 'notifications.enabled', true);
+                            updateSaveBar();
+                            if (typeof _refreshNfStateRow === 'function') {
+                                _refreshNfStateRow();
+                            }
+                            testStatus.innerHTML +=
+                                '<div style="margin-top:8px;font-size:12px;color:var(--green, #22c55e)">'
+                              + '✓ Notifications are now enabled. Save changes on the '
+                              + 'Notifications page to keep this.'
+                              + '</div>';
+                        }
+
                         testBtn.disabled = false;
                         testBtn.textContent = 'Send another';
                         testing = false;
