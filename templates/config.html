@@ -1,4 +1,4 @@
-<!-- Version: 3.4.19 -->
+<!-- Version: 3.4.20 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -880,11 +880,18 @@ function showOnboardingModal(opts) {
         testStatus.style.color = 'var(--t3)';
 
         try {
-            // Send against the configured URL (whatever is currently saved)
+            // v3.4.20: send the configured URL explicitly rather than an
+            // empty body. An empty body makes the server fall back to the
+            // notifier's in-memory config (self._cfg) — which on a fresh
+            // ntfy install hasn't been reloaded with the just-written URL,
+            // so the test would silently no-op. configuredUrl is in scope
+            // (derived at the top of this function from workingConfig) and
+            // is populated by the install flow before this modal opens.
+            // This matches what the main-screen nfSendTest() does.
             const r = await fetch('/api/notifications/test', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({}),
+                body: JSON.stringify({url: configuredUrl || null}),
             });
             const j = await r.json();
             if (!j.ok) {

@@ -19,6 +19,24 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.20] — 2026-05-14
+
+### Fixed
+- **Fixes the "Send test notification" button in the Phone setup guide modal doing nothing on a fresh ntfy install.** After installing local ntfy, the setup guide modal opens with a "Send test notification" button in its step 4. On a freshly-installed ntfy server, clicking that button did nothing — no notification, no error, no status change. The only way to send a working test was to close the modal, enable notifications, and use the test button on the main Notifications page instead.
+
+  **Root cause: the modal's test button sent an empty request body.** The `/api/notifications/test` endpoint accepts an optional `url` in its request body; when none is provided, it falls back to the notifier's in-memory configuration (`self._cfg`). On a fresh install, that in-memory config hasn't been reloaded with the URL the install just wrote, so the fallback URL is stale or empty and the test silently no-ops. The main-screen test button has always worked because it reads the URL from the browser's working config and sends it explicitly in the request body — so it never depends on the server-side config being current. The modal's button sent `{}` instead.
+
+  Notably, the comment directly above the broken line claimed the code was "sending against the configured URL" — it described the intent, but the code never matched it. The fix makes the code do what the comment said: send `configuredUrl` (already derived at the top of the modal-builder function from working config, and populated by the install flow before the modal opens) explicitly in the request body, exactly the way the main-screen test button does.
+
+  **Scope:**
+  - `templates/config.html` — one line changed in the setup guide modal's test handler: `body: JSON.stringify({})` → `body: JSON.stringify({url: configuredUrl || null})`. Comment corrected to match.
+  - No server changes — the `/api/notifications/test` endpoint already supported the explicit-URL path; the modal just wasn't using it. No schema changes, no new endpoints. 90 endpoints unchanged. SUDOERS_VERSION unchanged at 4.
+
+  **Test contract for v3.4.20:**
+  1. **Fresh ntfy install path.** Install local ntfy. When the Phone setup guide modal opens, click "Send test notification" in step 4. A test notification should send (and the status line should show the sending → delivered progression), without needing to close the modal or enable notifications first.
+  2. **Setup guide opened manually.** Open the setup guide from the install panel's "Setup guide" button on an install that already has ntfy configured. The test button should work the same way.
+  3. **Main-screen test button unaffected.** The test button on the main Notifications page continues to work as before — this fix only touched the modal's handler.
+
 ## [3.4.19] — 2026-05-14
 
 ### Changed
