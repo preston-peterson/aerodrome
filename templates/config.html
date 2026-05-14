@@ -1,4 +1,4 @@
-<!-- Version: 3.4.21 -->
+<!-- Version: 3.4.22 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1014,6 +1014,558 @@ function showOnboardingModal(opts) {
             testing = false;
         }
     };
+}
+
+// =============================================================================
+// v3.4.22 (#31): Notifications setup wizard
+//
+// A stepped modal overlay that walks a new user through getting push
+// notifications working end to end: choose where notifications go, install
+// or configure the server, install the phone app, subscribe and test.
+//
+// Distinct from showOnboardingModal above — that one is a post-install
+// phone-side guide (assumes ntfy is already installed, opened from the
+// "Setup guide" button or right after a manual install). This wizard is
+// the pre-install flow: it starts from "nothing configured" and includes
+// the install/configure step. The three-state button's Install click
+// (added in v3.4.19) points here.
+//
+// Structure: one shared overlay, a step state machine, four step
+// renderers. Step 2 branches on the Step 1 choice (local install vs
+// cloud topic). Backdrop-click-dismiss is intentionally disabled — a
+// multi-step flow shouldn't be lost by an accidental click outside;
+// only the explicit "Skip wizard" / X closes it.
+// =============================================================================
+function showNotificationsWizard() {
+    // --- wizard state -------------------------------------------------------
+    // branch: 'local' | 'cloud' | null (chosen in step 1)
+    // Collected as the user progresses; consumed by finish().
+    const wiz = {
+        step: 1,
+        branch: null,
+        // local-branch install params
+        port: 2586,
+        bind: '0.0.0.0',
+        // populated after the local install succeeds, or generated for cloud
+        topic: null,
+        ntfyVersion: null,
+        // configUrl  — what Aerodrome's SERVER uses to reach ntfy
+        //              (localhost for local branch, ntfy.sh for cloud)
+        // subscribeUrl — what the PHONE uses to subscribe
+        //              (LAN IP for local branch, ntfy.sh for cloud)
+        configUrl: null,
+        subscribeUrl: null,
+        installed: false,   // local branch: ntfy install confirmed
+        tested: false,      // step 4: a test was confirmed delivered
+    };
+
+    // Mirror ntfy_installer._generate_topic: 'aerodrome-' + ~8 urlsafe
+    // chars. The local branch gets its topic from the install response;
+    // the cloud branch has no install step, and an ntfy.sh topic is just
+    // a random identifier (ntfy.sh creates topics implicitly on first
+    // use), so client-side generation is appropriate here.
+    function _wizGenerateTopic() {
+        const bytes = new Uint8Array(6);
+        crypto.getRandomValues(bytes);
+        const b64 = btoa(String.fromCharCode.apply(null, bytes))
+            .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+        return 'aerodrome-' + b64;
+    }
+
+    // --- overlay scaffolding (pattern adapted from showOnboardingModal) -----
+    const bg = document.createElement('div');
+    bg.style.cssText =
+        'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:2000;'
+      + 'display:flex;align-items:center;justify-content:center;padding:20px;'
+      + 'overflow-y:auto';
+
+    const modal = document.createElement('div');
+    modal.style.cssText =
+        'background:var(--bg1);border:1px solid var(--bdr);border-top:3px solid var(--cyan);'
+      + 'border-radius:10px;max-width:640px;width:100%;max-height:90vh;'
+      + 'overflow-y:auto;color:var(--t1);font-family:var(--font);'
+      + 'display:flex;flex-direction:column';
+
+    bg.appendChild(modal);
+    document.body.appendChild(bg);
+
+    function dismiss() {
+        document.removeEventListener('keydown', onKey);
+        if (bg.parentNode) bg.parentNode.removeChild(bg);
+    }
+    function onKey(e) { if (e.key === 'Escape') dismiss(); }
+    document.addEventListener('keydown', onKey);
+    // NOTE: intentionally NO bg.onclick backdrop-dismiss — a multi-step
+    // flow shouldn't be lost to a stray click. X and "Skip wizard" only.
+
+    // --- navigation ---------------------------------------------------------
+    // Step sequence is linear 1→2→3→4 for both branches; the branch only
+    // changes what step 2 and step 4 render, not the step count.
+    function goNext() {
+        if (wiz.step < 4) { wiz.step++; render(); }
+        else { finish(); }
+    }
+    function goBack() {
+        if (wiz.step > 1) { wiz.step--; render(); }
+    }
+
+    // finish(): commit the collected config and close. Writes the same
+    // two keys the manual flow would — notifications.url and (if a test
+    // was confirmed) notifications.enabled — into working config, joining
+    // the existing unsaved-changes batch. v3.4.21 already auto-enables on
+    // a confirmed test inside the step-4 handler, so by the time finish()
+    // runs, enabled is usually already set; this is the belt-and-braces
+    // write plus the URL commit for the cloud branch (the local branch's
+    // install handler writes the URL itself, mirroring the legacy flow).
+    function finish() {
+        if (wiz.configUrl) {
+            setAt(workingConfig, 'notifications.url', wiz.configUrl);
+        }
+        if (wiz.tested && !getAt(workingConfig, 'notifications.enabled')) {
+            setAt(workingConfig, 'notifications.enabled', true);
+        }
+        updateSaveBar();
+        renderAll();
+        if (typeof _refreshNfStateRow === 'function') _refreshNfStateRow();
+        dismiss();
+        toast('Notifications setup complete — save changes to keep it');
+    }
+
+    // --- render -------------------------------------------------------------
+    // Rebuilds the whole modal body for the current step. Each step
+    // renderer returns {title, body, footer} and may wire its own
+    // interactions via a post-render hook.
+    function render() {
+        let parts;
+        if (wiz.step === 1) parts = renderStep1();
+        else if (wiz.step === 2) parts = renderStep2();
+        else if (wiz.step === 3) parts = renderStep3();
+        else parts = renderStep4();
+
+        modal.innerHTML = `
+            <div style="padding:16px 20px;border-bottom:1px solid var(--bdr);
+                        display:flex;justify-content:space-between;align-items:center;gap:12px">
+                <div style="font-size:15px;font-weight:500;color:var(--cyan)">${escapeAttr(parts.title)}</div>
+                <div style="display:flex;align-items:center;gap:12px">
+                    <span style="font-size:11px;color:var(--t3);font-family:var(--mono)">Step ${wiz.step} of 4</span>
+                    <button id="_wiz_x" class="btn btn-ghost" style="font-size:14px;padding:2px 8px;line-height:1">&times;</button>
+                </div>
+            </div>
+            <div style="padding:16px 20px;font-size:13px;line-height:1.6;flex:1">
+                ${parts.body}
+            </div>
+            <div style="padding:12px 20px;border-top:1px solid var(--bdr);
+                        display:flex;justify-content:space-between;align-items:center;gap:8px">
+                ${parts.footer}
+            </div>
+        `;
+
+        // Shared wiring
+        modal.querySelector('#_wiz_x').onclick = dismiss;
+        const skipBtn = modal.querySelector('#_wiz_skip');
+        if (skipBtn) skipBtn.onclick = () => {
+            dismiss();
+            // Skip → fall back to the legacy inline install panel so the
+            // power-user / manual-config path stays reachable.
+            if (typeof nfToggleInstallPanel === 'function') nfToggleInstallPanel(true);
+        };
+        const backBtn = modal.querySelector('#_wiz_back');
+        if (backBtn) backBtn.onclick = goBack;
+        const nextBtn = modal.querySelector('#_wiz_next');
+        if (nextBtn) nextBtn.onclick = goNext;
+
+        // Step-specific wiring
+        if (parts.wire) parts.wire();
+    }
+
+    // Footer building blocks — every step has a Skip exit (left), most
+    // have Back + Next (right). Step 2's Next is gated until the install
+    // or topic-confirm completes; step 4's Next reads "Finish".
+    function footerSkipBackNext(opts) {
+        opts = opts || {};
+        const skip = '<button id="_wiz_skip" class="btn btn-ghost" style="font-size:11px">'
+                   + 'Skip wizard — configure manually</button>';
+        let right = '';
+        if (wiz.step > 1) right += '<button id="_wiz_back" class="btn" style="font-size:12px">&larr; Back</button> ';
+        const nextLabel = opts.nextLabel || (wiz.step === 4 ? 'Finish' : 'Next →');
+        const nextDisabled = opts.nextDisabled ? 'disabled' : '';
+        right += `<button id="_wiz_next" class="btn btn-primary" style="font-size:12px" ${nextDisabled}>${nextLabel}</button>`;
+        return skip + '<div style="display:flex;gap:8px;align-items:center">' + right + '</div>';
+    }
+
+    // --- Step 1: choose where notifications go ------------------------------
+    function renderStep1() {
+        const localSel = wiz.branch === 'local' || wiz.branch === null;
+        const cloudSel = wiz.branch === 'cloud';
+        const optStyle = (sel) =>
+            'padding:12px 14px;border:1px solid ' + (sel ? 'var(--cyan)' : 'var(--bdr)') + ';'
+          + 'border-radius:6px;cursor:pointer;'
+          + (sel ? 'background:rgba(6,182,212,0.05);' : '');
+        return {
+            title: 'Set up notifications',
+            body: `
+                <p style="margin-bottom:12px">Where should Aerodrome send notifications?</p>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+                    <div id="_wiz_opt_local" style="${optStyle(localSel)}">
+                        <div style="font-size:13px;font-weight:500;margin-bottom:4px">Local ntfy server <span style="color:var(--t3);font-weight:400">(recommended)</span></div>
+                        <div style="font-size:11px;color:var(--t2);line-height:1.5">
+                            Aerodrome installs ntfy on this machine. Stays on your network,
+                            no third-party service. Best unless you need alerts while away from home.
+                        </div>
+                    </div>
+                    <div id="_wiz_opt_cloud" style="${optStyle(cloudSel)}">
+                        <div style="font-size:13px;font-weight:500;margin-bottom:4px">Public ntfy.sh</div>
+                        <div style="font-size:11px;color:var(--t2);line-height:1.5">
+                            Use the public ntfy.sh service. Works from anywhere with internet.
+                            The topic name acts as the password — Aerodrome generates an unguessable one.
+                        </div>
+                    </div>
+                </div>
+            `,
+            footer: footerSkipBackNext(),
+            wire: () => {
+                const pick = (b) => { wiz.branch = b; render(); };
+                modal.querySelector('#_wiz_opt_local').onclick = () => pick('local');
+                modal.querySelector('#_wiz_opt_cloud').onclick = () => pick('cloud');
+                // Default the branch so Next always has a value
+                if (wiz.branch === null) wiz.branch = 'local';
+            },
+        };
+    }
+
+    // --- Step 2: install (local) or configure topic (cloud) -----------------
+    function renderStep2() {
+        if (wiz.branch === 'cloud') return renderStep2Cloud();
+        return renderStep2Local();
+    }
+
+    function renderStep2Local() {
+        // If the install already succeeded (user went Back then Next), show
+        // the done state rather than offering to install again.
+        if (wiz.installed) {
+            return {
+                title: 'Install local ntfy server',
+                body: `
+                    <p><span style="color:var(--green)">&#10003; Local ntfy server installed and running</span>
+                    ${wiz.ntfyVersion ? '<span style="color:var(--t3);font-size:11px"> (ntfy ' + escapeAttr(wiz.ntfyVersion) + ')</span>' : ''}</p>
+                    <p style="margin-top:8px;color:var(--t2);font-size:12px">
+                        Topic <code style="font-family:var(--mono);background:var(--bg0);padding:1px 5px;border-radius:3px">${escapeAttr(wiz.topic)}</code> generated.
+                        Continue to set up your phone.
+                    </p>
+                `,
+                footer: footerSkipBackNext(),
+            };
+        }
+        return {
+            title: 'Install local ntfy server',
+            body: `
+                <p>Aerodrome will install ntfy as a system service on this machine.
+                Defaults work for most setups.</p>
+                <div style="display:flex;gap:14px;align-items:center;margin:12px 0;font-size:12px">
+                    <span>Port: <input id="_wiz_port" class="form-input" style="width:72px;font-family:var(--mono)" value="${wiz.port}"></span>
+                    <span>Bind:
+                        <select id="_wiz_bind" class="form-input" style="width:170px">
+                            <option value="0.0.0.0" ${wiz.bind === '0.0.0.0' ? 'selected' : ''}>0.0.0.0 (LAN-accessible)</option>
+                            <option value="127.0.0.1" ${wiz.bind === '127.0.0.1' ? 'selected' : ''}>127.0.0.1 (localhost only)</option>
+                        </select>
+                    </span>
+                </div>
+                <p style="font-size:11px;color:var(--t3);line-height:1.6">
+                    Requires <code style="font-family:var(--mono);background:var(--bg0);padding:1px 5px;border-radius:3px">sudo</code> —
+                    uses the sudoers entry created at install time. The topic name is auto-generated.
+                </p>
+                <div id="_wiz_install_status" style="margin-top:10px;font-size:12px;min-height:18px"></div>
+            `,
+            // Next is hidden until install succeeds; the action button is "Install ntfy"
+            footer: (() => {
+                const skip = '<button id="_wiz_skip" class="btn btn-ghost" style="font-size:11px">Skip wizard — configure manually</button>';
+                const back = '<button id="_wiz_back" class="btn" style="font-size:12px">&larr; Back</button>';
+                const install = '<button id="_wiz_install" class="btn btn-primary" style="font-size:12px">Install ntfy</button>';
+                return skip + '<div style="display:flex;gap:8px;align-items:center">' + back + ' ' + install + '</div>';
+            })(),
+            wire: () => {
+                const installBtn = modal.querySelector('#_wiz_install');
+                const status = modal.querySelector('#_wiz_install_status');
+                installBtn.onclick = async () => {
+                    wiz.port = Number(modal.querySelector('#_wiz_port').value) || 2586;
+                    wiz.bind = modal.querySelector('#_wiz_bind').value;
+                    installBtn.disabled = true;
+                    installBtn.textContent = 'Installing… (30-60s)';
+                    status.innerHTML = '<span class="spinner"></span> Installing ntfy…';
+                    status.style.color = 'var(--t3)';
+                    try {
+                        const r = await fetch('/api/ntfy/install', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({port: wiz.port, bind: wiz.bind}),
+                        });
+                        const j = await r.json();
+                        if (j.ok) {
+                            wiz.installed = true;
+                            wiz.topic = j.topic || 'aerodrome';
+                            wiz.ntfyVersion = j.version || null;
+                            // Server reaches its own local ntfy via localhost.
+                            wiz.configUrl = 'http://localhost:' + wiz.port + '/' + wiz.topic;
+                            // Pull the LAN base URL for the phone subscribe step.
+                            await loadNtfyStatus();
+                            const ntfyCfg = (nfNtfyStatus && nfNtfyStatus.config) || {};
+                            const lanBase = ntfyCfg.base_url
+                                || (ntfyCfg.detected_lan_ip ? 'http://' + ntfyCfg.detected_lan_ip + ':' + wiz.port : '');
+                            wiz.subscribeUrl = lanBase
+                                ? lanBase.replace(/\/$/, '') + '/' + wiz.topic
+                                : wiz.configUrl;  // fallback — better than nothing
+                            // Commit the URL now, same as the legacy install flow.
+                            setAt(workingConfig, 'notifications.url', wiz.configUrl);
+                            updateSaveBar();
+                            goNext();
+                        } else {
+                            status.innerHTML = '&#9888; ' + escapeAttr(j.message || 'Install failed');
+                            status.style.color = 'var(--red)';
+                            installBtn.disabled = false;
+                            installBtn.textContent = 'Try again';
+                        }
+                    } catch (e) {
+                        status.innerHTML = '&#9888; ' + escapeAttr(e.message || 'Network error');
+                        status.style.color = 'var(--red)';
+                        installBtn.disabled = false;
+                        installBtn.textContent = 'Try again';
+                    }
+                };
+            },
+        };
+    }
+
+    function renderStep2Cloud() {
+        // Generate the topic once, on first entry to this step.
+        if (!wiz.topic) {
+            wiz.topic = _wizGenerateTopic();
+            wiz.configUrl = 'https://ntfy.sh/' + wiz.topic;
+            wiz.subscribeUrl = wiz.configUrl;  // same URL for server and phone
+        }
+        return {
+            title: 'Your ntfy.sh topic',
+            body: `
+                <p>Aerodrome generated a private topic on the public ntfy.sh service.
+                The topic name is unguessable — it's what keeps your notifications private,
+                since ntfy.sh has no per-topic password.</p>
+                <div style="margin:12px 0;padding:10px 12px;background:var(--bg0);
+                            border:1px solid var(--bdr);border-radius:6px">
+                    <div style="font-size:11px;color:var(--t3);margin-bottom:4px">Your topic URL</div>
+                    <code style="font-family:var(--mono);font-size:12px;word-break:break-all;color:var(--t1)">${escapeAttr(wiz.configUrl)}</code>
+                </div>
+                <p style="font-size:11px;color:var(--t3);line-height:1.6">
+                    You'll subscribe to this exact URL in the phone app in a couple of steps.
+                    Aerodrome will use it to send. Nothing to install on this machine.
+                </p>
+            `,
+            footer: footerSkipBackNext(),
+        };
+    }
+
+    // --- Step 3: install the mobile app (same for both branches) ------------
+    function renderStep3() {
+        return {
+            title: 'Install the ntfy mobile app',
+            body: `
+                <p>On your phone, install the ntfy app — it's free and open-source:</p>
+                <div style="display:flex;gap:10px;flex-wrap:wrap;margin:12px 0">
+                    <a href="https://play.google.com/store/apps/details?id=io.heckel.ntfy" target="_blank" rel="noopener noreferrer"
+                       class="btn" style="font-size:12px;text-decoration:none">&#8599; Google Play (Android)</a>
+                    <a href="https://apps.apple.com/us/app/ntfy/id1625396347" target="_blank" rel="noopener noreferrer"
+                       class="btn" style="font-size:12px;text-decoration:none">&#8599; App Store (iOS)</a>
+                    <a href="https://f-droid.org/packages/io.heckel.ntfy/" target="_blank" rel="noopener noreferrer"
+                       class="btn" style="font-size:12px;text-decoration:none">&#8599; F-Droid</a>
+                </div>
+                <p style="font-size:11px;color:var(--t3)">
+                    Or search "ntfy" in your phone's app store. Once it's installed,
+                    continue to subscribe and test.
+                </p>
+            `,
+            footer: footerSkipBackNext(),
+        };
+    }
+
+    // --- Step 4: subscribe + test, with diagnostic-on-failure ---------------
+    function renderStep4() {
+        // Subscribe instructions differ by branch: local subscribes to a
+        // LAN-IP server + topic; cloud subscribes to the ntfy.sh topic URL.
+        let subscribeInstructions;
+        if (wiz.branch === 'cloud') {
+            subscribeInstructions = `
+                <p>In the ntfy app, tap <b>+</b> &rarr; <b>Subscribe to topic</b>, then either
+                paste the full URL or enter the topic name with the default server:</p>
+                <ul style="margin:6px 0 10px 18px;font-size:12px;color:var(--t2);line-height:1.7">
+                    <li>Topic: <code style="font-family:var(--mono);background:var(--bg0);padding:1px 5px;border-radius:3px">${escapeAttr(wiz.topic)}</code></li>
+                    <li>Server: <code style="font-family:var(--mono);background:var(--bg0);padding:1px 5px;border-radius:3px">https://ntfy.sh</code> (the app default)</li>
+                </ul>
+            `;
+        } else {
+            const base = (wiz.subscribeUrl || '').replace('/' + (wiz.topic || ''), '');
+            subscribeInstructions = `
+                <p>In the ntfy app, tap <b>+</b> &rarr; <b>Subscribe to topic</b>. Add your
+                server first, then the topic:</p>
+                <ul style="margin:6px 0 10px 18px;font-size:12px;color:var(--t2);line-height:1.7">
+                    <li>Server: <code style="font-family:var(--mono);background:var(--bg0);padding:1px 5px;border-radius:3px">${escapeAttr(base)}</code></li>
+                    <li>Topic: <code style="font-family:var(--mono);background:var(--bg0);padding:1px 5px;border-radius:3px">${escapeAttr(wiz.topic)}</code></li>
+                </ul>
+                <p style="font-size:11px;color:var(--t3);line-height:1.5;margin-bottom:8px">
+                    The server is your machine's LAN address — your phone must be on the
+                    same network (or reach it via Tailscale / VPN).
+                </p>
+            `;
+        }
+        return {
+            title: 'Subscribe and send a test',
+            body: `
+                ${subscribeInstructions}
+                <p style="margin-top:10px">Once the subscription is added, send a test:</p>
+                <div style="margin-top:8px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+                    <button id="_wiz_test" class="btn btn-primary" style="font-size:12px">Send test notification</button>
+                    <span id="_wiz_test_status" style="font-size:12px;color:var(--t3);min-height:16px"></span>
+                </div>
+                <div id="_wiz_test_diag"></div>
+            `,
+            footer: footerSkipBackNext({ nextLabel: 'Finish' }),
+            wire: () => {
+                const testBtn = modal.querySelector('#_wiz_test');
+                const status = modal.querySelector('#_wiz_test_status');
+                const diag = modal.querySelector('#_wiz_test_diag');
+                let testing = false;
+                testBtn.onclick = async () => {
+                    if (testing) return;
+                    testing = true;
+                    testBtn.disabled = true;
+                    testBtn.textContent = 'Sending…';
+                    diag.innerHTML = '';
+                    status.innerHTML = '<span class="spinner"></span> Sending test…';
+                    status.style.color = 'var(--t3)';
+                    try {
+                        const r = await fetch('/api/notifications/test', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({url: wiz.configUrl || null}),
+                        });
+                        const j = await r.json();
+                        if (!j.ok) {
+                            // Server rejected the send outright — show the
+                            // diagnostic with the server's own message.
+                            status.innerHTML = '&#9888; Send failed';
+                            status.style.color = 'var(--red)';
+                            diag.innerHTML = _wizDiag(j.message
+                                || 'The server could not send the test.');
+                            testBtn.disabled = false;
+                            testBtn.textContent = 'Try again';
+                            testing = false;
+                            return;
+                        }
+                        // Send accepted — poll the recent log to confirm
+                        // delivery, same approach as the main-screen test.
+                        status.innerHTML = '<span class="spinner"></span> Sent — waiting for delivery confirmation…';
+                        const startedAt = Date.now() / 1000;
+                        let attempts = 0;
+                        const maxAttempts = 10;
+                        const poll = async () => {
+                            attempts++;
+                            try {
+                                const rr = await fetch('/api/notifications/recent?limit=1');
+                                const jj = await rr.json();
+                                const latest = (jj.items || [])[0];
+                                if (latest && latest.ts >= startedAt - 1 && latest.sent
+                                        && latest.response_code && latest.response_code < 300) {
+                                    status.innerHTML = '<span style="color:var(--green)">&#10003; Delivered — check your phone</span>';
+                                    status.style.color = 'var(--green)';
+                                    wiz.tested = true;
+                                    // v3.4.21 parity: a confirmed test enables
+                                    // notifications. finish() also writes this,
+                                    // but doing it here too means the state is
+                                    // already correct if the user closes early.
+                                    if (!getAt(workingConfig, 'notifications.enabled')) {
+                                        setAt(workingConfig, 'notifications.enabled', true);
+                                        updateSaveBar();
+                                    }
+                                    testBtn.textContent = 'Send another';
+                                    testBtn.disabled = false;
+                                    testing = false;
+                                    return;
+                                }
+                                if (latest && latest.ts >= startedAt - 1 && !latest.sent) {
+                                    // ntfy rejected it — sent=false means the
+                                    // POST to ntfy itself failed.
+                                    status.innerHTML = '&#9888; Not delivered';
+                                    status.style.color = 'var(--red)';
+                                    diag.innerHTML = _wizDiag(
+                                        (latest.reason || 'ntfy rejected the message')
+                                        + (latest.response_error ? ' — ' + latest.response_error : ''));
+                                    testBtn.disabled = false;
+                                    testBtn.textContent = 'Try again';
+                                    testing = false;
+                                    return;
+                                }
+                            } catch (pollErr) {
+                                // transient — keep polling
+                            }
+                            if (attempts < maxAttempts) {
+                                setTimeout(poll, 1000);
+                            } else {
+                                // Sent to ntfy OK, but no delivery confirmation.
+                                // This is the "your phone isn't subscribed yet"
+                                // or "topic mismatch" case — the most common
+                                // real failure. Surface the diagnostic.
+                                status.innerHTML = '&#9888; No delivery confirmation';
+                                status.style.color = 'var(--amber)';
+                                diag.innerHTML = _wizDiag(null);  // null = the "didn't arrive" checklist
+                                testBtn.disabled = false;
+                                testBtn.textContent = 'Try again';
+                                testing = false;
+                            }
+                        };
+                        setTimeout(poll, 1000);
+                    } catch (e) {
+                        status.innerHTML = '&#9888; ' + escapeAttr(e.message || 'Network error');
+                        status.style.color = 'var(--red)';
+                        diag.innerHTML = _wizDiag(e.message || 'Could not reach the Aerodrome server.');
+                        testBtn.disabled = false;
+                        testBtn.textContent = 'Try again';
+                        testing = false;
+                    }
+                };
+            },
+        };
+    }
+
+    // _wizDiag: render the diagnostic block on a failed/unconfirmed test.
+    // msg = a specific error string when the server gave us one; null =
+    // the generic "sent OK but didn't arrive" checklist, which is the
+    // most common real case (phone not subscribed yet, wrong topic,
+    // firewall on the ntfy port).
+    function _wizDiag(msg) {
+        const checklist = wiz.branch === 'cloud'
+            ? `<li>The phone app is subscribed to topic <code style="font-family:var(--mono)">${escapeAttr(wiz.topic || '')}</code> on server <code style="font-family:var(--mono)">https://ntfy.sh</code></li>
+               <li>Your phone has internet access</li>
+               <li>The topic name matches exactly — it's case-sensitive</li>`
+            : `<li>The phone app is subscribed to topic <code style="font-family:var(--mono)">${escapeAttr(wiz.topic || '')}</code> on your LAN server</li>
+               <li>Your phone is on the same network as this machine (or connected via Tailscale / VPN)</li>
+               <li>Nothing is blocking port <code style="font-family:var(--mono)">${wiz.port}</code> between your phone and this machine</li>
+               <li>The topic name matches exactly — it's case-sensitive</li>`;
+        const lead = msg
+            ? `<div style="color:var(--red);font-weight:500;margin-bottom:6px">${escapeAttr(msg)}</div>`
+            : `<div style="color:var(--amber);font-weight:500;margin-bottom:6px">The test was sent to ntfy, but didn't arrive on your phone.</div>`;
+        return `
+            <div style="margin-top:10px;padding:10px 12px;background:rgba(245,158,11,0.06);
+                        border:1px solid rgba(245,158,11,0.3);border-radius:6px;font-size:12px;line-height:1.6">
+                ${lead}
+                <div style="color:var(--t2);margin-bottom:4px">Check that:</div>
+                <ul style="margin:0 0 0 18px;color:var(--t2)">${checklist}</ul>
+                <div style="color:var(--t3);margin-top:8px;font-size:11px">
+                    Fix the issue above, then tap "Try again". You can also "Skip wizard"
+                    and use the manual controls if you'd rather sort it out separately.
+                </div>
+            </div>
+        `;
+    }
+
+    // kick it off
+    render();
 }
 
 function deepClone(o) { return JSON.parse(JSON.stringify(o)); }
@@ -3009,15 +3561,18 @@ function _renderNfStateRow() {
 
 // v3.4.19: click handlers for the three state actions.
 //
-// Install: open the inline install panel (the existing nfInstallNtfy flow).
-// In a future release this will launch the setup wizard instead — the click
-// target moves to the wizard, the panel stays as a power-user escape hatch.
+// Install: launches the setup wizard (v3.4.22, #31). The wizard walks
+// the user through choosing local-vs-cloud, installing/configuring the
+// server, installing the phone app, and subscribing + testing. The
+// inline install panel (nfToggleInstallPanel) is still reachable as the
+// power-user escape hatch — the wizard's "Skip wizard" button opens it,
+// and so does the "Reconfigure" link on the Enabled/Disabled rows.
 //
 // Disable / Enable: flip notifications.enabled in working config, mark the
 // page dirty (existing save mechanism), re-render the state row to show
 // the new state. Save happens via the Save changes button at the bottom.
 function nfStateClickInstall() {
-    nfToggleInstallPanel(true);
+    showNotificationsWizard();
 }
 
 function nfStateClickEnable() {

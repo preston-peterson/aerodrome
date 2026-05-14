@@ -19,6 +19,38 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.22] — 2026-05-14
+
+### Added
+- **Adds the Notifications setup wizard — a guided multi-step flow for getting push notifications working end to end.** The three-state button shipped in v3.4.19 has an Install state for when notifications aren't configured yet; until now, clicking it opened the inline install panel — functional, but it left the user to figure out the sequence (install server, install phone app, subscribe, test) on their own. The wizard makes that sequence explicit.
+
+  **The flow, four steps:**
+
+  **1. Choose where notifications go.** Local ntfy server (installed on this machine, stays on your network — recommended) or public ntfy.sh (works from anywhere, the auto-generated topic name is what keeps it private). This choice branches the next steps.
+
+  **2. Install or configure the server.** Local branch: installs ntfy as a system service via the existing install path, with port and bind controls, and captures the auto-generated topic. Cloud branch: no install — generates an unguessable `aerodrome-`-prefixed topic client-side and shows the ntfy.sh URL you'll use.
+
+  **3. Install the mobile app.** Direct links to the ntfy app on Google Play, the App Store, and F-Droid. Same step for both branches — you need the app either way.
+
+  **4. Subscribe and test.** Branch-specific subscribe instructions (local shows your LAN server address + topic; cloud shows the ntfy.sh topic), then a test button. On a confirmed-delivered test, notifications are enabled — same behavior as v3.4.21's modal. **On a failed or unconfirmed test, the wizard surfaces a diagnostic** instead of just sitting on a spinner: a branch-specific checklist of likely causes (phone not subscribed yet, topic mismatch, phone not on the same network, firewall on the ntfy port, or whatever specific error the server returned). The "sent to ntfy OK but didn't arrive" case — the most common real failure — gets the checklist, because that pattern almost always means the phone side isn't subscribed correctly.
+
+  **Skip-wizard exit on every step.** "Skip wizard — configure manually" is present on all four steps. It closes the wizard and opens the inline install panel, so the power-user / manual-config path is never more than one click away. The wizard guides; it doesn't trap.
+
+  **Why a stepped modal rather than a full-page flow.** The wizard reuses the overlay-modal scaffolding pattern that the existing post-install setup guide already uses, so it's consistent with what's there — but unlike that guide, it renders one step at a time with Back/Next navigation, and backdrop-click-to-dismiss is intentionally disabled so a stray click outside the modal can't lose your place mid-flow. Only the explicit Skip or the × closes it.
+
+  **Relationship to the existing pieces.** The wizard orchestrates components that already exist: the `/api/ntfy/install` endpoint (local branch step 2), the `/api/notifications/test` endpoint and the recent-log delivery-confirmation poll (step 4), and the v3.4.21 auto-enable-on-confirmed-test behavior (step 4 and the Finish handler). What's new is the step state machine, the local-vs-cloud branching, and the diagnostic-on-failure path. The post-install "Setup guide" modal (`showOnboardingModal`) is unchanged and still reachable from the install panel — it remains the right tool for "ntfy's already installed, remind me of the phone steps."
+
+  **Scope:**
+  - `templates/config.html` — new `showNotificationsWizard()` function (~480 lines): overlay scaffolding, step state machine, four step renderers (step 2 and step 4 branch on the local/cloud choice), navigation, the install and test action handlers, and the `_wizDiag` diagnostic renderer. The three-state button's `nfStateClickInstall()` handler repointed from `nfToggleInstallPanel(true)` to `showNotificationsWizard()`.
+  - No server changes — every endpoint the wizard calls already existed. No schema changes. 90 endpoints unchanged. SUDOERS_VERSION unchanged at 4.
+
+  **Test contract for v3.4.22:**
+  1. **Local branch, happy path.** Three-state button in Install state → click → wizard opens at step 1. Choose Local → Next → install ntfy → on success it advances to step 3 → install app step → Next → step 4 shows LAN server + topic → send test → on confirmed delivery, the status goes green and notifications enable. Finish closes the wizard; the Notifications page shows the Enabled state with unsaved changes to save.
+  2. **Cloud branch, happy path.** Choose Public ntfy.sh at step 1 → step 2 shows a generated `aerodrome-<random>` topic and the ntfy.sh URL, no install → step 3 → step 4 shows the ntfy.sh subscribe instructions → test → confirmed → Finish.
+  3. **Test failure diagnostic.** At step 4, send a test without subscribing the phone first (or with a deliberately wrong setup). After the confirmation window expires, the wizard shows the diagnostic checklist — branch-appropriate — rather than a stuck spinner. "Try again" re-runs the test.
+  4. **Skip wizard.** From any step, "Skip wizard — configure manually" closes the wizard and opens the inline install panel.
+  5. **Back/forward navigation.** Back from step 3 returns to step 2 showing the already-installed state (local branch) rather than offering to install again. Escape key and the × both close the wizard; clicking the dark backdrop does not.
+
 ## [3.4.21] — 2026-05-14
 
 ### Changed
