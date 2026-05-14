@@ -19,6 +19,38 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.19] — 2026-05-14
+
+### Changed
+- **Replaces the Notifications-enabled checkbox and the Local ntfy server install card with a single three-state button at the top of the Notifications tab.** The notifications page accumulated visual clutter as features were added (capacity alerts, daily summary, stats, ntfy logs) and a new user landing on it had no obvious starting point — the "what do I install first?" affordance was buried in the middle of the page, and the enable checkbox was disabled with a yellow warning until you'd done the install steps. v3.4.19 collapses the master state into one control that shows where you are and offers the next action.
+
+  **The three states:**
+
+  **1. Install** — URL is empty, or URL points at localhost and the local ntfy server isn't running. The button reads "Install notifications" (or "Install local ntfy" when the URL is set but ntfy is missing). Clicking opens an inline install panel — the same UI that used to sit always-visible on the page, now progressive-disclosure behind the state button. The future setup wizard will replace this click target.
+
+  **2. Enabled** — URL is configured, ntfy is reachable (or external), and `notifications.enabled = true`. The button reads "Disable". A green dot indicates active. The configured URL is shown in the row, and a small "Reconfigure" link opens the install panel for users who want to upgrade ntfy or switch between local and ntfy.sh.
+
+  **3. Disabled** — URL is configured, ntfy is reachable, but `notifications.enabled = false`. The button reads "Enable" (in primary cyan — this is the obvious action from this state). A gray dot indicates inactive. Same "Reconfigure" link as Enabled.
+
+  **Why three states instead of a checkbox.** The previous design conflated three different questions into one toggle: is this configured? is it currently sending? what do I click? A user who'd never set up notifications saw the same disabled checkbox as a user who'd configured everything and then turned it off — different situations, identical UI. The state button shows the current state on the left (dot + text), the next action on the right (button label). Each state has exactly one valid next action: Install → wizard/install-panel, Enabled → Disable, Disabled → Enable. Clicking the same control from different states does different things, which is the whole point.
+
+  **The previous gating warning is gone.** Pre-v3.4.19, when the URL pointed at localhost but local ntfy wasn't installed, the page showed a yellow "⚠ Local ntfy not installed" banner and disabled the checkbox. That logic is absorbed into the Install state — instead of showing a warning + disabled checkbox, the state button itself becomes Install and the description explains what's wrong. Fewer competing affordances, same protection against silently-failing notifications.
+
+  **Master settings move below the state button.** ntfy URL, public URL, and default priority are still on the page (the wizard-skip / configure-manually exit) but below the state row and the test row. They're not gone, just no longer the first thing you see.
+
+  **Send-test row stands alone.** Previously the Send test card sat in a 2-column grid alongside the Local ntfy server card. Now it's its own row directly below the state button — still works when notifications are disabled (the existing behavior for debugging).
+
+  **Scope:**
+  - `templates/config.html` — replaced the master-enable form-grid and the test/install 2-col grid with the three-state button row, the inline install panel (hidden by default, expanded by Install or Reconfigure click), the standalone test row, and the master settings preserved below. Added the `_nfDeriveState`, `_renderNfStateRow`, `_refreshNfStateRow`, `nfStateClickInstall`, `nfStateClickEnable`, `nfStateClickDisable`, `nfToggleInstallPanel` functions. Removed `_updateNotificationsEnabledGate` (its logic absorbed into state derivation). Net ~+220 lines in the Notifications section, ~-90 lines from the removed gate and grid markup.
+  - No schema changes. No new endpoints. 90 endpoints unchanged. SUDOERS_VERSION unchanged at 4. The `notifications.enabled` config key is still the same write target — only the UI control changed.
+
+  **Test contract for v3.4.19:**
+  1. **First-time install scenario.** Fresh install with no URL configured. Notifications tab shows the state button reading "Install notifications" with cyan dot and primary-styled button. Clicking opens the install panel below the state row, scrolling it into view.
+  2. **URL configured, ntfy installed, enabled.** State button shows "Notifications enabled" with green dot, button reads "Disable" in plain style. URL appears in the description as a code block.
+  3. **Click "Disable".** Page becomes dirty (Save / Discard bar appears), state button immediately re-renders to show "Notifications disabled" with gray dot and primary "Enable" button. Saving persists the change; discarding flips it back.
+  4. **Localhost URL but ntfy not installed.** State button shows "Install local ntfy" with cyan dot — the previous yellow warning banner does not appear (its logic is absorbed). Clicking the button opens the install panel.
+  5. **Reconfigure link.** When in Enabled or Disabled state, the "Reconfigure" link in the row description opens the install panel for upgrade/uninstall/reinstall.
+
 ## [3.4.18] — 2026-05-13
 
 ### Added

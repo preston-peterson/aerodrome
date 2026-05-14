@@ -1,4 +1,4 @@
-<!-- Version: 3.4.18 -->
+<!-- Version: 3.4.19 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2427,6 +2427,10 @@ function sectionNotifications() {
     queueMicrotask(loadNtfyStatus);
     queueMicrotask(loadRecentNotifications);
     queueMicrotask(loadNotificationStats);
+    // v3.4.19: render the three-state button immediately from working
+    // config, before the ntfy-status fetch resolves. Status arriving
+    // later just refreshes it with install-state info.
+    queueMicrotask(_refreshNfStateRow);
 
     const n = workingConfig.notifications || {};
     const ev = n.events || {};
@@ -2457,9 +2461,67 @@ function sectionNotifications() {
             for remote-access options (Tailscale recommended).
         </div>
 
-        <!-- Master enable -->
+        <!-- v3.4.19: three-state button replaces the old "Notifications enabled"
+             checkbox + the Local ntfy server install card. The single button
+             shows the current state (Install / Enabled / Disabled) and offers
+             the next action on click. State is derived from working config
+             (URL configured?) + ntfy install status (local URL but ntfy
+             missing?). Replaces _updateNotificationsEnabledGate which used
+             to disable the checkbox in the "needs local ntfy" case. -->
+        <div id="nfStateRow" style="margin-bottom:12px">
+            <span style="font-size:11px;color:var(--t3)">Loading state…</span>
+        </div>
+
+        <!-- Inline install panel — hidden by default, expanded by the state
+             button's "Install" click. Pre-v3.4.19 this card was always
+             visible at the top of the page; now it's a progressive-disclosure
+             affordance behind the state button. The same #nfNtfyPanel id is
+             reused so loadNtfyStatus() + _renderNtfyPanel() keep working
+             without rewiring. The "Reconfigure" link on the state row also
+             toggles this panel for users who want to install/uninstall/upgrade
+             without the wizard. -->
+        <div id="nfInstallPanelWrap" style="display:none;margin-bottom:12px;
+                                            padding:12px 14px;background:var(--bg1);
+                                            border:1px solid var(--bdr);border-radius:6px">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+                <div style="font-size:13px;font-weight:500;color:var(--t1)">
+                    Local ntfy server
+                </div>
+                <button class="btn btn-ghost" onclick="nfToggleInstallPanel(false)"
+                        style="font-size:11px;padding:4px 10px">Close</button>
+            </div>
+            <div id="nfNtfyPanel" style="font-size:11px;color:var(--t3);line-height:1.5">
+                <span style="opacity:0.6">Checking install status…</span>
+            </div>
+        </div>
+
+        <!-- Send-test row. Promoted out of the previous 2-col grid so it
+             reads as a standalone affordance — the test verifies the URL
+             is reachable and the phone is subscribed, useful both during
+             setup and when debugging. Works even when notifications are
+             disabled via the state button above. -->
+        <div style="display:flex;align-items:center;gap:12px;padding:10px 14px;
+                    background:var(--bg1);border:1px solid var(--bdr);
+                    border-radius:6px;margin-bottom:16px">
+            <div style="flex:1">
+                <div style="font-size:13px;font-weight:500;color:var(--t1)">
+                    Send a test notification
+                </div>
+                <div style="font-size:11px;color:var(--t3);margin-top:2px">
+                    Verifies the URL is reachable and the phone is subscribed.
+                </div>
+            </div>
+            <button class="btn" onclick="nfSendTest()" id="nfTestBtn">Send test</button>
+            <span id="nfTestResult" style="font-size:12px;color:var(--t3);min-width:80px"></span>
+        </div>
+
+        <!-- Master settings — URL, public URL, default priority. Kept on the
+             page (below the state button) for power users who want to
+             configure manually rather than walk through the install flow
+             or future wizard. Pre-v3.4.19 these were grouped with the
+             Enabled checkbox in one form-grid; the checkbox moved into
+             the state button row above, so these stand alone now. -->
         <div class="form-grid">
-            ${field({label:'Notifications enabled', path:'notifications.enabled', type:'checkbox'})}
             ${field({label:'ntfy URL',
                      hint:'"https://ntfy.sh/your-topic" or "http://localhost:2586/your-topic"',
                      path:'notifications.url',
@@ -2475,36 +2537,6 @@ function sectionNotifications() {
                 {value:'high', label:'high — bypass some DND'},
                 {value:'max', label:'max — critical, always rings'},
             ]})}
-        </div>
-
-        <!-- Test button + install local ntfy panel -->
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:16px 0">
-            <!-- Test -->
-            <div style="padding:12px 14px;background:var(--bg1);border:1px solid var(--bdr);
-                        border-radius:6px">
-                <div style="font-size:13px;font-weight:500;color:var(--t1);margin-bottom:4px">
-                    Send a test notification
-                </div>
-                <div style="font-size:11px;color:var(--t3);margin-bottom:10px">
-                    Verifies the URL is reachable and the phone is subscribed.
-                    Works even when notifications are disabled above.
-                </div>
-                <button class="btn" onclick="nfSendTest()" id="nfTestBtn">
-                    Send test
-                </button>
-                <span id="nfTestResult" style="margin-left:10px;font-size:12px;color:var(--t3)"></span>
-            </div>
-
-            <!-- Install local ntfy -->
-            <div style="padding:12px 14px;background:var(--bg1);border:1px solid var(--bdr);
-                        border-radius:6px">
-                <div style="font-size:13px;font-weight:500;color:var(--t1);margin-bottom:4px">
-                    Local ntfy server
-                </div>
-                <div id="nfNtfyPanel" style="font-size:11px;color:var(--t3);line-height:1.5">
-                    <span style="opacity:0.6">Checking install status…</span>
-                </div>
-            </div>
         </div>
 
         <!-- Event toggles -->
@@ -2819,81 +2851,175 @@ async function loadNtfyStatus() {
             logsCard.style.display = showLogs ? '' : 'none';
         }
 
-        // v3.3.1: gate the "Notifications enabled" checkbox. When
-        // notifications.url points at localhost/127.0.0.1 AND ntfy
-        // isn't installed locally, enabling notifications would
-        // silently fail. Disable the checkbox + show an inline warning
-        // with an "Install local ntfy" pointer. Users with external
-        // ntfy URLs (ntfy.sh, custom servers, Tailscale tunnels) are
-        // unaffected — we trust the URL they provided.
-        _updateNotificationsEnabledGate();
+        // v3.4.19: refresh the three-state button row whenever ntfy status
+        // changes. State derivation depends on both workingConfig (URL,
+        // notifications.enabled) and nfNtfyStatus (is ntfy installed?), so
+        // the row needs to re-render when either changes. Replaces the
+        // pre-v3.4.19 _updateNotificationsEnabledGate which only managed
+        // the now-removed Enabled checkbox.
+        _refreshNfStateRow();
     } catch (e) {
         panel.innerHTML = `<span style="color:var(--red)">Error: ${escapeAttr(e.message)}</span>`;
+        // v3.4.19: refresh state row from working-config-only data so the
+        // row doesn't stick at "Loading state…" when status fetch fails.
+        // We lose the localhost-but-no-ntfy detection, but enabled/disabled
+        // from the config flag still renders correctly.
+        _refreshNfStateRow();
     }
 }
 
-// v3.3.1: helper for the notifications-enabled gate. Called whenever
-// either the URL field changes or ntfy status reloads, so the gate
-// stays in sync as the user edits config.
-function _updateNotificationsEnabledGate() {
-    const enabledCb = document.querySelector('input[data-path="notifications.enabled"]');
-    const urlInput = document.querySelector('input[data-path="notifications.url"]');
-    if (!enabledCb) return;
+// v3.4.19: derive the three-state button state from working config + ntfy
+// install status. Single source of truth — used by the renderer to draw
+// the row, and by the click handler to know what action a click triggers.
+//
+// State decision tree:
+//   Install   — URL empty, OR URL is localhost AND local ntfy not running
+//   Enabled   — URL configured, ntfy reachable (or external), enabled=true
+//   Disabled  — URL configured, ntfy reachable (or external), enabled=false
+//
+// The "URL is localhost AND ntfy not running" case (partial/not_installed)
+// stays in Install state because turning notifications on would silently
+// fail — exactly the case the pre-v3.4.19 checkbox gate caught. External
+// URLs (ntfy.sh, custom servers, Tailscale tunnels) are trusted; we don't
+// probe their reachability.
+function _nfDeriveState() {
+    const url = (workingConfig?.notifications?.url || '').trim();
+    const enabled = !!(workingConfig?.notifications?.enabled);
+    const ntfyState = nfNtfyStatus?.status?.state;
 
-    const url = (urlInput?.value || '').trim();
-    const state = nfNtfyStatus?.status?.state;
+    if (!url) return 'install';
 
-    // Conditions that block enable:
-    //   1. URL points at localhost/127.0.0.1 (so we need a local ntfy), AND
-    //   2. Local ntfy is not_installed (or partial — installed binary but
-    //      no working service)
     const isLocalUrl = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(url);
-    const needsLocalNtfy = isLocalUrl &&
-        (state === 'not_installed' || state === 'partial');
+    if (isLocalUrl && (ntfyState === 'not_installed' || ntfyState === 'partial')) {
+        return 'install';
+    }
 
-    // Remove any prior warning element
-    const wrapper = enabledCb.closest('.form-row, .form-grid > div, label, div');
-    let warningEl = document.getElementById('nfEnabledGateWarning');
-    if (warningEl) warningEl.remove();
+    return enabled ? 'enabled' : 'disabled';
+}
 
-    if (needsLocalNtfy) {
-        // Disable the checkbox; if it was checked, uncheck it (so the
-        // user can't save a config that'd silently fail).
-        enabledCb.disabled = true;
-        enabledCb.title = 'Install local ntfy first — the URL points at '
-                        + 'localhost but no local ntfy server is running';
-        if (enabledCb.checked) {
-            enabledCb.checked = false;
-            enabledCb.dispatchEvent(new Event('change', {bubbles: true}));
-        }
-        // Inline warning next to the checkbox label
-        warningEl = document.createElement('div');
-        warningEl.id = 'nfEnabledGateWarning';
-        warningEl.style.cssText = 'grid-column:1/-1;padding:8px 12px;'
-            + 'margin-top:6px;background:rgba(251,191,36,0.08);'
-            + 'border:1px solid rgba(251,191,36,0.4);border-radius:6px;'
-            + 'font-size:13px;line-height:1.5;color:var(--t1)';
-        warningEl.innerHTML =
-            '<span style="color:#fbbf24;font-weight:600">⚠ Local ntfy not installed.</span> '
-            + 'Notifications would silently fail with this URL. '
-            + 'Install local ntfy below, then re-check this box.';
-        // Insert directly after the checkbox's parent grid cell
-        if (enabledCb.parentElement) {
-            enabledCb.parentElement.insertAdjacentElement('afterend', warningEl);
-        }
+function _refreshNfStateRow() {
+    const row = document.getElementById('nfStateRow');
+    if (!row) return;  // not on this tab
+    row.innerHTML = _renderNfStateRow();
+}
+
+// v3.4.19: render the three-state button row. The visual conveys two
+// signals: the left-side dot shows the current state (cyan/green/gray),
+// and the right-side button shows the next action (Install/Disable/Enable).
+// .btn-primary is used for the action that's most likely what the user
+// wants to do from each state — install when nothing's set up, enable
+// when disabled. Plain .btn for the "destructive" direction (Disable
+// when enabled) to make it less attention-grabbing — clicking it by
+// accident would silence notifications.
+function _renderNfStateRow() {
+    const state = _nfDeriveState();
+    const url = (workingConfig?.notifications?.url || '').trim();
+
+    let dot, title, desc, btnLabel, btnClass, btnAction, reconfigureLink = '';
+
+    if (state === 'install') {
+        // What's missing? Show the right hint.
+        const ntfyState = nfNtfyStatus?.status?.state;
+        const needsNtfy = url && ntfyState && (ntfyState === 'not_installed' || ntfyState === 'partial');
+        dot = '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;'
+            + 'background:var(--cyan);box-shadow:0 0 8px rgba(6,182,212,0.4);'
+            + 'margin-right:12px;flex-shrink:0"></span>';
+        title = 'Notifications';
+        desc = needsNtfy
+            ? 'URL points at localhost but no local ntfy server is running. Install it to start sending notifications.'
+            : 'Set up push notifications via ntfy to get alerts on your phone.';
+        btnLabel = needsNtfy ? 'Install local ntfy' : 'Install notifications';
+        btnClass = 'btn btn-primary';
+        btnAction = 'nfStateClickInstall()';
+    } else if (state === 'enabled') {
+        dot = '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;'
+            + 'background:var(--green);box-shadow:0 0 8px rgba(34,197,94,0.4);'
+            + 'margin-right:12px;flex-shrink:0"></span>';
+        title = 'Notifications enabled';
+        desc = `Sending to <code style="font-family:var(--mono);color:var(--t1);background:var(--bg2);padding:1px 5px;border-radius:3px;font-size:11px">${escapeAttr(url)}</code>`;
+        btnLabel = 'Disable';
+        btnClass = 'btn';
+        btnAction = 'nfStateClickDisable()';
+        reconfigureLink = '<a onclick="nfToggleInstallPanel(true); return false;" '
+                        + 'style="font-size:12px;color:var(--cyan);text-decoration:none;'
+                        + 'margin-left:10px;cursor:pointer">Reconfigure</a>';
     } else {
-        // Conditions cleared — re-enable the checkbox
-        enabledCb.disabled = false;
-        enabledCb.title = '';
+        // disabled
+        dot = '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;'
+            + 'background:var(--t3);margin-right:12px;flex-shrink:0"></span>';
+        title = 'Notifications disabled';
+        desc = 'Configuration preserved &middot; no events firing';
+        btnLabel = 'Enable';
+        btnClass = 'btn btn-primary';
+        btnAction = 'nfStateClickEnable()';
+        reconfigureLink = '<a onclick="nfToggleInstallPanel(true); return false;" '
+                        + 'style="font-size:12px;color:var(--cyan);text-decoration:none;'
+                        + 'margin-left:10px;cursor:pointer">Reconfigure</a>';
+    }
+
+    return `
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;
+                    padding:12px 14px;background:var(--bg1);border:1px solid var(--bdr);
+                    border-radius:6px">
+            <div style="display:flex;align-items:center;min-width:0;flex:1">
+                ${dot}
+                <div style="min-width:0">
+                    <div style="font-size:14px;font-weight:500;color:var(--t1)">${title}</div>
+                    <div style="font-size:12px;color:var(--t2);margin-top:2px;line-height:1.4">
+                        ${desc}${reconfigureLink}
+                    </div>
+                </div>
+            </div>
+            <button class="${btnClass}" onclick="${btnAction}">${escapeAttr(btnLabel)}</button>
+        </div>`;
+}
+
+// v3.4.19: click handlers for the three state actions.
+//
+// Install: open the inline install panel (the existing nfInstallNtfy flow).
+// In a future release this will launch the setup wizard instead — the click
+// target moves to the wizard, the panel stays as a power-user escape hatch.
+//
+// Disable / Enable: flip notifications.enabled in working config, mark the
+// page dirty (existing save mechanism), re-render the state row to show
+// the new state. Save happens via the Save changes button at the bottom.
+function nfStateClickInstall() {
+    nfToggleInstallPanel(true);
+}
+
+function nfStateClickEnable() {
+    setAt(workingConfig, 'notifications.enabled', true);
+    updateSaveBar();
+    _refreshNfStateRow();
+}
+
+function nfStateClickDisable() {
+    setAt(workingConfig, 'notifications.enabled', false);
+    updateSaveBar();
+    _refreshNfStateRow();
+}
+
+// Toggle the inline install panel. show=true expands, show=false collapses.
+// The "Reconfigure" link on the state row uses this to open the panel for
+// users who want to upgrade/uninstall/install without going through the
+// state button (which only offers Install when the state is Install).
+function nfToggleInstallPanel(show) {
+    const wrap = document.getElementById('nfInstallPanelWrap');
+    if (!wrap) return;
+    wrap.style.display = show ? '' : 'none';
+    if (show) {
+        // Refresh the panel contents in case status changed since last open
+        loadNtfyStatus();
+        wrap.scrollIntoView({behavior: 'smooth', block: 'nearest'});
     }
 }
 
-// v3.3.1: re-run the gate whenever the URL field changes so the user
-// sees the gate update live (e.g. switching from localhost:2586 to
-// ntfy.sh should immediately re-enable the checkbox).
+// v3.4.19: re-derive the state row whenever the URL field changes so the
+// state updates live (e.g. typing a non-localhost URL flips from Install
+// to Disabled immediately). Replaces the v3.3.1 gate-update listener.
 document.addEventListener('input', function(e) {
     if (e.target && e.target.matches('input[data-path="notifications.url"]')) {
-        _updateNotificationsEnabledGate();
+        _refreshNfStateRow();
     }
 });
 
