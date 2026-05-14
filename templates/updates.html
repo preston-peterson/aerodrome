@@ -1,4 +1,4 @@
-<!-- Version: 3.4.22 -->
+<!-- Version: 3.4.23 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -960,53 +960,86 @@ async function applyLocal(version){
         applyError = e;
     }
 
-    // v2.87.2: state machine that polls the service until it comes
-    // back up running new code.
-    //
-    // v3.4.10: poll /api/ready (readiness) instead of /api/version
-    // (liveness). /api/version answers as soon as FastAPI binds the
-    // port — which is seconds before rollup backfills complete and
-    // before the SQLite page cache is warm enough for the dashboard.
-    // Reloading at /api/version-up was triggering a "this site can't
-    // be reached" dead-page error on heavy installs because the
-    // reload's dashboard requests would race against a service that
-    // was technically alive but not yet ready, OR because we caught
-    // the gap between two sequential restarts. /api/ready returns
-    // 200 only when the service is genuinely ready to serve heavy
-    // requests; 503 with details when something is still in flight.
-    //
-    // ALSO new in v3.4.10: require TWO consecutive successful
-    // /api/ready polls before declaring complete. Defends against
-    // the cross-restart-gap race where /api/ready briefly answers
-    // 200 from one process before another restart kicks in. With
-    // the 2-second poll interval, this means at least 2 seconds of
-    // continuous readiness before we reload.
-    //
-    // States, in roughly the order they're observed:
-    //   sent      — apply request just sent; service likely still up
-    //                briefly. We don't expect to render this state for
-    //                long (~1s typical) but it's the start state.
-    //   restarting — at least one poll has failed. Service is between
-    //                shutdown and back-up. Most of the visible window.
-    //   verifying — poll returned the OLD version. Means either the
-    //                apply silently rolled back, OR we're in a tiny
-    //                window where the old process is still answering.
-    //                Keep waiting up to the timeout.
-    //   backfilling — /api/ready returned 503 with rollup pending.
-    //                 Service alive but doing post-startup work. Show
-    //                 progress so the user knows it's not stuck.
-    //   complete  — TWO consecutive /api/ready returned 200 with NEW
-    //                version. Apply succeeded. Reload.
-    //   timeout   — 240s elapsed without seeing two consecutive ready
-    //                polls on the new version. Surface as an error.
-    //
-    //                v2.89.1: bumped from 120s after the initial
-    //                v2.89.0 deploy hit the timeout while migration v7
-    //                was still backfilling — the apply succeeded but
-    //                the UI gave up first. Real-world Pi 4B installs
-    //                with a year of data could see future migrations
-    //                push 2-3 minutes; 240s leaves comfortable
-    //                headroom without changing the underlying flow.
+    // v3.4.23: hand off to the shared readiness-poll-and-reload state
+    // machine. This loop was inlined here from v2.87.2 through v3.4.22;
+    // it now lives in pollReadyAndReload() (defined just below) so the
+    // GitHub apply path uses the IDENTICAL /api/ready gating. See that
+    // function's header for the full rationale and the bug it fixes.
+    await pollReadyAndReload({
+        oldVersion: _oldVersion,
+        targetVersion: version,
+        render: renderStatus,
+        setBadge: (state) => setBadge(state, ''),
+        onTimeout: () => {
+            btn.disabled = false;
+            btn.textContent = `Apply ${version} & restart`;
+        },
+    });
+}
+
+// v3.4.23: shared post-apply readiness-poll-and-reload state machine.
+//
+// Extracted from applyLocal(), where this loop lived inline from
+// v2.87.2 through v3.4.22. The extraction exists because the GitHub
+// apply path (applyGithubUpdate) had its OWN, much dumber reload
+// logic — a blind `setTimeout(reload, 4000)` — that predated the
+// v3.4.10 readiness work and never got the same treatment. On a heavy
+// install (5+ GB DB, 29M rows) the restart routinely outran the fixed
+// 4s delay, so the reload fired into the restart gap and the browser
+// showed "this site can't be reached" for ~15-20s until a manual
+// refresh. v3.4.10's fix had simply never been propagated to the
+// second apply path. Sharing one implementation is the structural
+// fix: the two apply paths can no longer drift.
+//
+// The /api/ready gating itself (v3.4.10): /api/version answers as
+// soon as FastAPI binds the port — seconds before rollup backfills
+// finish and before the SQLite page cache is warm enough for the
+// dashboard. /api/ready returns 200 only when the service is
+// genuinely ready to serve heavy requests; 503 with a reason when
+// something is still in flight. We also require TWO consecutive
+// 200/ready=true polls before reloading, to defend against the
+// cross-restart-gap race where /api/ready briefly answers 200 from
+// one process before a second restart kicks in. With the 2-second
+// poll interval that's at least 2 seconds of continuous readiness.
+//
+// States, in roughly the order they're observed:
+//   restarting  — a poll failed entirely. Service is between
+//                 shutdown and back-up. Most of the visible window.
+//   verifying   — poll returned the OLD version. Either the apply
+//                 rolled back, or the old process is briefly still
+//                 answering. Keep waiting up to the timeout.
+//   backfilling — /api/ready returned 503 with rollup pending.
+//                 Service alive but doing post-startup work; show
+//                 progress so the user knows it isn't stuck.
+//   complete    — TWO consecutive /api/ready returned 200 with the
+//                 NEW version. Apply succeeded. Reload.
+//   timeout     — 240s elapsed without two consecutive ready polls
+//                 on the new version. Render an error, then hand
+//                 back to the caller via onTimeout().
+//
+//                 v2.89.1: 240s (up from 120s) — a real v2.89.0
+//                 deploy hit the old timeout while migration v7 was
+//                 still backfilling. Pi 4B installs with a year of
+//                 data can see future migrations push 2-3 minutes;
+//                 240s leaves headroom.
+//
+// opts:
+//   oldVersion    — version string running before the apply, or null
+//                   if it couldn't be read. Distinguishes "service
+//                   back on OLD code" from "back on NEW code".
+//   targetVersion — version expected to come back. Display only.
+//   render(html, cls) — status-render callback for the calling card.
+//                   Same (html, cls) shape as renderStatus().
+//   setBadge(state)   — optional badge callback; called with 'ok' on
+//                   success and 'timeout' on timeout. Omit if the
+//                   caller has no badge.
+//   onTimeout()       — optional; called once if the 240s budget is
+//                   exhausted, so the caller can restore its own UI
+//                   (re-enable buttons, offer retry). The timeout
+//                   status message is rendered via render() first.
+async function pollReadyAndReload(opts){
+    const { oldVersion, targetVersion, render, setBadge, onTimeout } = opts;
+
     const POLL_INTERVAL_MS = 2000;
     const TIMEOUT_MS = 240_000;
     const REQUIRED_CONSECUTIVE_READY = 2;
@@ -1017,17 +1050,16 @@ async function applyLocal(version){
     while (true) {
         const elapsed = Date.now() - startTime;
         if (elapsed >= TIMEOUT_MS) {
-            renderStatus(
+            render(
                 `<span style="color:var(--red)">⚠</span> ` +
                 `Update timed out after ${Math.round(TIMEOUT_MS/1000)}s. ` +
-                `The service didn't come back up running ${_esc(version)}. ` +
+                `The service didn't come back up running ${_esc(targetVersion)}. ` +
                 `Check <code>sudo journalctl -u aerodrome -n 100</code> ` +
                 `for what happened, then reload this page.`,
                 'err'
             );
-            setBadge('timeout', '');
-            btn.disabled = false;
-            btn.textContent = `Apply ${version} & restart`;
+            if (setBadge) setBadge('timeout');
+            if (onTimeout) onTimeout();
             return;
         }
 
@@ -1067,20 +1099,20 @@ async function applyLocal(version){
             // Poll failed entirely → service is between shutdown and
             // listening. Reset consecutive-ready counter.
             consecutiveReady = 0;
-            renderStatus(
+            render(
                 `<span class="spinner"></span>` +
                 `Service is restarting. ` +
                 `Elapsed: ${Math.round(elapsed/1000)}s.`,
                 'info'
             );
-        } else if (_oldVersion && liveVersion === _oldVersion) {
+        } else if (oldVersion && liveVersion === oldVersion) {
             // Service answered, but with the OLD version. Reset
             // consecutive-ready counter — old version doesn't count.
             consecutiveReady = 0;
-            renderStatus(
+            render(
                 `<span class="spinner"></span>` +
-                `Service is up but still on ${_esc(_oldVersion)}. ` +
-                `Waiting for ${_esc(version)}… ` +
+                `Service is up but still on ${_esc(oldVersion)}. ` +
+                `Waiting for ${_esc(targetVersion)}… ` +
                 `Elapsed: ${Math.round(elapsed/1000)}s.`,
                 'info'
             );
@@ -1093,7 +1125,7 @@ async function applyLocal(version){
             const reasonText = backfillReason
                 ? `: ${_esc(backfillReason)}`
                 : '';
-            renderStatus(
+            render(
                 `<span class="spinner"></span>` +
                 `Service up on ${_esc(liveVersion)}; finishing post-restart work${reasonText}. ` +
                 `Elapsed: ${Math.round(elapsed/1000)}s.`,
@@ -1106,20 +1138,20 @@ async function applyLocal(version){
             // against the cross-restart-gap race.
             consecutiveReady++;
             if (consecutiveReady < REQUIRED_CONSECUTIVE_READY) {
-                renderStatus(
+                render(
                     `<span class="spinner"></span>` +
                     `Service ready on ${_esc(liveVersion)}; verifying stability… ` +
                     `Elapsed: ${Math.round(elapsed/1000)}s.`,
                     'info'
                 );
             } else {
-                renderStatus(
+                render(
                     `<span style="color:var(--green)">✓</span> ` +
                     `Update complete — now running ${_esc(liveVersion)} and fully ready. ` +
                     `Reloading page…`,
                     'ready'
                 );
-                setBadge('ok', '');
+                if (setBadge) setBadge('ok');
                 toast('Update applied', 'ok');
                 // Brief delay so the success message is visible.
                 setTimeout(() => window.location.reload(), 800);
@@ -1804,27 +1836,55 @@ async function applyGithubUpdate(tag){
         return;
     }
 
-    // Success — service is restarting. Mirror the local-apply success render.
+    // Success — apply accepted, service is restarting. v3.4.23: hand off
+    // to the shared readiness poll (pollReadyAndReload) instead of the
+    // old blind `setTimeout(reload, 4000)`. The fixed delay would fire
+    // the reload into the restart gap on heavy installs — see that
+    // function's header for the full story.
     _ghBadge('applied', 'ready');
-    const pipNote = j.pip_ok
-        ? ''
-        : `<div class="status-msg warn" style="margin-top:8px">
-             <strong>Note:</strong> pip install on the new requirements.txt
-             reported a warning: <code>${escapeHtml(j.pip_msg || '(no message)')}</code>.
-             The service restart should still succeed — if it doesn't, check the logs.
-           </div>`;
-    status.innerHTML = `<div class="status-msg ok">
-        <strong>Applied:</strong> ${escapeHtml(j.from_version)} → ${escapeHtml(j.to_version)}.
-        ${escapeHtml(j.files_updated)} files updated. Backup at <code>${escapeHtml(j.backup_dir)}/</code>.
-        ${escapeHtml(j.message)}
-    </div>${pipNote}
-    <div class="status-msg info" style="margin-top:8px">
-        The page will reload in a few seconds to pick up the new version.
-    </div>`;
 
-    // Reload after a short delay so the user sees the success message and
-    // the server has time to come back up. Same pattern as applyLocal().
-    setTimeout(() => window.location.reload(), 4000);
+    // The poll loop owns #githubUpdateStatus from here on (it renders
+    // live "restarting… / finishing post-restart work…" progress, the
+    // same as the local-update card). If pip reported a warning, surface
+    // it in the actions row instead — that survives the poll's takeover
+    // of the status area; rendering it into status would just flash and
+    // vanish on the first poll.
+    if (!j.pip_ok) {
+        const pipWarn = document.createElement('div');
+        pipWarn.className = 'status-msg warn';
+        pipWarn.style.marginTop = '8px';
+        pipWarn.innerHTML =
+            `<strong>Note:</strong> pip install on the new requirements.txt ` +
+            `reported a warning: <code>${escapeHtml(j.pip_msg || '(no message)')}</code>. ` +
+            `The service restart should still succeed — if it doesn't, check the logs.`;
+        actions.appendChild(pipWarn);
+    }
+
+    await pollReadyAndReload({
+        oldVersion: j.from_version || null,
+        targetVersion: j.to_version || tag,
+        render: (html, cls) => {
+            status.innerHTML = `<div class="status-msg ${cls}">${html}</div>`;
+        },
+        setBadge: (state) => {
+            if (state === 'ok') _ghBadge('applied', 'ready');
+            else _ghBadge('timeout', 'err');
+        },
+        onTimeout: () => {
+            // Restore recovery actions so the user isn't stranded — the
+            // same buttons the hard-error branch offers.
+            const retryBtn = document.createElement('button');
+            retryBtn.className = 'btn';
+            retryBtn.textContent = 'Try again';
+            retryBtn.onclick = () => applyGithubUpdate(tag);
+            actions.appendChild(retryBtn);
+            const recheckBtn = document.createElement('button');
+            recheckBtn.className = 'btn';
+            recheckBtn.textContent = 'Re-check status';
+            recheckBtn.onclick = () => checkGithubUpdate(true);
+            actions.appendChild(recheckBtn);
+        },
+    });
 }
 
 

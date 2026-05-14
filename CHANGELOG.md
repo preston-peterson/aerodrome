@@ -19,6 +19,28 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.23] — 2026-05-14
+
+### Fixed
+- **Applying an update from GitHub no longer drops you on a "this site can't be reached" page while the service restarts.** On a large install — a multi-gigabyte database with tens of millions of rows — the service takes a while to come back after an update: it has to restart, finish its post-startup rollup work, and warm its database cache before it can serve pages again. The Updates page was reloading itself on a fixed timer that didn't account for that. It fired the reload a few seconds after the update finished applying, the browser hit a service that hadn't finished restarting, and you got a connection-refused error page for fifteen to twenty seconds until you manually refreshed. The update itself always succeeded — the server did its job — but the page in front of you looked broken.
+
+  v3.4.23 makes the GitHub update flow wait for the server to actually be ready before reloading. Instead of a fixed timer, it polls the server's readiness check and shows live progress while you wait — "Service is restarting…", then "finishing post-restart work…", then a clean reload once the service confirms it can serve pages again. No more dead page, and you can see it working rather than guessing.
+
+  **Honest disclosure about v3.4.10 through v3.4.22.** This readiness-aware reload already existed — it was added in v3.4.10 — but only on the *local-zip* update path (the "upload an update file" card). The *GitHub* update path, which became the primary way to update, was never switched over to it and kept using the old fixed-timer reload the entire time. So anyone updating from GitHub on a heavy install across those releases would have seen the dead page; anyone using the local-zip path, or updating a small install where the restart finished inside the timer window, would not have. If you hit it on an older version, the recovery was always just to wait fifteen-or-so seconds and refresh — the update had applied fine underneath.
+
+  **Behind the scenes.** The root cause was two parallel apply paths that had drifted. `applyLocal()` and `applyGithubUpdate()` in `templates/updates.html` both end the same way — restart the service, then reload the page onto the new version — but each carried its own copy of the reload logic. When v3.4.10 added readiness polling (poll `/api/ready`, which returns 200 only once rollup backfills are done and a database probe is fast, instead of `/api/version`, which answers the instant the web server binds its port), the work went into `applyLocal()` and a comment was left on `applyGithubUpdate()` claiming it used "the same pattern as applyLocal()" — but it didn't; it still did a blind `setTimeout(reload, 4000)`. v3.4.23 fixes this structurally: the readiness-poll state machine is extracted into a single shared `pollReadyAndReload()` function that both apply paths call, so the two can no longer diverge. The shared poll keeps the v3.4.10 behavior — polls every 2 seconds up to a 240-second ceiling, and requires two consecutive ready responses before reloading to defend against catching a gap between sequential restarts — and distinguishes "service unreachable mid-restart" and "service up but still finishing post-startup work" from "service genuinely failed," so only a real failure ends the wait early.
+
+  **Scope:**
+  - `templates/updates.html` — extracted the inline v2.87.2/v3.4.10 poll loop out of `applyLocal()` into a new shared `pollReadyAndReload()` function; `applyLocal()` and `applyGithubUpdate()` now both call it with their own status-render, badge, and timeout-recovery callbacks. The GitHub card's pip-warning note (shown when the dependency install reports a warning) moved into the card's actions row so it survives the poll loop taking over the status area. Net change is a refactor plus the one behavioral fix — the GitHub path now gates on readiness.
+  - No server changes — `/api/ready` already existed and is unchanged. No schema changes. 90 endpoints unchanged. SUDOERS_VERSION unchanged at 4.
+
+  **Test contract for v3.4.23:**
+  1. **GitHub update on the heavy install — the bug case.** On the large test system, apply an update from GitHub. The Updates card should show the live "Service is restarting… / finishing post-restart work…" progression and then reload cleanly once the service is ready — no connection-refused dead page, no manual refresh needed.
+  2. **GitHub update on a small/fresh install.** Same flow, fast restart. Should still show the progression briefly and reload — no regression for the case that happened to work before.
+  3. **Local-zip update path.** Apply an update via the upload-a-file card. Behavior should be unchanged from v3.4.22 — this path already used the readiness poll; it is now calling the shared function instead of its own inline copy.
+  4. **Timeout recovery.** If the service genuinely does not come back within 240 seconds, both cards should surface the timeout error and restore their action buttons (the GitHub card offers "Try again" / "Re-check status") rather than hanging.
+  5. **pip-warning visibility.** If a GitHub update's dependency install reports a warning, the note should appear in the GitHub card's actions area and stay visible through the restart-poll progression.
+
 ## [3.4.22] — 2026-05-14
 
 ### Added
