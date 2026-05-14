@@ -1,4 +1,4 @@
-# Version: 3.4.23
+# Version: 3.4.24
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -1207,6 +1207,13 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         html = html.replace(
             'src="/static/health-indicator.js"',
             f'src="/static/health-indicator.js?v={_aerodrome_version}"'
+        )
+        # v3.4.24: add-watchlist.js is the shared "Add to Watchlist" component
+        # (used by index.html and aircraft.html). Cache-bust it like the other
+        # shared static JS so a stale copy isn't served across an update.
+        html = html.replace(
+            'src="/static/add-watchlist.js"',
+            f'src="/static/add-watchlist.js?v={_aerodrome_version}"'
         )
         # v2.85.12: inject the configured time_format and load the shared
         # timefmt.js helper. The injection sets window._aerodromeTimeFormat

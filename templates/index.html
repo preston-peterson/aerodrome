@@ -1,4 +1,4 @@
-<!-- Version: 3.4.23 -->
+<!-- Version: 3.4.24 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1293,17 +1293,10 @@
         .toast.warn { border-color: var(--amber); }
         .toast.err  { border-color: var(--red); }
 
-        /* Add-to-watchlist button */
-        .add-wl-btn {
-            background: transparent; border: 1px solid var(--bdr); color: var(--t2);
-            width: 28px; height: 22px; border-radius: 4px; cursor: pointer;
-            display: inline-flex; align-items: center; justify-content: center;
-            font-size: 14px; font-weight: 600; line-height: 1; padding: 0;
-            transition: all .15s;
-        }
-        .add-wl-btn:hover { border-color: var(--cyan); color: var(--cyan); }
-        .add-wl-btn.added { border-color: var(--green); color: var(--green); cursor: default; }
-        .add-wl-btn.added:hover { border-color: var(--green); color: var(--green); }
+        /* v3.4.24: .add-wl-btn styling moved to the shared add-watchlist.js
+           component (static/add-watchlist.js) so the button looks identical
+           on Live and on the aircraft details page. Only the Live/Military
+           "+" column's table-cell layout stays here. */
         td.col-add-wl { text-align: center; }
 
         /* Modal for picking identifier and label */
@@ -2004,24 +1997,11 @@
 </div>
 <div class="toast" id="toast"></div>
 
-<!-- Add-to-watchlist modal -->
-<div class="modal-bg" id="addWlModal" onclick="closeAddWl(event)">
-    <div class="modal" onclick="event.stopPropagation()">
-        <div class="modal-title">Add to Watchlist</div>
-        <div class="modal-sub" id="addWlSub">—</div>
-
-        <label class="modal-label">Identifier</label>
-        <div class="modal-options" id="addWlOptions"></div>
-
-        <label class="modal-label">Label</label>
-        <input type="text" class="modal-input" id="addWlLabel" placeholder="e.g. Dad's Cessna">
-
-        <div class="modal-actions">
-            <button class="modal-btn" onclick="closeAddWl()">Cancel</button>
-            <button class="modal-btn modal-btn-primary" id="addWlConfirm" onclick="confirmAddWl()">Add</button>
-        </div>
-    </div>
-</div>
+<!-- v3.4.24: the Add-to-Watchlist modal moved into the shared
+     add-watchlist.js component (static/add-watchlist.js), which injects its
+     own modal DOM. index.html and the aircraft details page now run the
+     identical add-to-watchlist flow. The rmWlModal / clearWlHistModal below
+     still use this page's own .modal-* infrastructure. -->
 
 <!-- Remove-watchlist-entry confirm modal. Two outcomes: remove entry only
      (keeps history), or remove entry AND delete its history rows. The count
@@ -2077,7 +2057,6 @@ let specials = {};
 let distUnit = 'mi';       // Updated from /api/ui-config on load
 let distEnabled = false;   // Hide Distance column unless receiver lat/lon configured
 let wlIcaos = new Set();   // ICAOs already on the watchlist (for button state)
-let addWlContext = null;   // { icao, callsign, tail, selectedType }
 
 // First-seen timestamps (Unix seconds), keyed by uppercase ICAO hex.
 // Populated from /api/first-seen after each grouped-tab fetch. Used by
@@ -5176,167 +5155,35 @@ function findAircraftByIcao(icao){
     return { icao: up };
 }
 
-// Try to resolve tail number via hexdb.io. Note the URL path: the hex
-// goes directly after /aircraft/, NOT under /aircraft/icao/ (that path
-// 404s). See collector.py's resolve_icao_to_tail for the same correction.
-async function lookupTail(icao){
-    try{
-        const r = await fetch(`https://hexdb.io/api/v1/aircraft/${icao}`);
-        if(!r.ok) return null;
-        const j = await r.json();
-        return (j.Registration || '').trim() || null;
-    }catch(e){ return null; }
-}
-
-async function openAddWl(icao){
+// v3.4.24: the add-to-watchlist modal — the identifier picker, the hexdb
+// tail lookup, the /api/watchlist/add POST — moved into the shared
+// component static/add-watchlist.js, so the Live tab and the aircraft
+// details page run the identical flow. openAddWl() stays here as a thin
+// wrapper: it builds the aircraft context from index.html's live-data
+// model (findAircraftByIcao) and hands it to the component, passing
+// index's own post-success behavior (wlIcaos / chips / tab re-render) as
+// the onAdded callback.
+function openAddWl(icao){
     const ac = findAircraftByIcao(icao);
-    // Prefer the description (more human-readable); fall back to the type code
+    // Prefer the description (more human-readable); fall back to the type code.
     const desc = (ac.type_desc || '').trim();
     const typeCode = (ac.aircraft_type || '').trim();
-    // The model value used for substring match — pick the description if present
-    // because it's what a person would naturally type (e.g., "CIRRUS SR-22 Turbo")
-    const modelValue = desc || typeCode || null;
-
-    addWlContext = {
+    AddWatchlist.open({
         icao: (ac.icao || icao).toUpperCase(),
         callsign: (ac.callsign || '').trim() || null,
-        tail: null,                // filled in below if hexdb resolves
-        model: modelValue,         // full description or type code from the aircraft row
-        modelTypeCode: typeCode || null,  // just the short code (e.g., "S22T")
-        selectedType: 'icao',
-        selectedValue: (ac.icao || icao).toUpperCase(),
-    };
-
-    // Show modal immediately with ICAO + callsign (if present); tail appears when resolved
-    document.getElementById('addWlSub').textContent =
-        `${addWlContext.icao}${addWlContext.callsign ? ' · ' + addWlContext.callsign : ''}${addWlContext.model ? ' · ' + addWlContext.model : ''}`;
-
-    renderAddWlOptions(true); // true = "resolving tail..." placeholder
-    document.getElementById('addWlLabel').value = addWlContext.icao;
-    document.getElementById('addWlConfirm').disabled = false;
-    document.getElementById('addWlModal').classList.add('on');
-
-    // Background hexdb lookup to add tail option if available
-    const tail = await lookupTail(addWlContext.icao);
-    if(tail){
-        addWlContext.tail = tail;
-    }
-    renderAddWlOptions(false);
-}
-
-function renderAddWlOptions(resolving){
-    const c = addWlContext;
-    const ctr = document.getElementById('addWlOptions');
-    const opts = [];
-
-    // Always have ICAO
-    opts.push({type: 'icao', label: 'ICAO Hex', value: c.icao});
-
-    if(c.callsign){
-        opts.push({type: 'callsign', label: 'Callsign', value: c.callsign});
-    }
-
-    if(c.tail){
-        opts.push({type: 'tail', label: 'Tail Number', value: c.tail});
-    } else if(resolving){
-        opts.push({type: '_pending', label: 'Tail Number', value: 'looking up…'});
-    }
-
-    // Model matching — offer the description and/or type code as substring matches.
-    // This lets the user watch for any aircraft whose description contains this text.
-    if(c.model){
-        opts.push({
-            type: 'model',
-            label: 'Model (matches any aircraft of this type)',
-            value: c.model,
-        });
-    }
-    // If we have a distinct short type code AND a different description, offer both.
-    if(c.modelTypeCode && c.modelTypeCode !== c.model){
-        opts.push({
-            type: 'model',
-            label: 'Type code',
-            value: c.modelTypeCode,
-        });
-    }
-
-    ctr.innerHTML = opts.map(o => {
-        if(o.type === '_pending'){
-            return `<div class="modal-option" style="opacity:.5;cursor:wait">
-                <span class="modal-opt-type">${o.label}</span>
-                <span class="modal-opt-val" style="font-style:italic">${o.value}</span>
-            </div>`;
-        }
-        // selected state: match both type AND value since there can be two model entries
-        const isSel = (c.selectedType === o.type && c.selectedValue === o.value);
-        const sel = isSel ? 'selected' : '';
-        const escVal = o.value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-        return `<div class="modal-option ${sel}" onclick="selectAddWlOption('${o.type}','${escVal}')">
-            <span class="modal-opt-type">${o.label}</span>
-            <span class="modal-opt-val">${o.value}</span>
-        </div>`;
-    }).join('');
-}
-
-function selectAddWlOption(type, value){
-    addWlContext.selectedType = type;
-    addWlContext.selectedValue = value;
-    // Update label default to match the new identifier if user hasn't customized
-    const labelEl = document.getElementById('addWlLabel');
-    // Only auto-overwrite if the field currently holds one of the prior default values
-    const priorDefaults = [
-        addWlContext.icao,
-        addWlContext.callsign,
-        addWlContext.tail,
-        addWlContext.model,
-        addWlContext.modelTypeCode,
-    ].filter(Boolean);
-    if(priorDefaults.includes(labelEl.value)){
-        labelEl.value = value;
-    }
-    renderAddWlOptions(false);
-}
-
-function closeAddWl(e){
-    if(e && e.target && !e.target.classList.contains('modal-bg')) return;
-    document.getElementById('addWlModal').classList.remove('on');
-    addWlContext = null;
-}
-
-async function confirmAddWl(){
-    if(!addWlContext) return;
-    const btn = document.getElementById('addWlConfirm');
-    btn.disabled = true;
-    const label = document.getElementById('addWlLabel').value.trim() || addWlContext.selectedValue;
-
-    try{
-        const r = await fetch('/api/watchlist/add', {
-            method:'POST',
-            headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({
-                identifier: addWlContext.selectedValue,
-                id_type: addWlContext.selectedType,
-                label: label,
-            }),
-        });
-        const j = await r.json();
-        if(r.ok){
-            toast(`Added ${addWlContext.selectedValue} — live within one poll cycle`);
-            // Track the ICAO so the button updates to the "added" state immediately
-            wlIcaos.add(addWlContext.icao);
-            document.getElementById('addWlModal').classList.remove('on');
-            addWlContext = null;
+        tail: null,                        // live rows carry no tail — the component resolves it
+        model: desc || typeCode || null,   // full description or type code from the aircraft row
+        modelTypeCode: typeCode || null,   // just the short code (e.g. "S22T")
+    }, {
+        toast: toast,
+        onAdded: (addedIcao) => {
+            // Track the ICAO so the "+" buttons flip to the added state,
+            // refresh the watchlist chips, and re-render the visible tabs.
+            wlIcaos.add(addedIcao);
             loadWLChips();
-            // Re-render visible tabs so buttons flip to ✓
             render('live'); render('military');
-        } else {
-            toast(j.error || 'Failed');
-            btn.disabled = false;
-        }
-    }catch(e){
-        toast('Error adding');
-        btn.disabled = false;
-    }
+        },
+    });
 }
 
 // =========================================================================
@@ -8285,5 +8132,6 @@ document.addEventListener('keydown', e => {
 
 </script>
 <script src="/static/theme.js"></script>
+<script src="/static/add-watchlist.js"></script>
 </body>
 </html>

@@ -1,4 +1,4 @@
-<!-- Version: 3.4.23 -->
+<!-- Version: 3.4.24 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -639,6 +639,7 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
 </div>
 
 <script src="/static/theme.js"></script>
+<script src="/static/add-watchlist.js"></script>
 <script>
 
 function escapeHtml(s) {
@@ -746,7 +747,53 @@ function renderError(title, detail) {
         </div>`;
 }
 
+// v3.4.24: add-to-watchlist on the details page. The detail payload is
+// stashed in _awlDetail so the title-row "+" button's handler can build
+// the context from it and hand it to the shared add-watchlist.js component
+// — the same flow the Live tab uses.
+let _awlDetail = null;
+
+function openAddWlFromDetail() {
+    const d = _awlDetail;
+    if (!d) return;
+    const typeCode = (d.aircraft_type || '').trim();
+    const desc = (d.aircraft_type_desc || '').trim();
+    const callsign = (d.last_callsign || d.first_callsign || '').trim();
+    AddWatchlist.open({
+        icao: (d.icao || '').toUpperCase(),
+        callsign: callsign || null,
+        // The detail payload already carries the registration, so pass it as
+        // the tail — the component then skips the hexdb lookup entirely.
+        tail: (d.registration || '').trim() || null,
+        model: desc || typeCode || null,
+        modelTypeCode: typeCode || null,
+    }, {
+        // No page toast here — the component falls back to its built-in one.
+        onAdded: () => {
+            const btn = document.getElementById('awlDetailBtn');
+            if (btn) {
+                btn.className = 'add-wl-btn added';
+                btn.textContent = '\u2713';
+                btn.title = 'Already on watchlist';
+                btn.disabled = true;
+                btn.onclick = null;
+            }
+            // Add the WATCHLIST pill next to the others if it isn't shown yet.
+            if (!document.querySelector('.title-row .wl-pill')) {
+                const trackEl = document.getElementById('trackLink');
+                if (trackEl && trackEl.parentNode) {
+                    const pill = document.createElement('span');
+                    pill.className = 'wl-pill';
+                    pill.textContent = 'WATCHLIST';
+                    trackEl.parentNode.insertBefore(pill, trackEl);
+                }
+            }
+        },
+    });
+}
+
 function renderDetail(d) {
+    _awlDetail = d;
     const main = document.getElementById('mainContent');
 
     const callsign = d.last_callsign || d.first_callsign || '';
@@ -780,6 +827,14 @@ function renderDetail(d) {
         crumbsEl.innerHTML = `<a href="/#search">Search</a> &nbsp;›&nbsp; Aircraft &nbsp;›&nbsp; <span style="color:var(--t2)">${escapeHtml(d.icao)}</span>`;
     }
 
+    // v3.4.24: add-to-watchlist "+" button in the hero, next to Track ↗.
+    // Mirrors the Live tab's button — both render `.add-wl-btn` styled by
+    // the shared add-watchlist.js component. If the aircraft is already on
+    // the watchlist, show the disabled "added" state instead.
+    const wlBtn = d.is_watchlist
+        ? `<button class="add-wl-btn added" id="awlDetailBtn" title="Already on watchlist" disabled>&#10003;</button>`
+        : `<button class="add-wl-btn" id="awlDetailBtn" title="Add to watchlist" onclick="openAddWlFromDetail()">+</button>`;
+
     let html = `
         <div class="title-row">
             <h1>${escapeHtml(d.icao)}</h1>
@@ -790,6 +845,7 @@ function renderDetail(d) {
             ${country ? `<span class="sep">·</span><span class="meta-text">${escapeHtml(country)}</span>` : ''}
             ${registration ? `<span class="sep">·</span><span class="meta-text">${escapeHtml(registration)}</span>` : ''}
             <a href="javascript:void(0)" class="track-link track-external-link" id="trackLink" data-icao="${escapeHtml((d.icao || '').toUpperCase())}">Track ↗</a>
+            ${wlBtn}
         </div>
 
         <div class="subtitle">

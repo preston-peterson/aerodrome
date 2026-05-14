@@ -19,6 +19,26 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.24] — 2026-05-14
+
+### Added
+- **The aircraft details page now has an add-to-watchlist button, right next to "Track ↗" in the hero — the same one the Live tab has.** Open any aircraft's detail page, click the `+` next to Track, and you get the familiar Add to Watchlist dialog: pick which identifier to watch (ICAO hex, callsign, tail number, or aircraft type), give it a label, and confirm. If the aircraft is already on your watchlist, the button shows the disabled "added" state instead, and the WATCHLIST pill is already in the hero. Previously, adding an aircraft you were looking at meant going back to the Live tab and finding it in the list — now it's one click from the page you're already on.
+
+  **Behind the scenes.** The Add to Watchlist dialog used to be coded inline in the Live page's template and nowhere else. Putting the identical flow on the details page meant either copying that code or extracting it — and copies drift apart over time. That is exactly the class of bug v3.4.23 just fixed (a reload routine that lived in two parallel copies, where only one ever got the fix it needed). So instead of a second copy, the whole dialog — the identifier picker, the hexdb tail lookup, the `/api/watchlist/add` call — moved into a new self-contained component, `static/add-watchlist.js`. It injects its own modal and its own (namespaced) styles, so it is a true drop-in: a page adds one `<script>` tag and gets the feature. The Live page's `openAddWl()` is now a thin wrapper that hands the component an aircraft and its own post-success behavior (refresh the watchlist chips, re-render the tabs); the details page calls the same component with its own callback (flip the button, show the pill). One implementation, two pages, no way for them to diverge.
+
+  **Scope:**
+  - `static/add-watchlist.js` (new) — the shared component. Owns the modal DOM and CSS (injected at load, CSS namespaced `.awl-*` so it collides with nothing), exposes `AddWatchlist.open(aircraft, { onAdded, toast })`. Carries a built-in fallback toast for pages that have none of their own.
+  - `templates/index.html` — removed the inline Add to Watchlist modal markup, its CSS, and its modal JavaScript; `openAddWl()` stays as a thin wrapper that builds the aircraft context from the Live page's in-memory data and delegates to the component. The `+` buttons on the Live and Military rows are unchanged.
+  - `templates/aircraft.html` — the `+` button (or the disabled "added" state) in the hero next to Track ↗; on a successful add it flips to added and inserts the WATCHLIST pill.
+  - `server.py` — `add-watchlist.js` added to the per-release cache-bust stamping, so a stale copy isn't served across an update. No schema changes, no endpoint changes — `/api/watchlist/add` already existed. SUDOERS_VERSION unchanged at 4.
+
+  **Test contract for v3.4.24:**
+  1. **Details page, aircraft not yet watched.** Open an aircraft's detail page; the `+` next to Track ↗ opens the Add to Watchlist dialog; pick an identifier and confirm. It adds, the button flips to ✓, and the WATCHLIST pill appears in the hero.
+  2. **Details page, aircraft already watched.** Open an aircraft that is already on the watchlist; the button shows the disabled "added" state and does not open the dialog.
+  3. **Live tab regression check.** The `+` buttons on the Live and Military rows still open the same dialog and add exactly as before — the dialog is now the shared component rather than the Live page's inline copy.
+  4. **Fallback toast.** The details page has no toast of its own; confirm the component's built-in toast shows the "Added …" confirmation there.
+  5. **Cache-bust.** After an update, confirm `add-watchlist.js` is requested with the `?v=` version querystring, like the other shared static scripts.
+
 ## [3.4.23] — 2026-05-14
 
 ### Fixed
