@@ -1,4 +1,4 @@
-# Version: 3.4.24
+# Version: 3.4.25
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -1229,11 +1229,27 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             f'<script>window._aerodromeTimeFormat={time_format!r};</script>'
             f'<script src="/static/timefmt.js?v={_aerodrome_version}"></script>'
         )
-        html = html.replace('</head>', timefmt_block + '</head>', 1)
+        # v3.4.25: inject window._aerodromeFirstRun into config.html so the
+        # setup wizard auto-opens on first dashboard load. The flag is only
+        # ever true when CONFIG.first_run is true (fresh installs, cleared
+        # on wizard completion/skip). Injected only into config.html — the
+        # wizard lives there and the / route redirects there when first_run.
+        if filename == "config.html":
+            first_run = bool(CONFIG.get("first_run"))
+            firstrun_block = (
+                f'<script>window._aerodromeFirstRun={"true" if first_run else "false"};</script>'
+            )
+            html = html.replace('</head>', firstrun_block + '</head>', 1)
         return HTMLResponse(content=html)
 
     @app.get("/", response_class=HTMLResponse)
     async def index():
+        # v3.4.25: on a fresh install, redirect first dashboard visit to
+        # /config where the setup wizard auto-opens. The wizard's exit
+        # paths clear first_run, so subsequent visits land here normally.
+        if CONFIG.get("first_run"):
+            from fastapi.responses import RedirectResponse
+            return RedirectResponse(url="/config", status_code=302)
         return _serve_template("index.html")
 
     # --- Live (direct from receiver, no DB) ---
@@ -5851,6 +5867,24 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         except Exception as e:
             logger.error(f"Drill query failed for card={card}: {e}")
             return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+    @app.post("/api/setup/dismiss")
+    async def dismiss_setup_wizard():
+        """v3.4.25: clear the first_run flag so the setup wizard never
+        reappears on subsequent dashboard loads. Called by every wizard
+        exit path — skip-all from Welcome, step-by-step skip, and finish.
+        Idempotent: safe to call when first_run is already false."""
+        CONFIG["first_run"] = False
+        try:
+            _save_config_preserving_comments()
+        except Exception as e:
+            logger.error(f"Failed to persist first_run dismiss: {e}")
+            return JSONResponse(
+                status_code=500,
+                content={"ok": False, "error": str(e)},
+            )
+        return {"ok": True}
 
 
     @app.get("/api/config")

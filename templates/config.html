@@ -1,4 +1,4 @@
-<!-- Version: 3.4.24 -->
+<!-- Version: 3.4.25 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -356,6 +356,16 @@ input[disabled] { opacity:.5; cursor:not-allowed; }
 <div class="wrap">
     <div class="page-title">Configuration</div>
     <div class="page-sub">Edit settings below. Changes take effect immediately for live settings; others need a service restart. <span class="field-tag">restart</span> marks restart-required fields.</div>
+
+    <!-- v3.4.25 #28: first-time setup wizard rerun entry point. Always visible
+         so the wizard is one click away after any close — including the
+         "closed and panicked" scenario. The button calls openSetupWizard()
+         directly; on first dashboard load the wizard auto-opens from load()
+         below (window._aerodromeFirstRun → injected by server.py). -->
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0 14px;font-size:12px;color:var(--t3);flex-wrap:wrap;gap:8px">
+        <span><span style="color:var(--cyan)">First-time setup wizard</span> &middot; guides you through Notifications, Display, and Retention</span>
+        <button onclick="openSetupWizard()" class="btn" style="border-color:var(--cyan);color:var(--cyan);font-size:12px">Run setup wizard</button>
+    </div>
 
     <div class="banner" id="restartBanner">
         <span class="icon">⚠</span>
@@ -1036,7 +1046,315 @@ function showOnboardingModal(opts) {
 // multi-step flow shouldn't be lost by an accidental click outside;
 // only the explicit "Skip wizard" / X closes it.
 // =============================================================================
-function showNotificationsWizard() {
+// =============================================================================
+// First-time setup wizard (#28) — v3.4.25
+// Post-install configuration walkthrough: Welcome → Notifications → Display →
+// Retention → Done. Auto-opens on first dashboard load (server.py redirects
+// `/` to `/config` when CONFIG.first_run is true and injects the
+// window._aerodromeFirstRun flag here). Also re-openable any time from the
+// "Run setup wizard" button in the Configuration page header.
+//
+// The Notifications step is a thin launcher into the existing
+// showNotificationsWizard() (#31, shipped v3.4.22) — it hides this wizard,
+// runs that one with an onClose callback, and resumes at Display when the
+// notifications wizard finishes or closes by any path. Display and
+// Retention steps modify the page-global `workingConfig` (single source of
+// truth) and each PUT it to /api/config so a mid-flow close doesn't lose
+// earlier choices. All three exit paths — skip-all from Welcome,
+// step-by-step skip, finish — call POST /api/setup/dismiss to clear
+// first_run so the wizard never reappears unprompted.
+// =============================================================================
+function openSetupWizard() {
+    const swz = { step: 0, suspended: false };
+
+    // Overlay scaffolding (pattern from showNotificationsWizard).
+    const bg = document.createElement('div');
+    bg.style.cssText =
+        'position:fixed;inset:0;background:rgba(0,0,0,0.65);z-index:2000;'
+      + 'display:flex;align-items:center;justify-content:center;padding:20px;'
+      + 'overflow-y:auto';
+    const modal = document.createElement('div');
+    modal.style.cssText =
+        'background:var(--bg1);border:1px solid var(--bdr);border-top:3px solid var(--cyan);'
+      + 'border-radius:10px;max-width:600px;width:100%;max-height:90vh;'
+      + 'overflow-y:auto;color:var(--t1);font-family:var(--font);'
+      + 'display:flex;flex-direction:column';
+    bg.appendChild(modal);
+    document.body.appendChild(bg);
+
+    function hide()  { bg.style.display = 'none'; swz.suspended = true; }
+    function show()  { bg.style.display = 'flex'; swz.suspended = false; }
+    function teardown() {
+        document.removeEventListener('keydown', onKey);
+        if (bg.parentNode) bg.parentNode.removeChild(bg);
+    }
+    function onKey(e) {
+        // Suspended while the notifications sub-wizard runs — its Escape
+        // handler closes it, which triggers our onClose hand-off; we
+        // shouldn't also exit the setup wizard from the same keypress.
+        if (e.key === 'Escape' && !swz.suspended) skipAll();
+    }
+    document.addEventListener('keydown', onKey);
+    // No backdrop click — multi-step flows shouldn't be lost to a stray click.
+
+    async function dismissSetup() {
+        // Best-effort; not fatal if the network blip eats it (next page load
+        // would just re-show the wizard, which is an acceptable degradation).
+        try { await fetch('/api/setup/dismiss', { method: 'POST' }); }
+        catch (e) { /* noop */ }
+    }
+
+    async function saveCfg() {
+        try {
+            const r = await fetch('/api/config', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ config: workingConfig }),
+            });
+            if (!r.ok) {
+                const j = await r.json().catch(() => ({}));
+                const msg = (j.errors && j.errors[0]) ? j.errors[0].message : 'save failed';
+                toast('Wizard save: ' + msg, 'err');
+                return false;
+            }
+            // Keep originalConfig in sync so the unsaved-changes bar doesn't
+            // think the wizard's saved fields are still dirty when the user
+            // returns to the regular config page after Finish.
+            originalConfig = JSON.parse(JSON.stringify(workingConfig));
+            return true;
+        } catch (e) {
+            toast('Wizard save failed: ' + e.message, 'err');
+            return false;
+        }
+    }
+
+    function next()      { swz.step++; render(); }
+    function back()      { if (swz.step > 0) { swz.step--; render(); } }
+    function skipStep()  { swz.step++; render(); }
+    function skipAll()   { dismissSetup(); teardown(); }
+    function finishAll() { dismissSetup(); teardown(); window.location.href = '/'; }
+
+    function render() {
+        if (swz.step === 0)       renderWelcome();
+        else if (swz.step === 1)  renderNotifications();
+        else if (swz.step === 2)  renderDisplay();
+        else if (swz.step === 3)  renderRetention();
+        else                       renderDone();
+    }
+
+    // Common frame: title bar + body + footer. dotsAt: -1 (no dots),
+    // or 0/1/2 (filled-up-to position, used for steps 1/2/3 of 3).
+    function frame(opts) {
+        const dots = (opts.dotsAt >= 0)
+            ? `<div style="display:flex;gap:5px;align-items:center;padding-top:4px">` +
+              [0,1,2].map(i =>
+                `<span style="width:6px;height:6px;border-radius:50%;background:${i <= opts.dotsAt ? 'var(--cyan)' : 'var(--bg3)'}"></span>`
+              ).join('') + `</div>`
+            : '';
+        modal.innerHTML = `
+            <div style="padding:16px 20px;border-bottom:1px solid var(--bdr);display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
+                <div style="display:flex;flex-direction:column;gap:3px">
+                    <div style="font-size:15px;font-weight:500;color:var(--cyan)">${opts.title}</div>
+                    <div style="font-size:11px;color:var(--t3);font-family:var(--mono)">${opts.sub || ''}</div>
+                </div>
+                ${dots}
+            </div>
+            <div style="padding:16px 20px;font-size:13px;line-height:1.6;flex:1">${opts.body}</div>
+            <div style="padding:11px 16px 11px 20px;border-top:1px solid var(--bdr);display:flex;justify-content:space-between;align-items:center;gap:8px;background:var(--bg0)">${opts.footer}</div>
+        `;
+    }
+
+    // Standard footer for steps 1-3: Skip-setup link + Back/Skip-step/Next.
+    function stdFooter(nextLabel) {
+        return `
+            <a id="_swz_skip" style="font-size:11px;color:var(--t3);text-decoration:underline;text-underline-offset:2px;cursor:pointer">Skip setup</a>
+            <div style="display:flex;gap:8px">
+                <button id="_swz_back" class="btn">Back</button>
+                <button id="_swz_skipstep" class="btn">Skip this step</button>
+                <button id="_swz_next" class="btn btn-primary">${nextLabel}</button>
+            </div>`;
+    }
+    function wireStdFooter(onNext) {
+        modal.querySelector('#_swz_back').onclick     = back;
+        modal.querySelector('#_swz_skipstep').onclick = skipStep;
+        modal.querySelector('#_swz_next').onclick     = onNext;
+        modal.querySelector('#_swz_skip').onclick     = skipAll;
+    }
+
+    // --- Screen 0: Welcome ---
+    function renderWelcome() {
+        frame({
+            title: 'Welcome to Aerodrome',
+            sub: 'first-time setup',
+            dotsAt: -1,
+            body: `
+                Your receiver is connected and aircraft are coming in. Three quick steps to finish setup — notifications, display preferences, and history retention.
+                <div style="margin-top:11px;padding:9px 11px;background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.3);border-radius:6px;color:#5dcaa5;font-size:12px">✓ Receiver and location were set during install.</div>
+                <div style="margin-top:9px;font-size:12px;color:var(--t3)">Skip any step, or skip the whole thing — you can rerun this from Configuration anytime.</div>
+            `,
+            footer: `
+                <a id="_swz_skip" style="font-size:11px;color:var(--t3);text-decoration:underline;text-underline-offset:2px;cursor:pointer">Skip setup — I'll configure later</a>
+                <button id="_swz_next" class="btn btn-primary">Get started →</button>
+            `,
+        });
+        modal.querySelector('#_swz_next').onclick = next;
+        modal.querySelector('#_swz_skip').onclick = skipAll;
+    }
+
+    // --- Screen 1: Notifications (launcher → showNotificationsWizard) ---
+    function renderNotifications() {
+        frame({
+            title: 'Get alerts on your phone',
+            sub: 'step 1 of 3',
+            dotsAt: 0,
+            body: `
+                Push a notification when a watchlist aircraft appears — using ntfy, free and open-source. The full setup walks you through local vs cloud, installing the phone app, and sending a test.
+                <div style="margin-top:14px"><button id="_swz_nf_open" class="btn" style="border-color:var(--cyan);color:var(--cyan)">Set up notifications →</button></div>
+                <div style="margin-top:9px;font-size:12px;color:var(--t3)">Opens the notification setup wizard. Done it already, or don't want alerts? Skip this step.</div>
+            `,
+            footer: stdFooter('Next →'),
+        });
+        wireStdFooter(next);
+        modal.querySelector('#_swz_nf_open').onclick = () => {
+            // Hand-off: hide this wizard, launch the notifications wizard.
+            // When it finishes or closes by any path, the onClose callback
+            // re-shows us at the Display step.
+            hide();
+            showNotificationsWizard(() => {
+                show();
+                swz.step = 2;
+                render();
+            });
+        };
+    }
+
+    // --- Screen 2: Display (time_format + receiver.distance_unit) ---
+    function renderDisplay() {
+        const cur_tf = (workingConfig.display || {}).time_format || 'auto';
+        const cur_du = (workingConfig.receiver || {}).distance_unit || 'mi';
+        const seg = (label, val, active, group) =>
+            `<button data-${group}v="${val}" class="btn" style="${active ? 'background:var(--cyan);color:var(--bg0);border-color:var(--cyan)' : ''}">${label}</button>`;
+        frame({
+            title: 'Display preferences',
+            sub: 'step 2 of 3',
+            dotsAt: 1,
+            body: `
+                How timestamps and distances render across the dashboard.
+                <div style="margin-top:14px;display:flex;flex-direction:column;gap:11px">
+                    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span>Time format</span>
+                        <div id="_swz_tf" style="display:flex;gap:4px">
+                            ${seg('Auto', 'auto', cur_tf === 'auto', 'tf')}
+                            ${seg('12-hour', '12h', cur_tf === '12h', 'tf')}
+                            ${seg('24-hour', '24h', cur_tf === '24h', 'tf')}
+                        </div>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span>Distance units</span>
+                        <div id="_swz_du" style="display:flex;gap:4px">
+                            ${seg('Miles', 'mi', cur_du === 'mi', 'du')}
+                            ${seg('Kilometers', 'km', cur_du === 'km', 'du')}
+                        </div>
+                    </div>
+                </div>
+                <div style="margin-top:9px;font-size:12px;color:var(--t3)">Distance unit was set during install — confirm or change here.</div>
+            `,
+            footer: stdFooter('Next →'),
+        });
+        // Segmented-control selection — mutate workingConfig in place.
+        function wireSeg(rootSel, group, applyFn) {
+            modal.querySelectorAll(`${rootSel} button`).forEach(b => {
+                b.onclick = () => {
+                    modal.querySelectorAll(`${rootSel} button`).forEach(x => x.style = '');
+                    b.style.cssText = 'background:var(--cyan);color:var(--bg0);border-color:var(--cyan)';
+                    applyFn(b.dataset[group + 'v']);
+                };
+            });
+        }
+        wireSeg('#_swz_tf', 'tf', v => {
+            if (!workingConfig.display) workingConfig.display = {};
+            workingConfig.display.time_format = v;
+        });
+        wireSeg('#_swz_du', 'du', v => {
+            if (!workingConfig.receiver) workingConfig.receiver = {};
+            workingConfig.receiver.distance_unit = v;
+        });
+        wireStdFooter(async () => {
+            // Ensure current selections are in workingConfig even if user
+            // never clicked (kept defaults).
+            if (!workingConfig.display)  workingConfig.display = {};
+            if (workingConfig.display.time_format == null) workingConfig.display.time_format = cur_tf;
+            if (!workingConfig.receiver) workingConfig.receiver = {};
+            if (workingConfig.receiver.distance_unit == null) workingConfig.receiver.distance_unit = cur_du;
+            const ok = await saveCfg();
+            if (ok) next();
+        });
+    }
+
+    // --- Screen 3: Retention (military_days, watchlist_days, all_days) ---
+    function renderRetention() {
+        const r = workingConfig.retention || {};
+        const numInput = (key, dflt) =>
+            `<input type="number" min="1" max="3650" value="${r[key] != null ? r[key] : dflt}" data-rk="${key}" style="width:100px;background:var(--bg0);border:1px solid var(--bdr);border-radius:6px;padding:6px 10px;color:var(--t1);font-family:var(--mono)">`;
+        frame({
+            title: 'How long to keep history',
+            sub: 'step 3 of 3',
+            dotsAt: 2,
+            body: `
+                Each tab keeps its own rolling history window. The defaults work for most setups — raise them for a longer record, lower them to keep the database smaller.
+                <div style="margin-top:14px;display:flex;flex-direction:column;gap:8px">
+                    <label style="display:flex;justify-content:space-between;align-items:center;gap:8px">Military${numInput('military_days', 30)}</label>
+                    <label style="display:flex;justify-content:space-between;align-items:center;gap:8px">Watchlist${numInput('watchlist_days', 30)}</label>
+                    <label style="display:flex;justify-content:space-between;align-items:center;gap:8px">All aircraft${numInput('all_days', 30)}</label>
+                </div>
+            `,
+            footer: stdFooter('Finish ✓'),
+        });
+        wireStdFooter(async () => {
+            if (!workingConfig.retention) workingConfig.retention = {};
+            modal.querySelectorAll('input[data-rk]').forEach(i => {
+                const v = parseInt(i.value, 10);
+                if (!isNaN(v) && v >= 1 && v <= 3650) {
+                    workingConfig.retention[i.dataset.rk] = v;
+                }
+            });
+            const ok = await saveCfg();
+            if (ok) next();
+        });
+    }
+
+    // --- Screen 4: Done ---
+    function renderDone() {
+        const tf  = (workingConfig.display || {}).time_format || 'auto';
+        const du  = (workingConfig.receiver || {}).distance_unit || 'mi';
+        const ret = workingConfig.retention || {};
+        const all = ret.all_days || 30;
+        const nfUrl = (workingConfig.notifications || {}).url || '';
+        const nfState = nfUrl
+            ? ((nfUrl.includes('localhost') || nfUrl.includes('127.0.0.1')) ? 'local ntfy' : 'cloud ntfy')
+            : 'not configured';
+        const tfLabel = tf === 'auto' ? 'auto time format' : tf + ' time';
+        const duLabel = du === 'mi' ? 'miles' : 'kilometers';
+        frame({
+            title: 'You\'re all set',
+            sub: 'setup complete',
+            dotsAt: 2,
+            body: `
+                <div style="display:flex;flex-direction:column;gap:5px;font-size:12px">
+                    <div style="color:var(--cyan)">✓ <span style="color:var(--t1)">Notifications</span> — <span style="color:var(--t2)">${nfState}</span></div>
+                    <div style="color:var(--cyan)">✓ <span style="color:var(--t1)">Display</span> — <span style="color:var(--t2)">${tfLabel}, ${duLabel}</span></div>
+                    <div style="color:var(--cyan)">✓ <span style="color:var(--t1)">Retention</span> — <span style="color:var(--t2)">${all}-day history on all tabs</span></div>
+                </div>
+                <div style="margin-top:11px;font-size:12px;color:var(--t3)">Anything you skipped — or want to change — lives in the gear menu → Configuration. You can rerun this wizard from there too.</div>
+            `,
+            footer: `<span></span><button id="_swz_finish" class="btn btn-primary">Go to dashboard →</button>`,
+        });
+        modal.querySelector('#_swz_finish').onclick = finishAll;
+    }
+
+    render();
+}
+
+
+function showNotificationsWizard(onClose) {
     // --- wizard state -------------------------------------------------------
     // branch: 'local' | 'cloud' | null (chosen in step 1)
     // Collected as the user progresses; consumed by finish().
@@ -1092,6 +1410,13 @@ function showNotificationsWizard() {
     function dismiss() {
         document.removeEventListener('keydown', onKey);
         if (bg.parentNode) bg.parentNode.removeChild(bg);
+        // v3.4.25: fire optional onClose so callers (the #28 setup wizard)
+        // can resume their own flow when this wizard finishes or closes by
+        // any path. Wrapped in try/catch — a misbehaving callback should
+        // not leave the modal half-torn-down.
+        if (typeof onClose === 'function') {
+            try { onClose(); } catch (e) { console.error('showNotificationsWizard onClose failed:', e); }
+        }
     }
     function onKey(e) { if (e.key === 'Escape') dismiss(); }
     document.addEventListener('keydown', onKey);
@@ -5718,6 +6043,15 @@ async function load() {
         originalConfig = deepClone(cfg);
         workingConfig = deepClone(cfg);
         renderAll();
+        // v3.4.25 #28: auto-open the first-time setup wizard on a fresh
+        // install. server.py injects window._aerodromeFirstRun=true when
+        // CONFIG.first_run is true; the / route also redirects here so this
+        // is the user's first dashboard touch. Wrapped in try/catch so a
+        // wizard-side bug never blocks the regular config page from loading.
+        if (window._aerodromeFirstRun) {
+            try { openSetupWizard(); }
+            catch (e) { console.error('Setup wizard failed to open:', e); }
+        }
     } catch (e) {
         document.getElementById('content').innerHTML =
             `<div class="section"><div class="field-error">Failed to load configuration: ${e.message}</div></div>`;

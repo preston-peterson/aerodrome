@@ -19,6 +19,15 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.25] — 2026-05-15
+
+### Added
+- **First-time setup wizard.** A new install now greets you with a short, skippable walkthrough — Welcome → Notifications → Display → Retention → Done — instead of dropping you straight onto a dashboard you may not have configured yet. The wizard auto-opens on your first dashboard load, and a "Run setup wizard" button on the Configuration page lets you re-run it any time you want to revisit the same flow (handy if you closed it on first run and want to come back).
+
+  The Notifications step launches the existing notifications-setup wizard (the one shipped in v3.4.22) — same flow, same outcome, just discoverable from day one rather than buried in the Notifications config tab. The Display step covers your time format and distance units. The Retention step covers per-tab history windows with sensible 30-day defaults. Every step is individually skippable, with a persistent "Skip setup" exit on every screen — the wizard never corners you. Watchlist and Military are deliberately *not* in the wizard: a brand-new user has nothing meaningful to put on the watchlist yet, and Military detection works out of the box with sensible defaults.
+
+  Behind the scenes: a new `first_run: true` key in `config.yaml.example` triggers the wizard on fresh installs only. Existing installs upgrading to v3.4.25 will have the key auto-merged in by Aerodrome's standard config migration — but the migrator now overrides it to `false` for that case, so a long-running install never sees the wizard pop up unexpectedly on update. All three wizard exit paths (skip-all, step-by-step skip, finish) clear the flag through a new `POST /api/setup/dismiss` endpoint, so it never re-appears once you're past it.
+
 ## [3.4.24] — 2026-05-14
 
 ### Added

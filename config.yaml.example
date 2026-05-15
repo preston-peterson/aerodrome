@@ -1,5 +1,5 @@
 # =============================================================================
-# Version: 3.4.24
+# Version: 3.4.25
 # Aerodrome — Example/Reference Configuration
 # =============================================================================
 # This is the canonical default config shipped with each Aerodrome release.
@@ -14,6 +14,14 @@
 # To customize: edit config.yaml (not this file), then:
 #   sudo systemctl restart aerodrome
 # =============================================================================
+
+# --- First-run setup wizard ---
+# Set to `true` to show the post-install setup wizard on the next dashboard
+# load. Fresh installs ship with this as true; the wizard clears it after
+# completion or skip. On upgrade, existing installs that acquire this key
+# via auto-merge have it overridden to false (see main.py migrate_config)
+# so the wizard never pops up unexpectedly on long-running installations.
+first_run: true
 
 # --- ADS-B Receiver ---
 # IMPORTANT: Change this to your actual receiver's IP address before starting.
