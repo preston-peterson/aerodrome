@@ -1,4 +1,4 @@
-<!-- Version: 3.4.25 -->
+<!-- Version: 3.4.26 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1104,22 +1104,39 @@ function openSetupWizard() {
         catch (e) { /* noop */ }
     }
 
-    async function saveCfg() {
+    // v3.4.26: targeted partial save via the wizard-specific endpoint that
+    // skips the cross-section silent-fail check. The full PUT /api/config
+    // rejects saves when notifications.enabled=true points at localhost with
+    // ntfy not installed — correct for the regular save flow but blocks the
+    // wizard when an install has stale notifications state from prior
+    // testing (the #32 uninstall-doesn't-reset bug). The wizard only ever
+    // touches one section at a time, so a section-scoped save is the right
+    // shape regardless and avoids the cross-section trap.
+    async function saveStep(patch) {
         try {
-            const r = await fetch('/api/config', {
-                method: 'PUT',
+            const r = await fetch('/api/setup/save-step', {
+                method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ config: workingConfig }),
+                body: JSON.stringify({ patch }),
             });
             if (!r.ok) {
                 const j = await r.json().catch(() => ({}));
-                const msg = (j.errors && j.errors[0]) ? j.errors[0].message : 'save failed';
+                const msg = (j.errors && j.errors[0])
+                    ? j.errors[0].message
+                    : (j.error || 'save failed');
                 toast('Wizard save: ' + msg, 'err');
                 return false;
             }
-            // Keep originalConfig in sync so the unsaved-changes bar doesn't
-            // think the wizard's saved fields are still dirty when the user
-            // returns to the regular config page after Finish.
+            // Mirror the patch back into workingConfig/originalConfig so the
+            // regular config page reflects the wizard's saved state, and the
+            // unsaved-changes bar doesn't think those keys are dirty.
+            for (const [section, vals] of Object.entries(patch)) {
+                if (typeof vals === 'object' && vals !== null && typeof workingConfig[section] === 'object' && workingConfig[section] !== null) {
+                    Object.assign(workingConfig[section], vals);
+                } else {
+                    workingConfig[section] = vals;
+                }
+            }
             originalConfig = JSON.parse(JSON.stringify(workingConfig));
             return true;
         } catch (e) {
@@ -1131,8 +1148,16 @@ function openSetupWizard() {
     function next()      { swz.step++; render(); }
     function back()      { if (swz.step > 0) { swz.step--; render(); } }
     function skipStep()  { swz.step++; render(); }
-    function skipAll()   { dismissSetup(); teardown(); }
-    function finishAll() { dismissSetup(); teardown(); window.location.href = '/'; }
+    async function skipAll()   { await dismissSetup(); teardown(); }
+    async function finishAll() {
+        // v3.4.26: await dismissSetup BEFORE navigating away. Without the
+        // await, the navigation triggered a fresh server-side /config render
+        // before first_run was cleared on disk — server.py would inject
+        // window._aerodromeFirstRun=true and the wizard auto-opened again.
+        await dismissSetup();
+        teardown();
+        window.location.href = '/';
+    }
 
     function render() {
         if (swz.step === 0)       renderWelcome();
@@ -1220,7 +1245,22 @@ function openSetupWizard() {
             // When it finishes or closes by any path, the onClose callback
             // re-shows us at the Display step.
             hide();
-            showNotificationsWizard(() => {
+            showNotificationsWizard(async () => {
+                // v3.4.26: #31 writes notifications.url (and sometimes .enabled)
+                // to workingConfig but does NOT persist — it relies on the user
+                // clicking "Save changes" afterwards. In the setup-wizard flow
+                // we should persist immediately so the user's notifications
+                // setup actually sticks. Save the notifications section via
+                // the new save-step endpoint before resuming.
+                const nf = workingConfig.notifications || {};
+                if (nf.url || nf.enabled) {
+                    const patch = {};
+                    if (nf.url != null)     patch.url     = nf.url;
+                    if (nf.enabled != null) patch.enabled = nf.enabled;
+                    await saveStep({ notifications: patch });
+                    // saveStep already toasts on error; either way we proceed
+                    // so a save failure doesn't strand the user mid-flow.
+                }
                 show();
                 swz.step = 2;
                 render();
@@ -1278,13 +1318,16 @@ function openSetupWizard() {
             workingConfig.receiver.distance_unit = v;
         });
         wireStdFooter(async () => {
-            // Ensure current selections are in workingConfig even if user
-            // never clicked (kept defaults).
-            if (!workingConfig.display)  workingConfig.display = {};
-            if (workingConfig.display.time_format == null) workingConfig.display.time_format = cur_tf;
-            if (!workingConfig.receiver) workingConfig.receiver = {};
-            if (workingConfig.receiver.distance_unit == null) workingConfig.receiver.distance_unit = cur_du;
-            const ok = await saveCfg();
+            // v3.4.26: build a targeted patch — only the keys this step changes.
+            // The new saveStep endpoint validates just these keys and skips the
+            // cross-section silent-fail check that would otherwise block on
+            // stale notifications state.
+            const tf = (workingConfig.display && workingConfig.display.time_format) || cur_tf;
+            const du = (workingConfig.receiver && workingConfig.receiver.distance_unit) || cur_du;
+            const ok = await saveStep({
+                display:  { time_format:   tf },
+                receiver: { distance_unit: du },
+            });
             if (ok) next();
         });
     }
@@ -1309,14 +1352,18 @@ function openSetupWizard() {
             footer: stdFooter('Finish ✓'),
         });
         wireStdFooter(async () => {
-            if (!workingConfig.retention) workingConfig.retention = {};
+            // v3.4.26: build a targeted retention patch — see Display for rationale.
+            const retentionPatch = {};
             modal.querySelectorAll('input[data-rk]').forEach(i => {
                 const v = parseInt(i.value, 10);
                 if (!isNaN(v) && v >= 1 && v <= 3650) {
-                    workingConfig.retention[i.dataset.rk] = v;
+                    retentionPatch[i.dataset.rk] = v;
                 }
             });
-            const ok = await saveCfg();
+            // If the user didn't change any value, the patch is empty —
+            // still send it so the wizard advances; the endpoint accepts
+            // an empty retention object and is a no-op for the disk write.
+            const ok = await saveStep({ retention: retentionPatch });
             if (ok) next();
         });
     }
@@ -1726,15 +1773,26 @@ function showNotificationsWizard(onClose) {
             `;
         } else {
             const base = (wiz.subscribeUrl || '').replace('/' + (wiz.topic || ''), '');
+            // v3.4.26: detect the localhost fallback (LAN IP auto-detection failed)
+            // and surface a clear warning. The previous behavior showed `Server: localhost`
+            // with help text saying "the server is your machine's LAN address" —
+            // directly contradicting itself, since localhost is unreachable from a phone.
+            const isLocalhostFallback = /^https?:\/\/(localhost|127\.0\.0\.1)/i.test(base);
+            const fallbackWarning = isLocalhostFallback ? `
+                <div style="margin:6px 0 10px;padding:8px 11px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.35);border-radius:6px;color:var(--amber);font-size:12px;line-height:1.5">
+                    <strong>LAN IP could not be auto-detected.</strong> Replace <code style="font-family:var(--mono);background:var(--bg0);padding:1px 4px;border-radius:3px">localhost</code> in the Server URL below with this machine's actual LAN address before subscribing — your phone can't reach <code style="font-family:var(--mono);background:var(--bg0);padding:1px 4px;border-radius:3px">localhost</code> from another device. Find your LAN IP with <code style="font-family:var(--mono);background:var(--bg0);padding:1px 4px;border-radius:3px">ip addr</code> on this machine.
+                </div>
+            ` : '';
             subscribeInstructions = `
                 <p>In the ntfy app, tap <b>+</b> &rarr; <b>Subscribe to topic</b>. Add your
                 server first, then the topic:</p>
+                ${fallbackWarning}
                 <ul style="margin:6px 0 10px 18px;font-size:12px;color:var(--t2);line-height:1.7">
                     <li>Server: <code style="font-family:var(--mono);background:var(--bg0);padding:1px 5px;border-radius:3px">${escapeAttr(base)}</code></li>
                     <li>Topic: <code style="font-family:var(--mono);background:var(--bg0);padding:1px 5px;border-radius:3px">${escapeAttr(wiz.topic)}</code></li>
                 </ul>
                 <p style="font-size:11px;color:var(--t3);line-height:1.5;margin-bottom:8px">
-                    The server is your machine's LAN address — your phone must be on the
+                    The server is your machine's LAN address &mdash; your phone must be on the
                     same network (or reach it via Tailscale / VPN).
                 </p>
             `;

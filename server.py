@@ -1,4 +1,4 @@
-# Version: 3.4.25
+# Version: 3.4.26
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -5880,6 +5880,77 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             _save_config_preserving_comments()
         except Exception as e:
             logger.error(f"Failed to persist first_run dismiss: {e}")
+            return JSONResponse(
+                status_code=500,
+                content={"ok": False, "error": str(e)},
+            )
+        return {"ok": True}
+
+
+    @app.post("/api/setup/save-step")
+    async def save_setup_step(payload: dict):
+        """v3.4.26: targeted partial-config save for the setup wizard.
+        Accepts a body of shape `{"patch": {"section": {"key": value, ...}, ...}}`
+        and updates ONLY the listed sections. Skips the cross-section
+        silent-failure check that the full PUT /api/config runs — that
+        check rejects any save when notifications.enabled=true with a
+        localhost URL and ntfy isn't installed, which is correct for the
+        regular config-save flow but BLOCKS the setup wizard from making
+        legitimate progress on unrelated keys (Display, Retention) when
+        an install has stale notifications state from prior testing. The
+        wizard only ever changes one section at a time; isolating its
+        saves to those sections preserves the silent-fail safety on the
+        regular save flow while letting the wizard work."""
+        # Allowed sections — the wizard only ever touches these.
+        ALLOWED = {"display", "retention", "receiver", "notifications"}
+        patch = payload.get("patch") if isinstance(payload, dict) else None
+        if not isinstance(patch, dict):
+            return JSONResponse(
+                status_code=400,
+                content={"ok": False, "error": "Body must be {'patch': {section: {...}, ...}}"},
+            )
+        for section in patch:
+            if section not in ALLOWED:
+                return JSONResponse(
+                    status_code=400,
+                    content={"ok": False, "error": f"Section '{section}' is not allowed in a setup-step patch"},
+                )
+        # Validate just the keys we're touching by running the full
+        # validator over a SHALLOW merge — this catches bad values in
+        # the patch (e.g. time_format='banana') without re-running the
+        # cross-section check on stale state we're not modifying.
+        from config_validator import validate_config
+        merged = {k: v for k, v in CONFIG.items()}
+        for section, vals in patch.items():
+            if isinstance(vals, dict) and isinstance(merged.get(section), dict):
+                merged[section] = {**merged[section], **vals}
+            else:
+                merged[section] = vals
+        errors = validate_config(merged)
+        # Filter validation errors down to ONLY paths in sections we're
+        # actively changing — stale errors elsewhere shouldn't block us.
+        relevant_errors = [
+            (p, m) for (p, m) in errors
+            if any(p == s or p.startswith(s + ".") for s in patch)
+        ]
+        if relevant_errors:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "ok": False,
+                    "errors": [{"path": p, "message": m} for p, m in relevant_errors],
+                },
+            )
+        # Apply patch in-place
+        for section, vals in patch.items():
+            if isinstance(vals, dict) and isinstance(CONFIG.get(section), dict):
+                CONFIG[section].update(vals)
+            else:
+                CONFIG[section] = vals
+        try:
+            _save_config_preserving_comments()
+        except Exception as e:
+            logger.error(f"Failed to persist setup-step patch: {e}")
             return JSONResponse(
                 status_code=500,
                 content={"ok": False, "error": str(e)},

@@ -19,6 +19,17 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.26] — 2026-05-16
+
+### Fixed
+- **First-time setup wizard now actually works on installs with prior notifications testing.** v3.4.25 shipped the wizard but three of its four screens silently failed to advance on any install that had previously installed and then uninstalled ntfy — a state where `notifications.enabled` is still `true` and the URL still points at `localhost`, but the local ntfy server is no longer there. The wizard's Display and Retention steps were trying to save the full config back through `PUT /api/config`, which (correctly) rejects that save state to prevent the user from locking in a configuration where notifications would silently fail. The fix routes the wizard's saves through a new dedicated endpoint that validates only the section being changed (Display, Retention, or Notifications), so legitimate progress on unrelated keys isn't blocked by stale state elsewhere in the config.
+
+  Two other wizard bugs also fixed in the same release. The Done screen's "Go to dashboard" button was bouncing the user straight back into the wizard instead of landing on the dashboard — a race condition where the navigation triggered before the first-run flag had been cleared on disk, so the server re-injected the auto-open flag and the wizard reopened immediately. Now the dismiss completes before the navigation. And the Notifications step's hand-off to the existing ntfy setup wizard wasn't persisting the URL the wizard had collected — the user would finish the notifications setup, walk back through the rest of the wizard, and land on a Configuration page that still showed notifications as un-configured. The hand-off now saves the notifications URL and enabled state immediately after the sub-wizard closes.
+
+  Also improves the local-ntfy setup flow itself: when the wizard can't auto-detect your machine's LAN IP, it previously displayed `Server: http://localhost:...` for the phone subscribe step, with help text right below saying "the server is your machine's LAN address" — directly contradicting itself, since `localhost` is unreachable from a phone. The wizard now detects that fallback case and shows a clear warning: replace `localhost` with the machine's actual LAN address, find it with `ip addr`, and proceed.
+
+  Behind the scenes: a new `POST /api/setup/save-step` endpoint accepts a partial patch `{patch: {section: {…}}}` restricted to `display`, `retention`, `receiver`, and `notifications`, validates only the sections the wizard is actively changing, and skips the cross-section silent-failure check that the full `PUT /api/config` runs. The wizard's `saveCfg` was replaced with a `saveStep` helper that builds and sends these section-scoped patches. The Notifications hand-off pulls `notifications.url` and `notifications.enabled` from `workingConfig` (where `showNotificationsWizard` writes them) immediately after the `onClose` callback fires, persisting them through `saveStep` before resuming at the Display screen. The `finishAll()` path now awaits the dismiss call before navigating. The `bump-version.sh` template list was also extended to include `templates/about.html` and `templates/switch-to-real.html`, eliminating a long-running annoyance where those two files' version headers had to be patched by hand at every release.
+
 ## [3.4.25] — 2026-05-15
 
 ### Added
