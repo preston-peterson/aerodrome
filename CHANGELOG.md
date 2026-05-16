@@ -19,6 +19,29 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.28] — 2026-05-16
+
+### Removed
+- **Both setup wizards are gone.** The first-time setup wizard added in v3.4.25 (Welcome → Notifications → Display → Retention overlay that auto-opened on first dashboard load) and the notifications setup wizard added in v3.4.22 (the stepped Install → Subscribe → Test flow the three-state button's Install action opened into) have both been removed. Three releases of corrective work on the wizards (v3.4.25 introducing them, v3.4.26 fixing four post-deploy bugs in them, v3.4.27 patching the LAN-IP fallout from the wizards' install-time DHCP race) made the maintenance cost outweigh the onboarding benefit — the wizard install path was the source of every bug in the arc, and the legacy install path (the "Install local ntfy" button on the Notifications page + `showOnboardingModal` post-install phone guide) had been working cleanly since well before the wizards arrived. Removing the wizards reverts the install flow to that legacy path.
+
+- **The three-state button's Install action now opens the inline install panel** instead of launching the notifications wizard. Clicking Install on the three-state button drops the user into the same port/bind form + "Install local ntfy" button that existed before v3.4.19. After a successful install, the post-install `showOnboardingModal` phone setup guide opens automatically — that flow is unchanged. The phone setup guide is the only modal in the path now; nothing stepped, nothing branching.
+
+- **`POST /api/setup/dismiss` and `POST /api/setup/save-step` removed.** The first was the wizard's first_run-clear endpoint (every wizard exit path called it before close); the second was the partial-patch endpoint v3.4.26 added when the wizard's Display/Retention steps couldn't progress through `PUT /api/config`'s cross-field validation. Both are gone. The `first_run` config key is now vestigial — existing configs that have it (anything bootstrapped under v3.4.25+) keep the key as a silent no-op; the config validator ignores unknown keys, and nothing in the codebase reads it. New installs no longer ship the key (removed from `config.yaml.example`); the `migrate_config` override that flipped the key to false on upgrade is removed.
+
+- **`window._aerodromeFirstRun` injection removed from `_serve_template`.** The wizard's auto-open trigger and the `/` → `/config` redirect that delivered first-time users to it are both gone. Hitting `/` lands on the dashboard for everyone, every time. The `_serve_template` function now does exactly the work it should: serve the template with `?v=` cache-bust stamping on shared static assets and the timefmt.js helper injection. Nothing else.
+
+### Retained
+- **v3.4.27's LAN-IP work stays intact.** The `_detect_lan_ip` retry/filter/tuple-return changes still ship — they help the legacy `nfInstallNtfy` install path too, since any install (wizard or not) can in principle race the DHCP-settle window if it runs on a freshly bootstrapped box. The one-click self-heal button (`nfFixLocalhostBaseUrl`) is still wired into the two surfaces that need it: the post-install `showOnboardingModal`'s phone setup guide warning, and the Notifications panel's `Local ntfy server` state row when `base_url` is localhost AND a re-detection currently succeeds. The third surface that had the button — the wizard's step 4 — went with the wizard. The `/api/ntfy/status` response still carries `detected_lan_ip` and `detected_lan_ip_error` so the surviving warnings show the failure reason when one exists.
+
+- **`showOnboardingModal`** — the post-install phone setup guide — is unchanged. It's the same modal that opens after every successful `nfInstallNtfy` call (and has since long before the wizards): server URL, copy buttons, topic name, the three mobile-app store links, an inline test-notification button. This is the only modal a user sees after clicking Install local ntfy.
+
+- **The inline-JS parse check** added to `bump-version.sh` in v3.4.27 is unchanged and remains advisory.
+
+### Operational notes
+- **Existing installs:** the `first_run` key in your `config.yaml` becomes a no-op after upgrade. No action needed — the validator ignores unknown keys, and removing the key from `config.yaml.example` doesn't trigger a migration to delete it from existing configs. If you want to clean it up by hand, remove the `first_run: true` (or `first_run: false`) line and its comment block from your `config.yaml`; the next `migrate_config` run on a future upgrade will not re-add it.
+- **The Run setup wizard button** in the Configuration page header is removed. Anyone who relied on it as a reconfiguration entry point can use the Notifications tab directly + the relevant fields on Display and Retention tabs — the same controls the wizard wrapped.
+- **For an install that landed under v3.4.25-27 with the wizard's failed-DHCP-race `base_url: localhost`:** the v3.4.27 self-heal button is still available on the Notifications panel and the post-install phone setup modal. Clicking it rewrites `server.yml` with the correctly-detected LAN IP and restarts ntfy. If you've already corrected it (typed the LAN IP into the Base URL field and clicked Save), nothing more is needed.
+
 ## [3.4.27] — 2026-05-16
 
 ### Fixed

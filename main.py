@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Version: 3.4.27
+# Version: 3.4.28
 """
 main.py — Aerodrome ADS-B Tracker
 
@@ -120,14 +120,6 @@ def migrate_config(config: dict) -> dict:
     if not added:
         return config
 
-    # v3.4.25: first_run is a fresh-install-only flag — if it was just
-    # added to an existing install's config by this migration, this is
-    # NOT a fresh install. Override to false so the post-install setup
-    # wizard doesn't pop up unexpectedly when long-running installs
-    # upgrade to a version that introduced the key.
-    if "first_run" in added:
-        live["first_run"] = False
-
     # Back up first
     ts = time.strftime("%Y%m%d-%H%M%S")
     backup_path = CONFIG_PATH.with_name(f"config.yaml.bak.{ts}")
@@ -171,10 +163,6 @@ def _migrate_config_plain(config: dict) -> dict:
     added = _deep_merge_missing(config, example)
     if not added:
         return config
-
-    # v3.4.25: see migrate_config() — same first_run override applies here.
-    if "first_run" in added:
-        config["first_run"] = False
 
     ts = time.strftime("%Y%m%d-%H%M%S")
     backup_path = CONFIG_PATH.with_name(f"config.yaml.bak.{ts}")
