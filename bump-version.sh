@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.4.26
+# Version: 3.4.27
 # =============================================================================
 # bump-version.sh — Bump Aerodrome version + auto-update CHANGELOG.md
 # =============================================================================
@@ -487,6 +487,84 @@ if [ "${SKIP_NAME_CHECK:-0}" = "0" ]; then
         echo "  defined inside the same outer function)."
         exit 1
     fi
+    echo ""
+fi
+
+# =============================================================================
+# Inline-JS parse check — advisory (v3.4.27+).
+# =============================================================================
+# For every template with inline <script> blocks, concatenate that
+# template's blocks and run `node --check` on the result. Catches
+# syntax errors inside any one template's JS that the Python AST and
+# name-resolution checks can't see (they only check Python).
+#
+# Important caveat: parses each template INDEPENDENTLY (not all
+# templates concatenated). Different templates legitimately declare
+# the same identifiers (`let activeTab`, `const cfg`, etc.) because
+# the browser loads them as separate documents — a concatenated parse
+# would false-positive on those collisions.
+#
+# Will NOT catch the specific v3.4.25 timefmt-injection regression
+# that motivated this — that wasn't a parse error, it was a deleted
+# line in _serve_template that left an HTML script reference
+# unrendered. Catching that class would require a server-side check
+# that the served HTML actually contains <script src> tags for every
+# JS file the inline code references. That's a separate, more
+# invasive check; the inline-parse pass here is the cheap one that
+# wouldn't false-positive.
+#
+# Skipped silently if node isn't installed. Always advisory — never
+# gates a release — until validated across at least one release cycle.
+NODE_BIN="$(command -v node 2>/dev/null || true)"
+if [ -n "$NODE_BIN" ]; then
+    echo "Inline JavaScript parse check..."
+    JS_PARSE_PY=$(cat <<'PYEOF'
+import re, sys, subprocess, tempfile
+from pathlib import Path
+
+tmpl_dir = Path('templates')
+if not tmpl_dir.is_dir():
+    sys.exit(0)
+
+ok = 0
+failed = []
+total_bytes = 0
+for path in sorted(tmpl_dir.glob('*.html')):
+    html = path.read_text()
+    blocks = re.findall(r'<script>\s*(.*?)</script>', html, re.DOTALL)
+    if not blocks:
+        continue
+    js = '\n'.join(blocks)
+    total_bytes += len(js)
+    with tempfile.NamedTemporaryFile(
+            'w', suffix='.js', delete=False, encoding='utf-8') as tf:
+        tf.write(js)
+        tmpname = tf.name
+    try:
+        r = subprocess.run(
+            ['node', '--check', tmpname],
+            capture_output=True, text=True)
+        if r.returncode == 0:
+            ok += 1
+        else:
+            failed.append((path.name, r.stderr.strip()))
+    finally:
+        Path(tmpname).unlink(missing_ok=True)
+
+print(f'  Parsed {ok + len(failed)} templates ({total_bytes} bytes inline JS)')
+if failed:
+    print(f'  ⚠ {len(failed)} template(s) failed parse:')
+    for name, err in failed:
+        # Show only the first line of stderr (the error message proper);
+        # node's stack traces are long and not useful here.
+        first = err.split('\n')[0] if err else '(no error message)'
+        print(f'    • {name}: {first}')
+    print('  (advisory at this release; not gating)')
+    sys.exit(0)  # advisory — don't fail the bump
+print('  ✓ Inline JS parse OK across all templates')
+PYEOF
+)
+    python3 -c "$JS_PARSE_PY"
     echo ""
 fi
 

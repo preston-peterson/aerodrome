@@ -1,4 +1,4 @@
-# Version: 3.4.26
+# Version: 3.4.27
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -1229,6 +1229,15 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             f'<script>window._aerodromeTimeFormat={time_format!r};</script>'
             f'<script src="/static/timefmt.js?v={_aerodrome_version}"></script>'
         )
+        # v3.4.27: actually inject the timefmt block into the served HTML.
+        # This .replace() line was dropped during the v3.4.25 firstrun_block
+        # edit below, leaving timefmt.js never loaded on any page — every
+        # call to formatTime/formatTimeFull/formatDateTime threw a
+        # ReferenceError, visibly breaking /status (Failed to load status:
+        # formatTimeFull is not defined) and silently breaking row-time
+        # formatting in templates/index.html, /aircraft, and the test-
+        # notification result + recent-notifications log in /config.
+        html = html.replace('</head>', timefmt_block + '</head>', 1)
         # v3.4.25: inject window._aerodromeFirstRun into config.html so the
         # setup wizard auto-opens on first dashboard load. The flag is only
         # ever true when CONFIG.first_run is true (fresh installs, cleared
@@ -8432,10 +8441,18 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         if status.get("state") == "aerodrome_managed":
             try:
                 from ntfy_installer import _read_base_url, _read_upstream_relay, _detect_lan_ip
+                # v3.4.27: _detect_lan_ip now returns (ip, error_reason).
+                # Both are surfaced in the API response so the wizard's
+                # "LAN IP could not be auto-detected" warning can show the
+                # actual cause (typically ENETUNREACH from an install-time
+                # DHCP race) and the wizard's self-heal button can offer
+                # a one-click fix when re-detection now succeeds.
+                lan_ip, lan_ip_err = _detect_lan_ip()
                 current_config = {
                     "base_url": _read_base_url(),
                     "upstream_relay": _read_upstream_relay(),
-                    "detected_lan_ip": _detect_lan_ip(),
+                    "detected_lan_ip": lan_ip,
+                    "detected_lan_ip_error": lan_ip_err,
                 }
             except Exception:
                 pass

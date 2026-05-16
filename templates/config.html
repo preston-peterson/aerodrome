@@ -1,4 +1,4 @@
-<!-- Version: 3.4.26 -->
+<!-- Version: 3.4.27 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -696,15 +696,25 @@ function showOnboardingModal(opts) {
 
     // Localhost detection — phones can't reach localhost on your server.
     const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(displayBaseUrl);
+    // v3.4.27: surface the detection failure reason (typically ENETUNREACH
+    // from an install-time DHCP race) AND, when re-detection now succeeds,
+    // offer a one-click self-heal button that calls the shared
+    // nfFixLocalhostBaseUrl() helper. The button only appears when there's
+    // a valid detected IP to switch to; otherwise the user still gets the
+    // manual instructions.
+    const detectedLanIpErr = ntfyCfg.detected_lan_ip_error || '';
+    const _obCanSelfHeal = isLocalhost && !!detectedLanIp;
     const localhostWarning = isLocalhost
         ? `<div style="margin-top:8px;padding:8px 10px;background:rgba(245,158,11,.08);
                        border-left:2px solid var(--amber);border-radius:0 4px 4px 0;
                        font-size:11px;color:var(--t2);line-height:1.5">
-               ⚠ <strong>Base URL is pointing at localhost</strong> — your phone can't reach that.
-               ${detectedLanIp
-                   ? `Detected LAN IP: <code>${_escHtmlCfg(detectedLanIp)}</code>.
-                      Set the Base URL to <code>http://${_escHtmlCfg(detectedLanIp)}:2586</code>
-                      in the Server config box below this modal, then come back.`
+               ⚠ <strong>Base URL is pointing at localhost</strong> — your phone can't reach that.${detectedLanIpErr ? ' <span style="opacity:0.85">(' + _escHtmlCfg(detectedLanIpErr) + ')</span>' : ''}
+               ${_obCanSelfHeal
+                   ? `<div style="margin-top:6px">Detected LAN IP: <code>${_escHtmlCfg(detectedLanIp)}</code>.</div>
+                      <div style="margin-top:6px">
+                        <button type="button" id="_ob_selfheal_btn" class="btn btn-primary" style="font-size:11px;padding:4px 10px">Use ${_escHtmlCfg(detectedLanIp)} as base URL</button>
+                        <span id="_ob_selfheal_status" style="font-size:11px;color:var(--t3);margin-left:6px"></span>
+                      </div>`
                    : 'Set the Base URL to your LAN IP (or Tailscale / reverse-proxy URL) in the Server config box below this modal, then come back.'}
            </div>` : '';
 
@@ -861,6 +871,10 @@ function showOnboardingModal(opts) {
     const copySubBtn = modal.querySelector('#_ob_copy_sub');
     const testBtn = modal.querySelector('#_ob_test_btn');
     const testStatus = modal.querySelector('#_ob_test_status');
+    // v3.4.27: self-heal button only present when the localhost warning
+    // included one (isLocalhost + detected_lan_ip both truthy).
+    const selfhealBtn = modal.querySelector('#_ob_selfheal_btn');
+    const selfhealStatus = modal.querySelector('#_ob_selfheal_status');
 
     function dismiss() {
         document.removeEventListener('keydown', onKey);
@@ -874,6 +888,24 @@ function showOnboardingModal(opts) {
 
     copyBaseBtn.onclick = () => copyToClipboard(displayBaseUrl, copyBaseBtn);
     copySubBtn.onclick = () => copyToClipboard(subscriptionUrl, copySubBtn);
+
+    // v3.4.27: self-heal button — one-click fix for the install-time
+    // LAN-IP race. On success the modal closes and reopens so the URL
+    // fields + the (now-gone) localhost warning re-render from fresh
+    // ntfy status. Reopening preserves the firstRun/topic/ntfyVersion
+    // context the modal was originally opened with.
+    if (selfhealBtn && detectedLanIp) {
+        selfhealBtn.onclick = async () => {
+            await nfFixLocalhostBaseUrl(detectedLanIp, 2586, {
+                btn: selfhealBtn,
+                status: selfhealStatus,
+                onSuccess: () => {
+                    dismiss();
+                    showOnboardingModal(opts);
+                },
+            });
+        };
+    }
 
     // Test flow: fire the existing /api/notifications/test endpoint, then
     // poll /api/notifications/recent to see if delivery succeeded. The
@@ -1777,10 +1809,36 @@ function showNotificationsWizard(onClose) {
             // and surface a clear warning. The previous behavior showed `Server: localhost`
             // with help text saying "the server is your machine's LAN address" —
             // directly contradicting itself, since localhost is unreachable from a phone.
+            // v3.4.27: pull the auto-detection failure reason out of the cached
+            // ntfy status (set by _detect_lan_ip's tuple return) and surface it
+            // in the warning text. Also: if re-detection now succeeds (typical
+            // after the install-time DHCP race that originally caused the
+            // failure), offer a one-click button to rewrite server.yml with
+            // the freshly-detected LAN IP so the user doesn't have to hand-edit
+            // server.yml or paste into the Base URL field.
             const isLocalhostFallback = /^https?:\/\/(localhost|127\.0\.0\.1)/i.test(base);
+            const _wizNtfyCfg = (nfNtfyStatus && nfNtfyStatus.config) || {};
+            const wizDetectedIp = _wizNtfyCfg.detected_lan_ip || '';
+            const wizDetectErr = _wizNtfyCfg.detected_lan_ip_error || '';
+            const wizCanSelfHeal = isLocalhostFallback && !!wizDetectedIp;
+            const wizReasonLine = wizDetectErr
+                ? ` <span style="opacity:0.85">(${escapeAttr(wizDetectErr)})</span>` : '';
             const fallbackWarning = isLocalhostFallback ? `
                 <div style="margin:6px 0 10px;padding:8px 11px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.35);border-radius:6px;color:var(--amber);font-size:12px;line-height:1.5">
-                    <strong>LAN IP could not be auto-detected.</strong> Replace <code style="font-family:var(--mono);background:var(--bg0);padding:1px 4px;border-radius:3px">localhost</code> in the Server URL below with this machine's actual LAN address before subscribing — your phone can't reach <code style="font-family:var(--mono);background:var(--bg0);padding:1px 4px;border-radius:3px">localhost</code> from another device. Find your LAN IP with <code style="font-family:var(--mono);background:var(--bg0);padding:1px 4px;border-radius:3px">ip addr</code> on this machine.
+                    <strong>LAN IP could not be auto-detected${wizReasonLine ? '' : '.'}</strong>${wizReasonLine}
+                    ${wizCanSelfHeal ? `
+                        <div style="margin-top:8px;color:var(--t2)">
+                            Re-detection now succeeds: <code style="font-family:var(--mono);background:var(--bg0);padding:1px 4px;border-radius:3px">${escapeAttr(wizDetectedIp)}</code>. Fix it with one click:
+                        </div>
+                        <div style="margin-top:6px">
+                            <button type="button" id="_wiz_selfheal_btn" class="btn btn-primary" style="font-size:12px">Use ${escapeAttr(wizDetectedIp)} as base URL</button>
+                            <span id="_wiz_selfheal_status" style="font-size:11px;color:var(--t3);margin-left:8px"></span>
+                        </div>
+                    ` : `
+                        <div style="margin-top:6px;color:var(--t2)">
+                            Replace <code style="font-family:var(--mono);background:var(--bg0);padding:1px 4px;border-radius:3px">localhost</code> in the Server URL below with this machine's actual LAN address before subscribing — your phone can't reach <code style="font-family:var(--mono);background:var(--bg0);padding:1px 4px;border-radius:3px">localhost</code> from another device. Find your LAN IP with <code style="font-family:var(--mono);background:var(--bg0);padding:1px 4px;border-radius:3px">ip addr</code> on this machine.
+                        </div>
+                    `}
                 </div>
             ` : '';
             subscribeInstructions = `
@@ -1810,6 +1868,30 @@ function showNotificationsWizard(onClose) {
             `,
             footer: footerSkipBackNext({ nextLabel: 'Finish' }),
             wire: () => {
+                // v3.4.27: wire the self-heal button if the warning rendered one.
+                // wizDetectedIp + wizCanSelfHeal are closure-captured from the
+                // renderStep4 scope above. On success we re-render the step,
+                // which recomputes the warning state (now no longer localhost)
+                // and shows the corrected Server URL.
+                const healBtn = modal.querySelector('#_wiz_selfheal_btn');
+                if (healBtn && wizCanSelfHeal) {
+                    const healStatus = modal.querySelector('#_wiz_selfheal_status');
+                    healBtn.onclick = async () => {
+                        await nfFixLocalhostBaseUrl(wizDetectedIp, wiz.port, {
+                            btn: healBtn,
+                            status: healStatus,
+                            onSuccess: (newBaseUrl) => {
+                                // Recompute the wizard's subscribe URL from
+                                // the fresh base_url, then re-render step 4
+                                // so the warning vanishes and the Server line
+                                // shows the LAN IP instead of localhost.
+                                wiz.subscribeUrl = newBaseUrl.replace(/\/$/, '')
+                                                 + '/' + (wiz.topic || '');
+                                render();
+                            },
+                        });
+                    };
+                }
                 const testBtn = modal.querySelector('#_wiz_test');
                 const status = modal.querySelector('#_wiz_test_status');
                 const diag = modal.querySelector('#_wiz_test_diag');
@@ -3809,6 +3891,34 @@ async function loadNtfyStatus() {
         nfNtfyStatus = j;
         panel.innerHTML = _renderNtfyPanel(j);
 
+        // v3.4.27: wire the panel-level self-heal button if the localhost
+        // warning rendered one. Same shared helper as the wizard step 4
+        // and the phone setup modal use; on success reload the panel so
+        // the warning disappears and the base URL field reflects the new
+        // value.
+        const panelHealBtn = panel.querySelector('#nfPanelSelfhealBtn');
+        if (panelHealBtn) {
+            const panelHealStatus = panel.querySelector('#nfPanelSelfhealStatus');
+            const _cfg = j.config || {};
+            const _detectedIp = _cfg.detected_lan_ip || '';
+            if (_detectedIp) {
+                panelHealBtn.onclick = async () => {
+                    await nfFixLocalhostBaseUrl(_detectedIp, 2586, {
+                        btn: panelHealBtn,
+                        status: panelHealStatus,
+                        // loadNtfyStatus() inside the helper has already
+                        // refreshed nfNtfyStatus; re-render the panel from
+                        // it so the warning vanishes and the Base URL
+                        // input reflects the new value.
+                        onSuccess: () => {
+                            panel.innerHTML = _renderNtfyPanel(nfNtfyStatus);
+                            _refreshNfStateRow();
+                        },
+                    });
+                };
+            }
+        }
+
         // v2.41.3: show the ntfy logs card only when an ntfy service
         // exists (aerodrome_managed or external). For not_installed /
         // partial states there's nothing useful to show.
@@ -4083,13 +4193,27 @@ function _renderNtfyPanel(statusPayload) {
     const baseUrl = cfg.base_url || '';
     const upstreamRelay = cfg.upstream_relay !== false;  // default on
     const detectedIp = cfg.detected_lan_ip || '';
+    // v3.4.27: pull error reason for the warning, and gate the self-heal
+    // button on detectedIp being a real LAN address.
+    const detectedIpErr = cfg.detected_lan_ip_error || '';
+    const baseIsLocalhost = baseUrl && /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(baseUrl);
+    const panelCanSelfHeal = baseIsLocalhost && !!detectedIp;
     // Warn visibly if base-url is pointing at localhost — that guarantees
     // the phone can't reach it. See the v2.40.5 "How it works" README section.
-    const localhostWarning = (baseUrl && /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(baseUrl))
-        ? `<div style="color:var(--amber);font-size:11px;margin-top:4px">
-               ⚠ base-url points at localhost — phones won't be able to reach this server.
-               Change it to your LAN IP${detectedIp ? ` (detected: <code>${escapeAttr(detectedIp)}</code>)` : ''}
-               or a Tailscale / reverse-proxy URL.
+    const localhostWarning = baseIsLocalhost
+        ? `<div style="color:var(--amber);font-size:11px;margin-top:4px;line-height:1.5">
+               ⚠ base-url points at localhost — phones won't be able to reach this server.${detectedIpErr ? ' <span style="opacity:0.85">(auto-detection failed: ' + escapeAttr(detectedIpErr) + ')</span>' : ''}
+               ${panelCanSelfHeal
+                   ? `<div style="margin-top:6px">
+                        Re-detection now succeeds: <code>${escapeAttr(detectedIp)}</code>.
+                        <button type="button" id="nfPanelSelfhealBtn" class="btn btn-primary"
+                                style="font-size:11px;padding:3px 10px;margin-left:6px">Use ${escapeAttr(detectedIp)}</button>
+                        <span id="nfPanelSelfhealStatus" style="font-size:11px;color:var(--t3);margin-left:6px"></span>
+                      </div>`
+                   : `<div style="margin-top:4px">
+                        Change it to your LAN IP${detectedIp ? ` (detected: <code>${escapeAttr(detectedIp)}</code>)` : ''}
+                        or a Tailscale / reverse-proxy URL.
+                      </div>`}
            </div>` : '';
     return `
         <div>Installed — version <code>${escapeAttr(version)}</code>
@@ -4542,6 +4666,75 @@ async function nfInstallNtfy() {
     } finally {
         nfInstallInProgress = false;
         loadNtfyStatus();
+    }
+}
+
+// v3.4.27: shared self-heal for the install-time LAN-IP detection race.
+// When server.yml's base_url is localhost (because _detect_lan_ip threw
+// at install time, typically ENETUNREACH from a DHCP race) AND a fresh
+// detection now succeeds, the three localhost-warning surfaces (wizard
+// step 4, phone setup guide modal, Notifications panel state row) all
+// offer a "Use <detected IP> as base URL" button that calls this. It
+// hands off to the existing /api/ntfy/config endpoint which rewrites
+// server.yml + restarts ntfy.
+//
+// Args:
+//   detectedIp — string, e.g. "192.168.88.198"
+//   port       — int (default 2586)
+//   uiHooks    — { btn, status, onSuccess } DOM refs/callback. btn is
+//                disabled during the request. status (a span) shows
+//                progress / error text. onSuccess is called after a
+//                successful update + status refresh, lets the caller
+//                trigger its own re-render (the wizard re-renders
+//                step 4; the legacy modal closes; the panel reloads).
+async function nfFixLocalhostBaseUrl(detectedIp, port, uiHooks) {
+    port = port || 2586;
+    uiHooks = uiHooks || {};
+    const { btn, status, onSuccess } = uiHooks;
+    const newUrl = 'http://' + detectedIp + ':' + port;
+    if (btn) btn.disabled = true;
+    if (status) {
+        status.textContent = 'Updating server.yml…';
+        status.style.color = 'var(--t3)';
+    }
+    try {
+        const r = await fetch('/api/ntfy/config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({base_url: newUrl}),
+        });
+        const j = await r.json();
+        if (!j.ok) {
+            if (status) {
+                status.style.color = 'var(--red)';
+                status.textContent = '⚠ ' + (j.error || j.message || 'Update failed');
+            }
+            if (btn) btn.disabled = false;
+            return false;
+        }
+        // Set the success status BEFORE refreshing state. loadNtfyStatus()
+        // rewrites the Notifications panel.innerHTML when called from the
+        // panel-button caller, which would destroy this status span before
+        // the user could see the success flash. Setting the message first
+        // means the user sees ✓ momentarily even when the caller's own
+        // re-render replaces the surrounding DOM.
+        if (status) {
+            status.style.color = 'var(--green)';
+            status.textContent = '✓ Base URL set to ' + newUrl;
+        }
+        // Refresh cached ntfy status so callers see the new base_url.
+        await loadNtfyStatus();
+        if (typeof onSuccess === 'function') {
+            try { onSuccess(newUrl); } catch (e) { /* caller's problem */ }
+        }
+        return true;
+    } catch (e) {
+        if (status) {
+            status.style.color = 'var(--red)';
+            status.textContent = '⚠ ' + (e.message || 'Network error');
+        }
+        if (btn) btn.disabled = false;
+        return false;
     }
 }
 

@@ -53,7 +53,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import requests
 
@@ -482,37 +482,86 @@ WantedBy=multi-user.target
 """
 
 
-def _detect_lan_ip() -> Optional[str]:
-    """Return a best-guess LAN IP for this host, or None if we can't
-    figure one out. This is used as the default base-url at install time
-    so the phone app can reach the ntfy server without pointing at
-    'localhost' (which would mean the phone itself). The user can always
-    override this in the Notifications config UI later.
+def _detect_lan_ip() -> Tuple[Optional[str], Optional[str]]:
+    """Return (ip, error_reason) — best-guess LAN IP for this host, or
+    (None, reason_string) if we can't figure one out. This is used as
+    the default base-url at install time so the phone app can reach
+    the ntfy server without pointing at 'localhost' (which would mean
+    the phone itself). The user can always override this in the
+    Notifications config UI later.
 
     Strategy: open a UDP socket to a non-routable address and ask which
     local interface the kernel would use. This doesn't actually send any
     packets — it's a pure routing-table lookup. Works on Linux, macOS,
-    and any system with a default route. Returns None on systems with
-    no default route configured (rare for a server), in which case the
-    caller should fall back to 'localhost' and let the user fix it up.
+    and any system with a default route.
 
-    Known limitation: on multi-homed hosts (Tailscale + Ethernet +
-    Docker bridge), the IP returned is "whatever the default route
-    points at," which may not be the LAN the phone is on. This is why
-    we always show the detected value in the install modal and let the
-    user override.
+    v3.4.27 changes (after an install-time race surfaced this):
+
+    * Retry with backoff. The previous one-shot version returned None
+      whenever it happened to be called before networking had settled —
+      most notably during a fresh-install bootstrap where the wizard
+      fires POST /api/ntfy/install within seconds of DHCP coming up.
+      We now retry up to 3 times with 500ms gaps (1.5s total worst
+      case), which closes the DHCP-race window without papering over
+      genuine no-network situations.
+
+    * Filter pathological results. Some configurations cause connect()
+      to "succeed" with a source IP of 0.0.0.0, 127.x.x.x (loopback),
+      or 169.254.x.x (link-local autoconf). None of those are usable
+      as a base-url for phone clients, so we treat them like detection
+      failures and either retry or give up.
+
+    * Return the actual exception text. The previous bare `except`
+      hid which error fired (ENETUNREACH? gaierror? something else?).
+      Returning (None, reason) lets /api/ntfy/status surface that
+      reason in the wizard's warning text, so future debug doesn't
+      need an ssh session and a one-liner Python repro.
+
+    Known limitation (unchanged): on multi-homed hosts (Tailscale +
+    Ethernet + Docker bridge), the IP returned is "whatever the default
+    route points at," which may not be the LAN the phone is on. The
+    user can always override in the Notifications config UI.
     """
     import socket
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    import time
+
+    last_error: Optional[str] = None
+    for attempt in range(3):
         try:
-            # 10.254.254.254 is non-routable TEST-NET-2; never sends anything
-            s.connect(("10.254.254.254", 1))
-            return s.getsockname()[0]
-        finally:
-            s.close()
-    except Exception:
-        return None
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                # 10.254.254.254 is unreachable in any normal config; the
+                # kernel still does a route lookup to decide a source IP.
+                s.connect(("10.254.254.254", 1))
+                ip = s.getsockname()[0]
+            finally:
+                s.close()
+
+            # Filter pathological "successes" — these are technically valid
+            # getsockname() results but useless as a phone-reachable URL.
+            if not ip:
+                last_error = "getsockname returned empty"
+            elif ip == "0.0.0.0":
+                last_error = "kernel returned 0.0.0.0 (no usable interface)"
+            elif ip.startswith("127."):
+                last_error = f"kernel returned loopback {ip} (no usable interface)"
+            elif ip.startswith("169.254."):
+                last_error = f"kernel returned link-local {ip} (DHCP not yet bound)"
+            else:
+                return (ip, None)
+        except OSError as e:
+            # The interesting one is ENETUNREACH ([Errno 101] Network is
+            # unreachable) — typically means we ran before DHCP finished
+            # bringing up the default route. Other OSErrors land here too.
+            last_error = f"[{type(e).__name__}: errno {e.errno}] {e.strerror or str(e)}"
+        except Exception as e:
+            last_error = f"[{type(e).__name__}] {e}"
+
+        # Backoff before retrying — but not after the last attempt.
+        if attempt < 2:
+            time.sleep(0.5)
+
+    return (None, last_error or "unknown error")
 
 
 def _server_yml_text(port: int, bind: str, cache_dir: str,
@@ -539,7 +588,7 @@ def _server_yml_text(port: int, bind: str, cache_dir: str,
     # localhost won't work because localhost-on-the-phone isn't the
     # server. Auto-detect LAN IP as the default.
     if base_url is None:
-        lan_ip = _detect_lan_ip()
+        lan_ip, lan_ip_err = _detect_lan_ip()
         if lan_ip:
             base_url = f"http://{lan_ip}:{port}"
             base_url_comment = (
@@ -549,11 +598,19 @@ def _server_yml_text(port: int, bind: str, cache_dir: str,
             )
         else:
             base_url = f"http://localhost:{port}"
+            # v3.4.27: include the actual detection failure reason in the
+            # config file comment so a sysadmin reading server.yml directly
+            # can see WHY auto-detection failed (typically an install-time
+            # network race: ENETUNREACH because DHCP hadn't finished).
+            err_line = f"# Detection failure: {lan_ip_err}\n" if lan_ip_err else ""
             base_url_comment = (
                 "# WARNING: could not auto-detect a LAN IP. Using localhost means\n"
                 "# phones CANNOT reach this server. Change base-url to something\n"
                 "# reachable from your phone, e.g. http://<server-lan-ip>:{port}\n"
-                "# or a Tailscale/reverse-proxy URL.".format(port=port)
+                "# or a Tailscale/reverse-proxy URL.\n"
+                "{err}# (Aerodrome's Notifications UI may offer a one-click fix if\n"
+                "# re-detection now succeeds — see the wizard at /config.)"
+                .format(port=port, err=err_line)
             )
     else:
         base_url_comment = "# base-url set via install options."
