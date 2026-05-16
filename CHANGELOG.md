@@ -19,6 +19,20 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.29] — 2026-05-16
+
+### Changed
+- **The Notifications page now shows the server-side and phone-side URLs separately when they differ.** Aerodrome's notifications architecture has always used two URLs for two different consumers: `notifications.url` (in `config.yaml`) is what the Aerodrome server itself uses to POST notifications to ntfy — for a local install, that's a `localhost` URL because both run on the same box — and the `base-url` in `/etc/ntfy/server.yml` is what the phone subscribes to, which has to be a LAN-reachable URL like `http://192.168.88.198:2586`. Until now the page only displayed the first one prominently (*"Sending to http://localhost:2586/..."*), which looked broken to anyone wondering how their phone could possibly reach localhost on the server. v3.4.29 changes that: when the conditions for the split apply (aerodrome-managed local ntfy is running, `notifications.url` is a localhost URL, and `server.yml`'s base-url is a non-localhost URL), the status row labels both — *"Aerodrome posts to: http://localhost:2586/..."* and *"Your phone subscribes: http://192.168.88.198:2586/..."* The form below relabels the ntfy URL field as *"(server-side)"* with hint text explaining that localhost is fine because both processes run on the same machine, and adds a read-only *"Phone subscribe URL"* row that mirrors the same URL the status row shows — so users can copy/paste it directly into their ntfy mobile app. For external-ntfy setups (ntfy.sh, custom servers, Tailscale tunnels), nothing changes — there's only one URL involved and the page presents it as before.
+
+- **The Public URL for tap actions placeholder is now dynamic.** The previous placeholder was a hard-coded `http://aerodrome.local:8000`, which only works on networks where mDNS is broadcasting that hostname AND the phone resolves `.local` names (uncommon on most home routers, broken with VPN or private-DNS active). When ntfy status has loaded and includes a detected LAN IP, the placeholder now shows the actual usable URL (e.g. `http://192.168.88.89:8000`). When detection isn't available yet, the placeholder shows `http://your-server-ip:8000` — clearly a template the user is meant to replace, not a literal value to type. The same change applies to the comment example in `config.yaml.example` so the hint stays consistent whether a user reads the YAML directly or the UI placeholder.
+
+- **The form-grid refreshes the URL pieces when ntfy status loads.** The form is rendered once per Notifications-tab visit, but the data that determines the split state (`detected_lan_ip`, `base_url`) loads asynchronously after the page lays out. v3.4.29 adds a targeted DOM update (`_refreshNfFormGridUrls`) that fires from `loadNtfyStatus`'s success path. It shows or hides the Phone subscribe URL row based on current state, sets that row's value to the freshly-computed phone URL, and updates the Public URL placeholder. No section re-render — the user's in-progress edits (typing in the ntfy URL field, etc.) are not disrupted.
+
+### Operational notes
+- No config migration needed. The `notifications.url` value is unchanged from what previous versions wrote at install time. The only differences are presentation (status row, form labels) and a dynamic placeholder.
+- Existing installs that were correctly configured before will keep working without any action. Existing installs where `notifications.url` was hand-edited away from the default localhost form will still see the single-URL display (the split only triggers when the *exact* conditions apply: aerodrome-managed ntfy + localhost notifications.url + non-localhost base_url).
+- The read-only Phone subscribe URL field is a display, not an editor — its value is derived from `server.yml`'s `base-url` and the topic. Editing the underlying URL still happens via the Base URL field in the Local ntfy server panel, the same place it has always lived.
+
 ## [3.4.28] — 2026-05-16
 
 ### Removed

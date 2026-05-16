@@ -1,4 +1,4 @@
-<!-- Version: 3.4.28 -->
+<!-- Version: 3.4.29 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2538,6 +2538,45 @@ function sectionNotifications() {
     // v2.50.31: capacity-alert thresholds. Defaults mirror capacity.py.
     const cap = n.capacity || {};
 
+    // v3.4.29 (option C): compute the "split state" — whether to surface the
+    // server-side-vs-phone-side URL distinction in the labels and add a
+    // read-only Phone subscribe URL row. Mirrors the logic in
+    // _renderNfStateRow's enabled branch. The form-grid is rendered once at
+    // section-render time, so loadNtfyStatus does targeted DOM updates
+    // (visibility + value) when fresh status arrives — see the
+    // nfPhoneSubscribeLabel / nfPhoneSubscribeField wiring there.
+    const ntfyCfg = (nfNtfyStatus && nfNtfyStatus.config) || {};
+    const ntfyState = nfNtfyStatus?.status?.state;
+    const detectedIp = ntfyCfg.detected_lan_ip || '';
+    const phoneBaseUrl = (ntfyCfg.base_url || '').replace(/\/$/, '');
+    const currentUrl = (n.url || '').trim();
+    const isLocalPost = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(currentUrl);
+    const phoneUrlNonLocal = phoneBaseUrl &&
+                             !/^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(phoneBaseUrl);
+    const showSplit = ntfyState === 'aerodrome_managed' && isLocalPost && phoneUrlNonLocal;
+
+    let phoneSubscribeUrl = '';
+    if (showSplit && currentUrl) {
+        const topic = currentUrl.replace(/^https?:\/\/[^\/]+\/?/, '');
+        phoneSubscribeUrl = topic ? `${phoneBaseUrl}/${topic}` : phoneBaseUrl;
+    }
+
+    // v3.4.29: dynamic placeholder for public_url. The old hard-coded
+    // "http://aerodrome.local:8000" implied mDNS broadcasting that hostname,
+    // which is uncommon on most home routers and unreliable on phones with
+    // VPN or private-DNS configured. Use the actual detected LAN IP when we
+    // have it; fall back to a clearly-generic template when we don't.
+    const publicUrlPlaceholder = detectedIp
+        ? `http://${detectedIp}:8000`
+        : 'http://your-server-ip:8000';
+
+    const ntfyUrlLabel = showSplit
+        ? 'ntfy URL <span style="color:var(--t3);font-weight:normal;font-size:11px">(server-side)</span>'
+        : 'ntfy URL';
+    const ntfyUrlHint = showSplit
+        ? 'The URL Aerodrome uses to post to its local ntfy. Localhost is fine &mdash; both run on the same box.'
+        : '"https://ntfy.sh/your-topic" or "http://localhost:2586/your-topic"';
+
     return `
     <div class="section">
         <div class="section-head">
@@ -2619,14 +2658,21 @@ function sectionNotifications() {
              Enabled checkbox in one form-grid; the checkbox moved into
              the state button row above, so these stand alone now. -->
         <div class="form-grid">
-            ${field({label:'ntfy URL',
-                     hint:'"https://ntfy.sh/your-topic" or "http://localhost:2586/your-topic"',
+            ${field({label: ntfyUrlLabel,
+                     hint: ntfyUrlHint,
                      path:'notifications.url',
                      placeholder:'https://ntfy.sh/aerodrome-abc123'})}
+            <div class="form-label" id="nfPhoneSubscribeLabel" style="${showSplit ? '' : 'display:none'}">
+                <span class="form-label-name">Phone subscribe URL <span style="color:var(--t3);font-weight:normal;font-size:11px">(read-only)</span></span>
+                <span class="form-label-hint">Give this URL to the ntfy mobile app. Edit the underlying base-url in the Local ntfy server panel above.</span>
+            </div>
+            <div class="form-field" id="nfPhoneSubscribeField" style="${showSplit ? '' : 'display:none'}">
+                <input type="text" id="nfPhoneSubscribeInput" class="form-input" value="${escapeAttr(phoneSubscribeUrl)}" readonly style="opacity:0.85;cursor:default;font-family:var(--mono)" onclick="this.select()">
+            </div>
             ${field({label:'Public URL for tap actions',
                      hint:'Where your phone can reach Aerodrome (LAN, Tailscale, or reverse-proxy URL). Leave blank to disable tap-to-open on notifications.',
                      path:'notifications.public_url',
-                     placeholder:'http://aerodrome.local:8000'})}
+                     placeholder: publicUrlPlaceholder})}
             ${field({label:'Default priority', path:'notifications.priority', type:'select', options:[
                 {value:'min', label:'min — silent'},
                 {value:'low', label:'low — silent, in tray'},
@@ -2983,6 +3029,16 @@ async function loadNtfyStatus() {
         // pre-v3.4.19 _updateNotificationsEnabledGate which only managed
         // the now-removed Enabled checkbox.
         _refreshNfStateRow();
+
+        // v3.4.29: targeted updates for the Notifications form-grid that
+        // depend on fresh ntfy status. The form is rendered once at
+        // sectionNotifications() time, so we DOM-update the bits that may
+        // be stale: the Phone subscribe URL row's visibility + value
+        // (option C — show the LAN-IP-based phone URL when the localhost
+        // URL is what's posted), and the Public URL input's placeholder
+        // (now uses detected_lan_ip instead of the old aerodrome.local
+        // hint that fails on most home routers without mDNS broadcasting).
+        _refreshNfFormGridUrls();
     } catch (e) {
         panel.innerHTML = `<span style="color:var(--red)">Error: ${escapeAttr(e.message)}</span>`;
         // v3.4.19: refresh state row from working-config-only data so the
@@ -2990,6 +3046,47 @@ async function loadNtfyStatus() {
         // We lose the localhost-but-no-ntfy detection, but enabled/disabled
         // from the config flag still renders correctly.
         _refreshNfStateRow();
+    }
+}
+
+// v3.4.29: update the Notifications form-grid pieces that depend on a
+// fresh ntfy status (detected_lan_ip + base_url). Called from
+// loadNtfyStatus after nfNtfyStatus is populated. No-op when the
+// Notifications section isn't currently rendered.
+function _refreshNfFormGridUrls() {
+    const phoneLabel = document.getElementById('nfPhoneSubscribeLabel');
+    const phoneField = document.getElementById('nfPhoneSubscribeField');
+    const phoneInput = document.getElementById('nfPhoneSubscribeInput');
+    const publicUrlInput = document.querySelector('input[data-path="notifications.public_url"]');
+    if (!phoneLabel && !publicUrlInput) return;  // not on Notifications tab
+
+    const ntfyCfg = (nfNtfyStatus && nfNtfyStatus.config) || {};
+    const ntfyState = nfNtfyStatus?.status?.state;
+    const detectedIp = ntfyCfg.detected_lan_ip || '';
+    const phoneBaseUrl = (ntfyCfg.base_url || '').replace(/\/$/, '');
+    const currentUrl = (workingConfig?.notifications?.url || '').trim();
+    const isLocalPost = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(currentUrl);
+    const phoneUrlNonLocal = phoneBaseUrl &&
+                             !/^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(phoneBaseUrl);
+    const showSplit = ntfyState === 'aerodrome_managed' && isLocalPost && phoneUrlNonLocal;
+
+    if (phoneLabel && phoneField && phoneInput) {
+        if (showSplit) {
+            const topic = currentUrl.replace(/^https?:\/\/[^\/]+\/?/, '');
+            const phoneSubscribeUrl = topic ? `${phoneBaseUrl}/${topic}` : phoneBaseUrl;
+            phoneInput.value = phoneSubscribeUrl;
+            phoneLabel.style.display = '';
+            phoneField.style.display = '';
+        } else {
+            phoneLabel.style.display = 'none';
+            phoneField.style.display = 'none';
+        }
+    }
+
+    if (publicUrlInput) {
+        publicUrlInput.placeholder = detectedIp
+            ? `http://${detectedIp}:8000`
+            : 'http://your-server-ip:8000';
     }
 }
 
@@ -3061,7 +3158,39 @@ function _renderNfStateRow() {
             + 'background:var(--green);box-shadow:0 0 8px rgba(34,197,94,0.4);'
             + 'margin-right:12px;flex-shrink:0"></span>';
         title = 'Notifications enabled';
-        desc = `Sending to <code style="font-family:var(--mono);color:var(--t1);background:var(--bg2);padding:1px 5px;border-radius:3px;font-size:11px">${escapeAttr(url)}</code>`;
+
+        // v3.4.29 (option C): when an aerodrome-managed local ntfy is
+        // installed AND notifications.url is a localhost URL (the URL
+        // Aerodrome's own server uses to POST to its local ntfy, which is
+        // fine since they're on the same box), AND server.yml's base_url
+        // is a non-localhost URL (which is what phones use to subscribe),
+        // show BOTH URLs labeled. Previously the displayed URL was just
+        // the localhost form, which looked broken to anyone wondering
+        // "how does my phone reach localhost on the server?"
+        const ntfyCfg = (nfNtfyStatus && nfNtfyStatus.config) || {};
+        const ntfyState = nfNtfyStatus?.status?.state;
+        const phoneBaseUrl = (ntfyCfg.base_url || '').replace(/\/$/, '');
+        const isLocalPost = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(url);
+        const phoneUrlNonLocal = phoneBaseUrl &&
+                                 !/^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(phoneBaseUrl);
+        const showSplit = ntfyState === 'aerodrome_managed' && isLocalPost && phoneUrlNonLocal;
+
+        const codeStyle = 'font-family:var(--mono);color:var(--t1);background:var(--bg2);padding:1px 5px;border-radius:3px;font-size:11px';
+
+        if (showSplit) {
+            // Reconstruct the phone subscribe URL from base_url + topic.
+            // Topic is whatever comes after host[:port]/ in the localhost URL.
+            const topic = url.replace(/^https?:\/\/[^\/]+\/?/, '');
+            const phoneSubscribeUrl = topic ? `${phoneBaseUrl}/${topic}` : phoneBaseUrl;
+            const labelStyle = 'color:var(--t3);font-size:11px;display:inline-block;min-width:150px';
+            desc = `<div style="display:flex;flex-direction:column;gap:3px;margin-top:1px">`
+                 + `<div><span style="${labelStyle}">Aerodrome posts to</span><code style="${codeStyle}">${escapeAttr(url)}</code></div>`
+                 + `<div><span style="${labelStyle}">Your phone subscribes</span><code style="${codeStyle}">${escapeAttr(phoneSubscribeUrl)}</code></div>`
+                 + `</div>`;
+        } else {
+            desc = `Sending to <code style="${codeStyle}">${escapeAttr(url)}</code>`;
+        }
+
         btnLabel = 'Disable';
         btnClass = 'btn';
         btnAction = 'nfStateClickDisable()';

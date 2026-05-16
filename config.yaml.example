@@ -1,5 +1,5 @@
 # =============================================================================
-# Version: 3.4.28
+# Version: 3.4.29
 # Aerodrome — Example/Reference Configuration
 # =============================================================================
 # This is the canonical default config shipped with each Aerodrome release.
@@ -256,7 +256,8 @@ notifications:
   # airplanes.live directly.
   #
   # If your phone is on the same LAN as Aerodrome, this is typically
-  # http://aerodrome.local:8000 or http://<server-ip>:8000. If you
+  # http://<server-ip>:8000 — replace <server-ip> with the LAN IP of the
+  # box running Aerodrome (find it with `ip addr` on Linux). If you
   # reach Aerodrome via Tailscale, WireGuard, or a reverse proxy, use
   # that URL instead. Leave blank if your phone can't reach Aerodrome
   # directly — notifications still fire, they just won't have the tap
