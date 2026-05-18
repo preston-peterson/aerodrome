@@ -1,4 +1,4 @@
-<!-- Version: 3.4.30 -->
+<!-- Version: 3.4.31 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -575,9 +575,9 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
 }
 .map-altitude-legend .gradient {
     flex:1; height:8px; border-radius:2px;
-    /* Match the JS altitude→color ramp. Roughly: green at ground,
-       yellow at ~10kft, orange at ~25kft, red at ~40kft+. Pulled
-       from the perceptually-ordered "turbo"-ish ramp the JS uses. */
+    /* Match the BIN_COLORS array in loadPositions() — green at ground,
+       yellow at ~10kft, orange at ~25kft, red at ~40kft+. Same six
+       perceptually-ordered stops the JS uses for polyline segments. */
     background:linear-gradient(to right,
         #22c55e 0%, #84cc16 20%, #eab308 40%,
         #f97316 60%, #ef4444 80%, #dc2626 100%);
@@ -1759,7 +1759,7 @@ function toggleMapTheme() {
 
 let _posMapState = {
     map: null,           // Leaflet Map instance once initialized
-    dotsLayer: null,     // L.layerGroup of circleMarkers, replaced per fetch
+    tracksLayer: null,   // v3.4.31: L.layerGroup of polyline segments + orphan dots, replaced per fetch
     receiverMarker: null,
     canvasRenderer: null,
     icao: null,
@@ -1776,24 +1776,12 @@ let _posMapState = {
     currentTheme: 'dark',
 };
 
-// Altitude → color. Perceptually-ordered green→yellow→orange→red ramp
-// matching the .map-altitude-legend gradient in the page CSS. Standard
-// flight-tracking convention: warm colors near the ground, cool colors
-// at cruise. Null altitude (some sightings have lat/lon without
-// altitude) renders as ground-color since "no altitude reported"
-// usually correlates with surface or low-altitude regimes.
-function altToColor(alt) {
-    if (alt == null) return '#22c55e'; // ground/no-data → green
-    // Clamp to legend range. Stops chosen to match common flight-level
-    // bands: 0-1k taxi/ground, 1-10k climb, 10-25k mid, 25-35k high,
-    // 35-45k cruise, 45k+ rare.
-    if (alt < 1000)   return '#22c55e';  // green
-    if (alt < 10000)  return '#84cc16';  // green-yellow
-    if (alt < 25000)  return '#eab308';  // yellow
-    if (alt < 35000)  return '#f97316';  // orange
-    if (alt < 45000)  return '#ef4444';  // red
-    return '#dc2626';                    // dark red
-}
+// v3.4.31: altToColor() function was removed. It used to do alt→color
+// directly for the per-position dot renderer. The new line renderer
+// uses a BIN_COLORS array inside loadPositions() with hysteresis-aware
+// binning, so the single mapping function is no longer needed. If any
+// future caller needs alt→color independently, build it from
+// BIN_THRESHOLDS + BIN_COLORS in the rendering block below.
 
 function initPositionMap(icao) {
     const block = document.getElementById('positionMapBlock');
@@ -1989,35 +1977,131 @@ async function loadPositions(window) {
         _posMapState.map.addControl(new ThemeControl());
     }
 
-    // Replace dots layer. Remove the previous group (if any), build a
-    // fresh one from the new positions, add it. Each position becomes
-    // a small circleMarker rendered on the canvas — radius 3 with
-    // full opacity so dots stay distinct when many cluster together.
-    // v3.4.17: switched from radius 4 / fillOpacity 0.7 to radius 3 /
-    // fillOpacity 1.0. The previous translucent setting was intended
-    // to convey density via opacity buildup, but with hundreds of
-    // overlapping dots at zoom-out the buildup saturated into a
-    // featureless bright wash that lost both per-dot detail AND the
-    // density signal it was supposed to communicate. Solid dots at
-    // smaller radius keep each position individually visible at any
-    // zoom and any density.
-    if (_posMapState.dotsLayer) {
-        _posMapState.dotsLayer.removeFrom(_posMapState.map);
-        _posMapState.dotsLayer = null;
+    // v3.4.31: replaced per-point dots with multi-color polyline segments.
+    // Each segment is colored by its ending point's altitude bin (sharp
+    // transition at the upper endpoint when the aircraft crosses a
+    // band). The line BREAKS at any time gap exceeding GAP_THRESHOLD_SEC
+    // — drawing a connecting line across a coverage gap would imply a
+    // path that didn't actually happen. 500 ft hysteresis at each bin
+    // boundary prevents flicker when altitude wobbles within ±250 ft of
+    // a threshold during steady cruise. Single-point orphans (no
+    // neighbor inside the gap threshold on either side) fall back to a
+    // small dot at their bin color so isolated points remain visible.
+    //
+    // History note: pre-v3.4.31 this block rendered each position as a
+    // separate L.circleMarker on the canvas. That worked but didn't
+    // convey the path SHAPE — the eye had to assemble the track from a
+    // cloud of dots. The line rendering shows the shape directly while
+    // keeping per-point altitude information via segment color.
+
+    const GAP_THRESHOLD_SEC = 120;
+    const HYSTERESIS_FT = 500;
+
+    // Bin thresholds and colors. Six bins, five thresholds between
+    // them. These define both the visual encoding here AND the gradient
+    // shown in the .map-altitude-legend strip in the page CSS — any
+    // change here must be mirrored in that gradient's stops (and vice
+    // versa) or the legend will drift from the colors on the map.
+    const BIN_THRESHOLDS = [1000, 10000, 25000, 35000, 45000];
+    const BIN_COLORS = ['#22c55e', '#84cc16', '#eab308', '#f97316', '#ef4444', '#dc2626'];
+
+    function _rawBin(alt) {
+        if (alt == null) return 0;
+        for (let i = 0; i < BIN_THRESHOLDS.length; i++) {
+            if (alt < BIN_THRESHOLDS[i]) return i;
+        }
+        return BIN_THRESHOLDS.length;
     }
-    const dots = [];
+
+    function _binWithHysteresis(alt, prevBin) {
+        const raw = _rawBin(alt);
+        if (prevBin === undefined || raw === prevBin) return raw;
+        const buffer = HYSTERESIS_FT / 2;
+        if (raw > prevBin) {
+            // Going up: only transition once alt >= boundary + buffer.
+            const boundary = BIN_THRESHOLDS[prevBin];
+            return alt >= boundary + buffer ? raw : prevBin;
+        } else {
+            // Going down: only transition once alt <= boundary - buffer.
+            const boundary = BIN_THRESHOLDS[raw];
+            return alt <= boundary - buffer ? raw : prevBin;
+        }
+    }
+
+    if (_posMapState.tracksLayer) {
+        _posMapState.tracksLayer.removeFrom(_posMapState.map);
+        _posMapState.tracksLayer = null;
+    }
+
+    // Pre-compute the hysteresis-adjusted bin for each position.
+    const binned = [];
+    let prevBin;
     for (const p of data.positions) {
         const [seenAt, lat, lon, alt] = p;
-        const dot = L.circleMarker([lat, lon], {
-            renderer: _posMapState.canvasRenderer,
-            radius: 3,
-            fillColor: altToColor(alt),
-            fillOpacity: 1.0,
-            stroke: false,
-        });
-        dots.push(dot);
+        const bin = _binWithHysteresis(alt, prevBin);
+        binned.push({ seenAt, lat, lon, alt, bin });
+        prevBin = bin;
     }
-    _posMapState.dotsLayer = L.layerGroup(dots).addTo(_posMapState.map);
+
+    // Walk consecutive pairs. Build polylines: each is a run of
+    // same-colored consecutive segments. Time-gap breaks close the
+    // current polyline; bin changes start a new polyline that shares
+    // its starting vertex with the previous one (so the visual line
+    // stays continuous across the color transition).
+    const polylines = [];
+    let cur = null;
+    for (let i = 1; i < binned.length; i++) {
+        const prev = binned[i - 1];
+        const here = binned[i];
+        const timeGap = here.seenAt - prev.seenAt;
+        if (timeGap > GAP_THRESHOLD_SEC) {
+            cur = null;
+            continue;
+        }
+        const color = BIN_COLORS[here.bin];
+        if (cur === null || cur.color !== color) {
+            cur = { color, points: [[prev.lat, prev.lon], [here.lat, here.lon]] };
+            polylines.push(cur);
+        } else {
+            cur.points.push([here.lat, here.lon]);
+        }
+    }
+
+    // Detect orphan points — no neighbor within the gap threshold on
+    // either side. Fall back to a small dot so isolated points stay
+    // visible. Without this, a single position surrounded by long
+    // gaps would render as nothing.
+    const orphanDots = [];
+    for (let i = 0; i < binned.length; i++) {
+        const p = binned[i];
+        const prev = i > 0 ? binned[i - 1] : null;
+        const next = i < binned.length - 1 ? binned[i + 1] : null;
+        const prevConnected = prev && (p.seenAt - prev.seenAt) <= GAP_THRESHOLD_SEC;
+        const nextConnected = next && (next.seenAt - p.seenAt) <= GAP_THRESHOLD_SEC;
+        if (!prevConnected && !nextConnected) {
+            orphanDots.push(L.circleMarker([p.lat, p.lon], {
+                renderer: _posMapState.canvasRenderer,
+                radius: 2.5,
+                fillColor: BIN_COLORS[p.bin],
+                fillOpacity: 1.0,
+                stroke: false,
+            }));
+        }
+    }
+
+    const layers = [];
+    for (const poly of polylines) {
+        layers.push(L.polyline(poly.points, {
+            renderer: _posMapState.canvasRenderer,
+            color: poly.color,
+            weight: 2.5,
+            opacity: 1.0,
+            lineCap: 'round',
+            lineJoin: 'round',
+        }));
+    }
+    layers.push(...orphanDots);
+    _posMapState.tracksLayer = L.layerGroup(layers).addTo(_posMapState.map);
 
     // Auto-fit bounds: include receiver + all dots. If there are no
     // dots in this window, just keep the existing view (don't fitBounds

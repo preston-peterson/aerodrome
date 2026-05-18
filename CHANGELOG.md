@@ -19,6 +19,25 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.31] — 2026-05-18
+
+### Changed
+- **The aircraft details map now draws each aircraft's track as a multi-color line instead of a cloud of per-point dots.** Same data underneath — every position sample from the ADS-B history feed — but rendered as connected polyline segments rather than discrete circle markers. The line color encodes altitude on the same six-stop ramp the page's altitude legend uses, so a glance tells you both the path the aircraft took and what altitude band it was in at every point. Climb, cruise, and descent phases read directly from the color transitions; the path shape reads from the line itself instead of having to be assembled mentally from a dotted cloud. The altitude legend strip below the map is unchanged — it was already the legend for these colors, just now it's a legend for the line instead of for the dots.
+
+- **The line breaks honestly across coverage gaps.** When the time between two consecutive position samples exceeds 120 seconds (the default ADS-B coverage-loss threshold for this rendering), the line stops at the last in-coverage point and resumes at the next one — it does not draw a connecting segment across the gap. Drawing across would imply a path the aircraft didn't actually fly. Two minutes between samples means real coverage loss in normal operation (most aircraft sample every 5-30 seconds when in range); the threshold is conservative enough to not break the line for momentary dropouts, strict enough to catch real terrain or over-horizon losses. If you have a single isolated position with no neighbors within the gap threshold on either side, it falls back to a small dot at its bin color so it remains visible.
+
+- **Altitude bin transitions use a 500 ft hysteresis to prevent flicker.** ADS-B altitude readings can wobble ±100 ft even during steady cruise. Without hysteresis, an aircraft cruising at FL299 (29,900 ft) would flicker between the orange and red bins on every other sample, producing a visually noisy striped line that doesn't reflect actual altitude behavior. The fix: transitioning to a higher bin requires the altitude to cross the boundary plus 250 ft; transitioning to a lower bin requires crossing it minus 250 ft. Net effect: 500 ft of deadband at each of the five bin thresholds (1000 / 10000 / 25000 / 35000 / 45000 ft). Smooth color transitions where the aircraft actually changed altitude bands; no flicker at boundaries where it didn't.
+
+### Behind the scenes
+- The new rendering replaces `dotsLayer` in `_posMapState` with `tracksLayer`, an `L.layerGroup` containing one or more `L.polyline` instances plus any orphan `L.circleMarker` fallbacks. The Leaflet canvas renderer (`L.canvas({ padding: 0.5 })`) handles polylines as efficiently as it handled circle markers, so the change is performance-neutral or slightly favorable: typical flight tracks produce 4-8 polyline segments versus N circle markers for N samples.
+- The `altToColor()` function that mapped altitudes to colors for the dot renderer is removed; its replacement is the `BIN_THRESHOLDS` + `BIN_COLORS` arrays inside `loadPositions()`, which the new hysteresis-aware binning uses directly. The `.map-altitude-legend` gradient in the page CSS retains the same six color stops it has since v3.4.x — that's the visual contract between the rendering and the legend, and it didn't need to move.
+- Each segment's color is determined by its **ending point's** altitude bin, so a sharp color transition lands at the point where the aircraft *reached* the new band. The polyline-builder closes the current run and starts a new one whenever the bin changes between consecutive points, sharing the transition vertex between the two polylines so the visual line stays continuous across the color change.
+
+### Operational notes
+- No config migration; no API changes; no data-storage changes. The rendering swap is entirely client-side in `templates/aircraft.html`.
+- The receiver marker, map theme toggle, and expand control are unchanged. The track is the only visual element that changed.
+- For very dense histories (10k+ sample windows), the page's existing even-sampling truncation behavior still applies — the line is drawn from the sampled subset, with the same `(sampled)` annotation in the meta line under the map.
+
 ## [3.4.30] — 2026-05-18
 
 ### Changed
