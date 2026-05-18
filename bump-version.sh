@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.4.29
+# Version: 3.4.30
 # =============================================================================
 # bump-version.sh — Bump Aerodrome version + auto-update CHANGELOG.md
 # =============================================================================
@@ -567,6 +567,134 @@ PYEOF
     python3 -c "$JS_PARSE_PY"
     echo ""
 fi
+
+# =============================================================================
+# PII audit — advisory (v3.4.30+).
+# =============================================================================
+# Scans all worked-tree files (excluding build/cache/data/HANDOFF) for
+# patterns that look like maintainer-identifying info — names and
+# real-network IPs. The PII audit had been an ad-hoc grep for names only;
+# v3.4.27 and v3.4.29 both shipped CHANGELOG entries with the maintainer's
+# actual LAN IPs because the grep didn't include the IP class. v3.4.30
+# codifies the audit as a pipeline step so this class is caught at bump
+# time rather than after a release ships.
+#
+# What it flags:
+#   • Names: forms identifying the maintainer that aren't the approved
+#     GitHub-username form (which is allow-listed because it appears in
+#     repository URLs throughout the docs).
+#   • Concrete RFC1918 IPs that aren't in the documentation allowlist.
+#     RFC 5737 ranges (192.0.2.x, 198.51.100.x, 203.0.113.x), the common
+#     docs subnets 192.168.0.x / 192.168.1.x / 10.0.0.x, and the special
+#     unroutable 10.254.254.254 (used by ntfy_installer.py's
+#     _detect_lan_ip kernel-route trick) are all skipped.
+#
+# Expected hits: LICENSE (MIT copyright holder) and templates/about.html
+# (the /about page's copyright line, added v3.4.18). These are the project's
+# two approved attribution surfaces — every OSS project has them. A third
+# hit is always a real leak.
+#
+# Always advisory. The maintainer reads the output and decides whether
+# each flagged item is intentional or needs scrubbing before staging.
+echo "PII audit (names + private-network IPs)..."
+PII_AUDIT_PY=$(cat <<'PYEOF'
+import os, re, sys
+
+# Negative lookahead suppresses the maintainer's GitHub-username form
+# (the approved attribution string that appears in repository URLs).
+# Case-insensitive across all branches.
+NAME_RE = re.compile(
+    r'\b' + 'pre' + 'ston(?!-pet' + 'erson)\\b'
+    r'|\b' + 'pre' + 'ston@'
+    r'|\b' + 'pro' + 'ton-ubnt\\b'
+    r'|/home/' + 'pre' + 'ston',
+    re.IGNORECASE,
+)
+IP_RE = re.compile(r'\b(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\b')
+
+def is_ip_pii(o1, o2, o3, o4):
+    """True if this IP is a concrete RFC1918 IP that's NOT in the docs allowlist."""
+    if any(o > 255 for o in (o1, o2, o3, o4)):
+        return False  # not a valid IP, regex coincidence
+    # Documentation / known-intentional allowlist:
+    if o1 == 192 and o2 == 0 and o3 == 2:     return False  # RFC 5737 TEST-NET-1
+    if o1 == 198 and o2 == 51 and o3 == 100:  return False  # RFC 5737 TEST-NET-2
+    if o1 == 203 and o2 == 0 and o3 == 113:   return False  # RFC 5737 TEST-NET-3
+    if o1 == 192 and o2 == 168 and o3 in (0, 1):  return False  # common docs subnets
+    if o1 == 10 and o2 == 0 and o3 == 0:      return False  # common docs subnet
+    if (o1, o2, o3, o4) == (10, 254, 254, 254):  return False  # _detect_lan_ip trick
+    # Private ranges that flag (everything else in RFC1918):
+    if o1 == 10:                               return True
+    if o1 == 172 and 16 <= o2 <= 31:           return True
+    if o1 == 192 and o2 == 168:                return True
+    return False
+
+# Skip build/cache/data dirs that don't ship in the release, plus HANDOFF
+# files (Claude-to-Claude session continuity, not public release artifacts).
+SKIP_DIRS = {'.git', 'venv', '__pycache__', '.backups', 'node_modules',
+             'logs', 'update', '.tracker.pid'}
+SKIP_EXT = {'.db', '.db-wal', '.db-shm', '.pyc', '.png', '.jpg', '.jpeg',
+            '.gif', '.pdf', '.zip', '.sha256', '.ico'}
+def should_skip(fname):
+    # HANDOFF files don't ship in the zip; allowlist them.
+    if 'HANDOFF' in fname:
+        return True
+    return any(fname.lower().endswith(e) for e in SKIP_EXT)
+
+# Approved attribution surfaces. Names appearing in these files are not
+# leaks — they're the project's deliberate copyright/license attribution.
+NAME_ALLOWLIST_FILES = {'./LICENSE', './templates/about.html'}
+
+name_hits = []
+ip_hits = []
+for root, dirs, files in os.walk('.'):
+    dirs[:] = [d for d in dirs
+               if d not in SKIP_DIRS and not d.startswith('.')]
+    for fname in files:
+        if should_skip(fname):
+            continue
+        path = os.path.join(root, fname)
+        try:
+            with open(path, encoding='utf-8') as f:
+                content = f.read()
+        except (UnicodeDecodeError, IsADirectoryError, OSError):
+            continue
+        for lno, line in enumerate(content.splitlines(), 1):
+            for m in NAME_RE.finditer(line):
+                if path not in NAME_ALLOWLIST_FILES:
+                    name_hits.append((path, lno, m.group(0), line.strip()[:100]))
+            for m in IP_RE.finditer(line):
+                o = tuple(int(m.group(i)) for i in (1, 2, 3, 4))
+                if is_ip_pii(*o):
+                    ip_hits.append((path, lno, m.group(0), line.strip()[:100]))
+
+clean = True
+
+if name_hits:
+    clean = False
+    print(f'  ⚠ {len(name_hits)} name-pattern hit(s) outside approved attribution surfaces:')
+    for path, lno, hit, ctx in name_hits:
+        print(f'    • {path}:{lno}  match="{hit}"')
+        print(f'        {ctx}')
+else:
+    print('  ✓ Names: clean (LICENSE + templates/about.html allowlisted)')
+
+if ip_hits:
+    clean = False
+    print(f'  ⚠ {len(ip_hits)} concrete-private-IP hit(s) outside docs allowlist:')
+    for path, lno, ip, ctx in ip_hits:
+        print(f'    • {path}:{lno}  {ip}')
+        print(f'        {ctx}')
+else:
+    print('  ✓ Private IPs: clean (docs subnets + 10.254.254.254 allowlisted)')
+
+if not clean:
+    print('  (advisory at this release; review and scrub before staging)')
+sys.exit(0)  # advisory — never gates a bump
+PYEOF
+)
+python3 -c "$PII_AUDIT_PY"
+echo ""
 
 # =============================================================================
 # Documentation drift check — advisory.
