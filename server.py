@@ -1,4 +1,4 @@
-# Version: 3.4.33
+# Version: 3.4.34
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -8503,6 +8503,28 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         ".backups",
         "update",
     }
+    # v3.4.34: also preserve the *configured* db filename if it differs
+    # from the historical default. install.sh --demo configures
+    # aircraft_history_synthetic.db; user-customized installs can use
+    # any filename via CONFIG["data"]["db_file"]. Without this dynamic
+    # add, the update-apply backup loop tries to copy the data DB into
+    # .backups/<ts>/ (potentially many GB), and racing against SQLite's
+    # WAL checkpointing trips an ENOENT on the .db-wal file mid-copy.
+    # On the test install (8.4 GB synthetic DB), this was bug-class:
+    # the apply would fail entirely with "Backup failed: [Errno 2]".
+    # Path.name strips any directory component since db_file is allowed
+    # to be either a bare filename or an absolute path.
+    try:
+        _configured_db = (CONFIG.get("data") or {}).get("db_file") or "aircraft_history.db"
+        _configured_db_name = Path(_configured_db).name
+        PRESERVE_PATHS.add(_configured_db_name)
+        PRESERVE_PATHS.add(_configured_db_name + "-shm")
+        PRESERVE_PATHS.add(_configured_db_name + "-wal")
+    except Exception:
+        # Hard fallback — if CONFIG is somehow malformed at this point,
+        # keep the static set rather than crashing route registration.
+        # The default-filename entries above still cover stock installs.
+        pass
 
     def _parse_version(v: str):
         """Return a tuple of ints from 'X.Y.Z' for comparison. None if unparseable."""

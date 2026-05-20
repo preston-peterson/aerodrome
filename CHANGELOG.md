@@ -19,6 +19,16 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.34] — 2026-05-20
+
+### Fixed
+- **Update apply: "Backup failed: [Errno 2] No such file or directory: ...db-wal" on installs that use a non-default database filename.** The `PRESERVE_PATHS` set used by the update-apply backup loop was hardcoded to `aircraft_history.db` (plus its `.db-shm` / `.db-wal` siblings) — the historical default filename. Any install configured with a different `data.db_file` — most commonly `aircraft_history_synthetic.db` from `install.sh --demo`, but also any user-customized filename — would skip the preservation check, fall through into the file-copy loop, and try to snapshot the database (potentially many gigabytes) into `.backups/<ts>/`. While that copy ran, SQLite would checkpoint the WAL and remove the `.db-wal` file, and `shutil.copy2()` would hit ENOENT on the now-missing file. The whole apply would abort and the update wouldn't be installed. v3.4.34 reads `CONFIG["data"]["db_file"]` at route-registration time, derives the configured filename, and adds the bare name plus its `-shm` and `-wal` variants to `PRESERVE_PATHS`. Both backup-loop and copy-overwrite loop pick up the addition since they share the same set. The fallback to the historical default name stays in place, so stock installs are unaffected.
+
+### Operational notes
+- Affects any install where `data.db_file` in `config.yaml` is not the default `aircraft_history.db`. Includes all demo-mode installs (`aircraft_history_synthetic.db`).
+- The fix is a route-registration-time change, no schema migration, no config migration. Existing `.backups/<ts>/` directories accumulated by past failed-or-partial apply attempts are unchanged — those are user data and not touched by the upgrade.
+- This is a fix to the update-apply path itself. To install v3.4.34 on an install where v3.4.33-or-earlier's apply is broken: use the rsync deploy path directly rather than the in-app updater. After v3.4.34 is running, future updates can apply through the in-app updater normally.
+
 ## [3.4.33] — 2026-05-20
 
 ### Changed
