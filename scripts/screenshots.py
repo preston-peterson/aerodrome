@@ -678,6 +678,118 @@ PERF_DIAG = {
 }
 
 # ---------------------------------------------------------------------------
+# Aircraft detail + positions (v3.4.33: for the aircraft-details screenshot).
+# Synthetic track exercises every visual feature of the v3.4.31 polyline
+# rendering: climb → mid cruise → high cruise → COVERAGE GAP → high cruise
+# → descent → landing. Altitude spans every bin so the line shows the full
+# six-color palette in transitions; the gap sits in the middle so a
+# polyline break is clearly visible; hysteresis is naturally exercised
+# because the steady-cruise segments stay at one altitude rather than
+# wobbling across a boundary.
+#
+# Bay Area coordinates so the receiver marker + map view make sense visually.
+# Receiver lives near San Mateo (37.5, -122.1); the synthetic flight traces
+# an arc from northwest to southeast through nearby airspace.
+# ---------------------------------------------------------------------------
+_AC_NOW = NOW
+_AC_TRACK_BASE = _AC_NOW - 7200  # 2h ago, in seconds since epoch
+
+# 28 sample points at ~30s cadence (=14 minutes of "real time" worth of
+# track), with a 4-minute gap between idx=14 and idx=15 to demonstrate
+# the gap-break. Format: [seen_at_seconds, lat, lon, altitude_ft].
+_AC_POSITIONS = []
+for i, (lat, lon, alt) in enumerate([
+    (38.10, -122.85,    600),   # 0 — taxi/climb
+    (38.06, -122.78,   2400),   # 1
+    (38.02, -122.72,   5200),   # 2 — bin transition green→yellow-green
+    (37.99, -122.66,   8400),   # 3
+    (37.95, -122.59,  12500),   # 4 — yellow
+    (37.92, -122.52,  16800),   # 5
+    (37.89, -122.45,  20900),   # 6 — orange
+    (37.86, -122.38,  24500),   # 7
+    (37.84, -122.31,  27800),   # 8
+    (37.81, -122.24,  30200),   # 9 — red
+    (37.79, -122.16,  32100),   # 10
+    (37.77, -122.08,  33800),   # 11
+    (37.75, -122.00,  35100),   # 12 — dark red
+    (37.73, -121.92,  35400),   # 13
+    (37.71, -121.84,  35200),   # 14 — last point before gap
+    # === COVERAGE GAP ~4 minutes ===
+    (37.65, -121.62,  35100),   # 15 — resumes (4-minute time jump below)
+    (37.62, -121.55,  34800),   # 16
+    (37.59, -121.48,  32400),   # 17 — descent begins
+    (37.56, -121.41,  28100),   # 18
+    (37.53, -121.34,  23200),   # 19 — orange
+    (37.50, -121.27,  17800),   # 20
+    (37.48, -121.20,  12900),   # 21
+    (37.45, -121.14,   8700),   # 22 — yellow
+    (37.43, -121.08,   5300),   # 23
+    (37.41, -121.02,   3100),   # 24 — green
+    (37.39, -120.96,   1900),   # 25
+    (37.37, -120.91,    900),   # 26
+    (37.35, -120.88,    200),   # 27 — landing
+]):
+    # 30s cadence, except after idx=14 (the gap) where the next sample
+    # appears 4 minutes (240s) later — well past the 120s gap-break
+    # threshold so the rendering shows a clean line-break.
+    if i == 0:
+        ts = _AC_TRACK_BASE
+    elif i == 15:
+        ts = _AC_POSITIONS[14][0] + 240   # 4-minute gap
+    else:
+        ts = _AC_POSITIONS[i - 1][0] + 30
+    _AC_POSITIONS.append([ts, lat, lon, alt])
+
+AIRCRAFT_POSITIONS = {
+    "ok": True,
+    "icao": "ABCDEF",
+    "window": "24h",
+    "count": len(_AC_POSITIONS),
+    "positions": _AC_POSITIONS,
+    "receiver": {"lat": 37.5, "lon": -122.1},
+    "truncated": False,
+}
+
+AIRCRAFT_DETAIL = {
+    "icao": "ABCDEF",
+    "registration": "N737TS",
+    "aircraft_type": "B738",
+    "aircraft_type_desc": "Boeing 737-800",
+    "operator": "Example Airlines",
+    "country": "United States",
+    "last_callsign": "EXA1234",
+    "first_callsign": "EXA1234",
+    "callsign": "EXA1234",
+    "sighting_count": 142,
+    "mode": "full",
+    "first_seen": _AC_NOW - 86400 * 38,
+    "last_seen": _AC_NOW - 1800,
+    "is_military": False,
+    "is_watchlist": False,
+    "recent_sightings": [],
+    # The detail page reads stat-card values from `ranges`, hour_of_day,
+    # day_of_week, and chips — discovered via grep on the render code.
+    # All values picked to look plausible for a regional 737 making
+    # roughly 4-5 trips per day past the receiver.
+    "ranges": {
+        "days_active": 38,
+        "max_altitude_ft": 35400,
+        "min_altitude_ft": 200,
+        "max_speed_kt": 482,
+        "sightings_per_day_min":    1,
+        "sightings_per_day_max":    8,
+        "sightings_per_day_median": 4,
+    },
+    "hour_of_day":  [2, 1, 0, 0, 0, 1, 4, 7, 9, 11, 12, 10, 9, 8, 7, 9, 11, 12, 10, 8, 6, 4, 3, 2],
+    "day_of_week":  [18, 22, 24, 21, 20, 19, 18],
+    "chips":        [
+        {"label": "Cruise altitude", "value": "FL352"},
+        {"label": "Typical route",   "value": "NW → SE corridor"},
+    ],
+    "primary_callsigns":   [{"callsign": "EXA1234", "count": 142}],
+}
+
+# ---------------------------------------------------------------------------
 # Playwright harness
 # ---------------------------------------------------------------------------
 
@@ -774,6 +886,15 @@ window.fetch = async (url) => {{
     if (url.includes('/api/backup/preview'))        return j({{ok: true, files: []}});
     if (url.includes('/api/config/validate'))       return j({{errors: []}});
     if (url.includes('/api/config'))                return j({json.dumps(payloads['config'])});
+    // v3.4.33: aircraft-detail page. Two endpoints: the detail object
+    // (full aircraft metadata for the hero/cards/sections) and the
+    // positions array used by the track-rendering map.
+    if (url.match(/\/api\/aircraft\/[0-9A-Fa-f]+\/positions/)) {{
+        return j({json.dumps(AIRCRAFT_POSITIONS)});
+    }}
+    if (url.match(/\/api\/aircraft\/[0-9A-Fa-f]+$/)) {{
+        return j({json.dumps(AIRCRAFT_DETAIL)});
+    }}
     // --- Docs viewer ---
     if (url.includes('/api/docs/')) {{
         const slug = url.split('/api/docs/')[1].split(/[?#]/)[0];
@@ -836,6 +957,40 @@ async def _render(browser, template_file: str, outfile: Path, *,
             tag_orig = f'<script src="/static/{asset}"></script>'
             tag_new  = f'<script>\n{body}\n</script>'
         html = html.replace(tag_orig, tag_new)
+
+    # v3.4.33: also inline Leaflet for templates that use the position-history
+    # map (currently just aircraft.html). The map block is the focal point of
+    # the aircraft-details screenshot and Leaflet has to actually load for
+    # the polyline-track rendering to be visible. Leaflet CSS/JS live in
+    # /static/leaflet/ and reference the same images/ subdir via relative
+    # CSS url() — inlining the CSS keeps url() pointing at /static/leaflet/
+    # which won't resolve under file://, but the polyline render doesn't
+    # depend on the default marker images, so the missing-image warnings
+    # are cosmetic for our purposes.
+    leaflet_dir = static_dir / 'leaflet'
+    for asset in ('leaflet.css', 'leaflet.js'):
+        path = leaflet_dir / asset
+        if not path.exists():
+            continue
+        body = path.read_text()
+        if asset.endswith('.css'):
+            tag_orig = f'<link rel="stylesheet" href="/static/leaflet/{asset}">'
+            tag_new  = f'<style>\n{body}\n</style>'
+            html = html.replace(tag_orig, tag_new)
+        else:
+            body = body.replace('</script>', r'<\/script>')
+            for tag_orig in (
+                f'<script src="/static/leaflet/{asset}" defer></script>',
+                f'<script src="/static/leaflet/{asset}"></script>',
+            ):
+                if tag_orig in html:
+                    # Leaflet must load synchronously in the harness so it's
+                    # ready when the page's IIFE fires. The `defer` attribute
+                    # is meaningless for inline scripts but the source tag
+                    # uses defer in production — strip it on inline.
+                    tag_new = f'<script>\n{body}\n</script>'
+                    html = html.replace(tag_orig, tag_new)
+                    break
 
     # v2.97.12: mirror server.py's timefmt.js injection (server.py:1142-1146).
     # The server replaces </head> at request time with a window._aerodromeTimeFormat
@@ -1133,6 +1288,42 @@ async def screenshot_diagnostics_watchlist(browser):
                          ready_fn=ready)
 
 
+async def screenshot_aircraft_details(browser):
+    """v3.4.33: aircraft details page showing the v3.4.31 multi-color
+    polyline track rendering on the position-history map. The synthetic
+    track exercises every visual feature — full color palette across
+    altitude bins, gap-break at a >120s coverage drop, smooth lines
+    where steady cruise sits between bin thresholds (hysteresis).
+
+    The page reads ICAO from window.location.pathname, which under the
+    harness loads as file:///tmp/<tmpname>.html — pathname's last
+    segment ends up being the tmp filename and fails the 6-hex-char
+    validation. We monkey-patch getIcaoFromUrl after page load and
+    re-trigger loadDetail() so the page renders with the intended ICAO."""
+    async def ready(p):
+        # Override the URL-parsing helper and re-call loadDetail so the
+        # detail panel populates from the mocked /api/aircraft/ABCDEF
+        # response instead of rendering the "Invalid aircraft URL" error
+        # that fires from the original file:// pathname.
+        await p.evaluate("""
+            window.getIcaoFromUrl = () => 'ABCDEF';
+            if (typeof loadDetail === 'function') {
+                loadDetail();
+            }
+        """)
+        # The detail load is async and the position map is initialized
+        # lazily after the receiver-coords check. 2500ms gives Leaflet
+        # time to lay out tiles, the polyline renderer time to walk the
+        # binned positions and emit segments, and the bounds calculation
+        # time to fit the map view. 2500ms is comfortable; a 1500ms
+        # smoke-test showed occasional half-rendered tiles.
+        await p.wait_for_timeout(2500)
+    return await _render(browser, 'aircraft.html',
+                         OUT_DIR / 'screenshot-aircraft-details.png',
+                         viewport={'width': 1400, 'height': 1100},
+                         ready_fn=ready)
+
+
 async def main():
     print(f"Rendering screenshots to {OUT_DIR}/ ...")
     renderers = [
@@ -1156,6 +1347,7 @@ async def main():
         screenshot_diagnostics_hub,
         screenshot_diagnostics_watchlist,
         screenshot_setup_guide,
+        screenshot_aircraft_details,  # v3.4.33
     ]
     async with async_playwright() as p:
         browser = await p.chromium.launch()

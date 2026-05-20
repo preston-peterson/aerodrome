@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.4.32
+# Version: 3.4.33
 # =============================================================================
 # bump-version.sh — Bump Aerodrome version + auto-update CHANGELOG.md
 # =============================================================================
@@ -569,15 +569,19 @@ PYEOF
 fi
 
 # =============================================================================
-# PII audit — advisory (v3.4.30+).
+# PII audit — REQUIRED (advisory v3.4.30 → v3.4.32, required v3.4.33+).
 # =============================================================================
 # Scans all worked-tree files (excluding build/cache/data/HANDOFF) for
 # patterns that look like maintainer-identifying info — names and
-# real-network IPs. The PII audit had been an ad-hoc grep for names only;
-# v3.4.27 and v3.4.29 both shipped CHANGELOG entries with the maintainer's
-# actual LAN IPs because the grep didn't include the IP class. v3.4.30
-# codifies the audit as a pipeline step so this class is caught at bump
-# time rather than after a release ships.
+# real-network IPs. The audit shipped as advisory in v3.4.30 to give it
+# a release cycle or two to surface false positives before becoming a
+# blocker. Three releases later (v3.4.30, v3.4.31, v3.4.32) all ran the
+# audit clean with no false positives — the documentation allowlist
+# (RFC 5737, common docs subnets, 10.254.254.254) covers every legitimate
+# documentation use. v3.4.33 graduates the audit to required: a findings
+# print is now followed by a non-zero exit, which under `set -e` halts
+# the bump. If a future legitimate documentation pattern trips this,
+# extend the allowlist rather than reverting to advisory.
 #
 # What it flags:
 #   • Names: forms identifying the maintainer that aren't the approved
@@ -594,8 +598,10 @@ fi
 # two approved attribution surfaces — every OSS project has them. A third
 # hit is always a real leak.
 #
-# Always advisory. The maintainer reads the output and decides whether
-# each flagged item is intentional or needs scrubbing before staging.
+# Like the static name-resolution check, the audit has no --skip-pii flag
+# (per decision 5.17). If you really need to bypass it for an emergency,
+# scrub the worked tree to clean and re-run — that's faster than adding a
+# flag and remembering to remove it.
 echo "PII audit (names + private-network IPs)..."
 PII_AUDIT_PY=$(cat <<'PYEOF'
 import os, re, sys
@@ -689,8 +695,9 @@ else:
     print('  ✓ Private IPs: clean (docs subnets + 10.254.254.254 allowlisted)')
 
 if not clean:
-    print('  (advisory at this release; review and scrub before staging)')
-sys.exit(0)  # advisory — never gates a bump
+    print('  (REQUIRED check: scrub the worked tree and re-run the bump)')
+    sys.exit(1)  # required — halts the bump when findings are present
+sys.exit(0)
 PYEOF
 )
 python3 -c "$PII_AUDIT_PY"

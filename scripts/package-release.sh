@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.4.32
+# Version: 3.4.33
 # =============================================================================
 # package-release.sh — Build the release zip + SHA256 for the current VERSION
 # =============================================================================
@@ -119,10 +119,19 @@ rm -rf "$RELEASE_DIR/venv" \
        "$RELEASE_DIR/.backups" 2>/dev/null || true
 # Also strip any runtime DB / pid / config-backup files that may be present
 # if package-release.sh is run on a live install rather than a clean tree.
+# v3.4.33: HANDOFF files (any path matching *-HANDOFF*.md or HANDOFF.md) are
+# also stripped here. HANDOFFs are Claude-to-Claude session continuity, not
+# public release artifacts; building them in the worked tree alongside
+# release prep used to require either remembering to delete them before
+# packaging or moving them to a parent directory. The maxdepth-1 strip
+# covers the workflow where bump-version.sh emits a HANDOFF alongside the
+# other release files; nested copies in docs/ or similar are intentionally
+# NOT stripped (those would be deliberate documentation, not session notes).
 find "$RELEASE_DIR" -maxdepth 1 \
     \( -name '.tracker.pid' \
     -o -name '*.db' -o -name '*.db-wal' -o -name '*.db-shm' \
-    -o -name 'config.yaml.bak.*' \) \
+    -o -name 'config.yaml.bak.*' \
+    -o -name '*-HANDOFF*.md' -o -name 'HANDOFF.md' \) \
     -delete 2>/dev/null || true
 
 # --- Zip ---

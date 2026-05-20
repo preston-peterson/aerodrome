@@ -19,6 +19,22 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.33] — 2026-05-20
+
+### Changed
+- **`scripts/package-release.sh` now strips HANDOFF-style files from the release zip.** The `maxdepth 1` strip pass that already removed runtime DB / pid / config-backup files now also drops anything matching `*-HANDOFF*.md` or `HANDOFF.md` in the release root. HANDOFFs are session-continuity notes for development, not public release artifacts; before this change, the workflow either required building HANDOFFs in a parent directory (the workaround used for the recent v3.4.x releases) or remembering to delete them before packaging. The strip is scoped to the release root only — any HANDOFF-named file nested inside `docs/` or another deliberate documentation directory would be kept on the (correct) assumption that it's intentional documentation rather than a session-handoff file.
+
+- **The PII audit graduates from advisory to required.** Introduced as a `bump-version.sh` pipeline step in v3.4.30 with `sys.exit(0)` on findings so any false positives could surface without blocking a release, the audit has now run clean across v3.4.30, v3.4.31, and v3.4.32 — three release cycles with zero false positives. The documentation allowlist (RFC 5737 ranges, the very common docs subnets `192.168.0.x` / `192.168.1.x` / `10.0.0.x`, plus the special unroutable `10.254.254.254` used by `_detect_lan_ip`'s kernel-route trick) covers every legitimate documentation use that has come up. v3.4.33 swaps the exit logic to `sys.exit(1)` on findings so a bump now halts under `set -e` when something flags. There's no `--skip-pii` flag (matching decision 5.17). If a future legitimate pattern trips the audit, the right fix is to extend the allowlist; in an emergency where that isn't an option, scrub the worked tree to clean and re-bump.
+
+- **Aircraft details page is now in the documentation screenshot harness.** v3.4.31's multi-color polyline track rendering shipped without a documentation screenshot of it — the existing 20 screenshots covered everything else. v3.4.33 adds `screenshot_aircraft_details` to `scripts/screenshots.py`, bringing the harness to 21 screenshots. The synthetic flight track exercises every feature of the v3.4.31 rendering: a full climb-cruise-descent sequence spanning all six altitude bins (green at takeoff/landing, yellow-green through yellow during climb-out and final approach, orange through red during mid-altitude cruise, dark red at FL350+ during high cruise), a 4-minute coverage gap mid-cruise that demonstrates the >120-second gap-break, and steady cruise segments that show the 500 ft hysteresis keeping the line smooth where altitude wobbles across bin boundaries. The harness was extended to also inline Leaflet (`/static/leaflet/leaflet.css` and `/static/leaflet/leaflet.js`) so the map actually renders under `file://` instead of requiring a live server. The aircraft-details page reads ICAO from `window.location.pathname` which the harness can't supply directly; the screenshot function monkey-patches `getIcaoFromUrl` and re-triggers `loadDetail()` after the initial page-load error so the detail panel populates from the mocked `/api/aircraft/ABCDEF` response.
+
+### Behind the scenes
+- The new PII-audit exit-on-findings means every future release runs the same gating as v3.4.33 itself did: the bump halts if any concrete identifying value sneaks into the worked tree. The release pipeline is now structurally honest about the policy rather than relying on human discipline to scrub at staging time.
+- The aircraft-details screenshot includes ~28 synthetic position samples with a deliberately-engineered altitude profile. The 30-second-cadence between most samples (with the single 240-second gap at sample 15) ensures the rendering's `GAP_THRESHOLD_SEC=120` is exercised in a visually obvious way. Bay Area coordinates and a fictional registration (`N737TS` operating as `EXA1234` for "Example Airlines") so nothing on the page identifies real aircraft or networks.
+
+### Operational notes
+- No config migration; no API changes; no schema changes. The HANDOFF-strip is a packaging change, the PII-audit graduation is a `bump-version.sh` exit-code change, and the screenshot addition is a docs-tooling change. Nothing the running service reads, writes, or serves is affected.
+
 ## [3.4.32] — 2026-05-20
 
 ### Changed
