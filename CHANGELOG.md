@@ -19,6 +19,20 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.35] — 2026-05-20
+
+### Changed
+- **Config migration now strips deprecated keys, not just adds new ones.** When `migrate_config` runs at startup on an existing install, it now also removes any top-level config keys that have been retired. The first (and currently only) deprecated key is `first_run`, introduced for the v3.4.x setup-wizard system and rendered vestigial by the wizard removal in v3.4.28. Existing configs that still carry `first_run` will have it silently dropped at the next start, with the change recorded in the same migration backup as any additive merges. `cat config.yaml` on freshly-migrated installs no longer shows the orphan key. The validator was already ignoring `first_run` as an unknown key so nothing relied on its presence; the strip just completes the cleanup the wizard removal started. The mechanism (a `DEPRECATED_CONFIG_KEYS` set + `_strip_deprecated_keys()` helper) is in place for future deprecations to use the same path.
+
+- **Card-render code: `_attach_airline_name()` helper extracted for the "look up friendly airline name, attach to row if recognized" pattern.** Previously duplicated in two card-rendering paths — the `top_operators` Stats card aggregation (lines 4115-4123) and the `all_operators` drill response (lines 5559-5562). Both did the same four-line lookup-and-attach, both with the same "never fabricate names" semantics (only attach when `airline_name()` returns a non-None value). The duplication was small but real, and the kind of place where future drift sneaks in — one site adds a normalization or a fallback and the other doesn't. The helper consolidates the pattern into one function that returns the row for chaining, which lets the `top_operators` call site collapse to a single-line list comprehension. The underlying `airline_name()` lookup in `designators.py` is unchanged.
+
+### Behind the scenes
+- The deprecation strip works on both `ruamel.yaml` (the comment-preserving primary path) and the PyYAML fallback path, so installs without `ruamel.yaml` get the same cleanup. The order is `_deep_merge_missing` first, then `_strip_deprecated_keys` — additions before removals — which means if a future deprecation has both shapes (a key both added under one name and removed under another) the new name will be in place by the time the old name is stripped.
+- The `_attach_airline_name()` helper accepts `operator_code: str | None` rather than requiring a non-None code, so the call sites can pass `r["operator"]` or `dict.get("operator")` directly without a None-check on the caller side. The helper also returns the row to support the list-comprehension call shape; the second call site discards the return because it appends in a different control flow.
+
+### Operational notes
+- No schema changes. Config migration writes a `config.yaml.bak.<timestamp>` to the install directory before any modification, same as the additive merge path always has; pruning of old backups is unchanged.
+
 ## [3.4.34] — 2026-05-20
 
 ### Fixed

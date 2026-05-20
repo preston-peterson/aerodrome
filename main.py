@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Version: 3.4.34
+# Version: 3.4.35
 """
 main.py — Aerodrome ADS-B Tracker
 
@@ -87,6 +87,12 @@ def migrate_config(config: dict) -> dict:
 
     Uses ruamel.yaml internally to preserve the user's existing comments,
     indentation, and key order when writing the merged config back.
+
+    v3.4.35: also strips deprecated keys that have outlived their purpose.
+    See DEPRECATED_CONFIG_KEYS below for the list. Removing them is
+    silent-ok because they're already documented as no-ops (the validator
+    ignores unknown keys); the strip just stops them appearing in the
+    on-disk config so a fresh `cat config.yaml` is clean.
     """
     if not CONFIG_EXAMPLE_PATH.exists():
         # No example shipped — nothing to compare against. Likely a dev checkout.
@@ -117,7 +123,8 @@ def migrate_config(config: dict) -> dict:
         return config
 
     added = _deep_merge_missing(live, example)
-    if not added:
+    removed = _strip_deprecated_keys(live)
+    if not added and not removed:
         return config
 
     # Back up first
@@ -139,9 +146,14 @@ def migrate_config(config: dict) -> dict:
         return config
 
     print("=" * 60)
-    print(f"Config migrated — added {len(added)} new key(s) from this release:")
-    for key in added:
-        print(f"  + {key}")
+    if added:
+        print(f"Config migrated — added {len(added)} new key(s) from this release:")
+        for key in added:
+            print(f"  + {key}")
+    if removed:
+        print(f"Config migrated — removed {len(removed)} deprecated key(s):")
+        for key in removed:
+            print(f"  - {key}")
     print(f"Previous config backed up to: {backup_path.name}")
     print(f"Your existing settings and comments were preserved.")
     print("=" * 60)
@@ -161,7 +173,8 @@ def _migrate_config_plain(config: dict) -> dict:
         return config
 
     added = _deep_merge_missing(config, example)
-    if not added:
+    removed = _strip_deprecated_keys(config)
+    if not added and not removed:
         return config
 
     ts = time.strftime("%Y%m%d-%H%M%S")
@@ -181,14 +194,49 @@ def _migrate_config_plain(config: dict) -> dict:
         return config
 
     print("=" * 60)
-    print(f"Config migrated (plain mode) — added {len(added)} new key(s):")
-    for key in added:
-        print(f"  + {key}")
+    if added:
+        print(f"Config migrated (plain mode) — added {len(added)} new key(s):")
+        for key in added:
+            print(f"  + {key}")
+    if removed:
+        print(f"Config migrated (plain mode) — removed {len(removed)} deprecated key(s):")
+        for key in removed:
+            print(f"  - {key}")
     print(f"Previous config backed up to: {backup_path.name}")
     print("Note: install 'ruamel.yaml' to preserve comments during future migrations.")
     print("=" * 60)
 
     return config
+
+
+# Keys that have outlived their purpose and should be removed from
+# on-disk configs at next migration. Each entry is the top-level key
+# name; nested deprecated keys would need a different shape and aren't
+# supported yet.
+#
+# - `first_run`: introduced for the v3.4.x setup-wizard system,
+#   rendered vestigial by the wizard removal in v3.4.28. The validator
+#   was already ignoring it as an unknown key; v3.4.35 stops it
+#   appearing in on-disk configs at all so `cat config.yaml` is clean
+#   on freshly-migrated installs.
+DEPRECATED_CONFIG_KEYS = {
+    "first_run",
+}
+
+
+def _strip_deprecated_keys(config) -> list:
+    """Remove top-level keys listed in DEPRECATED_CONFIG_KEYS from `config`.
+
+    Mutates `config` in place. Returns the list of keys that were removed
+    so the migration message can show what changed. Works on either a
+    plain dict or a ruamel.yaml CommentedMap — both support `del`.
+    """
+    removed = []
+    for key in DEPRECATED_CONFIG_KEYS:
+        if key in config:
+            del config[key]
+            removed.append(key)
+    return removed
 
 
 def load_config() -> dict:

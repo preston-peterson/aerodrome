@@ -1,4 +1,4 @@
-# Version: 3.4.34
+# Version: 3.4.35
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -68,6 +68,26 @@ _NOTIFIER = None
 # raw config, so resolved tails behave identically to icao-direct
 # entries from the user's perspective.
 _RESOLVED_WATCHLIST_TAILS: Dict[str, str] = {}
+
+
+def _attach_airline_name(row: dict, operator_code: str | None) -> dict:
+    """v3.4.35: if `operator_code` maps to a known airline, set
+    `row['name']` to the friendly name. Returns the row for chaining.
+    No-op if `operator_code` is None/empty or `airline_name()` doesn't
+    recognize the code (we never fabricate names).
+
+    Consolidates the 4-line "lookup-name, attach-if-truthy" pattern
+    that was duplicated in two card-rendering paths (top_operators
+    and the all_operators drill). The duplication was trivial but
+    real — extracting prevents future drift where one site picks up
+    a behavior (e.g. fallback name, normalization) and the other
+    doesn't."""
+    if not operator_code:
+        return row
+    nm = airline_name(operator_code)
+    if nm:
+        row["name"] = nm
+    return row
 
 
 def _resolve_watchlist_tails(config: dict, db_path: str) -> Dict[str, str]:
@@ -4114,13 +4134,8 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 """, (start_ts,))
                 # v2.41.15: attach airline name when we recognize the ICAO
                 # 3-letter designator ("DAL" -> "Delta Air Lines").
-                out = []
-                for r in rows:
-                    d = dict(r)
-                    nm = airline_name(d["operator"])
-                    if nm:
-                        d["name"] = nm
-                    out.append(d)
+                # v3.4.35: factored into _attach_airline_name (module-scope).
+                out = [_attach_airline_name(dict(r), r["operator"]) for r in rows]
                 result["cards"]["top_operators"] = out
 
             if card_check("military_branches"):
@@ -5556,10 +5571,9 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                         # for jumping into a specific aircraft.
                         "seen_at": slot["first"],
                     }
-                    # Attach friendly airline name when recognized
-                    nm = airline_name(prefix)
-                    if nm:
-                        row["name"] = nm
+                    # Attach friendly airline name when recognized.
+                    # v3.4.35: factored into _attach_airline_name.
+                    _attach_airline_name(row, prefix)
                     rows.append(row)
                 rows.sort(key=lambda x: -x["aircraft_count"])
 
@@ -5860,11 +5874,6 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             logger.error(f"Drill query failed for card={card}: {e}")
             return JSONResponse(status_code=500, content={"error": str(e)})
 
-
-    # v3.4.28: /api/setup/dismiss and /api/setup/save-step removed along
-    # with the setup wizards they served. The first_run config key is now
-    # vestigial — kept in existing configs as a silent no-op (the validator
-    # ignores unknown keys), removed from config.yaml.example.
 
     @app.get("/api/config")
     async def get_full_config():

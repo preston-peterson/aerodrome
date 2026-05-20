@@ -1,4 +1,4 @@
-# Version: 3.4.34
+# Version: 3.4.35
 """
 collector.py — ADS-B data fetcher and classifier.
 
