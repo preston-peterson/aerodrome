@@ -1,4 +1,4 @@
-# Version: 3.4.35
+# Version: 3.4.36
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -3531,8 +3531,8 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             "fastest", "slowest", "longest_track"
         ]),
         ("composition", "Composition", [
-            "top_types", "top_operators", "military_branches", "category_mix",
-            "top_countries"
+            "top_aircraft", "top_types", "top_operators",
+            "military_branches", "category_mix", "top_countries"
         ]),
         ("patterns",    "Patterns", [
             "hourly_histogram"
@@ -4069,6 +4069,45 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                     result["cards"]["longest_track"] = None
 
             # --- Composition ---
+            if card_check("top_aircraft"):
+                # v3.4.36: "most frequently seen aircraft" — the regulars
+                # in your airspace. Sum sighting_count from sightings_hourly
+                # within the window so the metric is windowed (unlike
+                # seen_aircraft.sighting_count which is all-time). Join
+                # with seen_aircraft for display fields (callsign, type,
+                # operator, registration). The JOIN is on the rollup's
+                # icao + seen_aircraft.icao PK, so it's an index-driven
+                # lookup not a table scan.
+                #
+                # Why SUM(sighting_count) and not COUNT(DISTINCT day)?
+                # SUM is much cheaper (no DISTINCT, single column read),
+                # already covered by the (hour_bucket, icao) index, and
+                # the semantic — "aircraft that spent the most time in
+                # your sky" — matches what users mean when they ask for
+                # the regulars. A slow helicopter loitering daily *is*
+                # more present than a fast jet that streaks past once.
+                # The bias is the feature.
+                rows = q("""
+                    SELECT s.icao,
+                           s.last_callsign,
+                           s.aircraft_type,
+                           s.aircraft_type_desc,
+                           s.operator,
+                           s.registration,
+                           SUM(h.sighting_count) AS n
+                    FROM sightings_hourly h
+                    JOIN seen_aircraft s ON s.icao = h.icao
+                    WHERE h.hour_bucket >= ?
+                    GROUP BY h.icao
+                    ORDER BY n DESC LIMIT 5
+                """, (start_ts // 3600,))
+                # Enrich each row with operator's friendly name (when
+                # known) via the shared helper from v3.4.35. Same
+                # pattern as top_operators.
+                result["cards"]["top_aircraft"] = [
+                    _attach_airline_name(dict(r), r["operator"]) for r in rows
+                ]
+
             if card_check("top_types"):
                 # v2.85.9: switched from all_sightings COUNT(DISTINCT icao)
                 # GROUP BY aircraft_type to seen_aircraft GROUP BY

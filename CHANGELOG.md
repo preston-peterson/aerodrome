@@ -19,6 +19,22 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.36] — 2026-05-20
+
+### Added
+- **Stats page: a new "Top 5 frequent aircraft" card shows the regulars in your airspace.** The card sits in the Composition section alongside Top 5 types and Top 5 operators. Each row is an individual aircraft — ICAO and callsign (or just ICAO if callsign isn't known), with the registration and aircraft type rendered as smaller secondary text, and the windowed sighting count on the right. Click any row to jump straight to that aircraft's detail page, where the existing sightings/days-active stats and v3.4.24's add-to-watchlist button surface the rest of the "is this one of my regulars" story.
+
+- **Counting metric: total sightings within the displayed window.** The card reads `SUM(sighting_count)` from `sightings_hourly` grouped by ICAO, joined to `seen_aircraft` for the display fields, ordered desc, top 5. The metric biases toward aircraft that spend more time visible to your receiver — a slow-mover loitering daily *is* more frequent in your sky than a fast jet streaking past once, and the card surfaces that honestly. The query shape matches the existing top_types / top_operators pattern (windowed JOIN against `seen_aircraft` for denormalized display fields) so its performance is in the same class — no new index needed; the existing `idx_hourly_bucket_icao` covers the window range scan.
+
+- **The card honors the page window selector (24h / 7d / 30d).** Switching the Stats page window updates which aircraft top the list, so "regulars today" and "regulars this month" tell different stories — both of which are interesting. No drill-down to a full ranked list yet: the row-click-to-detail-page interaction handles the "show me more about this one" case, which is the more common follow-up; a full `all_aircraft` distribution view can be a follow-up release if it's wanted.
+
+### Behind the scenes
+- The card uses a custom renderer (`topAircraftCard()`) rather than the generic `listCard()` because each row needs to navigate to an `/aircraft/<icao>` detail page rather than drill to a per-row "matching aircraft" filter (which would degenerate to "this one aircraft" since each row is already an individual). Composition-grid visual styling matches the other Top-5 cards so the section reads as a unit.
+- The original feature scope (filed under Tier 3 #1) called for both the Stats-page card and per-aircraft prominence on the detail page with one-click add-to-watchlist. On inspection, **the detail-page side of the feature was already shipped**: the hero already shows SIGHTINGS and DAYS ACTIVE prominently (since search.py computes both into the detail payload), and v3.4.24 added the "+" add-to-watchlist button right next to the Track ↗ link. The original framing described features that already existed, so this release ships only the new Stats-page card.
+
+### Operational notes
+- No schema changes; no config migration. The new card appears in the Composition section automatically on any install with `sightings_hourly` data (i.e. anyone post-v2.50.0 with at least one collector cycle behind them). Empty data state ("no data yet today") renders cleanly on fresh installs.
+
 ## [3.4.35] — 2026-05-20
 
 ### Changed

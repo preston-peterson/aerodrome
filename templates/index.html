@@ -1,4 +1,4 @@
-<!-- Version: 3.4.35 -->
+<!-- Version: 3.4.36 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -5891,6 +5891,7 @@ const CARD_BUILDERS = {
     }, 'slowest'),
     longest_track:    v => longestTrackCard(v),
     // Composition
+    top_aircraft:      v => topAircraftCard(v),  // v3.4.36
     top_types:         v => listCard('Top 5 aircraft types', v, r => r.name ? `${r.aircraft_type} — ${r.name}` : r.aircraft_type, r => r.n, 'top_types', r => r.aircraft_type, 'all_types'),
     top_operators:     v => listCard('Top 5 operators', v, r => r.name ? `${r.operator} — ${r.name}` : r.operator, r => r.n, 'top_operators', r => r.operator, 'all_operators'),
     military_branches: v => listCard('Military branches', v, r => r.branch, r => r.n, 'military_branches', null, 'all_military_branches'),
@@ -7617,6 +7618,48 @@ function longestTrackCard(data){
         <div class="stat-label">Longest continuous track</div>
         <div class="stat-value">${dur}</div>
         <div class="stat-sub">${who}</div>
+    </div>`;
+}
+
+// v3.4.36: top_aircraft is a list-style card where each row is an
+// individual aircraft, so the row click navigates to that aircraft's
+// detail page rather than drilling to an "aircraft matching this row"
+// view (which would be a one-row pointless filter). Visual density
+// matches listCard so the cards line up in the Composition grid.
+function topAircraftCard(items){
+    if(!items || !items.length){
+        return `<div class="stat-card">
+            <div class="stat-label">Top 5 frequent aircraft</div>
+            <div class="stat-empty">no data yet today</div>
+        </div>`;
+    }
+    const lis = items.slice(0, 5).map(r => {
+        const icao = String(r.icao || '').toUpperCase();
+        const safe = escapeHtml(icao);
+        // Primary identity: callsign if known, else ICAO (the link itself
+        // already exposes the ICAO so we don't need to repeat it).
+        const callsign = (r.last_callsign || '').trim().toUpperCase();
+        const type = (r.aircraft_type || '').trim().toUpperCase();
+        const reg = (r.registration || '').trim().toUpperCase();
+        // Compose the secondary line: registration / type, separated
+        // by · — omit empty fields entirely so the row stays tidy on
+        // unknown aircraft.
+        const parts = [];
+        if (reg) parts.push(reg);
+        if (type) parts.push(type);
+        const secondary = parts.join(' · ');
+        const primary = callsign || safe;
+        const sub = secondary
+            ? `<span class="sub" style="opacity:0.6;font-size:11px;margin-left:6px">${escapeHtml(secondary)}</span>`
+            : '';
+        return `<li>
+            <span class="name"><a class="icao-link" href="/aircraft/${safe}" style="text-decoration:none">${escapeHtml(primary)}</a>${sub}</span>
+            <span class="count">${r.n}</span>
+        </li>`;
+    }).join('');
+    return `<div class="stat-card">
+        <div class="stat-label">Top 5 frequent aircraft</div>
+        <ul class="stat-list">${lis}</ul>
     </div>`;
 }
 

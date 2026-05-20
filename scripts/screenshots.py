@@ -218,7 +218,7 @@ STATS = {
     "groups": [
         {"id":"today","label":"Today","cards":["unique_today","peak_simultaneous","average_concurrent","military_today","watchlist_hits","first_last_contact"]},
         {"id":"extremes","label":"Today's extremes","cards":["furthest","highest_altitude","lowest_altitude","fastest","slowest","longest_track"]},
-        {"id":"composition","label":"Composition","cards":["top_types","top_operators","military_branches","category_mix","top_countries"]},
+        {"id":"composition","label":"Composition","cards":["top_aircraft","top_types","top_operators","military_branches","category_mix","top_countries"]},
         {"id":"patterns","label":"Patterns","cards":["hourly_histogram"]},
         {"id":"history","label":"History","cards":["first_time_seen","daily_counts_7d","watchlist_frequency"]},
         {"id":"records","label":"All-time records","cards":["all_time_records"]},
@@ -240,6 +240,13 @@ STATS = {
         "fastest":          {"icao":"AD7E6F","callsign":"JBU934","speed":597,"aircraft_type":"A321"},
         "slowest":          {"icao":"AAAD47","callsign":"N78729","speed":84,"aircraft_type":"C172"},
         "longest_track":    {"icao":"AAA86C","callsign":"ENY3987","duration_seconds":4230},
+        "top_aircraft": [
+            {"icao":"A9F31C","last_callsign":"UPS2877","aircraft_type":"B763","registration":"N363UP","operator":"UPS","n":2841},
+            {"icao":"AB22E8","last_callsign":"SKW5193","aircraft_type":"CRJ7","registration":"N728SK","operator":"SKW","n":2104},
+            {"icao":"AC8E40","last_callsign":"FFT1612","aircraft_type":"A321","registration":"N701FR","operator":"FFT","n":1873},
+            {"icao":"A4D2B1","last_callsign":"N511MK","aircraft_type":"BE20","registration":"N511MK","operator":"","n":1652},
+            {"icao":"ADE419","last_callsign":"AAL1148","aircraft_type":"B738","registration":"N916NN","operator":"AAL","n":1438},
+        ],
         "top_types": [
             {"aircraft_type":"B738","n":90,"name":"Boeing 737-800"},
             {"aircraft_type":"A320","n":77,"name":"Airbus A320"},
