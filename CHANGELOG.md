@@ -19,6 +19,22 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.32] — 2026-05-20
+
+### Changed
+- **Upgrade ntfy directly from the Updates page instead of being redirected to the Notifications tab.** When the Updates page detects that a newer ntfy version is available, the cyan upgrade button now applies the upgrade in place — same `/api/ntfy/upgrade` endpoint the Notifications panel's upgrade button has always called, just wired to a button on the page where the user actually noticed the upgrade was available. The button label includes the target version (e.g. "Upgrade to 2.23.0") so it's clear what's being installed. Click it and you stay on the Updates page; the card switches to an in-progress message while the new binary downloads and the ntfy service restarts, then refreshes itself to "up to date" once done. The Check again button is locked alongside the upgrade button while the upgrade is in flight, so an accidental second click can't race the in-flight request.
+
+- **Status feedback now matches the page's existing pattern.** Progress, success, and failure all render as inline `status-msg` rows in the same card, using the same info/ready/err styling other cards on the page use for parity. Network errors and non-JSON server responses (the 500-returned-HTML case) are surfaced as the actual error text rather than getting swallowed by a generic "failed" message, so anything that goes wrong can be diagnosed from the page rather than from the logs. On success, the card briefly shows the upgrade's success message before re-checking status and re-rendering as "up to date" — about a 1.2-second delay to let the success message register before the refresh overwrites it.
+
+- **The Notifications tab's upgrade button is unchanged.** Users who get to the Notifications tab by another path (configuring notifications, troubleshooting, etc.) still see the same "Upgrade to X.Y.Z" button there. The two upgrade buttons share the same endpoint; nothing forks. The redirect-to-Notifications behavior was a friction path that meant the user had to (1) click a button that took them away from where they were, (2) find the Notifications tab, (3) expand the Local ntfy server panel which is collapsed by default, (4) click the actual upgrade button hidden inside it. Four clicks become one click on the page where the available-upgrade card already lives.
+
+### Behind the scenes
+- The new `upgradeNtfyInline()` in `templates/updates.html` captures the version from the button text (regex strip of the `Upgrade to ` prefix) before the button label is replaced with the in-progress state, so the post-failure restore path can put the right version number back on the button. The async flow re-enables both buttons in every non-success branch (parse failure, server-side ok:false, network exception) — locked buttons would otherwise be orphaned at "Upgrading…" if the user wanted to retry.
+- The Updates page's ntfy card structure (`ntfyUpdateStatus`, `ntfyUpdateActions`, the status-msg classes) was unchanged — only the button's onclick handler swapped from an anchor href to a function call, plus the new function appended after `checkNtfyUpdate()`. No new server endpoints, no schema changes, no config.
+
+### Operational notes
+- No config migration; the only file that changed is `templates/updates.html`. The deployed `/api/ntfy/upgrade` endpoint is the same one that has been in production since v3.x. Existing installs upgrade in place via the normal rsync deploy path.
+
 ## [3.4.31] — 2026-05-18
 
 ### Changed

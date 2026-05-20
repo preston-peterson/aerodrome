@@ -1,4 +1,4 @@
-<!-- Version: 3.4.31 -->
+<!-- Version: 3.4.32 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1244,10 +1244,10 @@ async function checkNtfyUpdate() {
                    style="color:var(--cyan);margin-left:6px">Release notes ↗</a>
             </div>`;
             actions.innerHTML = `
-                <a href="/config#notifications" class="btn btn-primary" style="text-decoration:none">
-                    Upgrade from Notifications tab
-                </a>
-                <button class="btn" onclick="checkNtfyUpdate()">Check again</button>`;
+                <button class="btn btn-primary" onclick="upgradeNtfyInline()" id="ntfyUpgradeBtn">
+                    Upgrade to ${_esc(latest)}
+                </button>
+                <button class="btn" onclick="checkNtfyUpdate()" id="ntfyCheckAgainBtn">Check again</button>`;
         } else {
             badge.textContent = 'up to date';
             badge.className = 'badge';
@@ -1259,6 +1259,92 @@ async function checkNtfyUpdate() {
     } catch (e) {
         // Fail closed — hide the card rather than show a confusing error
         card.style.display = 'none';
+    }
+}
+
+// v3.4.32: in-place ntfy upgrade from the Updates page. Replaces the
+// pre-v3.4.32 redirect button that sent users to /config#notifications
+// where the upgrade button lived hidden behind a collapsed panel +
+// "Reconfigure" link. The user noticed the upgrade on THIS page; let
+// them apply it on this page. Wired to the same /api/ntfy/upgrade
+// endpoint that the Notifications panel's nfUpgradeNtfy() calls — the
+// server-side behavior is identical, only the calling surface changes.
+async function upgradeNtfyInline() {
+    const status = document.getElementById('ntfyUpdateStatus');
+    const upgradeBtn = document.getElementById('ntfyUpgradeBtn');
+    const checkBtn = document.getElementById('ntfyCheckAgainBtn');
+
+    // Capture the latest version label off the button text so we can
+    // show it in the success message before the card re-renders.
+    const wasUpgradingTo = (upgradeBtn && upgradeBtn.textContent || '')
+        .replace(/^\s*Upgrade to\s*/, '').trim();
+
+    // Lock both buttons and switch the status row to an in-progress
+    // message. The status-msg classes (info/ready/warn/err) match what
+    // the card uses elsewhere on the page, so visually the in-progress
+    // state reads as a natural continuation of the card.
+    if (upgradeBtn) { upgradeBtn.disabled = true; upgradeBtn.textContent = 'Upgrading…'; }
+    if (checkBtn)   { checkBtn.disabled = true; }
+    if (status) {
+        status.innerHTML = `<div class="status-msg info">
+            <span class="spinner"></span>Upgrading ntfy${wasUpgradingTo ? ' to ' + _esc(wasUpgradingTo) : ''}…
+            this can take 30-60 seconds while the new binary is downloaded and the service restarts.
+        </div>`;
+    }
+
+    try {
+        const r = await fetch('/api/ntfy/upgrade', {method: 'POST'});
+        // Defensive parse — if the server returned an HTML error page on
+        // a 500, surface that clearly instead of letting r.json() throw
+        // a bare "unexpected character" error.
+        let j;
+        try {
+            j = await r.json();
+        } catch (parseErr) {
+            const txt = await r.text().catch(() => '(no body)');
+            if (status) {
+                status.innerHTML = `<div class="status-msg err">
+                    Upgrade failed: server returned HTTP ${r.status} with non-JSON body.
+                    <div style="font-family:var(--mono);font-size:11px;margin-top:6px;opacity:0.8">
+                        ${_esc(txt.slice(0, 300))}
+                    </div>
+                </div>`;
+            }
+            if (upgradeBtn) { upgradeBtn.disabled = false; upgradeBtn.textContent = `Upgrade to ${_esc(wasUpgradingTo)}`; }
+            if (checkBtn)   { checkBtn.disabled = false; }
+            return;
+        }
+
+        if (j.ok) {
+            // Success — re-check status so the card re-renders as "up to
+            // date". checkNtfyUpdate() rebuilds status + actions from
+            // scratch, so we don't need to clean up our in-progress UI.
+            if (status) {
+                status.innerHTML = `<div class="status-msg ready">
+                    ${_esc(j.message || 'Upgrade completed successfully.')} Refreshing status…
+                </div>`;
+            }
+            // Brief delay so the success message is visible before the
+            // refresh overwrites it. checkNtfyUpdate() re-renders the
+            // whole card from the new status payload.
+            setTimeout(() => checkNtfyUpdate(), 1200);
+        } else {
+            if (status) {
+                status.innerHTML = `<div class="status-msg err">
+                    Upgrade failed: ${_esc(j.message || 'Unknown error. Check logs for details.')}
+                </div>`;
+            }
+            if (upgradeBtn) { upgradeBtn.disabled = false; upgradeBtn.textContent = `Upgrade to ${_esc(wasUpgradingTo)}`; }
+            if (checkBtn)   { checkBtn.disabled = false; }
+        }
+    } catch (e) {
+        if (status) {
+            status.innerHTML = `<div class="status-msg err">
+                Upgrade failed: network or server error &mdash; ${_esc(e.message)}
+            </div>`;
+        }
+        if (upgradeBtn) { upgradeBtn.disabled = false; upgradeBtn.textContent = `Upgrade to ${_esc(wasUpgradingTo)}`; }
+        if (checkBtn)   { checkBtn.disabled = false; }
     }
 }
 
