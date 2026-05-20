@@ -1,4 +1,4 @@
-# Version: 3.4.36
+# Version: 3.4.38
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -4769,6 +4769,11 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 return cur.fetchall()
 
             rows = []
+            # v3.4.37: all_aircraft drill sets this to the real total-distinct-
+            # aircraft count from a separate COUNT query (the SQL LIMIT in that
+            # branch would otherwise make total_count just equal len(rows)).
+            # All other drills leave it None and use the default len(rows).
+            all_aircraft_total = None
 
             if card == "furthest":
                 # Top-N by distance today. Need lat/lon per aircraft.
@@ -5616,6 +5621,66 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                     rows.append(row)
                 rows.sort(key=lambda x: -x["aircraft_count"])
 
+            elif card == "all_aircraft":
+                # v3.4.37: full top-100 list backing the top_aircraft card's
+                # whole-card drill. Same metric as the card (windowed
+                # SUM(sighting_count) from sightings_hourly joined with
+                # seen_aircraft for display fields), capped at 100 so the
+                # panel stays scannable and the query stays bounded — on a
+                # busy install the full population would be many thousands
+                # of aircraft, more than a drill table can usefully render.
+                # Each row is a per-aircraft entry: icao + seen_at on the
+                # row makes the existing _drillRowHtml path treat it as a
+                # clickable jump to /aircraft/<icao>, the same UX as
+                # individual-aircraft drills (furthest_aircraft etc).
+                start_bucket = start_ts // 3600
+                # Separate count of distinct aircraft in window — used by
+                # the panel footer ("Showing top 100 of N aircraft"). The
+                # main query's LIMIT 100 would make len(rows) misleading;
+                # this gives the honest population number even when the
+                # display is capped. One COUNT(DISTINCT icao) on the
+                # rollup; same shape as the Tier-4 #6 query so equivalent
+                # cost — one-time on drill open, acceptable.
+                total_count_row = q(
+                    "SELECT COUNT(DISTINCT icao) AS n FROM sightings_hourly "
+                    "WHERE hour_bucket >= ?",
+                    (start_bucket,),
+                )
+                _all_aircraft_total = total_count_row[0]["n"] if total_count_row else 0
+                ac_rows = q("""
+                    SELECT s.icao,
+                           s.last_callsign,
+                           s.aircraft_type,
+                           s.aircraft_type_desc,
+                           s.operator,
+                           s.registration,
+                           s.first_seen_at,
+                           s.last_seen_at,
+                           SUM(h.sighting_count) AS n,
+                           MIN(h.first_seen_at) AS hourly_first,
+                           MAX(h.last_seen_at)  AS hourly_last
+                    FROM sightings_hourly h
+                    JOIN seen_aircraft s ON s.icao = h.icao
+                    WHERE h.hour_bucket >= ?
+                    GROUP BY h.icao
+                    ORDER BY n DESC
+                    LIMIT 100
+                """, (start_bucket,))
+                for r in ac_rows:
+                    d = dict(r)
+                    d["callsign"] = (d.get("last_callsign") or "").strip()
+                    d["sightings"] = d.get("n") or 0
+                    d["sightings_fmt"] = f"{d['sightings']:,}"
+                    d["first_seen"] = d.get("hourly_first") or d.get("first_seen_at")
+                    d["last_seen"]  = d.get("hourly_last")  or d.get("last_seen_at")
+                    d["seen_at"] = d["last_seen"]
+                    _attach_airline_name(d, d.get("operator"))
+                    rows.append(d)
+                # Stash the real total on a sentinel field so the response
+                # builder below overrides len(rows). See the override at
+                # `if all_aircraft_total is not None` further down.
+                all_aircraft_total = _all_aircraft_total
+
             elif card == "all_types":
                 # v2.41.22: aggregate drill for aircraft types. Same shape as
                 # all_operators but keyed by aircraft_type. Returns the full
@@ -5849,10 +5914,19 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             # actually render. Per-row lookups are fast because
             # idx_all_seen_icao covers (icao, seen_at) exactly.
             total_count = len(rows)
+            # v3.4.37: all_aircraft branch supplies its own real total
+            # (true distinct-aircraft count in window) since len(rows)
+            # there reflects only the SQL LIMIT cap.
+            if all_aircraft_total is not None:
+                total_count = all_aircraft_total
             # v2.66.0: cap at 25 unless caller asks for all. The "View
             # all N {types|etc}" button on Composition cards passes
             # all=true; the default panel render uses the cap for budget.
-            if not bypass_cap:
+            # v3.4.37: skip the 25-cap for all_aircraft — its SQL LIMIT
+            # of 100 IS the intended display size (the parent card asks
+            # for top 100 as its drill target), not a budget to be
+            # further trimmed.
+            if not bypass_cap and card != "all_aircraft":
                 rows = rows[:25]
 
             for r in rows:
@@ -9187,8 +9261,18 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         logger.warning("Initial sudoers drift check failed: %s", e)
 
     @app.post("/api/updates/local/apply")
-    async def apply_local_update():
-        """Back up current install, copy files from update/ over it, reinstall deps, restart."""
+    async def apply_local_update(snapshot_db: bool = False):
+        """Back up current install, copy files from update/ over it, reinstall deps, restart.
+
+        v3.4.38: when `snapshot_db=true`, also writes a consistent
+        SQLite-online-backup-API snapshot of the live database into the
+        backup directory before the file-copy step. The snapshot is the
+        ONLY way to get a usable DB rollback from the apply flow — the
+        regular code-only backup deliberately excludes the DB to avoid
+        racy file copies (see PRESERVE_PATHS above). Disabled by default
+        because the snapshot is the size of the live DB, which can be
+        gigabytes; opting in is an informed-consent choice.
+        """
         import subprocess
         install_dir = Path(__file__).parent
         update_dir = install_dir / "update"
@@ -9260,6 +9344,59 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 "ok": False,
                 "error": f"Backup failed: {e}. Update not applied."
             })
+
+        # v3.4.38: opt-in consistent DB snapshot via the SQLite online-backup
+        # API. Runs AFTER the code/templates backup (so its failure can't
+        # block the routine apply path) and BEFORE the prune (so the
+        # snapshot is included in the backup dir that prune retains under
+        # the keep-5 policy). The snapshot lives at
+        # .backups/<ts>/<db_filename>.snapshot — sibling-of-where-it-came-
+        # from naming so a user inspecting the backup dir can match the
+        # snapshot back to its source DB.
+        #
+        # Failure mode: if the snapshot fails (disk full, permissions,
+        # source DB corruption), log a warning but DO NOT abort the
+        # apply. The user opted in to belt-AND-suspenders behavior;
+        # losing the suspenders shouldn't block them from putting their
+        # belt on.
+        if snapshot_db:
+            try:
+                _configured_db = (CONFIG.get("data") or {}).get("db_file") or "aircraft_history.db"
+                _db_path = Path(_configured_db)
+                if not _db_path.is_absolute():
+                    _db_path = install_dir / _db_path
+                if _db_path.exists():
+                    _snapshot_name = f"{_db_path.name}.snapshot"
+                    _snapshot_path = backup_dir / _snapshot_name
+                    _t0 = time.time()
+                    _src = _open_db_conn(str(_db_path))
+                    _dst = _open_db_conn(str(_snapshot_path))
+                    try:
+                        with _dst:
+                            _src.backup(_dst)
+                    finally:
+                        _src.close()
+                        _dst.close()
+                    _size = _snapshot_path.stat().st_size
+                    _elapsed = time.time() - _t0
+                    logger.info(
+                        f"DB snapshot written to {_snapshot_path.name}: "
+                        f"{_size:,} bytes in {_elapsed:.1f}s"
+                    )
+                else:
+                    logger.warning(
+                        f"DB snapshot requested but {_db_path} does not exist; "
+                        f"skipping snapshot, continuing with apply"
+                    )
+            except Exception as snap_err:
+                # Best-effort. Keep the apply going regardless of why
+                # the snapshot failed — the user has a backup of their
+                # code, the DB stays in place (PRESERVE_PATHS skips it),
+                # and the worst case is they don't have a DB rollback
+                # for this specific apply.
+                logger.warning(
+                    f"DB snapshot failed (apply continues): {snap_err}"
+                )
 
         # Prune old install snapshots so .backups/ doesn't grow unbounded
         _prune_install_backups()
@@ -9563,7 +9700,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             raise ValueError(f"Unexpected error staging zip: {e}")
 
     @app.post("/api/updates/github/apply")
-    async def apply_github_update():
+    async def apply_github_update(snapshot_db: bool = False):
         """v3.0.1: download + verify + stage from GitHub, then apply.
 
         No request body — the tag to apply is read from update_state's
@@ -9571,6 +9708,11 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         Refuses if no update is currently available (running >= latest,
         or last_known_latest is null), so a stale UI cache can't trigger
         an unwanted apply.
+
+        v3.4.38: accepts a `snapshot_db` query param threaded through to
+        apply_local_update — opt-in consistent SQLite snapshot in the
+        backup dir, off by default. See apply_local_update for the
+        rationale on failure semantics (best-effort, doesn't block apply).
 
         Returns the same response shape as POST /api/updates/local/apply
         — the UI can reuse the local-apply result-rendering code without
@@ -9618,7 +9760,9 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         # of update/ on success. By reusing it we get all of that for free
         # — including the same response shape, so the UI doesn't need
         # special handling for the GitHub-apply path.
-        return await apply_local_update()
+        # v3.4.38: thread snapshot_db through so the GitHub-apply path
+        # honors the same opt-in DB-snapshot checkbox as the local-apply path.
+        return await apply_local_update(snapshot_db=snapshot_db)
 
     @app.get("/api/updates/github/check")
     async def check_github_update(force: bool = False):

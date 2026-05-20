@@ -19,6 +19,41 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.38] — 2026-05-20
+
+### Added
+- **The Updates page now tells you what auto-backup actually contains, and offers an opt-in DB snapshot.** A note at the top of the page is explicit about the mental-model gap that v3.4.34 codified: the per-apply `.backups/<timestamp>/` directory holds code and templates only, not a copy of the database. For users who want a consistent DB snapshot tied to a specific apply, a new "Snapshot database with this apply" checkbox writes one through SQLite's online-backup API into the same backup directory — the only correct way to snapshot a live SQLite database, never the racy file-copy that pre-v3.4.34 attempted. Off by default because the snapshot is the size of the live database (can be gigabytes) and the live DB itself stays in place untouched either way; opting in is an informed-consent choice, especially on installs running near their disk-headroom limits.
+
+- **Both apply paths honor the checkbox.** The local-apply ZIP flow and the GitHub-apply flow both read the same checkbox via a shared `getSnapshotDbFlag()` helper and append `?snapshot_db=true` to their fetch URL when checked. The endpoint defaults to `false` when missing, so a cached page or older template gracefully degrades to pre-v3.4.38 behavior.
+
+- **Snapshot failures don't block the update apply.** If the snapshot step fails for any reason — disk full, permissions, source DB corruption — the failure is logged at WARNING level but the apply continues. The reasoning: the user opted in to belt-and-suspenders behavior, and losing the suspenders shouldn't prevent putting the belt on. The update's code-only backup still happens, and the live DB stays in place (PRESERVE_PATHS skips it). Worst case is no DB rollback for this specific apply.
+
+- **Page navigation: the doc note links to Configuration → Backup** so users who want the full-strength backup feature (zip with manifest + config + DB) can find it without ambient knowledge of where it lives.
+
+### Behind the scenes
+- The snapshot step lives in `apply_local_update` between the code-backup-loop completion and the prune. That placement means the snapshot is included in the keep-5 retention policy (prunes happen after) and its failure can't block routine apply (the apply's response on backup failure returns 500 before this point is reached).
+- File naming: `<live_db_filename>.snapshot` (e.g. `aircraft_history.db.snapshot` or `aircraft_history_synthetic.db.snapshot`). Lives at the top level of `.backups/<timestamp>/` so a user inspecting the backup dir sees the snapshot sibling-of-its-source.
+- Uses `_open_db_conn` from `collector` for both source and destination, so the snapshot inherits the same WAL/journal pragmas the live DB uses. The `dst.backup()` call inside a `with dst:` block gives the standard transactional semantics SQLite documents for its online-backup API.
+- The pre-apply settings card is a real `<div class="card">` styled to match the existing card grammar on the page, not a banner — keeps the page rhythm intact, and gives the checkbox a comfortable parking spot that doesn't compete with the GitHub-update / Local-zip / ntfy-update cards below it.
+
+### Operational notes
+- No schema changes; no config changes; no new endpoints. The `snapshot_db` query parameter is additive on both existing apply endpoints.
+- **The DB-snapshot step does NOT prune old snapshots beyond the existing `INSTALL_BACKUP_KEEP=5` retention** that applies to the whole `.backups/<timestamp>/` directory tree. If you check the box on every apply, your `.backups/` will grow by 5× the live DB size and stabilize there. On the test box at 0.29× disk headroom, leave the box unchecked unless you've planned the space.
+
+## [3.4.37] — 2026-05-20
+
+### Added
+- **The Top 5 frequent aircraft card now drills to a top-100 panel.** Click anywhere on the card background (the label area or the whitespace around the rows, not the rows themselves) and the same Option C full-width panel that backs Top 5 types / operators / countries expands inline below the card, showing the top 100 aircraft by windowed sighting count. Columns: rank, ICAO, callsign, type, operator, registration, sightings, first seen, last seen — each row clickable to the aircraft's detail page, the same per-aircraft semantic as the card-face rows. The footer reads "Showing top 100 of N aircraft" where N is the real distinct-aircraft population in the window, so the 100-row cap is honest about what it's surfacing vs. the larger population.
+
+### Behind the scenes
+- **`all_aircraft` drill backend** mirrors the `all_operators` / `all_types` pattern but keeps the per-aircraft row shape (icao + seen_at on each row) so the existing `_drillRowHtml` non-aggregate path treats clicks as detail-page jumps rather than chained-aggregate filters. The SQL caps at `LIMIT 100` in the query to bound memory on busy installs where the true population could be tens of thousands; the real total comes from a separate `COUNT(DISTINCT icao) FROM sightings_hourly WHERE hour_bucket >= ?` so the footer can honestly show "of N aircraft." That extra count query is the same shape as the Tier 4 #6 bottleneck (111-115 ms class) — acceptable for one-time drill-open cost.
+- **`aircraft_list` preset** added to `DRILL_COLUMN_SETS` with 9 columns (rank, ICAO, callsign, type, operator, registration, sightings, first seen, last seen). Intentionally NOT added to the `aggregatePresets` set so each row keeps the per-aircraft click-to-detail behavior rather than chaining to a roll-up filter.
+- **Frontend row enrichment** extended to format `first_seen` / `last_seen` timestamps for non-aggregate rows too, not just aggregate rows. Same `fmtTime()` formatter the aggregates use, with idempotency guards so the aggregate path that already sets these fields isn't disturbed. Also added `sightings_fmt` formatting for non-aggregate rows that carry a numeric `sightings` field.
+- **The PII audit (graduated to required in v3.4.33) caught an inline maintainer-name comment** I left in the v3.4.37 SQL block during development — exactly the failure mode the gating was meant to prevent. The audit halted the bump, the comment was scrubbed, and the bump completed cleanly on the second run. Lesson 4.25 (codify-as-pipeline-step) validated in practice.
+
+### Operational notes
+- No schema changes; no config migration; no new endpoints. The drill backend extends the existing `/api/all/drill` dispatcher with one new `elif` branch.
+
 ## [3.4.36] — 2026-05-20
 
 ### Added

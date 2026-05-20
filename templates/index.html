@@ -1,4 +1,4 @@
-<!-- Version: 3.4.36 -->
+<!-- Version: 3.4.38 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -6081,6 +6081,12 @@ const DRILL_COLUMNS = {
     // individual-aircraft drill.
     all_operators:     { preset: 'operator_list' },
     all_types:         { preset: 'type_list' },
+    // v3.4.37: per-aircraft drill backing the top_aircraft card.
+    // Intentionally NOT in aggregatePresets so each row's
+    // viewAircraftDetails(icao, seen_at) click handler fires —
+    // every row is an individual aircraft, click jumps to its
+    // detail page.
+    all_aircraft:      { preset: 'aircraft_list' },
     all_military_branches: { preset: 'branch_list' },
     all_category_mix:  { preset: 'category_list' },
     // v2.50.27: full-country-list panel. Row clicks within route back
@@ -6218,6 +6224,22 @@ const DRILL_COLUMN_SETS = {
         ['Aircraft',    'aircraft_count_fmt',  'num primary' ],
         ['Sightings',   'sightings_fmt',       'num'     ],
         ['Top operator','top_operator',        'icao'    ],
+        ['First seen',  'first_seen_label',    ''        ],
+        ['Last seen',   'last_seen_label',     ''        ],
+    ],
+    // v3.4.37: per-aircraft drill columns for all_aircraft. Rows are
+    // individual aircraft, so the click target is the detail page
+    // (handled by _drillRowHtml's default non-aggregate path). No
+    // "Aircraft" column (each row IS one aircraft); sightings is the
+    // primary metric since it's what the parent card ranks by.
+    aircraft_list: [
+        ['#',           'rank',                'rank'    ],
+        ['ICAO',        'icao',                'icao'    ],
+        ['Callsign',    'callsign',            'cs'      ],
+        ['Type',        'aircraft_type',       'cs'      ],
+        ['Operator',    'operator',            'cs'      ],
+        ['Reg',         'registration',        ''        ],
+        ['Sightings',   'sightings_fmt',       'num primary' ],
         ['First seen',  'first_seen_label',    ''        ],
         ['Last seen',   'last_seen_label',     ''        ],
     ],
@@ -6689,6 +6711,23 @@ function renderOptionCDrillPanel(cardId, response, context){
             }
             out.first_seen_label = r.first_seen ? fmtTime(r.first_seen) : '—';
             out.last_seen_label  = r.last_seen  ? fmtTime(r.last_seen)  : '—';
+        }
+        // v3.4.37: per-aircraft rows in non-aggregate drills (currently
+        // aircraft_list) can also carry first_seen / last_seen for
+        // "when was this aircraft first/last in coverage during the
+        // window". Format them with the same fmtTime path; the
+        // aggregate block above sets these already so the no-op guard
+        // keeps both paths consistent.
+        if(!isAggregate){
+            if(r.first_seen && out.first_seen_label == null){
+                out.first_seen_label = fmtTime(r.first_seen);
+            }
+            if(r.last_seen && out.last_seen_label == null){
+                out.last_seen_label = fmtTime(r.last_seen);
+            }
+            if(typeof r.sightings === 'number' && out.sightings_fmt == null){
+                out.sightings_fmt = r.sightings.toLocaleString();
+            }
         }
         // Defaults for missing backend fields (no location configured, or
         // sighting lacked coords). Leave dashes so the column still lines up.
@@ -7626,7 +7665,15 @@ function longestTrackCard(data){
 // detail page rather than drilling to an "aircraft matching this row"
 // view (which would be a one-row pointless filter). Visual density
 // matches listCard so the cards line up in the Composition grid.
+//
+// v3.4.37: whole-card click now opens the all_aircraft drill panel
+// (top 100), matching the pattern from top_types / top_operators /
+// top_countries. Row click → /aircraft/<icao> (per-aircraft); card
+// background click → all_aircraft panel inline below. Row clicks
+// stopPropagation via the anchor's native navigation, so card-bg
+// handler only fires on label/whitespace clicks.
 function topAircraftCard(items){
+    const allCardId = 'all_aircraft';
     if(!items || !items.length){
         return `<div class="stat-card">
             <div class="stat-label">Top 5 frequent aircraft</div>
@@ -7636,14 +7683,9 @@ function topAircraftCard(items){
     const lis = items.slice(0, 5).map(r => {
         const icao = String(r.icao || '').toUpperCase();
         const safe = escapeHtml(icao);
-        // Primary identity: callsign if known, else ICAO (the link itself
-        // already exposes the ICAO so we don't need to repeat it).
         const callsign = (r.last_callsign || '').trim().toUpperCase();
         const type = (r.aircraft_type || '').trim().toUpperCase();
         const reg = (r.registration || '').trim().toUpperCase();
-        // Compose the secondary line: registration / type, separated
-        // by · — omit empty fields entirely so the row stays tidy on
-        // unknown aircraft.
         const parts = [];
         if (reg) parts.push(reg);
         if (type) parts.push(type);
@@ -7652,12 +7694,16 @@ function topAircraftCard(items){
         const sub = secondary
             ? `<span class="sub" style="opacity:0.6;font-size:11px;margin-left:6px">${escapeHtml(secondary)}</span>`
             : '';
+        // event.stopPropagation on the row's <a> click via the anchor's
+        // own onclick — so navigating to /aircraft/<icao> doesn't ALSO
+        // trigger the parent card's toggleDrill.
         return `<li>
-            <span class="name"><a class="icao-link" href="/aircraft/${safe}" style="text-decoration:none">${escapeHtml(primary)}</a>${sub}</span>
+            <span class="name"><a class="icao-link" href="/aircraft/${safe}" style="text-decoration:none" onclick="event.stopPropagation()">${escapeHtml(primary)}</a>${sub}</span>
             <span class="count">${r.n}</span>
         </li>`;
     }).join('');
-    return `<div class="stat-card">
+    return `<div class="stat-card drillable" data-drill-card="${allCardId}" onclick="toggleDrill(this, '${allCardId}')">
+        <span class="drill-chev">▼</span>
         <div class="stat-label">Top 5 frequent aircraft</div>
         <ul class="stat-list">${lis}</ul>
     </div>`;

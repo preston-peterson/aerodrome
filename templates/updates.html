@@ -1,4 +1,4 @@
-<!-- Version: 3.4.36 -->
+<!-- Version: 3.4.38 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -303,6 +303,36 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
     <div class="page-title">Updates</div>
     <div class="page-sub">Apply new releases of Aerodrome from GitHub or a local folder.</div>
 
+    <!-- v3.4.38: pre-apply settings strip. (A) doc note explaining what
+         the auto-backup actually contains — code + templates, NOT the
+         database. (B) opt-in checkbox to also snapshot the live DB via
+         the SQLite online-backup API before the file copy. Off by
+         default because the snapshot is the size of the live DB, which
+         can be gigabytes; opting in is informed consent.
+
+         Both apply paths (local zip + GitHub) read the checkbox state
+         via getSnapshotDbFlag() and append ?snapshot_db=true to their
+         fetch URL when enabled. -->
+    <div class="card" style="background: var(--bg2); border-color: var(--border)">
+        <div style="font-size:13px; line-height:1.6;">
+            <div style="margin-bottom: 8px">
+                <strong>Before you apply:</strong> Updates preserve your database in place. The auto-backup
+                in <code>.backups/&lt;timestamp&gt;/</code> contains code and templates only &mdash;
+                <em>not</em> a copy of the database. For a separate consistent DB snapshot use
+                <a href="/config#backup" style="color: var(--cyan)">Configuration &rarr; Backup</a> first,
+                or check the box below to include one in this apply's backup directory.
+            </div>
+            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none;">
+                <input type="checkbox" id="snapshotDbCheckbox" style="margin: 0">
+                <span>Snapshot database with this apply
+                    <span style="color: var(--text-tertiary); font-size: 11px; margin-left: 4px">
+                        (uses SQLite online-backup API; the snapshot is the size of your live DB)
+                    </span>
+                </span>
+            </label>
+        </div>
+    </div>
+
     <!-- v3.0.0: GitHub update card. Active card replacing the v2.41.3
          placeholder. Renders 5 states: disabled / never-checked / up-to-date
          / update-available / error. Page load reads cached state from
@@ -461,6 +491,16 @@ function _esc(s){
     return String(s == null ? '' : s)
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// v3.4.38: shared helper read by both the local-apply and GitHub-apply
+// fetch sites. Returns the current checkbox state, defaulting to false
+// if the checkbox element isn't in the DOM (defensive against future
+// page refactors that might move or rename the control). Returning a
+// boolean and not a string keeps the caller's URL construction clean.
+function getSnapshotDbFlag(){
+    const cb = document.getElementById('snapshotDbCheckbox');
+    return !!(cb && cb.checked);
 }
 
 // =========================================================================
@@ -924,7 +964,14 @@ async function applyLocal(version){
     // to the polling loop.
     let applyError = null;
     try {
-        const r = await fetch('/api/updates/local/apply', { method: 'POST' });
+        // v3.4.38: read the opt-in DB-snapshot checkbox state (set on
+        // the page-header card above) and append it as a query param.
+        // The endpoint defaults to false when missing, so a missing
+        // checkbox (e.g. cached older template) gracefully gets the
+        // pre-v3.4.38 behavior.
+        const snapshot = getSnapshotDbFlag();
+        const applyUrl = '/api/updates/local/apply' + (snapshot ? '?snapshot_db=true' : '');
+        const r = await fetch(applyUrl, { method: 'POST' });
         const j = await r.json();
         if (!r.ok || !j.ok) {
             // Server returned a definitive error before restarting (e.g.
@@ -1783,7 +1830,10 @@ async function applyGithubUpdate(tag){
 
     let j;
     try {
-        const r = await fetch('/api/updates/github/apply', { method: 'POST' });
+        // v3.4.38: same opt-in DB snapshot threading as the local apply.
+        const snapshot = getSnapshotDbFlag();
+        const applyUrl = '/api/updates/github/apply' + (snapshot ? '?snapshot_db=true' : '');
+        const r = await fetch(applyUrl, { method: 'POST' });
         j = await r.json();
     } catch(e){
         _ghBadge('error', 'err');
