@@ -1,4 +1,4 @@
-# Version: 3.4.38
+# Version: 3.4.39
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -3082,43 +3082,52 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                     # rollup. Why this caller, why now: every admin page
                     # (gear menu items — Status, Logs, Documentation,
                     # Configuration, Updates) polls /api/status on load
-                    # for the header health indicator. With raw queries
-                    # over 8M+ rows the COUNT(DISTINCT icao) ran 9.5 sec
-                    # (per the v2.50.17 perf-diag from the reference Pi
-                    # install). Combined with the 30s cache TTL, that
-                    # meant every gear-menu navigation outside the cache
-                    # window paid a multi-second cold-path penalty,
-                    # making admin pages feel sluggish even though the
-                    # Live/Watchlist/Military tabs (which switch
-                    # client-side without HTTP) felt snappy. Symptom
-                    # report from Pi user: "gear navigation is slow,
-                    # rest of Live tabs etc are faster."
+                    # v3.4.39: switch from `COUNT(DISTINCT icao) FROM
+                    # sightings_hourly` (the v2.50.x rollup query) to
+                    # `COUNT(*) FROM seen_aircraft WHERE last_seen_at >= ?`.
+                    # On the v3.4.38 reference install (8.6 GB synthetic
+                    # DB, 333K distinct aircraft, 691K rollup rows), the
+                    # rollup query had grown to 283.9 ms (per the
+                    # v3.4.38 perf diagnostic). Its query plan was the
+                    # same as it had ever been — `SEARCH sightings_hourly
+                    # USING COVERING INDEX idx_hourly_bucket_icao` plus
+                    # the `USE TEMP B-TREE FOR count(DISTINCT)` — but
+                    # the CPU work scales with rollup-row count, so the
+                    # cost grew predictably as the install accumulated
+                    # retention.
                     #
-                    # Same migration pattern as v2.50.0 for /api/all:
-                    # COUNT(DISTINCT icao) → over hour_bucket range
-                    # served by idx_hourly_bucket_icao covering index
-                    # (the all_tab_count_rollup probe shows 162ms vs
-                    # 9.5sec raw on the same hardware — ~57x). The
-                    # COUNT(*) becomes SUM(sighting_count): the rollup's
-                    # sighting_count is incremented per raw insert
-                    # (collector.py _upsert_hourly_rollup line 1999),
-                    # so summing across the bucket window is exactly
-                    # the raw row count.
+                    # `seen_aircraft.last_seen_at` is updated on every
+                    # collector upsert (collector.py:2773, :2989, :3074,
+                    # :3129) and indexed via `idx_seen_last`. The new
+                    # query is a single index range scan + COUNT(*), no
+                    # DISTINCT, no temp B-tree. Same semantics: an
+                    # aircraft is counted iff its most-recent sighting
+                    # falls inside the retention window, which is exactly
+                    # what the old rollup query expressed via
+                    # `hour_bucket >= cutoff_bucket`. The new query also
+                    # has cleaner boundary precision (last_seen_at is to
+                    # the second; hour_bucket truncation gave the old
+                    # query a 0-59 minute fuzz at the cutoff edge).
                     #
-                    # Boundary semantics shift slightly: hour_bucket is
-                    # cutoff_ts // 3600, so we may include up to 59 min
-                    # of pre-cutoff data inside the cutoff hour. For a
-                    # 30-day retention window that's 0.14% — invisible
-                    # in a status-card display. The military/watchlist
-                    # paths above are unchanged because retention
-                    # boundaries on those small tables matter more
-                    # (shorter retention windows in practice) and they
-                    # weren't slow.
+                    # `seen_aircraft` itself is never pruned by retention
+                    # (no DELETE in the collector), so it carries every
+                    # aircraft ever seen. The WHERE clause restricts to
+                    # the retention window, which is exactly the same set
+                    # the rollup-window query produced — the all-time
+                    # rows still in seen_aircraft just don't match the
+                    # WHERE filter and don't get counted.
+                    #
+                    # Total count: SUM(sighting_count) from the rollup
+                    # is still the right shape since that's the cumulative
+                    # raw-sighting count over the window (not a distinct-
+                    # aircraft measure), and it's already fast (no
+                    # DISTINCT — straight SUM over the covering index).
+                    # Kept unchanged.
                     all_cutoff_ts = now_ts - (CONFIG["retention"]["all_days"] * 86400)
                     all_cutoff_bucket = all_cutoff_ts // 3600
                     all_unique = conn.execute(
-                        "SELECT COUNT(DISTINCT icao) FROM sightings_hourly WHERE hour_bucket >= ?",
-                        (all_cutoff_bucket,)
+                        "SELECT COUNT(*) FROM seen_aircraft WHERE last_seen_at >= ?",
+                        (all_cutoff_ts,)
                     ).fetchone()[0]
                     all_total_row = conn.execute(
                         "SELECT COALESCE(SUM(sighting_count), 0) FROM sightings_hourly WHERE hour_bucket >= ?",
@@ -7959,6 +7968,21 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 "SELECT COUNT(DISTINCT icao) FROM sightings_hourly "
                 "WHERE hour_bucket >= ? AND hour_bucket <= ?",
                 (from_bucket, now),
+            ))
+            # v3.4.39: new production path. /api/status now runs this
+            # query instead of the COUNT(DISTINCT) rollup above —
+            # `idx_seen_last` makes it a single index range scan, no
+            # temp B-tree, no DISTINCT. Probe kept paired with the
+            # old rollup query so the reader can see the win directly
+            # (and confirm the two return the same row count, modulo
+            # any aircraft seen exactly at the cutoff boundary which
+            # the hour_bucket truncation might include but
+            # last_seen_at >= cutoff_ts wouldn't).
+            queries.append(_time_query(
+                f"unique_aircraft_count_seen (seen_aircraft.last_seen_at, last {all_days}d)",
+                "SELECT COUNT(*) FROM seen_aircraft "
+                "WHERE last_seen_at >= ?",
+                (from_ts,),
             ))
             if include_legacy:
                 # v2.50.26: legacy raw-fallback probe. Made obsolete for

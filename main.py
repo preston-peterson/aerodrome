@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Version: 3.4.38
+# Version: 3.4.39
 """
 main.py — Aerodrome ADS-B Tracker
 

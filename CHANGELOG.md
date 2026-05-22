@@ -19,6 +19,24 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.39] — 2026-05-22
+
+### Changed
+- **The All status card's unique-aircraft count is now ~50-100× faster.** On the v3.4.38 reference install (8.6 GB synthetic database, 33.6 days of retention, 48M raw sightings, 333K distinct aircraft, 691K rollup rows), the perf diagnostic measured the production `COUNT(DISTINCT icao) FROM sightings_hourly WHERE hour_bucket >= ?` query at 283.9 ms — up from the ~110 ms baseline filed against earlier in the year. The cost was growing predictably with retention: the query plan was correct (covering index plus a temp B-tree for the DISTINCT), but the CPU work scales with the rollup row count, and the rollup row count grows with retention. Projected to a 365-day retention window, the cost would have crossed into seconds. v3.4.39 swaps the query for `SELECT COUNT(*) FROM seen_aircraft WHERE last_seen_at >= ?` — a single index range scan on the existing `idx_seen_last`, no temp B-tree, no DISTINCT. Same semantic result, dramatically smaller constant factor, and the cost now scales with the number of *distinct aircraft* (333K) rather than the number of *rollup rows* (691K and growing), so the trajectory flattens out as the install accumulates retention.
+
+- **Cleaner boundary precision as a side effect.** The old query used `hour_bucket >= cutoff_bucket`, where `hour_bucket = seen_at // 3600` — the hour-truncation introduced up to a 59-minute fuzz at the retention cutoff edge. The new query uses `last_seen_at >= cutoff_ts` which is precise to the second. For a 30-day retention window the old fuzz worked out to 0.14% (invisible in a status-card display), so the precision win is a quiet bonus, not a correction.
+
+- **Total-sightings count is unchanged.** That value (`SUM(sighting_count) FROM sightings_hourly WHERE hour_bucket >= ?`) is already a fast index aggregate — straight `SUM` over the covering index, no `DISTINCT` involved. Only the unique-aircraft count needed the new path.
+
+### Behind the scenes
+- The fix relies on three preconditions that were verified before the swap: (1) `seen_aircraft.last_seen_at` exists on every install — added at schema migration v1 with a backfill from `all_sightings`, present since the early v2.x line; (2) `idx_seen_last` on that column exists, indexed and covering for the new query; (3) the collector updates `last_seen_at` on every UPSERT into `seen_aircraft` (four call sites in `collector.py` — verified). Without any of those, the swap would have needed a schema migration and would be a larger change; with all three already in place, the actual code change is a single SQL string and its parameter binding.
+- **Diagnostic probe paired.** The performance-diagnostic page (`/diagnostics/performance`) now reports both `unique_aircraft_count_rollup` (the old query, kept as a comparison baseline) and `unique_aircraft_count_seen` (the new query that production now runs). The two should return the same row count on a healthy install; the timing comparison shows the win directly. The legacy `unique_aircraft_count_raw_fallback` probe remains available behind `?include_legacy=true` for cases where the rollup path itself is degraded.
+- **`seen_aircraft` is not retention-pruned.** It carries every aircraft ever seen, even those whose data has been pruned from `all_sightings` and `sightings_hourly`. Semantically that's fine because the new query's WHERE filter (`last_seen_at >= cutoff_ts`) only counts aircraft whose most-recent sighting falls inside the retention window — aircraft last seen before the cutoff are still in `seen_aircraft` but don't match the filter, exactly mirroring the old query's behavior where pruned hour_buckets don't contribute to the DISTINCT count.
+
+### Operational notes
+- No schema changes; no config changes; no migration. The fix is a single SQL string swap on the read side. Existing installs pick up the new query at restart with no preparation.
+- The 30-second `db_stats_cache` TTL is unchanged; the new query is fast enough that the cache could in principle be shortened, but the cache also covers the other counts in the status payload and shortening it would shift load elsewhere — leaving the cache at 30s preserves the rest of the system's behavior.
+
 ## [3.4.38] — 2026-05-20
 
 ### Added
