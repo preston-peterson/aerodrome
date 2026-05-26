@@ -1,4 +1,4 @@
-<!-- Version: 3.4.43 -->
+<!-- Version: 3.4.44 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -524,7 +524,12 @@ function showSudoersRequiredModal(opts){
     const stagedVer = opts.staged_version != null ? opts.staged_version : '?';
     const liveVer = opts.live_version != null ? opts.live_version : '(none)';
     const installDir = opts.install_dir || '/opt/aerodrome';
-    const command = `sudo bash ${installDir}/install.sh`;
+    // v3.4.44: prefer the server-supplied recovery_command (points at the
+    // STAGED install.sh that writes the new SUDOERS_VERSION). Fall back to
+    // the old `<install_dir>/install.sh` form when the server hasn't
+    // supplied one — that path serves the no-update-drift case where the
+    // live install.sh DOES match the running release.
+    const command = opts.recovery_command || `sudo bash ${installDir}/install.sh`;
 
     return new Promise(resolve => {
         const bg = document.createElement('div');
@@ -1867,7 +1872,11 @@ async function applyGithubUpdate(tag){
             _lastSudoersCheck = j.sudoers;
             _lastUpdateInfo = { version: tag, install_dir: j.install_dir || null };
             const installDir = j.install_dir || '/opt/aerodrome';
-            const cmd = `sudo bash ${installDir}/install.sh`;
+            // v3.4.44: same recovery_command preference as the modal —
+            // use the server-supplied command (points at the STAGED
+            // install.sh) when present, fall back to the old form only
+            // when the server hasn't supplied one.
+            const cmd = j.sudoers.recovery_command || `sudo bash ${installDir}/install.sh`;
             const stagedV = j.sudoers.staged_version != null ? j.sudoers.staged_version : '?';
             const liveV = j.sudoers.live_version != null ? j.sudoers.live_version : '(none)';
             status.innerHTML = `

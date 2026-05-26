@@ -1,4 +1,4 @@
-# Version: 3.4.43
+# Version: 3.4.44
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -9129,6 +9129,15 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             }
 
         if live_ver < staged_ver:
+            # v3.4.44: recovery_command points at the STAGED install.sh,
+            # not the live one. The bug v3.4.44 fixes: the in-UI prompt
+            # used to read `sudo bash /opt/aerodrome/install.sh`, but
+            # /opt/aerodrome/install.sh is the LIVE (currently-installed)
+            # install.sh — which writes the OLD SUDOERS_VERSION. Running
+            # it can never produce the version the gate requires. The
+            # staged release's install.sh, which DOES write the new
+            # version, lives at update/<release>/install.sh; that's
+            # what we surface here.
             return {
                 "can_verify": True,
                 "needs_refresh": True,
@@ -9139,6 +9148,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 ),
                 "staged_version": staged_ver,
                 "live_version": live_ver,
+                "recovery_command": f"sudo bash {staged_installer}",
             }
 
         # live_ver >= staged_ver — we're fine. The >= case handles downgrade,

@@ -19,6 +19,27 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.44] — 2026-05-26
+
+### Fixed
+- **The "Sudoers update required" prompt no longer directs users at a path that can't satisfy it.** Releases since v3.4.43 (which bumped SUDOERS_VERSION from 4 to 5) surfaced an in-UI gate reading `sudo bash /opt/aerodrome/install.sh`. But that path is the LIVE install.sh — the currently-installed version, which by definition writes the OLD sudoers content. Running it could not lift the gate; the re-check would still see the old SUDOERS_VERSION and the modal would re-appear. The staged install.sh that actually writes the new content lives at `update/<release>/install.sh`, but the UI didn't surface that path. v3.4.44 changes the drift check to emit a new `recovery_command` field pointing at the staged installer, and updates both the modal and the apply-card-level prompt to use it when present. The no-update-drift case (live install's sudoers somehow older than live install.sh expects) continues to use the old form because the live install.sh IS the right answer there.
+
+- **New standalone recovery script `scripts/recover-sudoers.sh`** ships in v3.4.44 and is curl-runnable from GitHub raw. The script bakes the current sudoers content directly into itself — no dependency on either install.sh — and works on any install regardless of whether it's stuck behind a v3.4.43-style gate. Usage:
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/preston-peterson/aerodrome/main/scripts/recover-sudoers.sh | sudo bash
+  ```
+  Detects the install user from `/opt/aerodrome` ownership (with `AERODROME_INSTALL_DIR` env var for non-standard paths), validates the resulting sudoers via `visudo -cf` before atomically installing, and best-effort restarts aerodrome.service so the running process picks up the new grants immediately. Idempotent — safe to re-run.
+
+### Behind the scenes
+- The structural lesson from this bug: **the recovery path for a broken upgrade-gate must not depend on the broken upgrade-gate itself.** v3.4.43's gate could only be lifted by running an install.sh that wasn't yet installed — chicken-and-egg. v3.4.44 breaks the dependency by providing two independent paths (in-UI prompt now points at a path that actually works, AND a curl-runnable script that depends on nothing in the live install).
+- The recovery script ships at `scripts/recover-sudoers.sh` so users on stuck installs can also run it from the staged update directory directly (`sudo bash /opt/aerodrome/update/aerodrome-v3.4.44/scripts/recover-sudoers.sh`) once they've downloaded v3.4.44. The two access paths (curl from GitHub vs run from staged dir) give fleet operators a choice based on whether they can reach raw.githubusercontent.com from each install.
+- Sudoers content in `recover-sudoers.sh` is duplicated from `install.sh` — they must stay in sync when either changes. Any future SUDOERS_VERSION bump needs to update both places. A future v3.5.x release might consolidate by sourcing the content from a shared template; for now, the duplication is intentional (the recovery script's whole point is self-containment).
+
+### Operational notes
+- **For fleet operators with stuck v3.4.39 (or older) installs awaiting v3.4.43+:** the curl-and-bash recovery script unsticks them immediately, without manual SSH-grep-find-staged-installer steps. Document the URL once, push it to your fleet management runbook, run on each stuck box.
+- v3.4.44's own deploy path uses the same UI gate as v3.4.43's — but the gate now points at the right command, so deploying v3.4.44 (or any future v3.4.x release) onto a current install no longer requires the recovery script. The script exists for the residual stuck-installs from the v3.4.43 release, not as a general-purpose recovery tool for every future release. (Though it is a general-purpose recovery tool — if any future release hits a similar issue, the same script can be updated to write that release's sudoers content.)
+- No SUDOERS_VERSION bump in this release — SUDOERS_VERSION stays at 5 (v3.4.43's value). v3.4.44 is purely a fix to how the gate's recovery command is surfaced; the gate's actual content requirement is unchanged.
+
 ## [3.4.43] — 2026-05-26
 
 ### Fixed
