@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.4.39
+# Version: 3.4.40
 # =============================================================================
 # Aerodrome — Server Install Script
 # =============================================================================
@@ -68,11 +68,20 @@ fi
 DEMO_MODE=false
 HOME_LAT="40.0"
 HOME_LON="-75.0"
+# v3.4.40: feeder port is configurable. Default 8080 matches the historical
+# bootstrap-written config. Demo installs detect conflicts on this port and
+# fall back through a small candidate list (8080 → 8088 → 28080); explicit
+# --feeder-port wins outright. On upgrade-style re-runs the existing port is
+# preserved (read from the live unit file) so a user who is happily on a
+# non-default port keeps it across releases.
+FEEDER_PORT_REQUESTED=""
+FEEDER_PORT_DEFAULTS=(8080 8088 28080)
 while [ $# -gt 0 ]; do
     case "$1" in
         --demo)             DEMO_MODE=true; shift ;;
         --home-lat)         HOME_LAT="$2"; shift 2 ;;
         --home-lon)         HOME_LON="$2"; shift 2 ;;
+        --feeder-port)      FEEDER_PORT_REQUESTED="$2"; shift 2 ;;
         -h|--help)
             cat <<EOF
 Aerodrome install script.
@@ -84,6 +93,8 @@ Usage:
 Flags (used by bootstrap.sh --demo):
   --home-lat <n>                  Synthetic receiver latitude (default: 40.0)
   --home-lon <n>                  Synthetic receiver longitude (default: -75.0)
+  --feeder-port <n>               Synthetic feeder port (default: 8080, falls back
+                                  to 8088 then 28080 if 8080 is in use)
 EOF
             exit 0 ;;
         *)
@@ -242,6 +253,78 @@ chown -R "${USER}:${USER}" \
     "${INSTALL_DIR}/venv" 2>/dev/null || true
 echo -e "  ${GREEN}✓${RESET} Log, update, and backup directories created"
 
+# v3.4.40: resolve which port the synthetic feeder will use BEFORE
+# the config.yaml-write branch (which needs the value to set
+# receiver.port) AND the systemd-unit-write block (which needs the
+# value for ExecStart's --port flag). Lifted out so upgrade-style
+# re-runs — where config.yaml already exists and the fresh-config
+# branch is skipped — still resolve and preserve the existing port
+# choice rather than silently reverting a user-customized unit file.
+#
+# Order of precedence:
+#   1. --feeder-port flag (explicit override, validated only as
+#      numeric; honored even if the port is taken — the user knows
+#      what they're doing).
+#   2. Existing port read from the live feeder unit file (preserves
+#      a non-default choice across upgrades).
+#   3. Fallback chain — first port from FEEDER_PORT_DEFAULTS that
+#      isn't already listening. Default chain is 8080 → 8088 → 28080.
+# On chain exhaustion (all candidates taken), fail loudly with a
+# clear message rather than silently colliding.
+#
+# ss is part of iproute2, on every Tier-1 distro. The `ss -tln` form
+# intentionally doesn't pass -p (which would require root); we only
+# need to know if the port has a listener, not who.
+if [ "$DEMO_MODE" = "true" ]; then
+    FEEDER_PORT=""
+    if [ -n "$FEEDER_PORT_REQUESTED" ]; then
+        if ! [[ "$FEEDER_PORT_REQUESTED" =~ ^[0-9]+$ ]]; then
+            echo -e "  ${RED}✗${RESET} --feeder-port must be a number, got: ${FEEDER_PORT_REQUESTED}"
+            exit 2
+        fi
+        FEEDER_PORT="$FEEDER_PORT_REQUESTED"
+        if ss -tln 2>/dev/null | awk '{print $4}' | grep -qE ":${FEEDER_PORT}$"; then
+            echo -e "  ${YELLOW}⚠${RESET}  Port ${FEEDER_PORT} appears to already be in use, but --feeder-port was passed explicitly — proceeding."
+        fi
+    elif [ -f "/etc/systemd/system/${FEEDER_SERVICE_NAME}.service" ]; then
+        # Upgrade-style re-run — preserve existing port choice
+        EXISTING_PORT=$(grep -oE '\-\-port[[:space:]]+[0-9]+' \
+            "/etc/systemd/system/${FEEDER_SERVICE_NAME}.service" \
+            | awk '{print $2}' | head -1)
+        if [ -n "$EXISTING_PORT" ]; then
+            FEEDER_PORT="$EXISTING_PORT"
+        fi
+    fi
+
+    if [ -z "$FEEDER_PORT" ]; then
+        # Fresh install — walk the default chain looking for a free port
+        for candidate in "${FEEDER_PORT_DEFAULTS[@]}"; do
+            if ! ss -tln 2>/dev/null | awk '{print $4}' | grep -qE ":${candidate}$"; then
+                FEEDER_PORT="$candidate"
+                break
+            fi
+        done
+        if [ -z "$FEEDER_PORT" ]; then
+            echo
+            echo -e "  ${RED}✗${RESET} Demo install failed: every candidate port is already in use."
+            echo
+            echo "    Candidates checked: ${FEEDER_PORT_DEFAULTS[@]}"
+            echo "    What's using them:"
+            for p in "${FEEDER_PORT_DEFAULTS[@]}"; do
+                echo "      :${p}  $(ss -tlnp 2>/dev/null | awk -v port=":${p}" '$4 ~ port {print $NF}' | head -1)"
+            done
+            echo
+            echo "    Free one of the ports above, or re-run with an explicit port:"
+            echo "      ./install.sh --demo --feeder-port 38080"
+            echo
+            exit 1
+        fi
+        if [ "$FEEDER_PORT" != "${FEEDER_PORT_DEFAULTS[0]}" ]; then
+            echo -e "  ${YELLOW}⚠${RESET}  Port ${FEEDER_PORT_DEFAULTS[0]} is in use; using port ${FEEDER_PORT} for the synthetic feeder"
+        fi
+    fi
+fi
+
 # Create config.yaml from example if it doesn't exist (preserves existing config on upgrade)
 if [ ! -f "${INSTALL_DIR}/config.yaml" ]; then
     if [ -f "${INSTALL_DIR}/config.yaml.example" ]; then
@@ -259,20 +342,22 @@ if [ ! -f "${INSTALL_DIR}/config.yaml" ]; then
         # already existed) we leave the file alone — the in-app
         # switch-to-real wizard is the path for those.
         if [ "$DEMO_MODE" = "true" ]; then
-            DEMO_HOME_LAT="$HOME_LAT" DEMO_HOME_LON="$HOME_LON" \
+
+            DEMO_HOME_LAT="$HOME_LAT" DEMO_HOME_LON="$HOME_LON" DEMO_FEEDER_PORT="$FEEDER_PORT" \
             python3 - "${INSTALL_DIR}/config.yaml" <<'PYEOF'
 import os, re, sys
 path = sys.argv[1]
 home_lat = os.environ.get("DEMO_HOME_LAT", "40.0")
 home_lon = os.environ.get("DEMO_HOME_LON", "-75.0")
+feeder_port = os.environ.get("DEMO_FEEDER_PORT", "8080")
 with open(path, "r", encoding="utf-8") as f:
     text = f.read()
 # receiver.ip → 127.0.0.1 (first match is receiver.ip; same pattern bootstrap uses)
 text = re.sub(r'^(\s*ip:\s*)"[^"]*"(.*)$', r'\1"127.0.0.1"\2',
               text, count=1, flags=re.M)
-# receiver.port → 8080
+# receiver.port → resolved FEEDER_PORT (v3.4.40: was hardcoded 8080)
 text = re.sub(r'^(\s*port:\s*)\S+(\s.*)?$',
-              lambda m: f'{m.group(1)}8080{m.group(2) or ""}',
+              lambda m: f'{m.group(1)}{feeder_port}{m.group(2) or ""}',
               text, count=1, flags=re.M)
 # receiver.latitude / longitude → demo home coords
 text = re.sub(r'^(\s*latitude:\s*)\S+(\s.*)?$',
@@ -354,7 +439,7 @@ Group=${USER}
 WorkingDirectory=${INSTALL_DIR}
 ExecStart=${INSTALL_DIR}/venv/bin/python3 -m tools.synthetic_feeder.serve \\
     --host 127.0.0.1 \\
-    --port 8080 \\
+    --port ${FEEDER_PORT:-8080} \\
     --visible 50 \\
     --home-lat ${HOME_LAT} \\
     --home-lon ${HOME_LON} \\

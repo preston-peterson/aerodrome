@@ -1,4 +1,4 @@
-# Version: 3.4.39
+# Version: 3.4.40
 """
 collector.py — ADS-B data fetcher and classifier.
 
@@ -21,6 +21,20 @@ from typing import Any, Dict, List, Optional, Tuple
 from distance import haversine as _dist_haversine
 
 logger = logging.getLogger("adsb.collector")
+
+
+# v3.4.40: distinct exception type for the "URL is reachable but content
+# isn't ADS-B" failure mode. Treated separately from ConnectionError
+# (network down) and generic Exception (true unexpected error) so the
+# log message and the user-facing notification can be specific about
+# what's wrong — distinguishing "your receiver is unreachable" from
+# "your receiver URL points at the wrong service" from "an unexpected
+# error happened." All three flow through the same offline-threshold
+# counter so a misconfiguration eventually triggers the same notify.
+class _NonAdsbResponse(Exception):
+    """Receiver URL returned 200 but the body isn't a recognizable
+    ADS-B feed shape (HTML, non-JSON, or JSON without 'aircraft' key)."""
+    pass
 
 
 # =============================================================================
@@ -2651,8 +2665,59 @@ def fetch_and_store(config: Dict, watchlist_lookup: Dict):
     try:
         resp = requests.get(url, timeout=10)
         resp.raise_for_status()
-        data = resp.json()
+        # v3.4.40: validate the response actually looks like ADS-B data
+        # before falling through to a generic JSON parse error. The
+        # symptom this catches: the configured receiver URL is being
+        # served by something OTHER than the expected ADS-B feed
+        # (Aerodrome's synthetic feeder failed to start and a different
+        # app on the same port is responding, or the user pointed the
+        # config at the wrong service). The other service returns
+        # HTTP 200 with HTML or non-ADS-B JSON, the collector's old
+        # path tried to parse it and surfaced "Expecting value: line 1
+        # column 1 (char 0)" — accurate but unhelpful.
+        content_type = resp.headers.get("Content-Type", "").lower()
+        body_prefix = resp.text[:1].strip() if resp.text else ""
+        if "html" in content_type or body_prefix in ("<",):
+            raise _NonAdsbResponse(
+                f"Receiver URL returned {content_type or 'HTML'} content — "
+                f"this URL is reachable but isn't an ADS-B feed. "
+                f"Check that the configured port matches the feed source "
+                f"(on demo installs, see 'systemctl status aerodrome-synthetic-feeder')."
+            )
+        try:
+            data = resp.json()
+        except ValueError:
+            raise _NonAdsbResponse(
+                f"Receiver URL returned non-JSON content "
+                f"({len(resp.text)} bytes, first 60 chars: {resp.text[:60]!r}). "
+                f"Check that the configured port matches the feed source."
+            )
+        # Shape check: dump1090-fa returns {now, aircraft: [...], messages}.
+        # Other JSON endpoints might return 200 with {error: ...} or similar.
+        if isinstance(data, dict) and "aircraft" not in data:
+            raise _NonAdsbResponse(
+                f"Receiver URL returned JSON without an 'aircraft' key "
+                f"(got keys: {sorted(data.keys())[:6]}). "
+                f"Is the configured URL pointing at an ADS-B feed?"
+            )
         raw_list = data.get("aircraft", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+    except _NonAdsbResponse as e:
+        logger.error(str(e))
+        _consecutive_failed_polls += 1
+        _last_offline_reason = str(e)
+        if _consecutive_failed_polls >= offline_threshold and not _offline_notified:
+            _safe_notify(
+                "receiver_offline",
+                "Receiver returning non-ADS-B data",
+                f"Aerodrome is reaching the receiver URL at "
+                f"{receiver['ip']}:{receiver['port']} but the content isn't an "
+                f"ADS-B feed. {e}",
+                priority="high",
+                tags=["warning"],
+                click_route="status",
+            )
+            _offline_notified = True
+        return
     except requests.ConnectionError as e:
         logger.error(f"Cannot connect to receiver at {url}")
         _consecutive_failed_polls += 1

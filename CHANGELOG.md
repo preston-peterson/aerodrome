@@ -19,6 +19,26 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.40] — 2026-05-26
+
+### Changed
+- **Demo install detects port-8080 conflicts and tells you what's going on.** `install.sh --demo` previously hardcoded the synthetic feeder to port 8080 and wrote that into `config.yaml` without checking whether 8080 was actually free. On a developer laptop where 8080 is one of the most-commonly-claimed ports (FastAPI defaults, dev servers, proxies, traceroute tools), the conflict could go undetected and produce a misleading symptom: the feeder service would crash-loop, the *other* service on 8080 would happily answer the collector's poll with HTML or non-ADS-B JSON, and the dashboard would show "Collector Stalled" with "ADS-B Receiver Reachable (2ms)" — accurate in isolation, confusing as a pair. v3.4.40 fixes that by resolving the feeder port before writing either file. A `--feeder-port <n>` flag is the explicit override; otherwise the script walks an `8080 → 8088 → 28080` fallback chain and picks the first port that isn't already listening. If a chosen alternative isn't the primary 8080, the script tells you (`⚠ Port 8080 is in use; using port 8088 for the synthetic feeder`). If all three are taken, the script fails with a clear message listing what's holding each port plus an explicit re-run example: `./install.sh --demo --feeder-port 38080`.
+
+- **Upgrade-style re-runs preserve your existing port choice.** If the feeder unit file already exists (you're re-running `install.sh --demo` on top of an already-installed system, possibly because of an update flow that touches the install scripts), the script reads `--port` out of the existing unit and reuses it rather than reverting to the default chain. So if you customized to `--feeder-port 38080` once, you keep it across releases without re-passing the flag.
+
+- **The collector now distinguishes "URL is reachable but isn't ADS-B" from "URL is unreachable."** The previous behavior fell through the generic exception handler with the error message `Expecting value: line 1 column 1 (char 0)` — accurate (the response wasn't valid JSON) but unhelpful (it said nothing about WHY the response wasn't valid JSON, which is almost always "you're pointing at the wrong service"). v3.4.40 adds a content-type check + JSON shape check between `resp.raise_for_status()` and `data = resp.json()`. If the response is `text/html`, starts with `<`, or is JSON missing the `aircraft` key, the collector logs a specific error: `Receiver URL returned text/html content — this URL is reachable but isn't an ADS-B feed. Check that the configured port matches the feed source (on demo installs, see 'systemctl status aerodrome-synthetic-feeder').` That message names the actual problem and points at the diagnostic command that confirms it.
+
+- **The offline-notification trigger learns the new failure mode too.** After the existing `consecutive_failed_polls` threshold (default 5), the notifier fires with title "Receiver returning non-ADS-B data" rather than "Receiver offline" — same threshold, different message body so a user with phone notifications can tell at a glance whether their network is down or their config is pointing at the wrong service.
+
+### Behind the scenes
+- The port-resolution block in `install.sh` lives BEFORE the config.yaml-write branch and the systemd-unit-write block. Both write sites consume the resolved `FEEDER_PORT` env var; the resolution happens once, in one place. The earlier nested structure (resolver inside the fresh-config-write branch) would have silently reverted custom ports on upgrade installs where `config.yaml` already existed — caught during this release's build and lifted out.
+- The collector's new `_NonAdsbResponse` exception is module-level so the offline-threshold counter flows through the same path as `ConnectionError` (network down) and generic `Exception` (unexpected error). All three increment `_consecutive_failed_polls` and gate the notification on the same threshold; only the message and log text differ.
+- The dashboard UI is unchanged in this release. The "Stalled" badge on the Collector card and the "Reachable" badge on the ADS-B Receiver card still display the same way as v3.4.39 — what improved is what the journal log says when both are in the misleading combination, and what the install-time error path does to prevent the combination from arising in the first place. A future release could surface "URL is reachable but isn't ADS-B" as a distinct Status-card state; the log + notification improvement is the substantive win for this one.
+
+### Operational notes
+- Existing demo installs on port 8080 with a healthy feeder are unaffected — the upgrade-path branch reads `--port 8080` out of the existing unit file and reuses it.
+- Existing demo installs where the feeder is wedged on port 8080 because of a conflict (the laptop-install case that prompted this release) need recovery via the manual sed + restart sequence in the release HANDOFF before v3.4.40 helps with anything. v3.4.40 prevents the situation from recurring on the NEXT install, but doesn't auto-detect-and-fix an already-broken install.
+
 ## [3.4.39] — 2026-05-22
 
 ### Changed
