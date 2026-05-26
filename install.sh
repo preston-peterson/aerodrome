@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.4.42
+# Version: 3.4.43
 # =============================================================================
 # Aerodrome — Server Install Script
 # =============================================================================
@@ -287,12 +287,27 @@ if [ "$DEMO_MODE" = "true" ]; then
             echo -e "  ${YELLOW}⚠${RESET}  Port ${FEEDER_PORT} appears to already be in use, but --feeder-port was passed explicitly — proceeding."
         fi
     elif [ -f "/etc/systemd/system/${FEEDER_SERVICE_NAME}.service" ]; then
-        # Upgrade-style re-run — preserve existing port choice
+        # Upgrade-style re-run — preserve existing port choice IF the
+        # port is still free. v3.4.43: previously this branch blindly
+        # reused whatever port the existing unit file specified, which
+        # would re-create the wedge state if something else had grabbed
+        # that port between installs (the original PL7370 install hit
+        # this exact case: install.sh preserved --port 8080 from the
+        # prior wedged install, even though Hoptrail had taken 8080
+        # in the meantime).
         EXISTING_PORT=$(grep -oE '\-\-port[[:space:]]+[0-9]+' \
             "/etc/systemd/system/${FEEDER_SERVICE_NAME}.service" \
             | awk '{print $2}' | head -1)
         if [ -n "$EXISTING_PORT" ]; then
-            FEEDER_PORT="$EXISTING_PORT"
+            if ss -tln 2>/dev/null | awk '{print $4}' | grep -qE ":${EXISTING_PORT}$"; then
+                # The existing port is in use. Don't silently re-bind
+                # to it — fall through to the candidate chain below so
+                # we pick a free port instead.
+                echo -e "  ${YELLOW}⚠${RESET}  Previous install used port ${EXISTING_PORT} which is now in use; selecting a new free port from the fallback chain"
+                # Leave FEEDER_PORT empty so the chain-walk runs.
+            else
+                FEEDER_PORT="$EXISTING_PORT"
+            fi
         fi
     fi
 

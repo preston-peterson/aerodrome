@@ -1,4 +1,4 @@
-# Version: 3.4.42
+# Version: 3.4.43
 """
 collector.py — ADS-B data fetcher and classifier.
 
@@ -15,7 +15,6 @@ import sqlite3
 import subprocess
 import threading
 import time
-import yaml
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -105,9 +104,80 @@ def get_collector_health():
 # restart re-arms the guard, so a transient sudo/permission issue
 # resolved out-of-band gets retried on the next boot.
 _demo_recovery_attempted = False
-_NON_ADSB_RECOVERY_THRESHOLD = 3   # consecutive failed polls before firing
+_NON_ADSB_RECOVERY_THRESHOLD = 1   # consecutive failed polls before firing
 _DEMO_FEEDER_PORT_CANDIDATES = (8080, 8088, 28080)
 _FEEDER_UNIT_PATH = "/etc/systemd/system/aerodrome-synthetic-feeder.service"
+
+
+def _set_receiver_port_in_yaml_text(text: str, new_port: int) -> Optional[str]:
+    """v3.4.43: targeted line-edit of receiver.port in a YAML config file,
+    preserving every other byte of the file (comments, ordering, blank
+    lines, indent style, trailing comments on the changed line).
+
+    Algorithm:
+      1. Find the first top-level (indent=0) line whose key is 'receiver'.
+      2. Within that section (lines whose indent is greater than the
+         receiver: line's indent), find the first line whose key is 'port'.
+      3. Replace that line's VALUE, preserving the 'port:' prefix, any
+         whitespace after the colon, and any trailing inline comment.
+      4. Return the full file text with the one line modified.
+
+    Returns None if the structure didn't match (no top-level receiver
+    block, no port key under it) so the caller can log a clear miss
+    rather than silently writing a wrong file.
+
+    Replaces the v3.4.42 yaml.safe_load + yaml.safe_dump round-trip,
+    which worked for value-correctness but DESTROYED the file's
+    comments, ordering, and human-authored structure. The example
+    config has hundreds of lines of section headers and explanatory
+    comments; round-tripping through PyYAML threw all of that away.
+    This targeted-edit approach treats the file as text and only
+    mutates the one byte range that actually needs changing.
+
+    Limitations (acceptable for Aerodrome's schema):
+      - Assumes 'port:' under 'receiver:' is unambiguous (Aerodrome's
+        config has exactly one match, no nested sub-blocks under
+        receiver containing their own port field).
+      - Doesn't handle YAML flow-style ({receiver: {port: 8080}}).
+        Aerodrome's example uses block style; flow style isn't
+        emitted by anything we ship.
+    """
+    lines = text.splitlines(keepends=True)
+    in_receiver = False
+    receiver_indent = -1
+    for i, line in enumerate(lines):
+        stripped = line.rstrip("\r\n")
+        # Skip blank + comment-only lines for the structural walk.
+        body = stripped.strip()
+        if not body or body.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip())
+        if not in_receiver:
+            # Looking for the receiver: section header at top level.
+            if indent == 0 and body.split(":", 1)[0].strip() == "receiver":
+                in_receiver = True
+                receiver_indent = indent
+            continue
+        # We're inside receiver. If indent dropped back to receiver's
+        # level (or lower), we've exited the section without finding port.
+        if indent <= receiver_indent:
+            break
+        # Inside receiver. Look for the port: line.
+        key = body.split(":", 1)[0].strip()
+        if key == "port":
+            # Preserve prefix (indent + 'port:' + spaces) and any trailing
+            # inline comment; only the numeric value is replaced.
+            m = re.match(
+                r"^(?P<prefix>\s*port\s*:\s*)(?P<val>\S+)(?P<tail>.*?)$",
+                stripped,
+            )
+            if not m:
+                return None
+            # Reattach the original line ending.
+            line_ending = line[len(stripped):] or "\n"
+            lines[i] = f"{m.group('prefix')}{new_port}{m.group('tail')}{line_ending}"
+            return "".join(lines)
+    return None
 
 
 def _port_in_use(port: int) -> bool:
@@ -198,10 +268,16 @@ def _attempt_demo_port_recovery(config: dict):
 
     logger.info("Auto-recovery: selected port %d", new_port)
 
-    # Rewrite the feeder unit file with the new port. Read the existing
-    # content (world-readable; no sudo needed for read) and substitute
-    # the --port flag value. Bounded regex — only changes existing
-    # `--port N` patterns, no other behavior shifts.
+    # v3.4.43: validate-all-then-write ordering. Compute both new file
+    # contents up front; if EITHER computation fails, abort BEFORE any
+    # disk writes happen. The old v3.4.42 ordering wrote the unit file
+    # first, then validated the yaml edit — if the yaml edit failed, we
+    # left the install with a unit-file-and-config disagreement that
+    # was worse than the pre-recovery state.
+
+    # Read the existing feeder unit content (world-readable; no sudo
+    # needed for read) and substitute the --port flag value. Bounded
+    # regex — only changes existing `--port N` patterns.
     try:
         current_unit = unit_path.read_text()
     except Exception as e:
@@ -215,9 +291,33 @@ def _attempt_demo_port_recovery(config: dict):
             "whatever port its current ExecStart specifies."
         )
 
-    # Write via `sudo tee` (the v3.4.42 sudoers rule grants exactly this
-    # one path). tee reads from stdin, writes to argv[1]; stdout is
-    # captured-and-discarded so we don't echo the unit file to the log.
+    # Read + compute the config.yaml edit. If the structure can't be
+    # found (malformed YAML, flow style, etc), abort — the unit file
+    # hasn't been touched yet, so the install is still in the
+    # pre-recovery state (consistent with itself, just wedged).
+    cfg_path = pathlib.Path(config["data"].get("config_path") or "config.yaml")
+    if not cfg_path.is_absolute():
+        cfg_path = pathlib.Path(__file__).parent / cfg_path
+    try:
+        cfg_text = cfg_path.read_text()
+    except Exception as e:
+        logger.error("Auto-recovery: could not read config.yaml: %s", e)
+        return None
+    new_cfg_text = _set_receiver_port_in_yaml_text(cfg_text, new_port)
+    if new_cfg_text is None:
+        logger.error(
+            "Auto-recovery: couldn't find receiver.port in config.yaml "
+            "to edit (file may be malformed, in flow style, or missing "
+            "the receiver section). Aborting BEFORE any writes so the "
+            "install stays in its pre-recovery (consistent) state."
+        )
+        return None
+
+    # Both contents validated. Now do the writes.
+    # Write the unit file via `sudo tee` (the v3.4.42 sudoers rule
+    # grants exactly this one path). tee reads from stdin, writes to
+    # argv[1]; stdout is captured-and-discarded so we don't echo the
+    # unit file to the log.
     try:
         result = subprocess.run(
             ["sudo", "tee", str(unit_path)],
@@ -236,21 +336,20 @@ def _attempt_demo_port_recovery(config: dict):
         logger.error("Auto-recovery: unit-file write raised: %s", e)
         return None
 
-    # Edit config.yaml's receiver.port. Read the file, mutate via
-    # PyYAML (NOT regex — the manual-recovery sed bug from the v3.4.41
-    # build conversation: regex global-replace of "8080" would have
-    # clobbered web.port if its line ordered before receiver.port).
-    cfg_path = pathlib.Path(config["data"].get("config_path") or "config.yaml")
-    if not cfg_path.is_absolute():
-        cfg_path = pathlib.Path(__file__).parent / cfg_path
+    # Write config.yaml. Pre-validated above, so this should succeed
+    # unless something raced us to the file.
     try:
-        cfg_text = cfg_path.read_text()
-        cfg_data = yaml.safe_load(cfg_text) or {}
-        cfg_data.setdefault("receiver", {})["port"] = new_port
-        cfg_path.write_text(yaml.safe_dump(cfg_data, sort_keys=False,
-                                           default_flow_style=False))
+        cfg_path.write_text(new_cfg_text)
     except Exception as e:
-        logger.error("Auto-recovery: config.yaml edit failed: %s", e)
+        logger.error(
+            "Auto-recovery: config.yaml write failed AFTER unit-file "
+            "write succeeded. Install is now in a half-edited state. "
+            "Manual recovery: re-run the auto-recovery's intended edit "
+            "by setting receiver.port to %d in /opt/aerodrome/config.yaml "
+            "and running 'sudo systemctl restart aerodrome'. Underlying "
+            "error: %s",
+            new_port, e,
+        )
         return None
 
     # Mutate in-memory config so the NEXT poll uses the new URL without

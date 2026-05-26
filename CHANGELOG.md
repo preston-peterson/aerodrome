@@ -19,6 +19,24 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.43] — 2026-05-26
+
+### Fixed
+- **The auto-recovery no longer destroys your `config.yaml`'s comments and structure.** v3.4.42 used `yaml.safe_load` + `yaml.safe_dump` to round-trip the config file when updating the receiver port. PyYAML's dumper has no concept of comments — `safe_load` discards them silently, and `safe_dump` outputs only the structural data with its own formatting opinions. So every auto-recovery flattened the file: section comments gone, blank lines collapsed, key ordering possibly rearranged, quote-style possibly different. The values stayed correct, but the file's human-readability was destroyed. v3.4.43 replaces the round-trip with a targeted line-edit that finds the `receiver.port` line by walking the file as text, validates the structure, and replaces only that one line's value — preserving every byte of the rest of the file (comments, indentation, ordering, blank lines, trailing inline comments on the changed line).
+
+- **Auto-recovery now fires after 1 failed poll instead of 3.** The original threshold of 3 was reasonable for transient network blips, but the v3.4.40 non-ADS-B signature is deterministic — an HTML response or JSON missing the `aircraft` key never self-resolves on the next poll without intervention. Waiting 3 polls before triggering recovery just delayed the fix by ~2 minutes for no benefit. v3.4.43 drops the threshold to 1, so recovery fires immediately on the first non-ADS-B detection; total user-visible time from wedge state to green drops from ~4 minutes to ~2 minutes.
+
+- **`install.sh --demo` re-validates the preserved port on upgrade-style re-runs.** v3.4.40's port-resolution block had a branch that read the existing feeder unit file's `--port` value and reused it on subsequent install.sh runs — intended to preserve a deliberate user customization across releases. But the branch didn't check whether the preserved port was *still* free at the time of the new install. If something else had grabbed that port between installs (the original PL7370 scenario: Hoptrail took 8080 between the prior install and the re-install), install.sh would silently re-bind the feeder to the colliding port, creating a wedge state that the v3.4.42 auto-recovery would then have to clean up. v3.4.43 makes the upgrade branch validate the preserved port is currently free; if it isn't, the script falls through to the candidate chain and picks a new free port, with a `⚠ Previous install used port N which is now in use; selecting a new free port from the fallback chain` notice.
+
+### Behind the scenes
+- **Validate-all-then-write ordering.** The recovery flow now computes both the new unit-file content and the new config.yaml content BEFORE writing either to disk. If the config.yaml structure can't be edited (malformed YAML, flow style, missing receiver section), the recovery aborts before any disk writes happen — leaving the install in its pre-recovery state (consistent with itself, just still wedged) rather than in a half-edited state (unit file rewritten, config.yaml unchanged, services disagreeing about the port). The v3.4.42 ordering was unit-file-first then yaml; this release moves yaml validation to before the unit-file write.
+- **The YAML targeted-edit function ships with unit tests.** Five scenarios exercise the edit path: file with comments + trailing comments, no trailing comment, no receiver.port present (returns None), commented-out port elsewhere in the file (must not match), CRLF line endings preserved. All five pass; future contributors changing this function can run them by copying the snippet from the v3.4.43 build session log.
+- **PyYAML is no longer imported by collector.py.** v3.4.42 added the import for the round-trip; v3.4.43 removes it since the line-edit approach treats the file as text and doesn't need the parser.
+
+### Operational notes
+- **If your config.yaml was already flattened by a v3.4.42 auto-recovery**, the file's values are intact and correct but the structure and comments are gone. To restore: copy `config.yaml.example` over your current `config.yaml`, then re-apply your specific customizations (the feeder port, demo.enabled, watchlist entries, anything else you changed from defaults). Future auto-recoveries from v3.4.43 forward will preserve whatever structure you've established.
+- No sudoers changes; no schema changes; no migration. Existing v3.4.42 installs upgrade in place.
+
 ## [3.4.42] — 2026-05-26
 
 ### Added
