@@ -1,4 +1,4 @@
-<!-- Version: 3.4.40 -->
+<!-- Version: 3.4.41 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -383,7 +383,52 @@ function render(s) {
                 <div class="row"><span class="row-lbl">Status</span><span class="row-val ${statusClass(c.collector.ok)}">${c.collector.ok ? 'Running' : 'Stalled'}</span></div>
                 <div class="row"><span class="row-lbl">Last write</span><span class="row-val">${c.collector.last_write_seconds_ago != null ? c.collector.last_write_seconds_ago + 's ago' : '—'}</span></div>
                 <div class="row"><span class="row-lbl">Throughput</span><span class="row-val">${c.collector.records_per_sec_5m != null ? c.collector.records_per_sec_5m.toFixed(1) + '/s' : '—'}${c.collector.records_sample_count_5m != null ? ` <span style="opacity:.6">· ${c.collector.records_sample_count_5m.toLocaleString()} in last 5m</span>` : ''}</span></div>
-                ${c.collector.error ? `<div class="error-box">${c.collector.error}</div>` : ''}
+                ${(function(){
+                    // v3.4.41: surface the SPECIFIC poll error inline on the
+                    // Status card when the collector knows one. Without this,
+                    // the user saw only the symptom ("No data written yet" or
+                    // "No writes in Xs") and had to know to grep journalctl
+                    // for the cause. The collector module's
+                    // get_collector_health() now exposes the most recent
+                    // fetch-failure message (e.g. the v3.4.40 non-ADS-B
+                    // detection text) directly to /api/status, so the page
+                    // the user is already looking at tells them what's
+                    // actually wrong.
+                    //
+                    // Render priority:
+                    //   1. last_poll_error from the collector module (most
+                    //      specific — names the actual cause)
+                    //   2. fallback to c.collector.error (generic — "No data
+                    //      written yet" / "No writes in Xs")
+                    // If both exist, show the specific one and a small
+                    // streak-count footnote so the user can tell whether
+                    // it's a one-shot blip or a wedged state.
+                    //
+                    // Defense-in-depth: escape both error strings before
+                    // inlining. They originate from Python exception
+                    // messages — same trust boundary as a server log
+                    // line — and in practice contain only ASCII text +
+                    // em-dashes, but we shouldn't open a new XSS surface
+                    // on a status-page payload that any reverse-proxy or
+                    // browser-extension could see.
+                    function _esc(s){
+                        return String(s == null ? '' : s)
+                            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+                    }
+                    const specific = c.collector.last_poll_error;
+                    const streak   = c.collector.consecutive_failed_polls || 0;
+                    if (specific) {
+                        const streakNote = streak > 1
+                            ? ` <span style="opacity:0.65; font-size:11px;">(${streak} consecutive failed polls)</span>`
+                            : '';
+                        return `<div class="error-box">${_esc(specific)}${streakNote}</div>`;
+                    }
+                    if (c.collector.error) {
+                        return `<div class="error-box">${_esc(c.collector.error)}</div>`;
+                    }
+                    return '';
+                })()}
             </div>
 
             <!-- Web Server -->

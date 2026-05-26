@@ -1,4 +1,4 @@
-# Version: 3.4.40
+# Version: 3.4.41
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -3172,7 +3172,23 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             "records_per_sec_5m": None,
             "records_sample_count_5m": None,
             "error": None,
+            # v3.4.41: runtime poll-failure state from the collector module.
+            # Populated below from collector.get_collector_health() so the
+            # Status card can surface the SPECIFIC error (e.g. the v3.4.40
+            # non-ADS-B detection message) rather than just the generic
+            # "No data written yet" symptom.
+            "last_poll_error": None,
+            "consecutive_failed_polls": 0,
         }
+        try:
+            import collector as _collector_mod
+            _ch = _collector_mod.get_collector_health()
+            collector_check["last_poll_error"] = _ch.get("last_poll_error")
+            collector_check["consecutive_failed_polls"] = int(_ch.get("consecutive_failed_polls") or 0)
+        except Exception as e:
+            # Non-fatal — the symptom-level error path below still works,
+            # we just lose the cause-level diagnostic for this response.
+            logger.debug(f"collector health lookup failed in /api/status: {e}")
         if db_check["ok"]:
             try:
                 conn = _open_db_conn(db_path)

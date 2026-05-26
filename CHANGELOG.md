@@ -19,6 +19,21 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.41] — 2026-05-26
+
+### Changed
+- **The Status page Collector card now tells you what's actually wrong.** When the collector is wedged — most commonly because of a port conflict on demo installs (the v3.4.40 class of failure), or any other configured-URL mismatch — the card used to display only "No data written yet" or "No writes in Xs (threshold Ys)." That's the symptom. The actual cause was sitting in the journal log under `adsb.collector` and required `sudo journalctl -u aerodrome | grep ...` to find. v3.4.41 surfaces the specific error message directly on the card: when the collector knows why its last poll failed (and the v3.4.40 release made it know much more often), the Status page shows that message inline instead of the generic symptom. A consecutive-failed-polls counter shows alongside whenever the streak is >1, so users can tell a one-shot transient from a sustained wedge at a glance.
+
+- **The Status card auto-clears when the collector recovers.** The poll-failure state lives in the collector's in-memory `_last_offline_reason` field, which is already cleared on the first successful poll (the same code path that fires the `receiver_recovered` notification). So once recovery completes — by fixing the receiver URL, restarting a wedged feeder service, or whatever the actual cause was — the next polling cycle clears the message and the card returns to "Running" without any user action.
+
+### Behind the scenes
+- New module accessor `collector.get_collector_health()` returns a read-only snapshot of the collector's poll-failure state: `last_poll_error`, `consecutive_failed_polls`, `offline_notified`. Keeps the module's globals private; gives the `/api/status` endpoint a clean read path. The accessor is intentionally one-way (no setters) — the collector remains the single source of truth for the state machine, and the API endpoint just reads what's there. The state is module-level in-memory and not persisted across restarts; after a service restart the streak counter is 0 and `last_poll_error` is empty regardless of the pre-restart state. That's the right behavior: the first post-restart poll will re-evaluate and re-populate the state if the underlying problem is still present.
+- The status template's Collector card now renders with a small priority hierarchy: if `last_poll_error` is set, show that (the specific cause); otherwise fall back to the existing `c.collector.error` (the generic symptom). Both paths route through a local `_esc()` HTML-escape helper because the error string originates from Python exception messages — same trust boundary as a server log line, in practice ASCII + em-dashes, but no reason to open a new XSS surface on a status-page payload that any reverse-proxy or browser-extension might see.
+- This release is the first half of a longer arc on the demo-install port-conflict UX. The second half would be a recovery script (`scripts/recover-demo-port-conflict.sh`) that detects the wedge state and walks the same fallback port chain `install.sh` uses, with all the bug-fixes from the manual recovery sequence baked in. Optional and not blocking — Layer 1's diagnostic surfacing is enough that a user reading the Status page can construct the recovery on their own without ever opening a terminal.
+
+### Operational notes
+- No schema changes; no config changes; no migration. The status payload gains two new fields (`last_poll_error`, `consecutive_failed_polls`) that are always present and default to `null` / `0` when the collector has no failures to report. Existing UI code that doesn't know about these fields is unaffected because the template gracefully falls through to the prior "show `c.collector.error`" path.
+
 ## [3.4.40] — 2026-05-26
 
 ### Changed

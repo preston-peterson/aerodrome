@@ -1,4 +1,4 @@
-# Version: 3.4.40
+# Version: 3.4.41
 """
 collector.py — ADS-B data fetcher and classifier.
 
@@ -56,6 +56,40 @@ _notifier = None  # type: Optional[Any]
 _consecutive_failed_polls = 0
 _offline_notified = False
 _last_offline_reason = ""  # The error message from the most recent failure
+
+
+def get_collector_health():
+    """v3.4.41: read-only snapshot of the collector's poll-failure state
+    for the /api/status endpoint to surface on the Collector card.
+
+    The Status page used to show only the SYMPTOM ("No data written
+    yet" / "No writes in Xs") when the collector was wedged, which made
+    diagnostic effort necessary to find the CAUSE (the user had to know
+    to grep the journal log for the actual error). The collector
+    already knows the cause — `_last_offline_reason` carries the most
+    recent fetch-failure message, including the specific v3.4.40
+    non-ADS-B detection text. This accessor exposes it cleanly so the
+    Status card can render it inline.
+
+    Returns a dict with three fields:
+      - last_poll_error: str | None — the most recent fetch-failure
+        message, or None if no failure has been seen since startup.
+      - consecutive_failed_polls: int — failure-streak counter,
+        gated against the offline-notification threshold internally.
+      - offline_notified: bool — whether a receiver_offline notification
+        has already fired for the current streak (resets when a
+        successful poll lands).
+
+    All three reflect the current in-memory state; they are not
+    persisted across restarts. After a service restart the streak
+    counter is 0 and last_poll_error is empty regardless of the
+    pre-restart state — the next poll re-evaluates from scratch.
+    """
+    return {
+        "last_poll_error": _last_offline_reason or None,
+        "consecutive_failed_polls": int(_consecutive_failed_polls),
+        "offline_notified": bool(_offline_notified),
+    }
 
 # v2.50.31: capacity-alert state machine. Updated by check_capacity_alerts()
 # at most once every CAPACITY_CHECK_INTERVAL_SEC seconds (60s by default).
