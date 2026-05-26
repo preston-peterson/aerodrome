@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.4.41
+# Version: 3.4.42
 # =============================================================================
 # Aerodrome — Server Install Script
 # =============================================================================
@@ -475,7 +475,7 @@ fi
 SUDOERS_FILE="/etc/sudoers.d/aerodrome"
 echo -e "  Creating sudoers rule for in-UI restart button + ntfy installer..."
 sudo tee "${SUDOERS_FILE}" > /dev/null << SUDOEOF
-# SUDOERS_VERSION: 4
+# SUDOERS_VERSION: 5
 # Aerodrome sudoers rule — machine-readable.
 # The SUDOERS_VERSION comment above is read by the updater to detect when
 # a newer release requires this file to be refreshed. If you see a
@@ -539,6 +539,13 @@ ${USER} ALL=(ALL) NOPASSWD: /bin/systemctl restart aerodrome-synthetic-feeder, /
 ${USER} ALL=(ALL) NOPASSWD: /bin/systemctl enable aerodrome-synthetic-feeder, /usr/bin/systemctl enable aerodrome-synthetic-feeder
 ${USER} ALL=(ALL) NOPASSWD: /bin/systemctl disable aerodrome-synthetic-feeder, /usr/bin/systemctl disable aerodrome-synthetic-feeder
 ${USER} ALL=(ALL) NOPASSWD: /bin/rm -f /etc/systemd/system/aerodrome-synthetic-feeder.service
+# v3.4.42: write access to the feeder unit file, scoped to that exact
+# path. Enables the collector's auto-port-recovery (port-conflict detection
+# + automatic feeder-port reassignment when it detects the v3.4.40 non-ADS-B
+# wedge state). Bounded to the single file by sudoers' exact-command-match
+# semantics — no wildcards, no parent path; this can't be leveraged into
+# broader privileges.
+${USER} ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/systemd/system/aerodrome-synthetic-feeder.service
 SUDOEOF
 sudo chmod 0440 "${SUDOERS_FILE}"
 if sudo visudo -cf "${SUDOERS_FILE}" >/dev/null 2>&1; then

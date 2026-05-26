@@ -19,6 +19,26 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.42] — 2026-05-26
+
+### Added
+- **The collector now auto-recovers from the demo-mode port-conflict wedge state without user intervention.** When three consecutive polls return the v3.4.40 non-ADS-B signature (HTML or non-aircraft JSON from the configured URL), the collector walks the same `8080 → 8088 → 28080` fallback chain `install.sh --demo` uses, picks the first port that isn't already listening, rewrites the feeder's systemd unit file, rewrites `config.yaml`'s `receiver.port`, mutates the in-memory config so the next poll uses the new URL, and `systemctl restart`s the feeder service. The Status card error clears on the first successful poll thereafter — typically within one poll interval (60s default), so total elapsed time from wedge-detection to green is about 4 minutes. Once per process lifetime: if recovery fails for any reason (all candidate ports taken, sudoers not refreshed, write permission issue), the collector falls through to the existing notification path and the user can intervene manually.
+
+- **Status card now clears the auto-recovery sequence in plain sight.** The journal log shows the full sequence: `Auto-recovery: detected demo-mode non-ADS-B wedge; walking port candidates [8080, 8088, 28080]` → `Auto-recovery: selected port 8088` → `Auto-recovery: feeder moved to port 8088. Next poll will use http://127.0.0.1:8088/data/aircraft.json — Status card should clear within ~60s.` So when a user does check the journal during recovery, they see exactly what happened, not a mysterious self-correction.
+
+### Behind the scenes
+- **One new sudoers rule, exact-path-scoped.** v3.4.42 adds `${USER} ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/systemd/system/aerodrome-synthetic-feeder.service` — bounded to that single file by sudoers' exact-command-match semantics. No wildcards, no parent path; the rule can't be leveraged into broader privileges. Combined with the existing v3.1.0 rules for `systemctl restart aerodrome-synthetic-feeder` and `daemon-reload`, the collector has just enough capability to do the recovery and nothing else. SUDOERS_VERSION bumps to 5; existing installs will see the "sudoers update required" modal once and need to re-run `./install.sh` to refresh the sudoers file before auto-recovery is available.
+
+- **In-memory config mutation, not process restart.** Restarting the aerodrome service from inside the aerodrome service would kill the current poll mid-execution. Instead, the recovery mutates `config["receiver"]["port"]` in the shared dict that `fetch_and_store` reads on every poll, so the *next* poll uses the new URL without any process boundary. The disk `config.yaml` is also updated so a future restart (for any reason) picks up the same port from disk. This trick is only safe because the run-collector loop in main.py passes the same `config` dict reference to `fetch_and_store` each tick — never copies it.
+
+- **YAML parsing, not regex.** The config.yaml edit uses PyYAML to round-trip the file structure, not a regex global-replace. This avoids the bug class where `s/8080/8088/` would clobber `web.port` (also 8000 → also matches a `8080` if someone misconfigured) if its line ordered before `receiver.port`. The manual recovery sequence from the v3.4.41 build session illustrated the same hazard; codifying the parse-not-regex rule in the auto-recovery code means the auto-recovery can't recur the same mistake.
+
+- **Once-per-process guard, set before the work starts.** The guard flag flips to True at function entry, not at success. Any early-return path (preconditions failed, all ports taken, sudo failure) still leaves the recovery in the don't-retry state, so a failing recovery can't loop. A service restart re-arms the guard, so a transient sudoers issue resolved out-of-band gets retried on the next boot — appropriate for "I just refreshed install.sh" cases.
+
+### Operational notes
+- **Existing demo installs need to re-run `./install.sh` once** to pick up the new sudoers rule before auto-recovery is available. The UI's "Sudoers update required" modal surfaces this automatically; the install.sh re-run is non-destructive and preserves everything else (config, DB, the resolved feeder port from a prior install).
+- **No effect on real-receiver installs.** The preconditions check `config["demo"]["enabled"]` and the existence of the feeder unit file; on a real-receiver install, neither holds, so the recovery is silently skipped. Real-receiver users who hit the v3.4.40 non-ADS-B error see the v3.4.41 Status card surfacing as before — "fix your config" is still the right answer there.
+
 ## [3.4.41] — 2026-05-26
 
 ### Changed

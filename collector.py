@@ -1,4 +1,4 @@
-# Version: 3.4.41
+# Version: 3.4.42
 """
 collector.py — ADS-B data fetcher and classifier.
 
@@ -8,10 +8,14 @@ and additionally tags military + watchlist matches into their own tables.
 
 import logging
 import math
+import pathlib
+import re
 import requests
 import sqlite3
+import subprocess
 import threading
 import time
+import yaml
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -90,6 +94,195 @@ def get_collector_health():
         "consecutive_failed_polls": int(_consecutive_failed_polls),
         "offline_notified": bool(_offline_notified),
     }
+
+
+# v3.4.42: demo-mode auto-recovery state. The recovery walks the same
+# port-fallback chain `install.sh --demo` uses (8080 → 8088 → 28080)
+# and fires once per process lifetime. The once-per-process guard
+# prevents loops: if recovery fails (sudoers misconfigured, all ports
+# taken, write failure), the collector falls back to its normal
+# non-ADS-B error path and the user can intervene manually. A service
+# restart re-arms the guard, so a transient sudo/permission issue
+# resolved out-of-band gets retried on the next boot.
+_demo_recovery_attempted = False
+_NON_ADSB_RECOVERY_THRESHOLD = 3   # consecutive failed polls before firing
+_DEMO_FEEDER_PORT_CANDIDATES = (8080, 8088, 28080)
+_FEEDER_UNIT_PATH = "/etc/systemd/system/aerodrome-synthetic-feeder.service"
+
+
+def _port_in_use(port: int) -> bool:
+    """Return True if `port` has a TCP listener anywhere on this host.
+
+    Uses `ss -tln` (iproute2; present on every tier-1 distro). Falls
+    back to True on error so a failed probe doesn't cause us to pick
+    a port that's actually taken — better to skip a candidate than to
+    collide on it.
+    """
+    try:
+        out = subprocess.run(
+            ["ss", "-tln"], capture_output=True, text=True, timeout=2,
+        ).stdout
+        # Each listening line includes ":PORT" in the Local Address column.
+        # Match with regex so :8080 doesn't match :18080 etc.
+        return bool(re.search(rf":{port}\s", out))
+    except Exception:
+        return True
+
+
+def _attempt_demo_port_recovery(config: dict):
+    """Once-per-process attempt to recover from the v3.4.40 non-ADS-B
+    wedge state by walking the feeder-port fallback chain, rewriting
+    the feeder unit file + config.yaml, mutating in-memory config, and
+    restarting the feeder service.
+
+    Preconditions checked here (so callers can fire the trigger
+    indiscriminately):
+      1. We're in demo mode (config["demo"]["enabled"] is true).
+      2. The feeder unit file exists at the expected path.
+      3. We haven't already attempted recovery this process lifetime.
+
+    On success: in-memory config is mutated so the NEXT poll uses the
+    new URL without an aerodrome restart. The disk config.yaml is also
+    updated so a future restart picks up the same port.
+
+    Returns the new port on success, or None if recovery failed for
+    any reason (preconditions, all ports taken, sudo failure, write
+    failure, etc). Logging is verbose so journal log shows what was
+    attempted and why if anything didn't work.
+
+    The once-per-process guard is set regardless of outcome, so we
+    don't keep retrying a failing recovery in tight loop. A service
+    restart re-arms the guard.
+    """
+    global _demo_recovery_attempted
+    if _demo_recovery_attempted:
+        return None
+    # Set the guard NOW (not at end) so any early-return branches still
+    # leave us in the don't-retry state.
+    _demo_recovery_attempted = True
+
+    # Precondition 1: demo mode
+    if not bool((config.get("demo") or {}).get("enabled", False)):
+        logger.debug("Auto-recovery skipped: not in demo mode")
+        return None
+
+    # Precondition 2: feeder unit file exists
+    unit_path = pathlib.Path(_FEEDER_UNIT_PATH)
+    if not unit_path.exists():
+        logger.debug(
+            "Auto-recovery skipped: feeder unit %s does not exist", unit_path
+        )
+        return None
+
+    logger.info(
+        "Auto-recovery: detected demo-mode non-ADS-B wedge; walking "
+        "port candidates %s", list(_DEMO_FEEDER_PORT_CANDIDATES),
+    )
+
+    # Walk the port chain
+    new_port = None
+    for candidate in _DEMO_FEEDER_PORT_CANDIDATES:
+        if not _port_in_use(candidate):
+            new_port = candidate
+            break
+
+    if new_port is None:
+        logger.error(
+            "Auto-recovery failed: every candidate port in %s is in use. "
+            "Manual intervention needed — choose a free port and edit "
+            "/etc/systemd/system/aerodrome-synthetic-feeder.service "
+            "(--port flag) plus /opt/aerodrome/config.yaml (receiver.port).",
+            list(_DEMO_FEEDER_PORT_CANDIDATES),
+        )
+        return None
+
+    logger.info("Auto-recovery: selected port %d", new_port)
+
+    # Rewrite the feeder unit file with the new port. Read the existing
+    # content (world-readable; no sudo needed for read) and substitute
+    # the --port flag value. Bounded regex — only changes existing
+    # `--port N` patterns, no other behavior shifts.
+    try:
+        current_unit = unit_path.read_text()
+    except Exception as e:
+        logger.error("Auto-recovery: could not read feeder unit: %s", e)
+        return None
+    new_unit = re.sub(r"--port\s+\d+", f"--port {new_port}", current_unit)
+    if new_unit == current_unit:
+        logger.warning(
+            "Auto-recovery: feeder unit had no --port flag to replace; "
+            "skipping unit-file edit. The feeder will continue using "
+            "whatever port its current ExecStart specifies."
+        )
+
+    # Write via `sudo tee` (the v3.4.42 sudoers rule grants exactly this
+    # one path). tee reads from stdin, writes to argv[1]; stdout is
+    # captured-and-discarded so we don't echo the unit file to the log.
+    try:
+        result = subprocess.run(
+            ["sudo", "tee", str(unit_path)],
+            input=new_unit, capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            logger.error(
+                "Auto-recovery: sudo tee failed (rc=%d). Stderr: %s. If "
+                "you see 'sudo: a password is required', re-run "
+                "./install.sh on this server to refresh the sudoers rule "
+                "to SUDOERS_VERSION 5+.",
+                result.returncode, (result.stderr or "").strip(),
+            )
+            return None
+    except Exception as e:
+        logger.error("Auto-recovery: unit-file write raised: %s", e)
+        return None
+
+    # Edit config.yaml's receiver.port. Read the file, mutate via
+    # PyYAML (NOT regex — the manual-recovery sed bug from the v3.4.41
+    # build conversation: regex global-replace of "8080" would have
+    # clobbered web.port if its line ordered before receiver.port).
+    cfg_path = pathlib.Path(config["data"].get("config_path") or "config.yaml")
+    if not cfg_path.is_absolute():
+        cfg_path = pathlib.Path(__file__).parent / cfg_path
+    try:
+        cfg_text = cfg_path.read_text()
+        cfg_data = yaml.safe_load(cfg_text) or {}
+        cfg_data.setdefault("receiver", {})["port"] = new_port
+        cfg_path.write_text(yaml.safe_dump(cfg_data, sort_keys=False,
+                                           default_flow_style=False))
+    except Exception as e:
+        logger.error("Auto-recovery: config.yaml edit failed: %s", e)
+        return None
+
+    # Mutate in-memory config so the NEXT poll uses the new URL without
+    # waiting for an aerodrome restart. `config` is the same dict that
+    # fetch_and_store reads `receiver` from on every poll (the run_collector
+    # loop in main.py passes the same reference each tick), so this
+    # mutation propagates.
+    config["receiver"]["port"] = new_port
+
+    # daemon-reload to pick up the new unit file, then restart the feeder.
+    # NOT restarting aerodrome itself — the in-memory config mutation
+    # above means the next poll uses the new URL, no process restart
+    # needed. (Restarting aerodrome from inside aerodrome's own process
+    # would kill the current poll mid-execution; in-memory mutation
+    # avoids that entire class of problem.)
+    try:
+        subprocess.run(["sudo", "systemctl", "daemon-reload"],
+                       check=True, timeout=10)
+        subprocess.run(["sudo", "systemctl", "restart",
+                        "aerodrome-synthetic-feeder"],
+                       check=True, timeout=15)
+    except Exception as e:
+        logger.error("Auto-recovery: systemctl restart failed: %s", e)
+        return None
+
+    logger.info(
+        "Auto-recovery: feeder moved to port %d. Next poll will use "
+        "http://%s:%d%s — Status card should clear within ~%ds.",
+        new_port, config["receiver"]["ip"], new_port,
+        config["receiver"]["path"], config["receiver"]["poll_interval"],
+    )
+    return new_port
 
 # v2.50.31: capacity-alert state machine. Updated by check_capacity_alerts()
 # at most once every CAPACITY_CHECK_INTERVAL_SEC seconds (60s by default).
@@ -2739,6 +2932,23 @@ def fetch_and_store(config: Dict, watchlist_lookup: Dict):
         logger.error(str(e))
         _consecutive_failed_polls += 1
         _last_offline_reason = str(e)
+        # v3.4.42: after 3 consecutive non-ADS-B errors, attempt auto-recovery
+        # via the demo-mode port-fallback chain. Once per process lifetime
+        # (the function's internal guard), gated on demo mode + feeder unit
+        # existing. If recovery succeeds, mutate-in-memory means the next
+        # poll uses the new URL — we reset the streak counter so the status
+        # card clears cleanly. If recovery fails (all ports taken, sudoers
+        # not refreshed, etc), fall through to the existing notification
+        # path and let the user intervene manually.
+        if _consecutive_failed_polls >= _NON_ADSB_RECOVERY_THRESHOLD:
+            recovered_port = _attempt_demo_port_recovery(config)
+            if recovered_port is not None:
+                _consecutive_failed_polls = 0
+                _last_offline_reason = ""
+                # Skip the rest of this poll cycle's offline-notification
+                # check below — we just took recovery action; let the
+                # next poll evaluate fresh state.
+                return
         if _consecutive_failed_polls >= offline_threshold and not _offline_notified:
             _safe_notify(
                 "receiver_offline",
