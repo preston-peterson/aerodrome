@@ -119,11 +119,31 @@ def _compute_capacity_metrics(db_path: str, retention_days: int = 30) -> Dict[st
         conn.row_factory = sqlite3.Row
         try:
             now_ts = int(time.time())
-            min_ts_row = conn.execute(
-                "SELECT MIN(seen_at), COUNT(*) FROM all_sightings"
-            ).fetchone()
-            min_ts = min_ts_row[0]
-            total_rows = int(min_ts_row[1] or 0)
+            # v3.4.45: split the former combined `SELECT MIN(seen_at),
+            # COUNT(*) FROM all_sightings` into two separate statements.
+            # Combining MIN() and COUNT() in one SELECT forfeits both of
+            # SQLite's aggregate fast-paths: a standalone `SELECT MIN(x)`
+            # is satisfied by a single index seek (SEARCH ... idx_all_seen,
+            # effectively instant), and a standalone `SELECT COUNT(*)`
+            # scans the smallest covering index (~340 ms on the 69M-row /
+            # 5.7 GB reference install per its perf diagnostic). Asking for
+            # both at once forces a single full covering-index SCAN that
+            # computes both aggregates row-by-row with no seek shortcut —
+            # measured 70+ seconds cold and under concurrent collector
+            # writes on the reference box, which hung every admin page
+            # (each polls /api/status) while also stalling the collector
+            # poll loop (check_capacity_alerts calls this same function on
+            # its own interval). Two statements cost one extra round-trip
+            # but each runs against its proper fast-path; the split COUNT
+            # alone matches the diagnostic's standalone ~340 ms figure, and
+            # the MIN becomes free. Verified via EXPLAIN QUERY PLAN: the
+            # combined form SCANs, the split MIN SEARCHes.
+            min_ts = conn.execute(
+                "SELECT MIN(seen_at) FROM all_sightings"
+            ).fetchone()[0]
+            total_rows = int(conn.execute(
+                "SELECT COUNT(*) FROM all_sightings"
+            ).fetchone()[0] or 0)
 
             if total_rows == 0 or min_ts is None:
                 out["data_source"] = "insufficient"

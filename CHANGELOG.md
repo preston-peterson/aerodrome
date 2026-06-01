@@ -19,6 +19,21 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.45] — 2026-06-01
+
+### Fixed
+- **Admin pages no longer hang for minutes on large databases.** On installs with a big history database (tens of millions of sightings), opening any gear-menu page — Status, Logs, Configuration, Updates — could take several minutes to load, and the live dashboard's health indicator would stall along with it. The cause was a single query in the disk-capacity calculation that asked SQLite for the oldest sighting timestamp and the total row count in one combined statement. That phrasing forced the database to scan its entire sightings index in one pass to compute both numbers, with none of the shortcuts it would normally use. On the reference 12.5 GB / 69-million-row test install this scan took over 70 seconds while the collector was actively writing — and because every admin page checks system status on load (and on a timer), the slow scan stacked up and made the whole interface feel frozen. v3.4.45 splits the calculation into two separate queries: the oldest-timestamp lookup now resolves instantly via an index seek, and the row count uses the database's fast counting path (about a third of a second on the same install, versus 70+ seconds before). The capacity numbers are identical; only the query shape changed.
+
+- **The collector's polling cadence is steadier as a side effect.** The same capacity calculation also runs periodically inside the data collector to drive low-disk-space alerts. On large databases the slow scan was stalling the collector's poll loop intermittently, producing irregular gaps between data writes (sometimes 50+ seconds when the poll interval was set far lower). With the query fixed, the periodic capacity check is fast and the collector polls on a consistent schedule again.
+
+### Behind the scenes
+- The fix is a query-shape change only: `SELECT MIN(seen_at), COUNT(*) FROM all_sightings` became two statements, `SELECT MIN(seen_at) FROM all_sightings` and `SELECT COUNT(*) FROM all_sightings`. SQLite optimizes a standalone `MIN()` into an index seek and a standalone `COUNT(*)` into a covering-index scan, but a single SELECT requesting both aggregates forfeits both optimizations and falls back to one unshortcut scan that computes the two values row-by-row. The split was verified with `EXPLAIN QUERY PLAN` (the combined form SCANs; the split MIN SEARCHes) and timed on a synthetic table to confirm the standalone count matches the figure measured by the on-box performance diagnostic.
+- The capacity result was already cached for 30 seconds on the web side, which is why the hang was intermittent rather than constant — most status checks hit the cache and returned in milliseconds, but each time the cache expired, the next check paid the full multi-minute cost and blocked everything behind it until it finished.
+
+### Operational notes
+- No schema changes, no config changes, no migration. The fix is a drop-in code change to the capacity probe shared by the status endpoint and the collector's alert check.
+- Installs small enough that the combined query was already fast (a few thousand to a few hundred-thousand rows) will see no behavioral difference — the split query is equally fast there. The fix matters specifically at the scale where the single-pass scan had grown into seconds.
+
 ## [3.4.44] — 2026-05-26
 
 ### Fixed
