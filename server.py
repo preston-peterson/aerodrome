@@ -1,4 +1,4 @@
-# Version: 3.4.47
+# Version: 3.4.48
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -1325,8 +1325,14 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             return {"aircraft": [], "count": 0, "last_updated": int(time.time()), "error": str(e)}
 
     # --- Military ---
+    # v3.4.48: NON-async (plain def), same rationale as /api/watchlist below
+    # — synchronous row-fetch-and-group that must not run on the event loop.
+    # military_sightings is the same scale as watchlist_sightings; this
+    # endpoint only escaped the freeze because its retention window currently
+    # holds fewer rows. Running it in FastAPI's threadpool keeps it from
+    # becoming the next loop-blocker as data grows.
     @app.get("/api/military")
-    async def get_military():
+    def get_military():
         db_path = CONFIG["data"]["db_file"]
         days = CONFIG["retention"]["military_days"]
         cutoff = int(time.time()) - (days * 86400)
@@ -1369,8 +1375,22 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         }
 
     # --- Watchlist sightings ---
+    # v3.4.48: NON-async (plain def) on purpose. This handler does
+    # synchronous SQLite work that, at scale (millions of watchlist_sightings
+    # rows in the retention window), can take tens of seconds — it pulls the
+    # window's rows and groups them in Python. As an `async def` it ran that
+    # blocking work directly on the asyncio event loop, which single-handedly
+    # froze EVERY other request (admin-page loads, /api/status health polls)
+    # behind it — diagnosed from a HAR where /api/status calls whose own work
+    # was 9 ms still showed 30-54 s wall time because they were queued behind
+    # a 58-64 s /api/watchlist call holding the loop. FastAPI runs plain `def`
+    # endpoints in its threadpool instead of on the loop, so the blocking
+    # query no longer starves everything else. (The query itself is still
+    # heavy — a follow-up will reduce it to latest-per-aircraft + a count via
+    # GROUP BY, which the frontend already supports via ac.sighting_count —
+    # but getting it off the loop is the fix for the reported symptom.)
     @app.get("/api/watchlist")
-    async def get_watchlist_sightings():
+    def get_watchlist_sightings():
         db_path = CONFIG["data"]["db_file"]
         days = CONFIG["retention"]["watchlist_days"]
         cutoff = int(time.time()) - (days * 86400)

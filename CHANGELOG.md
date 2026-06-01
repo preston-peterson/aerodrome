@@ -19,6 +19,20 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.48] — 2026-06-01
+
+### Fixed
+- **One slow page no longer freezes the entire interface.** The real cause of the minutes-long admin-page delays on large databases turned out not to be any single query — it was that the Watchlist data endpoint, when it had a lot of history to load, ran its work in a way that blocked the web server from handling *anything else* until it finished. So clicking into Status, Logs, or Configuration could hang for 30-60 seconds not because those pages were slow, but because they were stuck in line behind a Watchlist request that was holding the server. v3.4.48 moves the Watchlist and Military data endpoints off that shared path so a heavy load on one of them no longer stalls everything else. Health checks, page navigation, and other tabs stay responsive even while a large Watchlist query is still working.
+
+### Behind the scenes
+- The fix changes `/api/watchlist` and `/api/military` from async handlers to synchronous ones, which makes the web framework run them in its worker threadpool instead of directly on the single asyncio event loop. Their database work is synchronous and, on a large install, lengthy; running lengthy synchronous work on the event loop serializes every concurrent request behind it. This was diagnosed from a captured HAR (using the per-section timing added in v3.4.47): `/api/status` calls whose own measured work was 9 milliseconds were showing 30-54 seconds of wall-clock time, because they were queued behind a 58-64 second `/api/watchlist` call that held the loop. The codebase already established this pattern for the hexdb resolver probe (which uses a worker thread for exactly this reason); this extends it to the two heaviest data endpoints.
+- The Watchlist query itself is still heavy — it loads the full retention window of sightings and groups them in memory. A follow-up will reduce it to one row per aircraft plus a sighting count computed in SQL (the frontend already prefers a server-provided `sighting_count` when present), which will make the Watchlist tab itself fast rather than merely non-blocking. This release deliberately does only the off-the-loop change: it's the fix for the reported symptom (navigation freezing), it's low-risk, and it doesn't touch the response shape.
+- The v3.4.47 diagnostic timing fields are retained for one more release so this fix can be confirmed from a HAR (the expected signature: `/api/status` calls no longer queued behind `/api/watchlist`). They'll be removed once confirmed.
+
+### Operational notes
+- No schema changes, no config changes, no migration. The change is two endpoint definitions switching from async to synchronous; response shapes are identical.
+- Expected behavior after deploy: navigating between admin pages and the live dashboard stays responsive even when the Watchlist tab is loading a large history. The Watchlist tab's own first load may still take a while on very large installs until the follow-up query optimization lands — but it no longer holds up the rest of the app while it does.
+
 ## [3.4.47] — 2026-06-01
 
 ### Changed
