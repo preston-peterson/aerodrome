@@ -19,6 +19,20 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.51] — 2026-06-01
+
+### Fixed
+- **Fixed "apply from GitHub," which was broken by the v3.4.49 change.** Applying an update directly from GitHub failed at the final step with a cryptic error in the UI ("JSON.parse: unexpected character"). The download, checksum verification, and staging all succeeded; the failure was in the handoff to the shared apply routine. v3.4.49 converted that shared routine from asynchronous to synchronous (correctly — it does blocking work and belongs in the worker threadpool), but the GitHub-apply path was still calling it the old asynchronous way, which raised an internal error and returned an error page the UI couldn't read. v3.4.51 fixes the handoff to call the now-synchronous routine correctly, running it in a worker thread so it still stays off the main request loop.
+
+### Behind the scenes
+- The specific failure was `await apply_local_update(...)` against a function that v3.4.49 made synchronous — awaiting a plain return value raises `TypeError: object dict can't be used in 'await' expression`. The fix runs it via `asyncio.to_thread(apply_local_update, ...)`, which both satisfies the `await` (it returns an awaitable) and keeps the blocking apply off the event loop — the same threadpool behavior the routine gets when invoked directly as an endpoint.
+- Root cause of the regression: v3.4.49's async→sync sweep checked each handler for whether it contained `await`, but not whether some *other* function `await`ed it. One internal caller relationship (GitHub-apply → local-apply) crossed that boundary. A scan for `await <now-synchronous-handler>(...)` across the file confirmed this was the only such case.
+- The local-zip apply path was unaffected and remained a working way to deploy throughout — it invokes the apply routine directly as an HTTP endpoint rather than awaiting it internally.
+
+### Operational notes
+- No schema changes, no config changes, no migration.
+- **To deploy this release:** because the GitHub-apply path is what's broken on v3.4.49/v3.4.50, use the **local-zip apply** (the upload box on the Updates page, or staging the release into `update/` over SSH) to get v3.4.51 onto the install. Once v3.4.51 is running, applying future releases directly from GitHub works again.
+
 ## [3.4.50] — 2026-06-01
 
 ### Fixed

@@ -1,4 +1,4 @@
-# Version: 3.4.50
+# Version: 3.4.51
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -9903,7 +9903,17 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         # special handling for the GitHub-apply path.
         # v3.4.38: thread snapshot_db through so the GitHub-apply path
         # honors the same opt-in DB-snapshot checkbox as the local-apply path.
-        return await apply_local_update(snapshot_db=snapshot_db)
+        # v3.4.51: apply_local_update became a synchronous handler in v3.4.49
+        # (it does blocking work — extract, deps, restart — and FastAPI runs
+        # sync handlers in its threadpool). This caller is still async and
+        # used to `await` it; awaiting the now-sync function's dict return
+        # raised "TypeError: object dict can't be used in 'await' expression"
+        # and broke every GitHub apply. Run it via asyncio.to_thread: that
+        # both satisfies the await (to_thread returns an awaitable) and keeps
+        # the blocking apply off the event loop, matching the threadpool
+        # behavior it gets when called directly as an endpoint.
+        import asyncio
+        return await asyncio.to_thread(apply_local_update, snapshot_db=snapshot_db)
 
     @app.get("/api/updates/github/check")
     def check_github_update(force: bool = False):
