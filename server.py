@@ -1,4 +1,4 @@
-# Version: 3.4.46
+# Version: 3.4.47
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -2892,6 +2892,13 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     async def get_status():
         """Comprehensive health check of all Aerodrome components."""
         now = time.time()
+        # v3.4.47 DIAGNOSTIC: wall-clock checkpoints across the endpoint's
+        # major sections, surfaced as `_endpoint_timings_ms` in the response
+        # so a HAR capture localizes the slow section without log access.
+        _ep_t0 = time.perf_counter()
+        _ep = {}
+        def _ep_mark(label):
+            _ep[label] = round((time.perf_counter() - _ep_t0) * 1000, 1)
 
         # --- Receiver check ---
         receiver = CONFIG["receiver"]
@@ -2910,6 +2917,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             receiver_check["error"] = "Timeout after 5s"
         except Exception as e:
             receiver_check["error"] = str(e)
+        _ep_mark("after_receiver")
 
         # --- Hexdb.io resolver check ---
         # Probe hexdb with a known-good hex (a well-known easyJet A319 used
@@ -3061,6 +3069,15 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                     db_check["stats_cached_age_sec"] = now_ts - cache["timestamp"]
                 else:
                     fresh_stats = {}
+                    # v3.4.47 DIAGNOSTIC: per-section timing emitted into the
+                    # /api/status response (db.stats_timings_ms) so a captured
+                    # HAR shows exactly which cache-miss query dominates. Two
+                    # prior fixes (v3.4.45 query split, v3.4.46 row-count cache)
+                    # each targeted a query that turned out not to be the whole
+                    # cost; this instrumentation replaces guessing with a
+                    # direct measurement that rides along in the JSON response.
+                    _t = {}
+                    _t0 = time.perf_counter()
                     # Military and watchlist stay on raw — small tables and
                     # the v2.50.17 covering indexes (idx_mil_seen_icao,
                     # idx_watch_seen_icao) made these queries fast (sub-60ms
@@ -3069,13 +3086,17 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                         ("military_sightings", "military", "military_days"),
                         ("watchlist_sightings", "watchlist", "watchlist_days"),
                     ]:
+                        _ts = time.perf_counter()
                         cutoff = now_ts - (CONFIG["retention"][days_key] * 86400)
                         unique = conn.execute(
                             f"SELECT COUNT(DISTINCT icao) FROM {table} WHERE seen_at >= ?", (cutoff,)
                         ).fetchone()[0]
+                        _t[f"{key}_distinct_ms"] = round((time.perf_counter() - _ts) * 1000, 1)
+                        _ts = time.perf_counter()
                         total = conn.execute(
                             f"SELECT COUNT(*) FROM {table} WHERE seen_at >= ?", (cutoff,)
                         ).fetchone()[0]
+                        _t[f"{key}_total_ms"] = round((time.perf_counter() - _ts) * 1000, 1)
                         fresh_stats[key] = {"unique": unique, "total": total}
 
                     # v2.50.19: all_sightings stats migrate to the hourly
@@ -3125,16 +3146,23 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                     # Kept unchanged.
                     all_cutoff_ts = now_ts - (CONFIG["retention"]["all_days"] * 86400)
                     all_cutoff_bucket = all_cutoff_ts // 3600
+                    _ts = time.perf_counter()
                     all_unique = conn.execute(
                         "SELECT COUNT(*) FROM seen_aircraft WHERE last_seen_at >= ?",
                         (all_cutoff_ts,)
                     ).fetchone()[0]
+                    _t["all_unique_seen_ms"] = round((time.perf_counter() - _ts) * 1000, 1)
+                    _ts = time.perf_counter()
                     all_total_row = conn.execute(
                         "SELECT COALESCE(SUM(sighting_count), 0) FROM sightings_hourly WHERE hour_bucket >= ?",
                         (all_cutoff_bucket,)
                     ).fetchone()
+                    _t["all_total_rollup_ms"] = round((time.perf_counter() - _ts) * 1000, 1)
                     all_total = int(all_total_row[0]) if all_total_row else 0
                     fresh_stats["all"] = {"unique": all_unique, "total": all_total}
+
+                    _t["stats_block_total_ms"] = round((time.perf_counter() - _t0) * 1000, 1)
+                    db_check["stats_timings_ms"] = _t
 
                     nonlocal_state["db_stats_cache"] = {"data": fresh_stats, "timestamp": now_ts}
                     db_check["stats"] = fresh_stats
@@ -3150,14 +3178,21 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 if cap_cache and (now_ts - cap_cache.get("timestamp", 0)) < DB_STATS_CACHE_TTL_SEC:
                     db_check["capacity"] = cap_cache["data"]
                 else:
+                    # v3.4.47 DIAGNOSTIC: time the capacity computation; it
+                    # returns its own _timings_ms (see capacity.py) which we
+                    # surface under db.capacity so the HAR shows the internal
+                    # breakdown too.
+                    _tc = time.perf_counter()
                     retention_days = CONFIG.get("retention", {}).get("all_days", 30)
                     cap = _compute_capacity_metrics(db_path, retention_days)
+                    cap["_outer_call_ms"] = round((time.perf_counter() - _tc) * 1000, 1)
                     nonlocal_state["capacity_cache"] = {"data": cap, "timestamp": now_ts}
                     db_check["capacity"] = cap
             except Exception as e:
                 db_check["error"] = str(e)
         else:
             db_check["error"] = "Database file does not exist (will be created on first poll)"
+        _ep_mark("after_db_check")
 
         # --- Collector check ---
         # Collector health is inferred from recent writes to all_sightings.
@@ -3302,6 +3337,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         except Exception:
             _upd_available = False
 
+        _ep_mark("before_response_assembly")
         return {
             "overall_ok": core_ok,
             "severity": severity,
@@ -3309,6 +3345,10 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             "timestamp": int(now),
             "version": version,
             "update_available": _upd_available,
+            # v3.4.47 DIAGNOSTIC: section wall-clock checkpoints (ms from
+            # endpoint entry). Read directly from a captured HAR to localize
+            # the slow section. Removed once the bottleneck is fixed.
+            "_endpoint_timings_ms": _ep,
             "components": {
                 "collector": collector_check,
                 "webserver": webserver_check,

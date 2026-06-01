@@ -19,6 +19,19 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.47] — 2026-06-01
+
+### Changed
+- **Diagnostic build: the system-status response now reports how long each part of the check took.** The previous two releases each addressed a query that turned out not to be the full cause of the slow admin pages on very large databases, so this release stops narrowing by hypothesis and measures directly. The `/api/status` response now carries a small set of timing fields — wall-clock checkpoints across the endpoint's major sections, plus a per-query breakdown of the database-statistics and capacity calculations. Captured in a browser's network trace, these fields show exactly which step is consuming the time. This is instrumentation only: no calculation or behavior changed, and the extra fields are ignored by the existing interface. The instrumentation will be removed once the slow step is identified and fixed.
+
+### Behind the scenes
+- Timing is surfaced in the response body rather than the server log so it can be read straight from a HAR capture without shell access to the box, and so each measurement is unambiguously tied to the request that produced it (including the version stamp already present in the payload, which confirmed in the prior round that the slow calls were running the new code rather than stale pre-fix traffic).
+- The added fields are `_endpoint_timings_ms` at the top level (section checkpoints from endpoint entry), `database.stats_timings_ms` (per-query timings for the military/watchlist/all statistics block, only present on a cache-miss recompute), and `database.capacity._timings_ms` (per-query timings inside the capacity probe). All are diagnostic and carry a leading underscore to mark them as non-contract.
+
+### Operational notes
+- No schema changes, no config changes, no migration. Purely additive instrumentation fields in one JSON response.
+- This is a transitional build. After the next HAR capture localizes the slow section, a follow-up release will apply the fix and remove these fields.
+
 ## [3.4.46] — 2026-06-01
 
 ### Fixed
