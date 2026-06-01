@@ -19,6 +19,21 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.46] — 2026-06-01
+
+### Fixed
+- **Admin pages and the collector no longer stall intermittently on large databases.** v3.4.45 split the capacity probe's combined timestamp-and-count query so each half could use its fast path, which lowered the cost of a single run — but on the reference 12.5 GB install the stalls came back at 30-60 seconds, just less often. The remaining cause was that the same row-count scan runs from two places on independent schedules: the system-status endpoint (which every admin page checks, refreshing every 30 seconds) and the data collector's periodic disk-space check (every 60 seconds). Because the web server and the collector share one process, those two scans periodically run at the same moment, and on a memory-constrained host the database's index doesn't stay in cache, so two simultaneous scans of it thrash the disk and each balloons from a fraction of a second to nearly a minute. v3.4.46 caches the row count for ten minutes across the whole process and guards the refresh with a lock, so the underlying scan runs at most once every ten minutes and never two at a time. The count is used only to estimate the database's per-row growth for capacity projections, a figure that drifts by a fraction of a percent over ten minutes, so the cached value is more than fresh enough.
+
+### Behind the scenes
+- The fix adds a small process-wide cache (`_get_cached_total_rows`) in capacity.py with double-checked locking: a lock-free fast path returns the cached count when it's fresh, and on expiry exactly one thread acquires the lock and runs the scan while any others either wait for it or read the value it just stored — they never launch parallel scans. The behavior was verified with a concurrency test: ten simultaneous callers against a cold cache trigger exactly one underlying scan, all receive the same value, and the cache refreshes correctly after its TTL elapses.
+- Why caching works cleanly here: the web server (uvicorn) and the collector run in the same process, with the collector as a background thread, so a module-level cache is visible to both callers. Before this change, each computed the count independently — the status endpoint behind its own 30-second result cache, the collector behind its 60-second rate limit — and neither knew the other had just done the same scan.
+- The oldest-sighting timestamp (used for the days-of-data figure) is deliberately left uncached: it's a cheap index seek, and keeping it live means days-of-data reflects retention pruning immediately. Only the expensive full-table count is cached.
+- Root-cause diagnosis came from per-request version stamps in a captured HAR: the slow calls were confirmed to be running the post-v3.4.45 code (not stale pre-fix traffic), which is what established that the query split alone hadn't resolved it and pointed at scan concurrency as the remaining factor.
+
+### Operational notes
+- No schema changes, no config changes, no migration. The cache is in-memory and rebuilds on restart; the first capacity computation after a restart runs one scan to warm it, then it's quiet for ten minutes at a time.
+- Installs small enough that the count scan was already fast see no behavioral difference. The fix matters at the scale where the scan had grown expensive and the two callers' schedules could collide.
+
 ## [3.4.45] — 2026-06-01
 
 ### Fixed

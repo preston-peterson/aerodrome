@@ -41,11 +41,67 @@ post-install — in steady state the measurement dominates.
 import os
 import shutil
 import sqlite3
+import threading
 import time
 from typing import Any, Dict, Optional, Tuple
 
 
 CAPACITY_DEFAULT_BYTES_PER_ROW = 170  # used only when measurement isn't available
+
+# v3.4.46: process-wide cache for the expensive all_sightings row count.
+#
+# `COUNT(*) FROM all_sightings` is a full covering-index scan — ~340 ms on
+# the 69M-row / 5.7 GB reference install in isolation, but it was being run
+# from BOTH callers of _compute_capacity_metrics: /api/status (every 30 s on
+# its own cache-miss) and the collector's check_capacity_alerts (every 60 s).
+# Because the web server and the collector run in the SAME process (the
+# collector is a daemon thread inside the uvicorn process), these two scan
+# sources fire on independent schedules and periodically OVERLAP. On a
+# RAM-constrained host (the reference box has ~7 GB resident against a
+# 12.5 GB DB, so the 830 MB seen_at index doesn't stay cached), two or three
+# concurrent scans of that index thrash the page cache and each balloons
+# from ~340 ms to 30-60 seconds. That was the residual hang after v3.4.45
+# split the MIN/COUNT query: the split lowered per-scan cost but did nothing
+# about the scans overlapping.
+#
+# The total row count is used only to derive a bytes-per-row growth estimate,
+# which is inherently approximate and moves by ~0.02 % over ten minutes at
+# the reference install's ingest rate. So we cache it process-wide for
+# 10 minutes and guard the refresh with a lock: at most one COUNT scan runs
+# at a time, and concurrent callers wait for that single scan (or use the
+# still-fresh cached value) rather than launching parallel scans. MIN(seen_at)
+# is NOT cached here — it's a cheap index seek (see v3.4.45) and oldest-row
+# freshness matters more for the days-of-data figure.
+_ROWCOUNT_CACHE_TTL_SEC = 600  # 10 minutes
+_rowcount_cache = {"total_rows": None, "ts": 0.0}
+_rowcount_lock = threading.Lock()
+
+
+def _get_cached_total_rows(conn) -> int:
+    """Return COUNT(*) of all_sightings, cached process-wide for
+    _ROWCOUNT_CACHE_TTL_SEC with double-checked locking so the underlying
+    full-index scan runs at most once per TTL and never concurrently.
+
+    See the _rowcount_cache comment above for why this exists.
+    """
+    now = time.time()
+    c = _rowcount_cache
+    # Fast path: fresh cached value, no lock needed.
+    if c["total_rows"] is not None and (now - c["ts"]) < _ROWCOUNT_CACHE_TTL_SEC:
+        return c["total_rows"]
+    # Slow path: acquire the lock, re-check (another thread may have just
+    # refreshed while we waited), then scan if still stale.
+    with _rowcount_lock:
+        now = time.time()
+        if c["total_rows"] is not None and (now - c["ts"]) < _ROWCOUNT_CACHE_TTL_SEC:
+            return c["total_rows"]
+        total_rows = int(conn.execute(
+            "SELECT COUNT(*) FROM all_sightings"
+        ).fetchone()[0] or 0)
+        c["total_rows"] = total_rows
+        c["ts"] = now
+        return total_rows
+
 
 # v2.50.31: alert thresholds. The defaults are also the values that the
 # UI starts with on a fresh config — same shape as the rest of the
@@ -119,31 +175,19 @@ def _compute_capacity_metrics(db_path: str, retention_days: int = 30) -> Dict[st
         conn.row_factory = sqlite3.Row
         try:
             now_ts = int(time.time())
-            # v3.4.45: split the former combined `SELECT MIN(seen_at),
-            # COUNT(*) FROM all_sightings` into two separate statements.
-            # Combining MIN() and COUNT() in one SELECT forfeits both of
-            # SQLite's aggregate fast-paths: a standalone `SELECT MIN(x)`
-            # is satisfied by a single index seek (SEARCH ... idx_all_seen,
-            # effectively instant), and a standalone `SELECT COUNT(*)`
-            # scans the smallest covering index (~340 ms on the 69M-row /
-            # 5.7 GB reference install per its perf diagnostic). Asking for
-            # both at once forces a single full covering-index SCAN that
-            # computes both aggregates row-by-row with no seek shortcut —
-            # measured 70+ seconds cold and under concurrent collector
-            # writes on the reference box, which hung every admin page
-            # (each polls /api/status) while also stalling the collector
-            # poll loop (check_capacity_alerts calls this same function on
-            # its own interval). Two statements cost one extra round-trip
-            # but each runs against its proper fast-path; the split COUNT
-            # alone matches the diagnostic's standalone ~340 ms figure, and
-            # the MIN becomes free. Verified via EXPLAIN QUERY PLAN: the
-            # combined form SCANs, the split MIN SEARCHes.
+            # MIN(seen_at): cheap index seek (SEARCH ... idx_all_seen),
+            # kept inline and uncached so days-of-data reflects current
+            # retention pruning. See v3.4.45 for the MIN/COUNT split.
             min_ts = conn.execute(
                 "SELECT MIN(seen_at) FROM all_sightings"
             ).fetchone()[0]
-            total_rows = int(conn.execute(
-                "SELECT COUNT(*) FROM all_sightings"
-            ).fetchone()[0] or 0)
+            # COUNT(*): full covering-index scan, expensive at scale and
+            # called from two schedules in one process. Cached process-wide
+            # for 10 min with a lock so it never runs concurrently — this is
+            # the v3.4.46 fix for the residual admin-page/collector stalls
+            # that v3.4.45's query split didn't fully resolve. See the
+            # _get_cached_total_rows / _rowcount_cache comments at module top.
+            total_rows = _get_cached_total_rows(conn)
 
             if total_rows == 0 or min_ts is None:
                 out["data_source"] = "insufficient"
