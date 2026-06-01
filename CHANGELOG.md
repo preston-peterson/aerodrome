@@ -19,6 +19,35 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.50] — 2026-06-01
+
+### Fixed
+- **Fixed a slowdown introduced by the previous release on large, memory-constrained installs.** v3.4.49 moved the app's handlers off the shared event loop so one slow page couldn't freeze the others — and that part worked: page navigation became responsive. But it also removed an accidental side effect of the old design, where the single event loop forced every request to run one at a time. With that gone, every browser tab's background health check (which runs every 30 seconds) could recompute the system-status database statistics *at the same moment* whenever the 30-second cache expired. On an install with a very large database and limited memory, several of those heavy recomputations running in parallel competed for the same disk cache and dragged each other down, escalating from about a second to over a minute and leaving the interface unresponsive. v3.4.50 serializes that recomputation: the first request to find the cache expired refreshes it while the others wait briefly for that single refresh (or use the just-refreshed value), instead of all of them recomputing in parallel. One refresh every 30 seconds instead of one per concurrent tab.
+
+### Behind the scenes
+- A lock now guards the `/api/status` database-stats and capacity recompute. The cache-freshness check happens after acquiring the lock, so a request that waited finds the cache another request just refreshed and skips the expensive queries entirely — the same double-checked pattern introduced for the row-count cache two releases ago. The lock also serializes the database connection opens in that path, which matters because each connection reserves a block of cache and memory-map space; many concurrent opens were compounding the memory pressure on the constrained box.
+- This is the counterpart to v3.4.49, not a reversal of it. v3.4.49's move to the threadpool was correct and stays — it's what keeps one genuinely slow page (Logs, Stats) from blocking navigation. v3.4.50 adds back *bounded* concurrency for the one hot, frequently-polled path that was being recomputed redundantly. The general principle: heavy work belongs off the event loop (v3.4.49), but a frequently-polled cache needs single-flight refresh so the move to real concurrency doesn't turn cache expiry into a thundering herd (v3.4.50).
+- The v3.4.47 diagnostic timing fields are retained one more release to confirm this fix (expected result: `/api/status` recompute stays bounded — around a second on a cache-miss — with no escalation under multi-tab polling). They'll be removed alongside the heavy-query optimizations still tracked as follow-up.
+
+### Operational notes
+- No schema changes, no config changes, no migration.
+- Expected behavior after deploy: the interface stays responsive under normal multi-tab use; the once-per-30-seconds status recompute no longer multiplies by the number of open tabs. Individual data-heavy tabs (Logs, Stats, Watchlist, Military) loading their own content remains a separate, tracked optimization.
+
+## [3.4.49] — 2026-06-01
+
+### Fixed
+- **No single slow page can freeze the rest of the interface anymore.** v3.4.48 fixed this for the Watchlist and Military data endpoints, but the same underlying issue affected most of the app: the Logs, Stats, Documentation, Search, and other endpoints all ran their database and file work directly on the web server's single event loop, so whenever any one of them was busy on a large install, every other request — page navigation, health checks, other tabs — had to wait in line behind it. A capture on the reference install showed the Logs endpoints taking 66 seconds, Stats 34 seconds, and the Documentation page 38 seconds, each of which froze everything else for its full duration. v3.4.49 moves every handler that does blocking work into the web server's worker threadpool, so the event loop stays free to service other requests no matter what any one endpoint is doing. Navigating the gear menu and switching tabs stays responsive even while a heavy page is still loading its own data.
+
+### Behind the scenes
+- The change converts 81 route handlers from asynchronous to synchronous definitions. A handler declared `async` but which never actually `await`s anything gains nothing from being asynchronous — it still runs to completion on the event loop without ever yielding, so any slow work inside it blocks every other request. The web framework runs synchronous handlers in a worker threadpool instead, which is exactly where blocking database and file work belongs. The seven handlers that genuinely do asynchronous work (file uploads, config import, the GitHub-apply and backup-restore flows) were left asynchronous, as they should be.
+- This was identified the same way as the v3.4.48 fix: the per-section response timing added in v3.4.47 showed `/api/status` calls whose own handler work was single-digit milliseconds nonetheless taking 25-35 seconds of wall time, which is only possible if they were queued behind something else holding the loop. Each capture pointed at a different slow endpoint, confirming the problem was the shared-loop architecture rather than any one query.
+- The individual heavy endpoints (Logs, Stats, Watchlist, Military) are still slow on their own at very large scale — moving them off the shared loop stops them blocking each other but doesn't make their own queries faster. Reducing those queries is tracked as follow-up work; this release is the architectural fix that makes the app usable in the meantime.
+- The v3.4.47 diagnostic timing fields are retained one more release to confirm this fix from a capture (the expected result: no endpoint shows other requests queued behind it). They'll be removed alongside the heavy-query optimizations.
+
+### Operational notes
+- No schema changes, no config changes, no migration. The change is handler declarations switching from async to synchronous; request/response behavior and shapes are unchanged.
+- Expected behavior after deploy: the gear menu, dashboard, and tab switching stay responsive at all times. Individual data-heavy tabs (Logs, Stats, Watchlist, Military) may still take time to load their own content on very large installs, but loading one no longer blocks the others.
+
 ## [3.4.48] — 2026-06-01
 
 ### Fixed

@@ -1,4 +1,4 @@
-# Version: 3.4.48
+# Version: 3.4.50
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -1052,15 +1052,15 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     _apple_touch = _static_dir / "apple-touch-icon.png"
     if _favicon_ico.exists():
         @app.get("/favicon.ico", include_in_schema=False)
-        async def _favicon_ico_route():
+        def _favicon_ico_route():
             return FileResponse(str(_favicon_ico), media_type="image/x-icon")
     if _favicon_svg.exists():
         @app.get("/favicon.svg", include_in_schema=False)
-        async def _favicon_svg_route():
+        def _favicon_svg_route():
             return FileResponse(str(_favicon_svg), media_type="image/svg+xml")
     if _apple_touch.exists():
         @app.get("/apple-touch-icon.png", include_in_schema=False)
-        async def _apple_touch_route():
+        def _apple_touch_route():
             return FileResponse(str(_apple_touch), media_type="image/png")
 
     # --- Notifier initialization ---
@@ -1261,12 +1261,12 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         return HTMLResponse(content=html)
 
     @app.get("/", response_class=HTMLResponse)
-    async def index():
+    def index():
         return _serve_template("index.html")
 
     # --- Live (direct from receiver, no DB) ---
     @app.get("/api/live")
-    async def get_live():
+    def get_live():
         from collector import is_military
         receiver = CONFIG["receiver"]
         mil_cfg = CONFIG.get("military", {})
@@ -1428,7 +1428,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     # aircraft detail page (/aircraft/{ICAO}) uses it for the sightings
     # history table — same query, same shape, just a different caller.
     @app.get("/api/all/drill")
-    async def get_all_drill(
+    def get_all_drill(
         icao: str = Query(..., description="ICAO hex of the aircraft to drill into"),
         from_ts: Optional[int] = Query(None, description="Start timestamp (unix)"),
         to_ts: Optional[int] = Query(None, description="End timestamp (unix)"),
@@ -1594,7 +1594,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     # endpoints via curl until the Search tab arrives.
 
     @app.get("/api/search")
-    async def get_search(q: str = "", limit: int = 50, offset: int = 0,
+    def get_search(q: str = "", limit: int = 50, offset: int = 0,
                           order: str = "", dir: str = "",
                           from_ts: int = 0, to_ts: int = 0):
         """Free-form search across aircraft. Returns ranked results.
@@ -1751,7 +1751,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         }
 
     @app.get("/api/search/aircraft/{icao}")
-    async def get_search_aircraft(icao: str):
+    def get_search_aircraft(icao: str):
         """Per-aircraft detail page data. ICAO must be 6 hex chars."""
         from search import detail_for_aircraft
         if len(icao) != 6 or not all(c in "0123456789ABCDEFabcdef" for c in icao):
@@ -1767,7 +1767,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         return d
 
     @app.get("/api/search/suggestions")
-    async def get_search_suggestions():
+    def get_search_suggestions():
         """v2.51.0 Phase 3: derive example queries from THIS install's data
         so the Search tab's empty state shows clickable examples that are
         guaranteed to return at least one result.
@@ -1870,11 +1870,11 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             conn.close()
 
     @app.get("/api/watchlist/entries")
-    async def get_watchlist_entries():
+    def get_watchlist_entries():
         return {"entries": CONFIG.get("watchlist", []) or []}
 
     @app.post("/api/watchlist/add")
-    async def add_watchlist_entry(entry: WatchlistEntry):
+    def add_watchlist_entry(entry: WatchlistEntry):
         watchlist = CONFIG.get("watchlist") or []
 
         new_entry = {"label": entry.label or entry.identifier}
@@ -1911,7 +1911,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         return {"status": "added", "entry": new_entry, "message": "Live within one poll cycle"}
 
     @app.post("/api/watchlist/remove")
-    async def remove_watchlist_entry(entry: WatchlistEntry):
+    def remove_watchlist_entry(entry: WatchlistEntry):
         watchlist = CONFIG.get("watchlist") or []
         identifier = entry.identifier
         ident_upper = identifier.upper()
@@ -1987,7 +1987,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         }
 
     @app.get("/api/watchlist/history/count")
-    async def watchlist_history_count(label: Optional[str] = Query(None)):
+    def watchlist_history_count(label: Optional[str] = Query(None)):
         """Return how many watchlist_sightings rows match a given label, or
         the total row count if no label is given. Used by the UI to populate
         the remove-with-history confirm dialog and the clear-all-history
@@ -1995,7 +1995,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         return {"label": label, "count": _count_watchlist_history(label)}
 
     @app.post("/api/watchlist/history/clear")
-    async def watchlist_history_clear():
+    def watchlist_history_clear():
         """Delete ALL rows from watchlist_sightings. Irreversible. The UI
         gates this behind an explicit confirm showing the row count."""
         try:
@@ -2022,7 +2022,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     # query so per-tab renders only cost one round-trip regardless of how
     # many rows are visible.
     @app.get("/api/first-seen")
-    async def get_first_seen(icaos: str = Query("", description="Comma-separated ICAO hex list")):
+    def get_first_seen(icaos: str = Query("", description="Comma-separated ICAO hex list")):
         """Return first_seen_at timestamps for the given ICAOs. Empty input
         returns an empty map. Unknown ICAOs are simply omitted from the
         response (no error — the frontend treats absence as 'no data')."""
@@ -2592,7 +2592,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     _update_check_thread.start()
 
     @app.post("/api/notifications/daily-summary/test")
-    async def post_daily_summary_test():
+    def post_daily_summary_test():
         """Compose + send a daily summary immediately, bypassing the
         scheduled-time check but NOT the usual notify() gates (disabled,
         quiet hours, rate limit). For the UI's 'Send test summary'
@@ -2751,7 +2751,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     # is working. Intended to be curl-friendly:
     #   curl -s http://HOST:PORT/api/resolve-tail/debug | python3 -m json.tool
     @app.get("/api/resolve-tail/debug")
-    async def get_resolve_tail_debug():
+    def get_resolve_tail_debug():
         cache = _collector_mod._ICAO_CACHE
         positive = sum(1 for v in cache.values() if v)
         negative = sum(1 for v in cache.values() if not v)
@@ -2784,7 +2784,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
     # --- Status (comprehensive component health check) ---
     @app.get("/api/capacity")
-    async def get_capacity():
+    def get_capacity():
         """v2.50.30: lightweight capacity metrics endpoint. Same data
         the Capacity card on the Status page renders, but without the
         receiver/hexdb probes that /api/status does. Used by the
@@ -2796,7 +2796,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         return {"ok": True, "capacity": _compute_capacity_metrics(db_path, retention_days)}
 
     @app.get("/api/version")
-    async def get_version():
+    def get_version():
         """v2.87.2: lightweight version endpoint. The Updates page
         polls this during apply-and-restart so the browser can show
         live status (shutting down, restarting, back online) instead
@@ -2816,7 +2816,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         return {"version": _aerodrome_version}
 
     @app.get("/api/ready")
-    async def get_ready():
+    def get_ready():
         """v3.4.10: readiness probe, distinct from /api/version's
         liveness probe. Returns 200 only when the service is ready
         to serve heavy requests (Stats tab, dashboard pages, etc.).
@@ -2909,7 +2909,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         }
 
     @app.get("/api/status")
-    async def get_status():
+    def get_status():
         """Comprehensive health check of all Aerodrome components."""
         now = time.time()
         # v3.4.47 DIAGNOSTIC: wall-clock checkpoints across the endpoint's
@@ -3070,6 +3070,16 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         db_path = CONFIG["data"]["db_file"]
         db_check = {"ok": False, "path": db_path, "size_mb": None, "error": None, "stats": {}}
         if os.path.exists(db_path):
+            # v3.4.50: serialize the whole db_check under the stampede lock.
+            # The cache-freshness checks below happen AFTER acquiring, so a
+            # thread that waited on the lock finds the cache another thread
+            # just refreshed and skips the expensive recompute — the
+            # double-check is inherent in the existing "if fresh: use else:
+            # recompute" structure. This also serializes the connection
+            # opens, which matters on a memory-constrained box where many
+            # concurrent connections (each reserving cache_size + mmap_size)
+            # were compounding the page-cache thrash.
+            _db_check_refresh_lock.acquire()
             try:
                 db_check["size_mb"] = round(os.path.getsize(db_path) / (1024 * 1024), 2)
                 conn = _open_db_conn(db_path)
@@ -3210,6 +3220,8 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                     db_check["capacity"] = cap
             except Exception as e:
                 db_check["error"] = str(e)
+            finally:
+                _db_check_refresh_lock.release()
         else:
             db_check["error"] = "Database file does not exist (will be created on first poll)"
         _ep_mark("after_db_check")
@@ -3412,7 +3424,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     # through this endpoint. Search results have their own export path
     # (/api/search?... + frontend CSV stitching) which is independent.
     @app.get("/api/export")
-    async def export_csv(
+    def export_csv(
         tab: str = Query(..., description="'watchlist' or 'military'"),
         from_ts: Optional[int] = Query(None),
         to_ts: Optional[int] = Query(None),
@@ -3513,7 +3525,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
     # --- UI config (what the frontend needs to know about settings) ---
     @app.get("/api/ui-config")
-    async def get_ui_config():
+    def get_ui_config():
         r = CONFIG.get("receiver", {})
         has_location = r.get("latitude") is not None and r.get("longitude") is not None
         mil = CONFIG.get("military", {})
@@ -3654,7 +3666,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         return True
 
     @app.get("/api/stats")
-    async def get_stats():
+    def get_stats():
         import sqlite3
         st = CONFIG.get("stats") or {}
         if not st.get("enabled", True):
@@ -4777,7 +4789,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     # the "value" column (distance, altitude, speed, duration, etc); metric_label
     # formats it with units for display.
     @app.get("/api/stats/drill")
-    async def drill_stats(card: str, value: Optional[str] = Query(None),
+    def drill_stats(card: str, value: Optional[str] = Query(None),
                            all: bool = Query(False, alias="all")):
         """Drill into the aircraft behind a stat card.
         For simple cards (Waves 1 & 2): card=<id> is all that's needed.
@@ -6074,7 +6086,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
 
     @app.get("/api/config")
-    async def get_full_config():
+    def get_full_config():
         """Return the full current config as JSON."""
         return CONFIG
 
@@ -6082,7 +6094,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         config: dict
 
     @app.put("/api/config")
-    async def update_full_config(payload: ConfigPayload):
+    def update_full_config(payload: ConfigPayload):
         """Validate and save a new config. Returns which keys changed and whether
         a service restart is required for the changes to fully take effect."""
         from config_validator import validate_config, diff_keys, requires_restart
@@ -6349,12 +6361,12 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         return items
 
     @app.get("/api/config/backups")
-    async def list_config_backups():
+    def list_config_backups():
         """Return all config.yaml.bak.* files with metadata."""
         return {"backups": _list_config_backups()}
 
     @app.get("/api/config/db-tuning")
-    async def get_db_tuning_status():
+    def get_db_tuning_status():
         """v2.50.14: surface what the SQLite tuning auto-detect resolves
         to on this hardware, so the Configuration UI can render a status
         line under the dropdown like 'Auto resolves to Balanced (3.8 GB
@@ -6396,7 +6408,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         }
 
     @app.get("/api/config/backup/{name}", response_class=PlainTextResponse)
-    async def read_config_backup(name: str):
+    def read_config_backup(name: str):
         """Return the raw text of a specific backup so the frontend can preview it."""
         if not _BACKUP_NAME_RE.match(name):
             return PlainTextResponse("Invalid backup name", status_code=400)
@@ -6409,7 +6421,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             return PlainTextResponse(f"Error reading backup: {e}", status_code=500)
 
     @app.get("/api/config/export", response_class=Response)
-    async def export_config():
+    def export_config():
         """Download the current config.yaml as an attachment."""
         path = Path(CONFIG_PATH)
         if not path.is_file():
@@ -6487,7 +6499,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         }
 
     @app.post("/api/config/restore/{name}")
-    async def restore_config_backup(name: str):
+    def restore_config_backup(name: str):
         """Replace config.yaml with the contents of a specific backup.
         Backs up the current config first."""
         if not _BACKUP_NAME_RE.match(name):
@@ -6589,7 +6601,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     #     target machine; we skip it with a warning if not
 
     @app.get("/api/backup/export")
-    async def backup_export():
+    def backup_export():
         """Build + stream a zip containing config + DB + ntfy config.
         Size depends on the database; can be large (100MB+ for a year of
         history). Streamed rather than built-in-memory to avoid OOM."""
@@ -6767,7 +6779,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             return {"ok": False, "message": str(e)}
 
     @app.get("/api/backup/preview")
-    async def backup_preview():
+    def backup_preview():
         """Return what the backup WOULD contain, without actually building
         the zip. Used to show file sizes + warnings before the user clicks
         Download — databases can be large and we want to set expectations."""
@@ -7377,7 +7389,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                                   "path": None, "started_at": None}
 
     @app.post("/api/backup/create-server-side")
-    async def create_server_side_backup():
+    def create_server_side_backup():
         """v3.4.0: write a backup zip directly to <install_dir>/.backups/
         without round-tripping through the browser. Returns when the
         backup is complete (synchronous). For long-running backups,
@@ -7473,14 +7485,14 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         }
 
     @app.get("/api/backup/create-server-side/progress")
-    async def server_side_backup_progress():
+    def server_side_backup_progress():
         """Poll endpoint for the running server-side backup. Returns
         current phase + percent + bytes_written, or running=false when
         nothing is in flight."""
         return {"ok": True, **dict(_server_side_backup_state)}
 
     @app.get("/api/backup/list-server-side")
-    async def list_server_side_backups():
+    def list_server_side_backups():
         """List user-initiated server-side backups under
         <install_dir>/.backups/. Does NOT include the auto-managed
         .pre-restore.* snapshots — those have their own endpoint."""
@@ -7602,7 +7614,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         )
 
     @app.delete("/api/backup/server-side/{filename}")
-    async def delete_server_side_backup(filename: str):
+    def delete_server_side_backup(filename: str):
         """v3.4.0: delete a named server-side backup and its sha256
         sidecar. Filename is validated to be a bare basename within
         <install_dir>/.backups/ — no path traversal."""
@@ -7650,7 +7662,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     # UI that surfaces the snapshots and lets the user purge them all.
 
     @app.get("/api/backup/pre-restore")
-    async def list_pre_restore():
+    def list_pre_restore():
         """List pre-restore safety snapshots paired by timestamp. Newest
         first. Returns total bytes used and the active keep-N policy so
         the UI can show context."""
@@ -7665,7 +7677,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         }
 
     @app.post("/api/backup/pre-restore/purge")
-    async def purge_pre_restore():
+    def purge_pre_restore():
         """Delete every pre-restore snapshot file. Useful when the keep-N
         retention (default 3) is more conservative than the user wants and
         they'd rather reclaim every byte. Future restores will recreate
@@ -7699,7 +7711,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     # try to avoid it.
 
     @app.get("/api/perf/diagnostics")
-    async def perf_diagnostics(include_legacy: bool = False):
+    def perf_diagnostics(include_legacy: bool = False):
         """Performance diagnostic snapshot. Returns storage footprint,
         query timings, index coverage, and system context.
 
@@ -8383,7 +8395,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         return f"{n:.1f} TB"
 
     @app.post("/api/perf/analyze")
-    async def post_perf_analyze():
+    def post_perf_analyze():
         """v2.42.6: manually re-run ANALYZE to refresh SQLite query-planner
         statistics. Useful after heavy data churn or if a user notices
         queries got slow and wants to try refreshing stats before
@@ -8427,7 +8439,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     #                                        a URL before saving it to config)
 
     @app.get("/api/notifications/recent")
-    async def notifications_recent(limit: int = 20):
+    def notifications_recent(limit: int = 20):
         """Recent notification attempts, newest first. Used by the UI to show
         a sliding log of what Aerodrome has tried to send — helpful when
         debugging why a notification didn't arrive."""
@@ -8437,7 +8449,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         return {"ok": True, "items": _NOTIFIER.recent(limit)}
 
     @app.get("/api/notifications/stats")
-    async def notifications_stats():
+    def notifications_stats():
         """(v2.41.3) Summary of notification activity since service start.
         Includes counts + breakdowns over last 24h, last 7d, and since startup,
         plus last-sent / last-error records. Used by the Stats tab and any
@@ -8450,7 +8462,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         return {"ok": True, "stats": _NOTIFIER.stats()}
 
     @app.get("/api/ntfy/logs")
-    async def ntfy_logs(lines: int = 100):
+    def ntfy_logs(lines: int = 100):
         """(v2.41.3) Return recent ntfy systemd journal output. Tries
         `journalctl -u ntfy` first; on many Ubuntu systems the aerodrome
         user's adm/systemd-journal group membership grants read access
@@ -8506,7 +8518,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         url: Optional[str] = None  # if set, test this URL instead of configured one
 
     @app.post("/api/notifications/test")
-    async def notifications_test(body: TestNotificationBody):
+    def notifications_test(body: TestNotificationBody):
         """Send a test notification. Useful for confirming the URL is
         reachable and the phone is subscribed. Bypasses the enable + event
         gates (but still honors rate limit), so works even when the feature
@@ -8538,7 +8550,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     # for privileged operations (install.sh sets up the sudoers rule).
 
     @app.get("/api/ntfy/status")
-    async def ntfy_status():
+    def ntfy_status():
         """Describe the local ntfy install: present/missing/external/partial,
         version, service active, installable flag, etc. The UI uses the
         'state' field to decide which affordances to show."""
@@ -8603,7 +8615,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         upstream_relay: bool = True
 
     @app.post("/api/ntfy/install")
-    async def ntfy_install(body: NtfyInstallBody):
+    def ntfy_install(body: NtfyInstallBody):
         """Download, verify, install, configure, and start ntfy as a systemd
         service alongside Aerodrome. Idempotent — re-running when already
         installed is a no-op that returns current state."""
@@ -8641,7 +8653,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         upstream_relay: Optional[bool] = None
 
     @app.post("/api/ntfy/config")
-    async def ntfy_config_update(body: NtfyConfigBody):
+    def ntfy_config_update(body: NtfyConfigBody):
         """(v2.40.5) Update /etc/ntfy/server.yml's base-url and/or upstream
         relay toggle. Restarts the service to apply. Only works on
         aerodrome-managed installs. Used by the Base URL field and the
@@ -8664,7 +8676,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         return result
 
     @app.post("/api/ntfy/upgrade")
-    async def ntfy_upgrade():
+    def ntfy_upgrade():
         """Upgrade the local ntfy install to the latest release. Only works
         on aerodrome_managed installs."""
         try:
@@ -8682,7 +8694,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         purge_data: bool = False
 
     @app.post("/api/ntfy/uninstall")
-    async def ntfy_uninstall(body: NtfyUninstallBody = NtfyUninstallBody()):
+    def ntfy_uninstall(body: NtfyUninstallBody = NtfyUninstallBody()):
         """Remove a local aerodrome-managed ntfy install. Refuses to touch
         external (user-managed) installs.
 
@@ -8700,7 +8712,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         return result
 
     @app.post("/api/restart")
-    async def restart_service():
+    def restart_service():
         """Restart the Aerodrome systemd service to pick up restart-only config changes."""
         ok, note = _do_restart()
         if ok:
@@ -8793,7 +8805,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                     logger.warning(f"Could not refresh update/{name}: {e}")
 
     @app.get("/api/updates/local/check")
-    async def check_local_update():
+    def check_local_update():
         """Scan the ./update folder and report whether a newer version is staged."""
         install_dir = Path(__file__).parent
         update_dir = install_dir / "update"
@@ -9301,7 +9313,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         }
 
     @app.get("/api/sudoers/status")
-    async def sudoers_status():
+    def sudoers_status():
         """(v2.41.2) Return whether /etc/sudoers.d/aerodrome matches what
         the currently-installed Aerodrome expects. Independent of the
         update flow — surfaced via a header badge and the Updates page
@@ -9360,6 +9372,25 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         # no display benefit.
         "capacity_cache": None,
     }
+    # v3.4.50: stampede-protection lock for the db_check recompute in
+    # /api/status. v3.4.49 moved the (non-awaiting) status handler into
+    # the threadpool, which was the right fix for one slow endpoint
+    # freezing navigation — but it also removed the implicit
+    # one-request-at-a-time serialization the single event loop used to
+    # provide. The unintended consequence: every admin tab polls
+    # /api/status on a 30s cadence, and when the 30s db_stats/capacity
+    # caches expire, ALL the concurrent pollers saw the miss and
+    # recomputed the expensive COUNT(DISTINCT)/capacity queries IN
+    # PARALLEL. On a RAM-constrained box those concurrent SQLite scans
+    # thrash the page cache and feed back on each other, escalating from
+    # ~1s to 60s+ and leaving the UI non-responsive — a classic cache
+    # stampede. This lock collapses the concurrent recomputes into one:
+    # the first thread to see a stale cache acquires the lock and
+    # refreshes; the others either serve the still-present (slightly
+    # stale) cached value without recomputing, or — only on a cold cache
+    # with nothing to serve — wait for that single refresh. Same
+    # double-checked pattern as the v3.4.46 row-count cache.
+    _db_check_refresh_lock = _threading.Lock()
     DB_STATS_CACHE_TTL_SEC = 30
     HEXDB_PROBE_CACHE_TTL_SEC = 30
 
@@ -9371,7 +9402,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         logger.warning("Initial sudoers drift check failed: %s", e)
 
     @app.post("/api/updates/local/apply")
-    async def apply_local_update(snapshot_db: bool = False):
+    def apply_local_update(snapshot_db: bool = False):
         """Back up current install, copy files from update/ over it, reinstall deps, restart.
 
         v3.4.38: when `snapshot_db=true`, also writes a consistent
@@ -9875,7 +9906,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         return await apply_local_update(snapshot_db=snapshot_db)
 
     @app.get("/api/updates/github/check")
-    async def check_github_update(force: bool = False):
+    def check_github_update(force: bool = False):
         """v3.0.0: real implementation of the GitHub update check.
 
         Page-load reads the cached state from SQLite — no HTTP call to
@@ -9971,7 +10002,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         return entries
 
     @app.get("/api/changelog")
-    async def get_changelog(source: str = "install"):
+    def get_changelog(source: str = "install"):
         """Parse CHANGELOG.md and return entries as structured JSON.
 
         source="install" (default) reads CHANGELOG.md from the running install.
@@ -10002,7 +10033,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
 
     @app.get("/notification-test-ok", response_class=HTMLResponse)
-    async def notification_test_ok():
+    def notification_test_ok():
         """Confirmation page reached via tap on a test notification's
         Click action. v2.47.2: exists so users can verify the full
         tap-to-open path end-to-end (ntfy delivery + Click header +
@@ -10126,31 +10157,31 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
 
     @app.get("/status", response_class=HTMLResponse)
-    async def status_page():
+    def status_page():
         return _serve_template("status.html")
 
     @app.get("/config", response_class=HTMLResponse)
-    async def config_page():
+    def config_page():
         return _serve_template("config.html")
 
     @app.get("/updates", response_class=HTMLResponse)
-    async def updates_page():
+    def updates_page():
         return _serve_template("updates.html")
 
     @app.get("/documentation", response_class=HTMLResponse)
-    async def docs_page():
+    def docs_page():
         return _serve_template("docs.html")
 
     @app.get("/about", response_class=HTMLResponse)
-    async def about_page():
+    def about_page():
         return _serve_template("about.html")
 
     @app.get("/logs", response_class=HTMLResponse)
-    async def logs_page():
+    def logs_page():
         return _serve_template("logs.html")
 
     @app.get("/performance", response_class=HTMLResponse)
-    async def performance_page():
+    def performance_page():
         """v2.41.8: diagnostic page that renders /api/perf/diagnostics.
         Accessed from the Updates page or gear menu; intended for debugging
         slow-hardware scenarios (Pi with large databases, etc.).
@@ -10165,7 +10196,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     # URL (not embedded in /config) so the browser back button does the
     # right thing (returns to /config, doesn't unwind half a wizard).
     @app.get("/setup/switch-to-real", response_class=HTMLResponse)
-    async def switch_to_real_page():
+    def switch_to_real_page():
         return _serve_template("switch-to-real.html")
 
     @app.post("/api/setup/switch-to-real")
@@ -10359,7 +10390,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     # uppercase and we want a single canonical URL per aircraft to
     # avoid bookmark fragmentation and weird cache behavior.
     @app.get("/aircraft/{icao}", response_class=HTMLResponse)
-    async def aircraft_detail_page(icao: str):
+    def aircraft_detail_page(icao: str):
         # Validate format first — 6 hex chars, no exceptions
         if len(icao) != 6 or not all(c in "0123456789ABCDEFabcdef" for c in icao):
             raise HTTPException(status_code=400, detail="invalid ICAO hex")
@@ -10370,7 +10401,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         return _serve_template("aircraft.html")
 
     @app.get("/api/aircraft/{icao}")
-    async def get_aircraft_detail(icao: str):
+    def get_aircraft_detail(icao: str):
         """v2.53.0: rich detail dataset for the /aircraft/{ICAO} page.
         Superset of /api/search/aircraft/{icao} — adds hour-of-day and
         day-of-week distributions, altitude/speed ranges, derived
@@ -10426,7 +10457,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         return d
 
     @app.get("/api/aircraft/{icao}/positions")
-    async def get_aircraft_positions(icao: str, window: str = "24h"):
+    def get_aircraft_positions(icao: str, window: str = "24h"):
         """v2.86.0: position stream for the aircraft-detail-page map.
         Returns every position fix recorded for one ICAO over the
         selected time window, plus the receiver's own coordinates so
@@ -10540,7 +10571,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         }
 
     @app.get("/diagnostics", response_class=HTMLResponse)
-    async def diagnostics_hub_page():
+    def diagnostics_hub_page():
         """v2.41.23: hub page listing all available troubleshooting diagnostics.
         Each registered diagnostic appears as a card linking to its dedicated
         page. The hub itself is pure static content; the registry lives in the
@@ -10549,7 +10580,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         return _serve_template("diagnostics.html")
 
     @app.get("/diagnostics/watchlist-alerts", response_class=HTMLResponse)
-    async def diagnostics_watchlist_page():
+    def diagnostics_watchlist_page():
         """v2.41.23: client-side diagnostic that captures the state driving
         the Watchlist tab pulse. Snapshots localStorage, the /api/watchlist
         response, and the watchlist_alerts configuration, then evaluates
@@ -10572,12 +10603,12 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     # endpoints that aren't using the tuned connection helper.
 
     @app.get("/diagnostics/slow-queries", response_class=HTMLResponse)
-    async def diagnostics_slow_queries_page():
+    def diagnostics_slow_queries_page():
         """Slow-query diagnostic page (v2.84.0)."""
         return _serve_template("diagnostics-slow-queries.html")
 
     @app.get("/api/diagnostics/slow-queries/recent")
-    async def get_recent_slow_queries(limit: int = Query(50, ge=1, le=200)):
+    def get_recent_slow_queries(limit: int = Query(50, ge=1, le=200)):
         """Return the most recent slow queries from the in-memory ring.
         Page reloads call this on a button click; no automatic poll
         (the ring is bounded and meant for triage-during-incident, not
@@ -10590,14 +10621,14 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         }
 
     @app.post("/api/diagnostics/slow-queries/clear")
-    async def clear_slow_queries():
+    def clear_slow_queries():
         """Empty the ring. Backs the diagnostic page's "Clear" button."""
         from slow_query_log import clear
         clear()
         return {"ok": True}
 
     @app.get("/api/diagnostics/slow-queries/explain")
-    async def explain_query_plan(query: str = Query(..., pattern=r"^[a-z_]+$")):
+    def explain_query_plan(query: str = Query(..., pattern=r"^[a-z_]+$")):
         """Run EXPLAIN QUERY PLAN against a known query shape with a
         representative parameter value drawn from the user's actual data.
         `query` is a label naming one of the canonical shapes, NOT raw
@@ -10684,7 +10715,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             conn.close()
 
     @app.get("/api/diagnostics/connection-tuning-audit")
-    async def connection_tuning_audit():
+    def connection_tuning_audit():
         """Static report of which endpoints use the tuned connection
         helper (`_open_db_conn`) vs. raw `sqlite3.connect()`. The list
         is hand-maintained — kept short and deliberate rather than
@@ -10771,7 +10802,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     }
 
     @app.get("/api/docs/{slug}", response_class=PlainTextResponse)
-    async def get_doc(slug: str):
+    def get_doc(slug: str):
         """Return the raw markdown for the named doc."""
         rel = DOC_FILES.get(slug)
         if not rel:
@@ -10786,7 +10817,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     # images render inside the in-app doc viewer. Restricted to filenames
     # matching the pattern — not an arbitrary static-file server.
     @app.get("/docs/{filename}")
-    async def get_doc_asset(filename: str):
+    def get_doc_asset(filename: str):
         from fastapi.responses import FileResponse
         # Reject anything that isn't a bare file name inside docs/ — no
         # traversal allowed.
@@ -10812,7 +10843,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         return Path(__file__).parent / log_dir / "tracker.log"
 
     @app.get("/api/logs/info")
-    async def get_logs_info():
+    def get_logs_info():
         """Return file size, line count (estimated from size for large files,
         exact for small ones), and last-modified timestamp."""
         p = _log_file_path()
@@ -10842,7 +10873,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     LOG_TAIL_MAX_BYTES = 50 * 1024 * 1024  # 50 MB
 
     @app.get("/api/logs/tail", response_class=PlainTextResponse)
-    async def get_logs_tail(n: int = Query(500, ge=0, le=200_000)):
+    def get_logs_tail(n: int = Query(500, ge=0, le=200_000)):
         """Return the last N lines of the log, or the full file if n == 0.
         Text is returned as plain text for the browser to split and render."""
         p = _log_file_path()
@@ -10888,7 +10919,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             return PlainTextResponse(f"# error reading log: {e}", status_code=500)
 
     @app.get("/api/logs/download")
-    async def download_log():
+    def download_log():
         """Serve the log file as an attachment download."""
         from fastapi.responses import FileResponse
         p = _log_file_path()
