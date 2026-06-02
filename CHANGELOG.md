@@ -19,6 +19,20 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.53] — 2026-06-02
+
+### Fixed
+- **Pages no longer slow down gradually as the database grows.** SQLite chooses how to run each query based on statistics about the size and shape of your tables, and Aerodrome only ever computed those statistics once — when the database was first created or migrated. On a long-running install those statistics slowly become wrong as the tables grow, and eventually the database starts choosing slow ways to answer queries that it used to answer quickly. This was the underlying cause behind several queries that had quietly gotten slower over weeks of uptime — most visibly the Stats page, where one card had grown to take about five seconds because the planner, working from weeks-old statistics, picked a poor strategy for it. v3.4.53 refreshes those statistics automatically on a schedule, so plans stay correct as data accumulates. Installs that had drifted will see affected pages return to their normal speed after the update.
+
+### Behind the scenes
+- The collector now runs `PRAGMA optimize` periodically (every six hours, and once shortly after each start), with `analysis_limit` set so each refresh samples a bounded number of rows per index rather than scanning entire indexes. `PRAGMA optimize` only re-analyzes tables whose size has drifted enough since the last analysis to risk a bad plan, so the typical run does little or no work and costs a fraction of a second even on a multi-gigabyte database. It runs in the collector's background loop, never on the web request path, and is wrapped so a failure can never interrupt collection.
+- This complements, rather than replaces, the one-time full analysis that still runs on fresh installs and schema migrations. The previous design deliberately ran that analysis only once to avoid a slow startup on large databases; the gap it left was that nothing kept the statistics current afterward. The bounded periodic refresh closes that gap cheaply.
+- This is a general planner-health fix, not a Stats-specific one — any query whose plan depends on table-size estimates benefits. The Stats page was simply where the symptom was most visible.
+
+### Operational notes
+- No schema changes, no config changes, no migration. The refresh writes only SQLite's internal statistics table.
+- Expected behavior after deploy: shortly after the service restarts, the planner statistics are refreshed; pages that had drifted slower return to normal speed, and stay there. There is no visible change for an install whose statistics were already current.
+
 ## [3.4.52] — 2026-06-02
 
 ### Fixed

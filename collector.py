@@ -1,4 +1,4 @@
-# Version: 3.4.52
+# Version: 3.4.53
 """
 collector.py — ADS-B data fetcher and classifier.
 
@@ -396,6 +396,21 @@ _capacity_state = {
 }
 _last_capacity_check_ts = 0
 CAPACITY_CHECK_INTERVAL_SEC = 60
+
+# v3.4.53: periodic query-planner stats refresh. The marker-gated ANALYZE
+# in init_db runs once (fresh install / schema bump) and never again, so
+# SQLite's planner statistics go stale as tables grow. Observed in
+# practice on a 45-day-old install: plans built from first-week row counts
+# mis-ordered a join in the Stats "top_aircraft" query, making a one-day
+# windowed lookup run ~5s (slower than a 365-day count over the same
+# table — the signature of a wrong plan). PRAGMA optimize re-analyzes only
+# the tables whose size has drifted enough to matter, and analysis_limit
+# bounds it to a sample rather than a full index scan, so the per-run cost
+# stays small (sub-second) even on a multi-gigabyte database. Run once per
+# poll cycle, rate-limited like the capacity check.
+_last_stats_optimize_ts = 0.0
+STATS_OPTIMIZE_INTERVAL_SEC = 6 * 3600   # every 6 hours
+STATS_OPTIMIZE_ANALYSIS_LIMIT = 1000
 
 # v2.48.0: per-ICAO "last seen squawk" map used to detect EDGES into an
 # emergency code (7500/7600/7700) rather than re-firing every poll while
@@ -819,6 +834,43 @@ def check_capacity_alerts(config: Dict[str, Any]) -> None:
             )
     except Exception as e:
         logger.warning("Capacity alert check failed (ignoring): %s", e)
+
+
+def refresh_query_planner_stats(config: Dict[str, Any]) -> None:
+    """v3.4.53: periodically refresh SQLite's query-planner statistics.
+
+    Called once per poll cycle, rate-limited to STATS_OPTIMIZE_INTERVAL_SEC
+    (6 hours) so a sub-60s poll cadence doesn't multiply the work. Runs
+    PRAGMA optimize with a bounded analysis_limit: optimize re-analyzes
+    only the tables whose size has drifted enough since the last ANALYZE
+    to risk a bad plan, and analysis_limit caps each ANALYZE to a sample
+    rather than a full index scan — so the cost is small even on a
+    multi-gigabyte database. This is the durable fix for stats going stale
+    on long-running installs (the marker-gated ANALYZE in init_db only
+    runs once). Never raises — a stats-refresh failure must not break the
+    collector."""
+    global _last_stats_optimize_ts
+    try:
+        now = time.time()
+        if now - _last_stats_optimize_ts < STATS_OPTIMIZE_INTERVAL_SEC:
+            return
+        _last_stats_optimize_ts = now
+
+        db_path = config["data"]["db_file"]
+        conn = _open_db_conn(db_path)
+        try:
+            conn.execute(f"PRAGMA analysis_limit={STATS_OPTIMIZE_ANALYSIS_LIMIT}")
+            t0 = time.time()
+            conn.execute("PRAGMA optimize")
+            conn.commit()
+            logger.info(
+                "Query-planner stats refreshed (PRAGMA optimize, %.2fs)",
+                time.time() - t0,
+            )
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning("Query-planner stats refresh failed (ignoring): %s", e)
 
 
 # =============================================================================

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Version: 3.4.52
+# Version: 3.4.53
 """
 main.py — Aerodrome ADS-B Tracker
 
@@ -26,7 +26,8 @@ import uvicorn
 
 from collector import (init_db, build_watchlist_lookup, fetch_and_store,
                        set_db_path, _open_db_conn, set_db_tuning_profile,
-                       set_receiver_location, check_capacity_alerts)
+                       set_receiver_location, check_capacity_alerts,
+                       refresh_query_planner_stats)
 from server import get_app
 
 BASE_DIR = Path(__file__).parent
@@ -305,6 +306,13 @@ def run_collector(config: dict, stop_event: threading.Event):
             # calling it every poll iteration is fine even at sub-60s
             # poll cadences. Never raises (best-effort try/except inside).
             check_capacity_alerts(config)
+            # v3.4.53: periodic query-planner stats refresh. Internally
+            # rate-limited to once every 6 hours (STATS_OPTIMIZE_INTERVAL_SEC),
+            # so calling it every poll is fine. Bounded PRAGMA optimize, never
+            # raises. Keeps SQLite's plans correct as tables grow — without it,
+            # stats from a fresh install go stale and mis-plan queries months
+            # later (the cause of the ~5s Stats top_aircraft query).
+            refresh_query_planner_stats(config)
         except Exception as e:
             logger.error(f"Collector error: {e}", exc_info=True)
         stop_event.wait(interval)
