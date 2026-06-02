@@ -19,6 +19,20 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.52] — 2026-06-02
+
+### Fixed
+- **The Watchlist and Military tabs now load.** On installs with a long history they had stopped loading at all — the page would sit indefinitely and never show results. The cause was that both tabs asked the server for *every individual sighting* in the retention window and assembled them into a single enormous response — on a large reference database that response was over 600 MB of data for a single tab load, which the server struggled to build, the network struggled to transfer, and the browser struggled to parse, so in practice it never finished. These tabs only actually display one row per aircraft (the most recent sighting) plus a count of how many times each aircraft was seen, so v3.4.52 has the server compute exactly that and send only that. The same tab load now returns a small response in roughly a second or two instead of hundreds of megabytes that never arrived.
+
+### Behind the scenes
+- The Watchlist and Military endpoints previously ran `SELECT ... ORDER BY seen_at` across the whole window, pulled every row into memory, and grouped them per aircraft in Python — both the row volume and the resulting JSON scaled with total sightings (millions of rows). They now do the grouping in SQL: an aggregate pass computes the latest timestamp and the sighting count per aircraft, then a join fetches just that latest row's fields. The result is one row per aircraft regardless of how many times it was seen. Per-aircraft annotation (distance, military/special styling, country) now runs on those few latest rows instead of on every sighting.
+- The query shape was chosen by measurement. A window-function version (`ROW_NUMBER` + `COUNT` partitioned by aircraft) was correct but required sorting the entire window twice and ran to about 12 seconds on a synthetic 1.4-million-row stand-in. The aggregate-then-join version uses the existing index for the aggregate pass and an indexed lookup for the join-back, and ran in under a second on the same data — verified to return identical per-aircraft latest-timestamps and counts to the old grouping with zero mismatches.
+- The API response keeps the same overall structure, with a per-aircraft `sighting_count` carrying the number that the UI previously derived from the length of the (now-omitted) full sightings list. The unique/total summary line and the CSV export were updated to read that count. The per-aircraft detail/expand view is unaffected — it fetches an individual aircraft's sightings through a separate, already-paginated endpoint.
+
+### Operational notes
+- No schema changes, no config changes, no migration.
+- Expected behavior after deploy: the Watchlist and Military tabs load promptly and show the same aircraft, latest positions, and per-aircraft counts as before. The large background response and the associated memory spikes when those tabs (especially Military, which auto-refreshes) were open are gone.
+
 ## [3.4.51] — 2026-06-01
 
 ### Fixed

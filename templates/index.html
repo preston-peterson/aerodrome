@@ -1,4 +1,4 @@
-<!-- Version: 3.4.51 -->
+<!-- Version: 3.4.52 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2767,7 +2767,12 @@ function render(tab) {
 // =========================================================================
 function updateStats(elId, groups) {
     const unique = groups.length;
-    const total = groups.reduce((sum, g) => sum + (g.sightings?.length || 0), 0);
+    // v3.4.52: the Watchlist/Military endpoints no longer ship the full
+    // per-aircraft sightings array (it was a ~600 MB payload); they send a
+    // per-aircraft sighting_count instead. Prefer that, falling back to the
+    // old array length for any other caller still shaped the old way.
+    const total = groups.reduce((sum, g) =>
+        sum + (g.latest?.sighting_count ?? g.sighting_count ?? g.sightings?.length ?? 0), 0);
     document.getElementById(elId).textContent = `${unique.toLocaleString()} unique aircraft · ${total.toLocaleString()} total sightings`;
 }
 
@@ -5291,7 +5296,8 @@ function exportLatest(tab) {
         rows = groups.map(g => {
             const ac = g.latest;
             return [ac.icao, ac.callsign, ac.watchlist_label, ac.aircraft_type, ac.type_desc,
-                    ac.speed, ac.altitude, ac.lat, ac.lon, distVal(ac), fmtSeenAtCSV(ac.seen_at), g.sightings.length];
+                    ac.speed, ac.altitude, ac.lat, ac.lon, distVal(ac), fmtSeenAtCSV(ac.seen_at),
+                    (ac.sighting_count ?? g.sighting_count ?? g.sightings?.length ?? 0)];
         });
     } else if (tab === 'military') {
         headers = ['icao', 'callsign', 'special_label', 'aircraft_type', 'type_desc',
@@ -5299,7 +5305,8 @@ function exportLatest(tab) {
         rows = groups.map(g => {
             const ac = g.latest;
             return [ac.icao, ac.callsign, ac.special_label || '', ac.aircraft_type, ac.type_desc,
-                    ac.speed, ac.altitude, ac.lat, ac.lon, distVal(ac), fmtSeenAtCSV(ac.seen_at), g.sightings.length];
+                    ac.speed, ac.altitude, ac.lat, ac.lon, distVal(ac), fmtSeenAtCSV(ac.seen_at),
+                    (ac.sighting_count ?? g.sighting_count ?? g.sightings?.length ?? 0)];
         });
     }
     // v2.67.0: the 'all' tab branch was removed alongside the All tab.

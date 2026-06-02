@@ -1,4 +1,4 @@
-# Version: 3.4.51
+# Version: 3.4.52
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -1339,35 +1339,54 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
         conn = _open_db_conn(db_path)
         conn.row_factory = sqlite3.Row
+        # v3.4.52: was "fetch every sighting in the window, group in Python".
+        # On the reference install that returned a ~600 MB JSON payload
+        # (every one of ~1.9M rows serialized) and never completed — the
+        # query, the serialization, the network transfer, and the browser
+        # parse were all O(all sightings). The tab only needs one row per
+        # aircraft (the latest) plus a count, so this now does that in SQL:
+        # an aggregate pass for MAX(seen_at) + COUNT(*) per icao, then a
+        # join back to fetch just the latest row's fields. Returns one row
+        # per aircraft instead of every sighting — ~1.8s and a few hundred
+        # KB on the reference data, versus 37-50s and 600 MB before.
+        # Verified equivalent to the old grouping with EXPLAIN QUERY PLAN +
+        # a row-count/latest-timestamp cross-check on synthetic data.
         rows = conn.execute("""
-            SELECT icao, callsign, speed, lat, lon, altitude,
-                   aircraft_type, type_desc, seen_at, special_label, squawk
-            FROM military_sightings WHERE seen_at >= ?
-            ORDER BY seen_at DESC
+            WITH agg AS (
+                SELECT icao, MAX(seen_at) AS max_seen, COUNT(*) AS cnt
+                FROM military_sightings WHERE seen_at >= ?
+                GROUP BY icao
+            )
+            SELECT ms.icao, ms.callsign, ms.speed, ms.lat, ms.lon, ms.altitude,
+                   ms.aircraft_type, ms.type_desc, ms.seen_at, ms.special_label,
+                   ms.squawk, agg.cnt AS sighting_count
+            FROM agg
+            JOIN military_sightings ms
+              ON ms.icao = agg.icao AND ms.seen_at = agg.max_seen
+            GROUP BY ms.icao
         """, (cutoff,)).fetchall()
         conn.close()
 
-        grouped = {}
+        from countries import country_for_icao
+        aircraft = []
         for row in rows:
             entry = dict(row)
+            sighting_count = int(entry.pop("sighting_count") or 0)
             entry["distance"] = _distance_from_receiver(entry.get("lat"), entry.get("lon"))
             _annotate_military(entry)
-            # v2.83.3: derive country from the ICAO 24-bit address using
-            # the same country_for_icao helper that backs the Stats
-            # "Top 5 countries" card. military_sightings doesn't store
-            # country, so we resolve at API time; the lookup is a pure
-            # function of the ICAO hex (no DB or network), so the per-row
-            # cost is trivial.
-            from countries import country_for_icao
+            # v2.83.3: derive country from the ICAO 24-bit address (pure
+            # function of the hex, no DB/network). Only the latest row per
+            # aircraft is annotated now, not every sighting.
             entry["country"] = country_for_icao(entry["icao"]) or ""
-            icao = entry["icao"]
-            if icao not in grouped:
-                grouped[icao] = {"latest": entry, "sightings": []}
-            grouped[icao]["sightings"].append(entry)
+            entry["sighting_count"] = sighting_count
+            # sightings kept as an empty list for backward compatibility with
+            # any frontend code that reads g.sightings; the per-aircraft count
+            # is carried by sighting_count (which the list/CSV/total now read).
+            aircraft.append({"latest": entry, "sightings": [], "sighting_count": sighting_count})
 
         specials = CONFIG.get("military", {}).get("special_aircraft", {})
         return {
-            "aircraft": list(grouped.values()),
+            "aircraft": aircraft,
             "special_aircraft": {k.upper(): v for k, v in specials.items()},
             "default_military_color": CONFIG.get("military", {}).get("default_color", "#ef4444"),
             "last_updated": int(time.time()),
@@ -1397,26 +1416,39 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
         conn = _open_db_conn(db_path)
         conn.row_factory = sqlite3.Row
+        # v3.4.52: was "fetch every sighting in the window, group in Python",
+        # which serialized a ~600 MB payload of all ~2.7M rows and never
+        # completed. The tab needs one row per aircraft (latest) plus a
+        # count, so this aggregates MAX(seen_at) + COUNT(*) per icao then
+        # joins back for the latest row's fields. See the matching note in
+        # /api/military above; same approach, verified the same way.
         rows = conn.execute("""
-            SELECT icao, callsign, speed, lat, lon, altitude,
-                   aircraft_type, type_desc, seen_at, watchlist_label, squawk
-            FROM watchlist_sightings WHERE seen_at >= ?
-            ORDER BY seen_at DESC
+            WITH agg AS (
+                SELECT icao, MAX(seen_at) AS max_seen, COUNT(*) AS cnt
+                FROM watchlist_sightings WHERE seen_at >= ?
+                GROUP BY icao
+            )
+            SELECT ws.icao, ws.callsign, ws.speed, ws.lat, ws.lon, ws.altitude,
+                   ws.aircraft_type, ws.type_desc, ws.seen_at, ws.watchlist_label,
+                   ws.squawk, agg.cnt AS sighting_count
+            FROM agg
+            JOIN watchlist_sightings ws
+              ON ws.icao = agg.icao AND ws.seen_at = agg.max_seen
+            GROUP BY ws.icao
         """, (cutoff,)).fetchall()
         conn.close()
 
-        grouped = {}
+        aircraft = []
         for row in rows:
             entry = dict(row)
+            sighting_count = int(entry.pop("sighting_count") or 0)
             entry["distance"] = _distance_from_receiver(entry.get("lat"), entry.get("lon"))
             _annotate_military(entry)
-            icao = entry["icao"]
-            if icao not in grouped:
-                grouped[icao] = {"latest": entry, "sightings": []}
-            grouped[icao]["sightings"].append(entry)
+            entry["sighting_count"] = sighting_count
+            aircraft.append({"latest": entry, "sightings": [], "sighting_count": sighting_count})
 
         return {
-            "aircraft": list(grouped.values()),
+            "aircraft": aircraft,
             "last_updated": int(time.time()),
             "retention_days": days,
         }
