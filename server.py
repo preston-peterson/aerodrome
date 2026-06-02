@@ -1,4 +1,4 @@
-# Version: 3.4.55
+# Version: 3.4.57
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -2944,13 +2944,6 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     def get_status():
         """Comprehensive health check of all Aerodrome components."""
         now = time.time()
-        # v3.4.47 DIAGNOSTIC: wall-clock checkpoints across the endpoint's
-        # major sections, surfaced as `_endpoint_timings_ms` in the response
-        # so a HAR capture localizes the slow section without log access.
-        _ep_t0 = time.perf_counter()
-        _ep = {}
-        def _ep_mark(label):
-            _ep[label] = round((time.perf_counter() - _ep_t0) * 1000, 1)
 
         # --- Receiver check ---
         receiver = CONFIG["receiver"]
@@ -2969,7 +2962,6 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             receiver_check["error"] = "Timeout after 5s"
         except Exception as e:
             receiver_check["error"] = str(e)
-        _ep_mark("after_receiver")
 
         # --- Hexdb.io resolver check ---
         # Probe hexdb with a known-good hex (a well-known easyJet A319 used
@@ -3131,15 +3123,6 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                     db_check["stats_cached_age_sec"] = now_ts - cache["timestamp"]
                 else:
                     fresh_stats = {}
-                    # v3.4.47 DIAGNOSTIC: per-section timing emitted into the
-                    # /api/status response (db.stats_timings_ms) so a captured
-                    # HAR shows exactly which cache-miss query dominates. Two
-                    # prior fixes (v3.4.45 query split, v3.4.46 row-count cache)
-                    # each targeted a query that turned out not to be the whole
-                    # cost; this instrumentation replaces guessing with a
-                    # direct measurement that rides along in the JSON response.
-                    _t = {}
-                    _t0 = time.perf_counter()
                     # Military and watchlist stay on raw — small tables and
                     # the v2.50.17 covering indexes (idx_mil_seen_icao,
                     # idx_watch_seen_icao) made these queries fast (sub-60ms
@@ -3148,83 +3131,39 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                         ("military_sightings", "military", "military_days"),
                         ("watchlist_sightings", "watchlist", "watchlist_days"),
                     ]:
-                        _ts = time.perf_counter()
                         cutoff = now_ts - (CONFIG["retention"][days_key] * 86400)
                         unique = conn.execute(
                             f"SELECT COUNT(DISTINCT icao) FROM {table} WHERE seen_at >= ?", (cutoff,)
                         ).fetchone()[0]
-                        _t[f"{key}_distinct_ms"] = round((time.perf_counter() - _ts) * 1000, 1)
-                        _ts = time.perf_counter()
                         total = conn.execute(
                             f"SELECT COUNT(*) FROM {table} WHERE seen_at >= ?", (cutoff,)
                         ).fetchone()[0]
-                        _t[f"{key}_total_ms"] = round((time.perf_counter() - _ts) * 1000, 1)
                         fresh_stats[key] = {"unique": unique, "total": total}
 
-                    # v2.50.19: all_sightings stats migrate to the hourly
-                    # rollup. Why this caller, why now: every admin page
-                    # (gear menu items — Status, Logs, Documentation,
-                    # Configuration, Updates) polls /api/status on load
-                    # v3.4.39: switch from `COUNT(DISTINCT icao) FROM
-                    # sightings_hourly` (the v2.50.x rollup query) to
-                    # `COUNT(*) FROM seen_aircraft WHERE last_seen_at >= ?`.
-                    # On the v3.4.38 reference install (8.6 GB synthetic
-                    # DB, 333K distinct aircraft, 691K rollup rows), the
-                    # rollup query had grown to 283.9 ms (per the
-                    # v3.4.38 perf diagnostic). Its query plan was the
-                    # same as it had ever been — `SEARCH sightings_hourly
-                    # USING COVERING INDEX idx_hourly_bucket_icao` plus
-                    # the `USE TEMP B-TREE FOR count(DISTINCT)` — but
-                    # the CPU work scales with rollup-row count, so the
-                    # cost grew predictably as the install accumulated
-                    # retention.
-                    #
-                    # `seen_aircraft.last_seen_at` is updated on every
-                    # collector upsert (collector.py:2773, :2989, :3074,
-                    # :3129) and indexed via `idx_seen_last`. The new
-                    # query is a single index range scan + COUNT(*), no
-                    # DISTINCT, no temp B-tree. Same semantics: an
-                    # aircraft is counted iff its most-recent sighting
-                    # falls inside the retention window, which is exactly
-                    # what the old rollup query expressed via
-                    # `hour_bucket >= cutoff_bucket`. The new query also
-                    # has cleaner boundary precision (last_seen_at is to
-                    # the second; hour_bucket truncation gave the old
-                    # query a 0-59 minute fuzz at the cutoff edge).
-                    #
-                    # `seen_aircraft` itself is never pruned by retention
-                    # (no DELETE in the collector), so it carries every
-                    # aircraft ever seen. The WHERE clause restricts to
-                    # the retention window, which is exactly the same set
-                    # the rollup-window query produced — the all-time
-                    # rows still in seen_aircraft just don't match the
-                    # WHERE filter and don't get counted.
-                    #
-                    # Total count: SUM(sighting_count) from the rollup
-                    # is still the right shape since that's the cumulative
-                    # raw-sighting count over the window (not a distinct-
-                    # aircraft measure), and it's already fast (no
-                    # DISTINCT — straight SUM over the covering index).
-                    # Kept unchanged.
+                    # v2.50.19/v3.4.39: all_sightings stats come from
+                    # seen_aircraft (unique) and the hourly rollup (total).
+                    # seen_aircraft is never pruned by retention, so the
+                    # WHERE last_seen_at >= cutoff restricts the count to the
+                    # retention window — same set the old rollup-window query
+                    # produced, via a single index range scan + COUNT(*) (no
+                    # DISTINCT, no temp B-tree). The rollup SUM gives the
+                    # cumulative raw-sighting count over the window.
                     all_cutoff_ts = now_ts - (CONFIG["retention"]["all_days"] * 86400)
-                    all_cutoff_bucket = all_cutoff_ts // 3600
-                    _ts = time.perf_counter()
                     all_unique = conn.execute(
                         "SELECT COUNT(*) FROM seen_aircraft WHERE last_seen_at >= ?",
                         (all_cutoff_ts,)
                     ).fetchone()[0]
-                    _t["all_unique_seen_ms"] = round((time.perf_counter() - _ts) * 1000, 1)
-                    _ts = time.perf_counter()
+                    # v3.4.57: hour_bucket is stored in seconds, so the window
+                    # bound is all_cutoff_ts directly (not //3600). Behaviorally
+                    # a no-op — the rollup is pruned to retention, so both forms
+                    # select the same rows — but corrected so no stray //3600
+                    # remains and this matches the other hour_bucket queries.
                     all_total_row = conn.execute(
                         "SELECT COALESCE(SUM(sighting_count), 0) FROM sightings_hourly WHERE hour_bucket >= ?",
-                        (all_cutoff_bucket,)
+                        (all_cutoff_ts,)
                     ).fetchone()
-                    _t["all_total_rollup_ms"] = round((time.perf_counter() - _ts) * 1000, 1)
                     all_total = int(all_total_row[0]) if all_total_row else 0
                     fresh_stats["all"] = {"unique": all_unique, "total": all_total}
-
-                    _t["stats_block_total_ms"] = round((time.perf_counter() - _t0) * 1000, 1)
-                    db_check["stats_timings_ms"] = _t
 
                     nonlocal_state["db_stats_cache"] = {"data": fresh_stats, "timestamp": now_ts}
                     db_check["stats"] = fresh_stats
@@ -3240,14 +3179,8 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 if cap_cache and (now_ts - cap_cache.get("timestamp", 0)) < DB_STATS_CACHE_TTL_SEC:
                     db_check["capacity"] = cap_cache["data"]
                 else:
-                    # v3.4.47 DIAGNOSTIC: time the capacity computation; it
-                    # returns its own _timings_ms (see capacity.py) which we
-                    # surface under db.capacity so the HAR shows the internal
-                    # breakdown too.
-                    _tc = time.perf_counter()
                     retention_days = CONFIG.get("retention", {}).get("all_days", 30)
                     cap = _compute_capacity_metrics(db_path, retention_days)
-                    cap["_outer_call_ms"] = round((time.perf_counter() - _tc) * 1000, 1)
                     nonlocal_state["capacity_cache"] = {"data": cap, "timestamp": now_ts}
                     db_check["capacity"] = cap
             except Exception as e:
@@ -3256,7 +3189,6 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 _db_check_refresh_lock.release()
         else:
             db_check["error"] = "Database file does not exist (will be created on first poll)"
-        _ep_mark("after_db_check")
 
         # --- Collector check ---
         # Collector health is inferred from recent writes to all_sightings.
@@ -3401,7 +3333,6 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         except Exception:
             _upd_available = False
 
-        _ep_mark("before_response_assembly")
         return {
             "overall_ok": core_ok,
             "severity": severity,
@@ -3409,10 +3340,6 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             "timestamp": int(now),
             "version": version,
             "update_available": _upd_available,
-            # v3.4.47 DIAGNOSTIC: section wall-clock checkpoints (ms from
-            # endpoint entry). Read directly from a captured HAR to localize
-            # the slow section. Removed once the bottleneck is fixed.
-            "_endpoint_timings_ms": _ep,
             "components": {
                 "collector": collector_check,
                 "webserver": webserver_check,
@@ -4244,7 +4171,16 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                     FROM top
                     JOIN seen_aircraft s ON s.icao = top.icao
                     ORDER BY top.n DESC
-                """, (start_ts // 3600,))
+                """, (start_ts,))
+                # v3.4.56: param is start_ts (seconds), NOT start_ts//3600.
+                # hour_bucket is stored as (seen_at/3600)*3600 — truncated
+                # to the hour but in SECONDS. Passing hours made the filter
+                # (hour_bucket >= ~494000) match every row in the table, so
+                # this card silently aggregated ALL-TIME data instead of the
+                # intended day window — both wrong (the card is a "today"
+                # card) and slow (full-table scan of the rollup). With the
+                # seconds value the filter is selective and uses the
+                # hour_bucket index.
                 # Enrich each row with operator's friendly name (when
                 # known) via the shared helper from v3.4.35. Same
                 # pattern as top_operators.
@@ -4594,7 +4530,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                     GROUP BY watchlist_label
                     ORDER BY total_hits DESC
                     LIMIT 10
-                """, (thirty_days_ago // 3600,))
+                """, (thirty_days_ago,))
                 result["cards"]["watchlist_frequency"] = [dict(r) for r in rows]
 
             # --- All-time records (Wave 3) ---
@@ -5790,7 +5726,11 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 # row makes the existing _drillRowHtml path treat it as a
                 # clickable jump to /aircraft/<icao>, the same UX as
                 # individual-aircraft drills (furthest_aircraft etc).
-                start_bucket = start_ts // 3600
+                # v3.4.56: hour_bucket is stored in seconds (truncated to
+                # the hour), so the window param is start_ts directly. The
+                # previous start_ts//3600 passed hours, matching every row
+                # and making the drill show all-time instead of the window.
+                start_bucket = start_ts
                 # Separate count of distinct aircraft in window — used by
                 # the panel footer ("Showing top 100 of N aircraft"). The
                 # main query's LIMIT 100 would make len(rows) misleading;

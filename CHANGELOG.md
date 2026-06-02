@@ -19,6 +19,32 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.57] — 2026-06-02
+
+### Changed
+- **Internal maintenance — no functional change.** The recent performance work added some temporary timing measurements to the system-status response so that performance captures could pinpoint exactly which part of a slow page was responsible. Now that the performance work is complete, those measurements have been removed to keep the status response clean. This has no visible effect: the timing fields were never displayed anywhere in the interface; they only rode along in the raw response for diagnosis. A leftover internal time-unit inconsistency in one status calculation was also tidied up at the same time — it produced the correct result already, so nothing changes for users.
+
+### Behind the scenes
+- Removed the per-section endpoint checkpoints (`_endpoint_timings_ms`), the per-query stats timings (`stats_timings_ms`), and the capacity-probe timings (`_timings_ms` / `_outer_call_ms`) from the `/api/status` response and the capacity module. All of the underlying queries are unchanged; only the surrounding stopwatch code was removed. Confirmed nothing in the frontend read these fields.
+- Corrected the one remaining place where an hour-bucket window was divided by 3600 before comparison (`all_total` in the status path). Because the hourly rollup is already pruned to the retention window, the old and new forms select the same rows, so the displayed total is identical — this is purely removing the last instance of the units inconsistency so none remains in the tree.
+
+### Operational notes
+- No schema changes, no config changes, no migration. No user-visible behavior change.
+
+## [3.4.56] — 2026-06-02
+
+### Fixed
+- **The Stats "most seen aircraft" card now shows the current day, not all of history — and loads quickly.** This card sits in the Composition group alongside "most seen types" and "most seen operators," which both count the current day. The most-seen-aircraft card was meant to do the same but, because of a units mistake in how it filtered by time, it was actually counting every sighting ever recorded. That made it both incorrect (showing all-time regulars instead of today's) and slow (it had to crunch the entire history rollup on every Stats load — the single slowest part of the page). It now correctly counts the current day, matching its sibling cards, and as a result returns almost instantly. The expanded "top 100" list behind the card had the same issue and is fixed the same way.
+- Applied the same time-window correction to the watchlist-frequency card so it filters its 30-day window correctly rather than relying on the rollup happening to hold only recent data.
+
+### Behind the scenes
+- The hourly rollup stores its timestamp (`hour_bucket`) in seconds, truncated to the hour. The affected queries were dividing the window start by 3600 before comparing, which produced a threshold so small that every row matched — so the "where the time window" filter selected the whole table. Removing the stray division makes the comparison seconds-against-seconds, so the filter is selective and the database can use the time index instead of scanning everything. On the reference install this turns the most-seen-aircraft card from well over a second into a few milliseconds.
+- The card's contents will change for anyone who had been unknowingly seeing all-time figures: it now reflects the configured day window, consistent with the rest of the Composition group. This is the intended behavior.
+
+### Operational notes
+- No schema changes, no config changes, no migration.
+- Expected behavior after deploy: the most-seen-aircraft card and its expanded list show the current day and load quickly; the Stats page overall is noticeably faster.
+
 ## [3.4.55] — 2026-06-02
 
 ### Fixed

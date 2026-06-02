@@ -175,28 +175,19 @@ def _compute_capacity_metrics(db_path: str, retention_days: int = 30) -> Dict[st
         conn.row_factory = sqlite3.Row
         try:
             now_ts = int(time.time())
-            # v3.4.47 DIAGNOSTIC: per-query timing surfaced in out["_timings_ms"]
-            # so a captured /api/status HAR shows the internal capacity-probe
-            # breakdown directly. Removed once the slow section is identified.
-            _tm = {}
             # MIN(seen_at): cheap index seek (SEARCH ... idx_all_seen),
             # kept inline and uncached so days-of-data reflects current
             # retention pruning. See v3.4.45 for the MIN/COUNT split.
-            _ts = time.perf_counter()
             min_ts = conn.execute(
                 "SELECT MIN(seen_at) FROM all_sightings"
             ).fetchone()[0]
-            _tm["min_ts_ms"] = round((time.perf_counter() - _ts) * 1000, 1)
             # COUNT(*): full covering-index scan, expensive at scale and
             # called from two schedules in one process. Cached process-wide
             # for 10 min with a lock so it never runs concurrently — this is
             # the v3.4.46 fix for the residual admin-page/collector stalls
             # that v3.4.45's query split didn't fully resolve. See the
             # _get_cached_total_rows / _rowcount_cache comments at module top.
-            _ts = time.perf_counter()
             total_rows = _get_cached_total_rows(conn)
-            _tm["total_rows_cached_ms"] = round((time.perf_counter() - _ts) * 1000, 1)
-            out["_timings_ms"] = _tm
 
             if total_rows == 0 or min_ts is None:
                 out["data_source"] = "insufficient"
@@ -217,12 +208,10 @@ def _compute_capacity_metrics(db_path: str, retention_days: int = 30) -> Dict[st
             # otherwise use everything we have.
             if days_present >= 7:
                 seven_days_ago = now_ts - 7 * 86400
-                _ts = time.perf_counter()
                 recent_rows = conn.execute(
                     "SELECT COUNT(*) FROM all_sightings WHERE seen_at >= ?",
                     (seven_days_ago,)
                 ).fetchone()[0]
-                _tm["rows_per_day_window_ms"] = round((time.perf_counter() - _ts) * 1000, 1)
                 out["rows_per_day"] = round(int(recent_rows) / 7.0, 0)
             else:
                 out["rows_per_day"] = round(total_rows / days_present, 0)
