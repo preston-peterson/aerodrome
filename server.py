@@ -1,4 +1,4 @@
-# Version: 3.4.54
+# Version: 3.4.55
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -4571,17 +4571,30 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             if card_check("watchlist_frequency"):
                 # Top watchlist entries by number of distinct sightings
                 # in the last 30 days (rolling window).
+                #
+                # v3.4.55: read the watchlist_hourly rollup instead of
+                # scanning raw watchlist_sightings. The raw form grouped
+                # ~2.7M rows by label with a COUNT(DISTINCT icao) (~1.3s on
+                # the reference install); the rollup holds one row per
+                # (icao, hour, label) — ~27K rows total — and carries
+                # sighting_count, so SUM(sighting_count) reproduces the raw
+                # COUNT(*) exactly and COUNT(DISTINCT icao) is over the same
+                # set of aircraft. Same pattern top_aircraft already uses
+                # against sightings_hourly. Verified identical results to
+                # the raw query on synthetic data. The hour-bucket window
+                # boundary is hour-aligned rather than exact-second, an
+                # immaterial difference for a 30-day "top 10" card.
                 thirty_days_ago = end_ts - (30 * 86400)
                 rows = q("""
                     SELECT watchlist_label,
                            COUNT(DISTINCT icao) AS unique_aircraft,
-                           COUNT(*) AS total_hits
-                    FROM watchlist_sightings
-                    WHERE seen_at >= ? AND watchlist_label IS NOT NULL AND watchlist_label != ''
+                           SUM(sighting_count) AS total_hits
+                    FROM watchlist_hourly
+                    WHERE hour_bucket >= ? AND watchlist_label IS NOT NULL AND watchlist_label != ''
                     GROUP BY watchlist_label
                     ORDER BY total_hits DESC
                     LIMIT 10
-                """, (thirty_days_ago,))
+                """, (thirty_days_ago // 3600,))
                 result["cards"]["watchlist_frequency"] = [dict(r) for r in rows]
 
             # --- All-time records (Wave 3) ---

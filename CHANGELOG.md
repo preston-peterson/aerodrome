@@ -19,6 +19,18 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.55] — 2026-06-02
+
+### Fixed
+- **The Stats page's watchlist-frequency card is much faster.** This card — which watchlist labels are most active over the last 30 days — was scanning every individual watchlist sighting in the window (millions of rows on a large install) to tally each label. It now reads the same numbers from the pre-aggregated hourly rollup, which holds roughly one row per aircraft per hour rather than one per sighting. On the reference install that's a drop from over a second to a small fraction of one, with identical results.
+
+### Behind the scenes
+- The query moved from raw `watchlist_sightings` (grouping ~2.7M rows by label with a `COUNT(DISTINCT icao)`) to the `watchlist_hourly` rollup (~27K rows), summing the per-bucket sighting counts to reproduce the raw total exactly and counting distinct aircraft over the same set. This mirrors how the most-seen-aircraft card already reads the sightings rollup. Verified on synthetic data to return identical labels, unique-aircraft counts, and totals to the raw query. The only difference is that the 30-day window edge is now hour-aligned rather than exact-to-the-second, which doesn't change a 30-day top-ten ranking.
+
+### Operational notes
+- No schema changes, no config changes, no migration. The rollup table already exists and is maintained by the collector; this card now uses it.
+- One Stats card remains on the optimization list — the range-rose histogram — to be looked at next.
+
 ## [3.4.54] — 2026-06-02
 
 ### Fixed
