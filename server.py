@@ -1,4 +1,4 @@
-# Version: 3.4.53
+# Version: 3.4.54
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -4216,19 +4216,34 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 # the regulars. A slow helicopter loitering daily *is*
                 # more present than a fast jet that streaks past once.
                 # The bias is the feature.
+                # v3.4.54: aggregate-first. The previous form joined
+                # sightings_hourly to seen_aircraft and THEN grouped, which
+                # let the planner choose to drive the join from the
+                # 535K-row seen_aircraft table — measured at ~3s on the
+                # reference install even with fresh statistics (the join
+                # order, not stale stats, was the remaining cost). Doing the
+                # windowed SUM/GROUP/LIMIT on sightings_hourly alone first
+                # reduces it to 5 rows, then joins seen_aircraft for only
+                # those 5. Same top-5 result; verified equivalent on
+                # synthetic data (41ms -> 7ms, 0 mismatches).
                 rows = q("""
+                    WITH top AS (
+                        SELECT icao, SUM(sighting_count) AS n
+                        FROM sightings_hourly
+                        WHERE hour_bucket >= ?
+                        GROUP BY icao
+                        ORDER BY n DESC LIMIT 5
+                    )
                     SELECT s.icao,
                            s.last_callsign,
                            s.aircraft_type,
                            s.aircraft_type_desc,
                            s.operator,
                            s.registration,
-                           SUM(h.sighting_count) AS n
-                    FROM sightings_hourly h
-                    JOIN seen_aircraft s ON s.icao = h.icao
-                    WHERE h.hour_bucket >= ?
-                    GROUP BY h.icao
-                    ORDER BY n DESC LIMIT 5
+                           top.n AS n
+                    FROM top
+                    JOIN seen_aircraft s ON s.icao = top.icao
+                    ORDER BY top.n DESC
                 """, (start_ts // 3600,))
                 # Enrich each row with operator's friendly name (when
                 # known) via the shared helper from v3.4.35. Same

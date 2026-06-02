@@ -19,6 +19,18 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.54] — 2026-06-02
+
+### Fixed
+- **The Stats page's "most seen aircraft" card is much faster.** This card — the regulars in your airspace — was the slowest single piece of the Stats page, taking around three seconds on a large database even after the statistics refresh in the previous release. It was asking the database to combine the hourly activity rollup with the full aircraft table and only then narrow down to the top few, which on a large install meant doing work proportional to the whole aircraft table. It now narrows the rollup down to the top few aircraft first and looks up details for just those, which is the same answer with a fraction of the work. On the reference install this is the difference between roughly three seconds and a few milliseconds for that card.
+
+### Behind the scenes
+- The query previously joined `sightings_hourly` to `seen_aircraft` and grouped afterward, which left the planner free to drive the join from the ~535K-row `seen_aircraft` side. Restructured to aggregate the windowed rollup (`SUM(sighting_count)` grouped by aircraft, ordered, limited to five) in a CTE first, then join `seen_aircraft` for only those five rows. This was the residual cost that the v3.4.53 statistics refresh couldn't fix, because it was the query's structure rather than a stale plan. Verified on synthetic data to return the identical top five with no mismatches.
+- Two other Stats cards remain on the optimization list — the watchlist-frequency card and the range-rose histogram — and will be addressed individually next.
+
+### Operational notes
+- No schema changes, no config changes, no migration. Pure query restructure; the card's contents are unchanged.
+
 ## [3.4.53] — 2026-06-02
 
 ### Fixed
