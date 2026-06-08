@@ -1,4 +1,4 @@
-# Version: 3.4.57
+# Version: 3.4.58
 """
 collector.py — ADS-B data fetcher and classifier.
 
@@ -1126,17 +1126,27 @@ def _hexdb_cache_check(conn, key: str, now_ts: int) -> Tuple[str, Optional[str]]
     Updates hit_count / last_hit_at on fresh hits so we can see per-entry
     reuse activity in diagnostics."""
     row = conn.execute(
-        "SELECT registration, resolved_at, last_outcome FROM hexdb_cache WHERE icao = ?",
+        "SELECT registration, resolved_at, last_outcome, registered_owner "
+        "FROM hexdb_cache WHERE icao = ?",
         (key,),
     ).fetchone()
     if not row:
         return ("miss_never_cached", None)
-    reg, resolved_at, last_outcome = row
+    reg, resolved_at, last_outcome, registered_owner = row
     # Pick the TTL based on what the cache recorded
     ttl_days = (HEXDB_POSITIVE_TTL_DAYS if last_outcome == "positive"
                 else HEXDB_NEGATIVE_TTL_DAYS)
     age_days = (now_ts - resolved_at) / 86400.0
     if age_days > ttl_days:
+        return ("stale", None)
+    # v3.4.58: registry-enrichment self-heal. A positive entry written
+    # before the registered_owner column existed (or before this feature
+    # shipped) has a registration but a NULL owner. Treat it as stale so
+    # the next resolve re-fetches once and backfills owner/manufacturer
+    # from the same hexdb response — existing installs fill in gradually
+    # as their aircraft are looked at, without a bulk re-fetch. Only the
+    # positive case qualifies: a negative entry legitimately has no owner.
+    if last_outcome == "positive" and registered_owner is None:
         return ("stale", None)
     # Fresh hit — bump counters
     conn.execute(
@@ -1149,19 +1159,28 @@ def _hexdb_cache_check(conn, key: str, now_ts: int) -> Tuple[str, Optional[str]]
 
 
 def _hexdb_cache_write(conn, key: str, reg: Optional[str],
-                       outcome: str, now_ts: int) -> None:
+                       outcome: str, now_ts: int,
+                       registered_owner: Optional[str] = None,
+                       manufacturer: Optional[str] = None) -> None:
     """Upsert into hexdb_cache. Resets hit_count to 0 on refresh because the
-    entry is effectively new."""
+    entry is effectively new.
+
+    v3.4.58: also persists registered_owner / manufacturer (parsed from the
+    same hexdb forward response as the registration) and mirrors them onto
+    seen_aircraft so the detail page can read them without a hexdb call."""
     conn.execute("""
-        INSERT INTO hexdb_cache (icao, registration, resolved_at, last_outcome, hit_count, last_hit_at)
-        VALUES (?, ?, ?, ?, 0, NULL)
+        INSERT INTO hexdb_cache (icao, registration, resolved_at, last_outcome,
+                                 hit_count, last_hit_at, registered_owner, manufacturer)
+        VALUES (?, ?, ?, ?, 0, NULL, ?, ?)
         ON CONFLICT(icao) DO UPDATE SET
             registration = excluded.registration,
             resolved_at = excluded.resolved_at,
             last_outcome = excluded.last_outcome,
             hit_count = 0,
-            last_hit_at = NULL
-    """, (key, reg, now_ts, outcome))
+            last_hit_at = NULL,
+            registered_owner = excluded.registered_owner,
+            manufacturer = excluded.manufacturer
+    """, (key, reg, now_ts, outcome, registered_owner or None, manufacturer or None))
     # v2.51.0: when hexdb resolves a registration, mirror it into
     # seen_aircraft so search results carry tail registration without
     # needing a JOIN at query time. Only write if reg is non-empty —
@@ -1174,6 +1193,23 @@ def _hexdb_cache_write(conn, key: str, reg: Optional[str],
             "UPDATE seen_aircraft SET registration = ?, fts_dirty = 1 "
             "WHERE icao = ? AND (registration IS NULL OR registration != ?)",
             (reg, key, reg),
+        )
+    # v3.4.58: mirror owner/manufacturer onto seen_aircraft. Separate from
+    # the registration mirror because hexdb may know an owner even where
+    # these were previously NULL, and we only overwrite when we actually
+    # have a non-empty value (never clobber a known owner with a blank).
+    # Not FTS-indexed, so no fts_dirty bump needed.
+    if registered_owner:
+        conn.execute(
+            "UPDATE seen_aircraft SET registered_owner = ? "
+            "WHERE icao = ? AND (registered_owner IS NULL OR registered_owner != ?)",
+            (registered_owner, key, registered_owner),
+        )
+    if manufacturer:
+        conn.execute(
+            "UPDATE seen_aircraft SET manufacturer = ? "
+            "WHERE icao = ? AND (manufacturer IS NULL OR manufacturer != ?)",
+            (manufacturer, key, manufacturer),
         )
 
 
@@ -1339,12 +1375,19 @@ def resolve_icao_to_tail(icao: str) -> Optional[str]:
         if resp.status_code == 200:
             data = resp.json()
             reg = (data.get("Registration") or "").strip().upper()
+            # v3.4.58: the same forward response carries the registered
+            # owner and manufacturer — capture them so the detail page can
+            # show "owned by …" without a second lookup or an external site.
+            owner = (data.get("RegisteredOwners") or "").strip()
+            manuf = (data.get("Manufacturer") or "").strip()
             if reg:
                 _ICAO_CACHE[key] = reg
                 if _db_path:
                     try:
                         conn = _open_db_conn(_db_path)
-                        _hexdb_cache_write(conn, key, reg, "positive", now_ts)
+                        _hexdb_cache_write(conn, key, reg, "positive", now_ts,
+                                           registered_owner=owner or None,
+                                           manufacturer=manuf or None)
                         _hexdb_event_log(conn, "miss_positive", key, now_ts)
                         conn.commit()
                         conn.close()
@@ -2105,7 +2148,9 @@ def init_db(db_path: str):
             resolved_at INTEGER NOT NULL,
             last_outcome TEXT NOT NULL,
             hit_count INTEGER DEFAULT 0,
-            last_hit_at INTEGER
+            last_hit_at INTEGER,
+            registered_owner TEXT,
+            manufacturer TEXT
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_hexdb_resolved_at ON hexdb_cache(resolved_at)")

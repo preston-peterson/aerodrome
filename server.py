@@ -1,4 +1,4 @@
-# Version: 3.4.57
+# Version: 3.4.58
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -10465,6 +10465,65 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         _annotate_watchlist(d)
 
         return d
+
+    @app.get("/api/aircraft/{icao}/enrich")
+    async def enrich_aircraft_registry(icao: str):
+        """v3.4.58: resolve + return the registered owner and manufacturer
+        for one aircraft, for the detail page's "owned by" line.
+
+        Reads seen_aircraft first; if the owner isn't populated yet, fires
+        a single hexdb forward lookup (the same call the ICAO→tail resolver
+        makes — it now also captures owner/manufacturer from that response)
+        with a short time budget so the request can't hang, then reads back
+        the mirrored values. Deliberately kept OFF the main
+        /api/aircraft/{icao} payload so the heavy detail query never blocks
+        on a network call — the frontend fetches this separately and fills
+        the owner line in once it returns."""
+        key = (icao or "").upper().strip()
+        if len(key) != 6 or not all(c in "0123456789ABCDEF" for c in key):
+            raise HTTPException(status_code=400, detail="invalid ICAO hex")
+
+        def _read():
+            conn = _open_db_conn(CONFIG["data"]["db_file"])
+            try:
+                row = conn.execute(
+                    "SELECT registration, registered_owner, manufacturer "
+                    "FROM seen_aircraft WHERE icao = ?", (key,)
+                ).fetchone()
+            finally:
+                conn.close()
+            if not row:
+                return None
+            return {
+                "registration": row[0] or "",
+                "registered_owner": row[1] or "",
+                "manufacturer": row[2] or "",
+            }
+
+        cur = _read()
+        if cur is None:
+            raise HTTPException(status_code=404, detail="aircraft not found")
+
+        # Already enriched — return immediately, no lookup.
+        if cur["registered_owner"]:
+            return {"ok": True, "icao": key, **cur}
+
+        # Not yet resolved — one forward lookup with a short budget.
+        # resolve_icao_to_tail handles caching, negative-cache, and the
+        # owner/manufacturer capture as a side effect; we re-read after.
+        import asyncio as _asyncio
+        try:
+            await _asyncio.wait_for(
+                _asyncio.to_thread(_collector_mod.resolve_icao_to_tail, key),
+                timeout=4.0,
+            )
+        except _asyncio.TimeoutError:
+            pass  # leave blank this round; it'll be populated on next view
+        except Exception as e:
+            logger.debug(f"enrich resolve failed for {key}: {e}")
+
+        cur = _read() or cur
+        return {"ok": True, "icao": key, **cur}
 
     @app.get("/api/aircraft/{icao}/positions")
     def get_aircraft_positions(icao: str, window: str = "24h"):

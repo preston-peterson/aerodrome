@@ -1,4 +1,4 @@
-<!-- Version: 3.4.57 -->
+<!-- Version: 3.4.58 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -133,6 +133,12 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
 .title-row .track-link:hover { background:rgba(6,182,212,0.1); }
 
 .subtitle { color:var(--t3); font-size:13px; margin-bottom:24px; font-family:var(--mono); }
+
+/* v3.4.58: registered-owner line under the identity row. Sits between
+   the title-row and the first-seen/last-seen subtitle. Mono to match,
+   slightly brighter than the subtitle since it's identity info. */
+.owner-line { color:var(--t2); font-size:13px; margin:-16px 0 18px 0; font-family:var(--mono); }
+.owner-line .owner-label { color:var(--t3); text-transform:uppercase; font-size:11px; letter-spacing:.04em; margin-right:8px; }
 
 .metrics-grid {
     display:grid; grid-template-columns:repeat(5, 1fr);
@@ -801,6 +807,10 @@ function renderDetail(d) {
     const operator = d.operator || '';
     const country = d.country || '';
     const registration = d.registration || '';
+    // v3.4.58: registered owner (e.g. "DISTRIBUTORS DEVELOPMENT INC").
+    // May be empty on first view (not yet resolved) — maybeEnrichOwner()
+    // fetches it lazily below and fills in the line once it returns.
+    const owner = (d.registered_owner || '').trim();
 
     // v2.57.0: MIL and WATCHLIST pills in the hero. Backend annotates
     // is_military / mil_label / mil_color and is_watchlist / watchlist_label
@@ -846,6 +856,10 @@ function renderDetail(d) {
             ${registration ? `<span class="sep">·</span><span class="meta-text">${escapeHtml(registration)}</span>` : ''}
             <a href="javascript:void(0)" class="track-link track-external-link" id="trackLink" data-icao="${escapeHtml((d.icao || '').toUpperCase())}">Track ↗</a>
             ${wlBtn}
+        </div>
+
+        <div class="owner-line" id="ownerLine"${owner ? '' : ' style="display:none"'}>
+            <span class="owner-label">Owner</span><span class="owner-name">${escapeHtml(owner)}</span>
         </div>
 
         <div class="subtitle">
@@ -894,6 +908,27 @@ function renderDetail(d) {
     if (d.mode !== 'sparse') {
         initPositionMap(d.icao);
     }
+
+    // v3.4.58: if the registered owner isn't populated yet, fetch it
+    // lazily and fill in the owner line. Kept off the main detail payload
+    // so the heavy detail query never waits on a hexdb call.
+    maybeEnrichOwner(d.icao, owner);
+}
+
+function maybeEnrichOwner(icao, existingOwner) {
+    // Already shown from the stored payload — nothing to do.
+    if (existingOwner) return;
+    fetch(`/api/aircraft/${encodeURIComponent(icao)}/enrich`)
+        .then(r => r.ok ? r.json() : null)
+        .then(j => {
+            if (!j || !j.registered_owner) return;
+            const line = document.getElementById('ownerLine');
+            if (!line) return;
+            const nameEl = line.querySelector('.owner-name');
+            if (nameEl) nameEl.textContent = j.registered_owner;
+            line.style.display = '';
+        })
+        .catch(() => { /* enrichment is best-effort; ignore failures */ });
 }
 
 function buildTrackUrl(icao, registration) {

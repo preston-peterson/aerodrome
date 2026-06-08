@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 # Current schema version. Bump whenever a new migration is added.
 # v2.51.0 introduces schema version 1 (the search-feature schema).
 # Any DB without a schema_version table is implicitly at version 0.
-CURRENT_SCHEMA_VERSION = 9
+CURRENT_SCHEMA_VERSION = 10
 
 
 # A migration is a (target_version, description, callable) tuple.
@@ -1229,6 +1229,42 @@ def _migration_v9_seen_furthest_covering_index(conn: sqlite3.Connection) -> None
     )
 
 
+def _migration_v10_registry_enrichment(conn: sqlite3.Connection) -> None:
+    """v3.4.58: add `registered_owner` and `manufacturer` columns to
+    seen_aircraft (and the matching pair to hexdb_cache) so the aircraft
+    detail page can show the registered owner — e.g. "DISTRIBUTORS
+    DEVELOPMENT INC" for a privately-registered PC-12 — without sending
+    the user off to an external site.
+
+    Data source: hexdb.io's forward endpoint (/api/v1/aircraft/{hex}),
+    which the ICAO→tail resolver already calls. Its JSON response carries
+    `RegisteredOwners` and `Manufacturer` alongside the `Registration`
+    field the resolver already reads, so capturing them adds no new
+    external traffic — the resolver parses two more fields from a
+    response it already has and mirrors them onto seen_aircraft.
+
+    No backfill here: existing hexdb_cache rows predate these columns and
+    hold no owner data to copy. Population is lazy — the resolver fills
+    the columns as aircraft are resolved (and a "have registration but no
+    owner yet" cache entry is treated as stale once, so existing installs
+    self-heal as their aircraft are re-resolved).
+
+    Idempotent: each ALTER tolerates "duplicate column name" so a re-run
+    (or partial prior run) is a no-op.
+    """
+    for table in ("seen_aircraft", "hexdb_cache"):
+        for col in ("registered_owner", "manufacturer"):
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
+                logger.info(f"Migration v10: added {table}.{col} column")
+            except sqlite3.OperationalError as e:
+                if "duplicate column" in str(e).lower():
+                    logger.info(f"Migration v10: {table}.{col} already exists "
+                                "(re-run no-op)")
+                else:
+                    raise
+
+
 # Ordered list of all migrations. NEVER edit a shipped migration —
 # always add a new one. The list is the source of truth for what
 # CURRENT_SCHEMA_VERSION should be.
@@ -1251,6 +1287,8 @@ MIGRATIONS: List[Migration] = [
      _migration_v8_update_state),
     (9, "seen_aircraft covering index for stats_furthest_prerank (v3.4.8 — corrects v3.4.7's mis-placed index)",
      _migration_v9_seen_furthest_covering_index),
+    (10, "registry enrichment: registered_owner + manufacturer columns on seen_aircraft/hexdb_cache (v3.4.58)",
+     _migration_v10_registry_enrichment),
 ]
 
 

@@ -1652,7 +1652,8 @@ def detail_for_aircraft(conn: sqlite3.Connection, icao: str) -> Optional[Dict[st
     row = conn.execute("""
         SELECT icao, first_seen_at, first_callsign, first_aircraft_type,
                registration, last_callsign, aircraft_type, aircraft_type_desc,
-               operator, country, last_lat, last_lon, last_seen_at, sighting_count
+               operator, country, last_lat, last_lon, last_seen_at, sighting_count,
+               registered_owner, manufacturer
         FROM seen_aircraft WHERE icao = ?
     """, (icao,)).fetchone()
     if row is None:
@@ -1666,6 +1667,11 @@ def detail_for_aircraft(conn: sqlite3.Connection, icao: str) -> Optional[Dict[st
         "operator": row[8], "country": row[9],
         "last_lat": row[10], "last_lon": row[11],
         "last_seen_at": row[12], "sighting_count": row[13] or 0,
+        # v3.4.58: registry enrichment — registered owner (e.g.
+        # "DISTRIBUTORS DEVELOPMENT INC") and manufacturer, populated
+        # lazily by the hexdb forward resolver. Empty string when not
+        # yet resolved or unknown to hexdb.
+        "registered_owner": row[14] or "", "manufacturer": row[15] or "",
     }
 
     # Sighting history summary from rollup. Cheap — bounded by the

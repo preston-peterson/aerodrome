@@ -19,6 +19,20 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.58] — 2026-06-08
+
+### Added
+- **An aircraft's detail page now shows its registered owner.** Open any aircraft and, just under the identity row, you'll see who the airframe is registered to — for a privately-owned aircraft that's often a company, trust, or flying club rather than an airline. This fills a gap that was most visible on general-aviation aircraft: the existing "operator" line is derived from the airline-style callsign, so a private aircraft with no airline code simply showed nothing there. The registered owner is a different piece of information — it comes from the aircraft's registration record — and it's now pulled in automatically. The first time you open a given aircraft the owner appears a moment after the page loads (it's looked up in the background); after that it's stored and shows immediately. Coverage depends on what the registration database knows, so some aircraft — particularly foreign or very new registrations — may not show an owner yet.
+
+### Behind the scenes
+- The owner (and the manufacturer) are read from the very same registration lookup Aerodrome already performs to turn a hex code into a tail number. That lookup's response always carried the registered-owner and manufacturer fields; we simply weren't reading them. Capturing them therefore adds no new external requests — the resolver parses two more fields from a response it already had and stores them on the aircraft record. A small dedicated endpoint performs the lookup on demand so the main detail query — already the heaviest read in the app — never waits on the network; the page fetches the owner separately and fills the line in when it arrives.
+- The manufacturer is captured and stored too, but it isn't shown as its own line because the aircraft's type description already names the maker (a "Pilatus PC-12," say, already reads as Pilatus). The build year that some external sites display isn't available from this source, so it's intentionally out of scope here.
+- Existing installs fill in gradually rather than all at once: a cached lookup that has a tail number but predates this feature — so has no owner recorded — is treated as due for one refresh, which picks up the owner the next time that aircraft is resolved. There is no bulk re-fetch on upgrade.
+
+### Operational notes
+- Schema migration v10 adds two columns (`registered_owner`, `manufacturer`) to the aircraft record and the lookup cache. It is idempotent, carries no data backfill, and is effectively instant on any install — the columns populate lazily as aircraft are looked up.
+- No config changes.
+
 ## [3.4.57] — 2026-06-02
 
 ### Changed
