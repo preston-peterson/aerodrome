@@ -1,4 +1,4 @@
-<!-- Version: 3.4.58 -->
+<!-- Version: 3.4.59 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -135,9 +135,12 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
 .subtitle { color:var(--t3); font-size:13px; margin-bottom:24px; font-family:var(--mono); }
 
 /* v3.4.58: registered-owner line under the identity row. Sits between
-   the title-row and the first-seen/last-seen subtitle. Mono to match,
-   slightly brighter than the subtitle since it's identity info. */
-.owner-line { color:var(--t2); font-size:13px; margin:-16px 0 18px 0; font-family:var(--mono); }
+   the title-row (which carries its own 6px bottom margin) and the
+   first-seen/last-seen subtitle. Mono to match, slightly brighter than
+   the subtitle since it's identity info.
+   v3.4.59: dropped a stray -16px top margin that pulled this line up
+   into the title row's baseline; it now sits as a normal line. */
+.owner-line { color:var(--t2); font-size:13px; margin:0 0 10px 0; font-family:var(--mono); }
 .owner-line .owner-label { color:var(--t3); text-transform:uppercase; font-size:11px; letter-spacing:.04em; margin-right:8px; }
 
 .metrics-grid {
@@ -858,8 +861,8 @@ function renderDetail(d) {
             ${wlBtn}
         </div>
 
-        <div class="owner-line" id="ownerLine"${owner ? '' : ' style="display:none"'}>
-            <span class="owner-label">Owner</span><span class="owner-name">${escapeHtml(owner)}</span>
+        <div class="owner-line" id="ownerLine">
+            <span class="owner-label">Owner</span><span class="owner-name">${owner ? escapeHtml(owner) : '\u2014'}</span>
         </div>
 
         <div class="subtitle">
@@ -918,6 +921,9 @@ function renderDetail(d) {
 function maybeEnrichOwner(icao, existingOwner) {
     // Already shown from the stored payload — nothing to do.
     if (existingOwner) return;
+    // The owner line is always rendered (showing "—" until resolved), so
+    // we only need to fill in the name if a lookup returns one. If it
+    // doesn't resolve, the "—" placeholder stays — the tag is always visible.
     fetch(`/api/aircraft/${encodeURIComponent(icao)}/enrich`)
         .then(r => r.ok ? r.json() : null)
         .then(j => {
@@ -926,9 +932,8 @@ function maybeEnrichOwner(icao, existingOwner) {
             if (!line) return;
             const nameEl = line.querySelector('.owner-name');
             if (nameEl) nameEl.textContent = j.registered_owner;
-            line.style.display = '';
         })
-        .catch(() => { /* enrichment is best-effort; ignore failures */ });
+        .catch(() => { /* enrichment is best-effort; leave the placeholder */ });
 }
 
 function buildTrackUrl(icao, registration) {

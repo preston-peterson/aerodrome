@@ -19,6 +19,17 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.59] — 2026-06-08
+
+### Changed
+- **The registered-owner line on an aircraft's detail page is now always shown, and sits correctly under the identity row.** Two small follow-ups to the owner line introduced in 3.4.58. First, the line is now present on every aircraft: when the owner is known it's filled in, and when it isn't yet resolved — or simply isn't on file — the line still appears with a "—" placeholder rather than vanishing. That makes it a permanent, predictable part of the page, and a visible cue for which aircraft still don't have an owner resolved. Second, a spacing glitch is fixed: the line had been pulled up too tightly against the callsign row, and now sits as its own line with normal spacing above and below.
+
+### Behind the scenes
+- The owner element is always rendered now (it was previously hidden when empty); the background lookup fills in the name when it returns and otherwise leaves the placeholder in place. The spacing fix removed a stray negative top margin that was overlapping the line into the title row's baseline — it now relies on the title row's own bottom margin for separation.
+
+### Operational notes
+- No schema, config, or migration changes. Aircraft-detail-page presentation only.
+
 ## [3.4.58] — 2026-06-08
 
 ### Added
