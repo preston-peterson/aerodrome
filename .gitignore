@@ -99,3 +99,11 @@ desktop.ini
 # of commits if the script is ever invoked from somewhere unexpected.
 aerodrome-v*.zip
 aerodrome-v*.zip.sha256
+
+# Maintainer + agent-only — never public
+.claude/
+CLAUDE.md
+HANDOFF.md
+HANDOFF*.md
+*-HANDOFF.md
+AGENT_GUARDRAILS.md
