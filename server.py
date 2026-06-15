@@ -1,4 +1,4 @@
-# Version: 3.4.76
+# Version: 3.4.80
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -3620,9 +3620,65 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 "starting_view": mp.get("starting_view", "fit_all"),
                 "fixed_zoom": int(mp.get("fixed_zoom", 9) or 9),
                 "default_theme": mp.get("default_theme", "auto"),
-                "labels": mp.get("labels", "selected"),
             },
         }
+
+    # =========================================================================
+    # /api/coverage — max-range coverage outline (radar overlay, v3.5.0)
+    # =========================================================================
+    # The farthest aircraft received in each compass direction, as a polygon
+    # the radar can overlay (tar1090's "range outline"). Computed from the
+    # SAME sightings_hourly grid the Stats range rose uses — group positions
+    # into a coarse lat/lon grid, then for each of N bearing bins keep the
+    # single farthest cell. Cached (recompute at most every few minutes) since
+    # it scans the rollup. Plain `def` so the scan runs off the event loop.
+    _coverage_cache = {"ts": 0.0, "payload": None}
+    @app.get("/api/coverage")
+    def get_coverage():
+        r = CONFIG.get("receiver", {})
+        rx_lat, rx_lon = r.get("latitude"), r.get("longitude")
+        if not isinstance(rx_lat, (int, float)) or not isinstance(rx_lon, (int, float)):
+            return {"available": False, "reason": "receiver location not configured"}
+        unit = (r.get("distance_unit") or "mi").lower()
+        now = time.time()
+        if _coverage_cache["payload"] is not None and (now - _coverage_cache["ts"]) < 300:
+            return _coverage_cache["payload"]
+        GRID_RES = 0.05
+        conn = _open_db_conn(CONFIG["data"]["db_file"])
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute("""
+                SELECT ROUND(last_lat / ?) * ? AS lat_b,
+                       ROUND(last_lon / ?) * ? AS lon_b
+                FROM sightings_hourly
+                WHERE last_lat IS NOT NULL AND last_lon IS NOT NULL
+                GROUP BY lat_b, lon_b
+            """, (GRID_RES, GRID_RES, GRID_RES, GRID_RES)).fetchall()
+        finally:
+            conn.close()
+        NB = 36  # 10-degree bearing bins
+        best_d = [0.0] * NB
+        best_pt = [None] * NB
+        for row in rows:
+            lat2, lon2 = row["lat_b"], row["lon_b"]
+            d = _dist_haversine(rx_lat, rx_lon, lat2, lon2, unit)
+            if d is None or d <= 0:
+                continue
+            bi = int(round(_dist_compass_bearing(rx_lat, rx_lon, lat2, lon2) / (360.0 / NB))) % NB
+            if d > best_d[bi]:
+                best_d[bi] = d
+                best_pt[bi] = [round(lat2, 4), round(lon2, 4)]
+        points = [p for p in best_pt if p is not None]
+        payload = {
+            "available": True,
+            "receiver": {"lat": rx_lat, "lon": rx_lon},
+            "points": points,  # ordered by bearing bin (0°..350°)
+            "max_distance": round(max(best_d), 1) if any(best_d) else 0,
+            "distance_unit": unit,
+        }
+        _coverage_cache["ts"] = now
+        _coverage_cache["payload"] = payload
+        return payload
 
     # =========================================================================
     # /api/stats — today-stats for the Stats tab

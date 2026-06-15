@@ -10,7 +10,7 @@ Usage:
         # each error: {"path": "receiver.port", "message": "Must be 1-65535"}
         return error_response(errors)
 """
-# Version: 3.4.76
+# Version: 3.4.80
 
 import re
 from typing import Any, List, Tuple
@@ -911,9 +911,10 @@ def validate_config(cfg: Any) -> Errors:
             dt = mp.get("default_theme")
             if dt is not None and dt not in ("auto", "light", "dark"):
                 errs.append(("map.default_theme", "Must be auto, light, or dark"))
-            lb = mp.get("labels")
-            if lb is not None and lb not in ("selected", "all"):
-                errs.append(("map.labels", "Must be selected or all"))
+            # (map.labels removed v3.4.78 — labels are now an on-map 3-state
+            # control, not a config setting. A leftover key in an old config is
+            # harmless: the validator ignores unknown keys and the radar reads
+            # its label state from the browser, not config.)
 
     return errs
 # The collector re-reads these from CONFIG on each poll interval.

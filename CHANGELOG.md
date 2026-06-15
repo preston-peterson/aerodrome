@@ -19,6 +19,12 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.80] — 2026-06-15
+
+### Added
+- **See how far your receiver reaches, in every direction.** A new ⬡ button on the radar (bottom-left) overlays a "coverage outline" — the farthest aircraft you've received in each compass direction, traced as a shape around your location. It's the quickest way to spot where your antenna does well and where terrain or obstructions cut it short. The outline is off by default and remembers your choice; it's drawn from your recent position history (the same data behind the Stats range rose), so no extra tracking is involved. Needs your receiver coordinates set (Configuration → Receiver).
+- **One control for aircraft labels, right on the radar.** An "Aa" button cycles labels through **All → Selected → Off** — every callsign, just the selected/hovered ones (plus the always-on military/watchlist pills), or none. With labels off the red military and amber watchlist **rings** still stay, so you can tell those aircraft apart without the text clutter. Your choice is remembered. (This is now the single place labels are set — it replaces the earlier Map-settings "Aircraft labels" option, so there's just one control, on the map where you want it.)
+
 ## [3.4.76] — 2026-06-15
 
 ### Added

@@ -1,4 +1,4 @@
-# Version: 3.4.76
+# Version: 3.4.80
 fastapi>=0.104.0
 uvicorn>=0.24.0
 requests>=2.32.0

@@ -1,5 +1,5 @@
 # =============================================================================
-# Version: 3.4.76
+# Version: 3.4.80
 # Aerodrome — Example/Reference Configuration
 # =============================================================================
 # This is the canonical default config shipped with each Aerodrome release.
@@ -103,10 +103,8 @@ map:
   #   "light" — OSM light tiles
   #   "dark"  — Carto dark tiles
   default_theme: "auto"
-  # Aircraft callsign labels on the radar:
-  #   "selected" — only the selected/hovered aircraft (plus military/watchlist)
-  #   "all"      — every aircraft (can be crowded at 100+)
-  labels: "selected"
+  # (Aircraft labels are controlled by the on-map "Aa" button on the radar,
+  # which cycles All / Selected / Off — there's no config key for it.)
 
 # --- Data Retention (days) ---
 # Each tab keeps its own history. Data older than these limits is

@@ -1,4 +1,4 @@
-<!-- Version: 3.4.76 -->
+<!-- Version: 3.4.80 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1296,10 +1296,9 @@ function sectionMap() {
                 {value:'light', label:'Light'},
                 {value:'dark',  label:'Dark'},
             ]})}
-            ${field({label:'Aircraft labels', hint:'callsign labels on the markers (military & watchlist are always labeled)', path:'map.labels', type:'select', options:[
-                {value:'selected', label:'Selected / hovered only'},
-                {value:'all',      label:'All aircraft'},
-            ]})}
+        </div>
+        <div style="margin-top:12px;font-size:12px;color:var(--t3)">
+            Aircraft labels are controlled on the radar itself — the "Aa" button cycles All / Selected / Off.
         </div>
     </div>`;
 }

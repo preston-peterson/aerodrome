@@ -1,4 +1,4 @@
-<!-- Version: 3.4.76 -->
+<!-- Version: 3.4.80 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -709,6 +709,7 @@
         .rl-mil { border:2px solid #ef4444; background:transparent; }
         .rl-wl { border:2px solid var(--amber); background:transparent; }
         .rl-rx { background:var(--cyan); }
+        .rl-cov { border:1.5px solid #7dd3fc; background:rgba(125,211,252,.12); border-radius:2px; }
         /* Legend toggle button — same look as the theme/zoom controls. */
         #radarMap .map-legend-btn {
             background:var(--bg2); color:var(--t1);
@@ -718,6 +719,36 @@
             font-size:13px; font-weight:700; font-style:italic;
         }
         #radarMap .map-legend-btn:hover { background:var(--bg1); }
+        /* Coverage-outline toggle — same chrome as the legend button, with an
+           active (on) state in the accent color. */
+        #radarMap .map-coverage-btn {
+            background:var(--bg2); color:var(--t1);
+            border:1px solid var(--bdr); border-radius:4px;
+            width:30px; height:30px; padding:0; cursor:pointer;
+            display:flex; align-items:center; justify-content:center;
+            font-size:14px; line-height:1;
+        }
+        #radarMap .map-coverage-btn:hover { background:var(--bg1); }
+        #radarMap .map-coverage-btn.on {
+            color:#7dd3fc; border-color:#7dd3fc; background:rgba(125,211,252,.12);
+        }
+        /* Labels control — cycles All → Selected → Off (state shown by the
+           button's look). When the map carries .labels-off, every marker label
+           is hidden but the MIL/WL rings stay (they're .rm-ring, untouched). */
+        #radarMap .map-labels-btn {
+            background:var(--bg2); color:var(--t2);
+            border:1px solid var(--bdr); border-radius:4px;
+            width:30px; height:30px; padding:0; cursor:pointer;
+            display:flex; align-items:center; justify-content:center;
+            font-size:12px; font-weight:700; line-height:1;
+        }
+        #radarMap .map-labels-btn:hover { background:var(--bg1); }
+        #radarMap .map-labels-btn.lbl-all { color:var(--cyan); border-color:var(--cyan); }
+        #radarMap .map-labels-btn.lbl-selected { color:var(--t1); }
+        #radarMap .map-labels-btn.lbl-off { color:var(--t3); text-decoration:line-through; }
+        #radarMap.labels-off .rm-label { display:none !important; }
+        /* Group the bottom-left tool buttons into a clean vertical stack. */
+        #radarMap .radar-tools { display:flex; flex-direction:column; gap:5px; }
 
         /* Phone: panes stack, one at a time via the toggle. */
         @media (max-width: 900px) {
@@ -2156,6 +2187,7 @@
                     <div class="rl-row"><span class="rl-swatch rl-mil"></span> Military (red ring + MIL)</div>
                     <div class="rl-row"><span class="rl-swatch rl-wl"></span> Watchlist (amber ring + WL)</div>
                     <div class="rl-row"><span class="rl-swatch rl-rx"></span> Receiver &amp; range rings</div>
+                    <div class="rl-row"><span class="rl-swatch rl-cov"></span> Coverage outline (⬡ toggle)</div>
                 </div>
             </div>
         </div>
@@ -2469,7 +2501,7 @@ let statsCfg = { enabled: true, refresh_interval: 300, timezone: '', cards: {} }
 // first ui-config load. ring_distances is a resolved list of numbers (the
 // server handles the follow-range-rose option).
 let mapCfg = { show_range_rings: true, ring_distances: [50,100,150,200,250],
-               starting_view: 'fit_all', fixed_zoom: 9, default_theme: 'auto', labels: 'selected' };
+               starting_view: 'fit_all', fixed_zoom: 9, default_theme: 'auto' };
 let statsTimer = null;        // setInterval id for auto-refresh
 let statsLastFetch = null;    // timestamp of last successful fetch
 let statsInflight = false;    // prevent overlapping fetches
@@ -3230,6 +3262,7 @@ const _radar = {
     markers: {},          // icao -> L.marker
     receiverMarker: null,
     rangeRings: [],       // L.circle[]
+    coverageLayer: null,  // L.polygon — max-range coverage outline (toggle)
     receiver: null,       // {lat, lon, distance_unit}
     selectedIcao: null,
     panelOpen: false,
@@ -3372,24 +3405,40 @@ function initRadarMap(receiver){
     });
     _radar.map.addControl(new ThemeControl());
 
-    // Legend toggle (bottom-left). Opens/closes the marker-key panel — the
-    // legend isn't shown by default, just a click away.
-    const LegendControl = L.Control.extend({
+    // Bottom-left tool buttons — Legend (i), Coverage (⬡), Labels (Aa) —
+    // grouped into ONE control so they align in a clean vertical stack and
+    // reliably receive clicks. (Three SEPARATE bottom-left controls stacked
+    // awkwardly and dropped clicks; one container is the standard Leaflet
+    // grouping — Leaflet gives the wrapper `.leaflet-control` =
+    // pointer-events:auto + corner margins, and the buttons sit in a flex
+    // column inside it.)
+    const RadarToolsControl = L.Control.extend({
         options: { position: 'bottomleft' },
         onAdd: function(){
-            const btn = L.DomUtil.create('button', 'map-legend-btn');
-            btn.type = 'button';
-            btn.textContent = 'i';
-            btn.title = 'Radar legend';
-            btn.setAttribute('aria-label', 'Toggle radar legend');
-            L.DomEvent.disableClickPropagation(btn);
-            L.DomEvent.on(btn, 'click', toggleRadarLegend);
-            return btn;
+            const wrap = L.DomUtil.create('div', 'radar-tools');
+            const mk = (cls, html, title, fn) => {
+                const b = L.DomUtil.create('button', cls, wrap);
+                b.type = 'button';
+                b.innerHTML = html;
+                b.title = title;
+                b.setAttribute('aria-label', title);
+                L.DomEvent.disableClickPropagation(b);
+                L.DomEvent.on(b, 'click', fn);
+                return b;
+            };
+            mk('map-legend-btn', 'i', 'Radar legend', toggleRadarLegend);
+            mk('map-coverage-btn' + (radarCoverageOn() ? ' on' : ''), '&#x2B22;',
+               'Toggle max-range coverage outline', toggleRadarCoverage);
+            mk('map-labels-btn lbl-' + radarLabelsMode(), 'Aa',
+               'Cycle aircraft labels (all / selected / off)', radarCycleLabels);
+            return wrap;
         }
     });
-    _radar.map.addControl(new LegendControl());
+    _radar.map.addControl(new RadarToolsControl());
 
     if(haveRx) _radarDrawReceiver(receiver);
+    if(radarCoverageOn()) _radarDrawCoverage();   // restore persisted overlay
+    _radarApplyLabels();                          // apply persisted labels state
 
     // Click the map background (not a marker — those stopPropagation) to
     // dismiss the details overlay; Esc does the same.
@@ -3468,7 +3517,7 @@ function _radarBuildIcon(ac){
     const track = (ac.track != null && !isNaN(ac.track)) ? Number(ac.track) : null;
     const rot = (track == null) ? 0 : track;
     const cls = 'radar-marker' + (isMil ? ' mil' : '') + (isWl ? ' wl' : '')
-        + (mapCfg.labels === 'all' ? ' labeled' : '')
+        + (radarLabelsMode() === 'all' ? ' labeled' : '')
         + (ac.icao === _radar.selectedIcao ? ' selected' : '');
     // Label: military + watchlist show their pill label (always visible via
     // CSS); everyone else gets the callsign (visible on hover/selected only).
@@ -3843,6 +3892,79 @@ function toggleLiveListCollapsed(){
 function toggleRadarLegend(){
     const el = document.getElementById('radarLegend');
     if(el) el.hidden = !el.hidden;
+}
+
+// v3.5.0 (radar H): max-range coverage outline — a toggleable polygon of the
+// farthest aircraft received in each compass direction (/api/coverage). The
+// toggle state persists per browser.
+const RADAR_COVERAGE_KEY = 'aerodrome.radar_coverage';
+function radarCoverageOn(){
+    try { return localStorage.getItem(RADAR_COVERAGE_KEY) === '1'; } catch(e){ return false; }
+}
+function _radarSyncCoverageBtn(){
+    const btn = document.querySelector('#radarMap .map-coverage-btn');
+    if(btn) btn.classList.toggle('on', radarCoverageOn());
+}
+function toggleRadarCoverage(){
+    const on = !radarCoverageOn();
+    try { localStorage.setItem(RADAR_COVERAGE_KEY, on ? '1' : '0'); } catch(e){}
+    _radarSyncCoverageBtn();
+    if(on) _radarDrawCoverage(); else _radarClearCoverage();
+}
+function _radarClearCoverage(){
+    if(_radar.coverageLayer && _radar.map){ _radar.map.removeLayer(_radar.coverageLayer); }
+    _radar.coverageLayer = null;
+}
+function _radarDrawCoverage(){
+    if(!_radar.map || !radarCoverageOn()) return;
+    fetch('/api/coverage')
+        .then(r => r.ok ? r.json() : null)
+        .then(j => {
+            _radarClearCoverage();
+            if(!j || !j.available || !(j.points || []).length || !_radar.map || !radarCoverageOn()) return;
+            _radar.coverageLayer = L.polygon(j.points, {
+                renderer: _radar.canvasRenderer, color: '#7dd3fc', weight: 1.5,
+                opacity: 0.75, fillColor: '#7dd3fc', fillOpacity: 0.06, interactive: false,
+            }).addTo(_radar.map);
+        })
+        .catch(() => {});
+}
+
+// v3.5.0: the SINGLE labels control — an on-map button that cycles three
+// states (the only place labels are configured; there's no config setting):
+//   'all'      — every aircraft labeled
+//   'selected' — selected/hovered only, plus the always-on MIL/WL pills (default)
+//   'off'      — no labels at all, but the red MIL / amber WL RINGS stay, so
+//                you still see which planes are military/watchlist without the
+//                text clutter (long watchlist labels crowd fast).
+// Persists per browser.
+const RADAR_LABELS_KEY = 'aerodrome.radar_labels';   // 'all' | 'selected' | 'off'
+function radarLabelsMode(){
+    try { const v = localStorage.getItem(RADAR_LABELS_KEY);
+          if(v === 'all' || v === 'selected' || v === 'off') return v; } catch(e){}
+    return 'selected';
+}
+function _radarApplyLabels(){
+    const mode = radarLabelsMode();
+    if(_radar.map){
+        // 'off' hides every .rm-label via a container class (rings untouched).
+        _radar.map.getContainer().classList.toggle('labels-off', mode === 'off');
+    }
+    // 'all' vs 'selected' is per-marker (the `labeled` class in _radarBuildIcon),
+    // so re-skin existing markers to pick up the change.
+    _radarReskin();
+    const btn = document.querySelector('#radarMap .map-labels-btn');
+    if(btn){
+        btn.className = 'map-labels-btn lbl-' + mode;
+        const human = mode === 'all' ? 'All' : (mode === 'selected' ? 'Selected only' : 'Off');
+        btn.title = 'Aircraft labels: ' + human + ' — click to cycle';
+    }
+}
+function radarCycleLabels(){
+    const order = ['all', 'selected', 'off'];
+    const next = order[(order.indexOf(radarLabelsMode()) + 1) % order.length];
+    try { localStorage.setItem(RADAR_LABELS_KEY, next); } catch(e){}
+    _radarApplyLabels();
 }
 
 // Draggable splitter between the list and map panes (desktop). Drag adjusts
@@ -6569,7 +6691,6 @@ async function loadUiConfig(){
                 starting_view: j.map.starting_view || 'fit_all',
                 fixed_zoom: parseInt(j.map.fixed_zoom, 10) || 9,
                 default_theme: j.map.default_theme || 'auto',
-                labels: j.map.labels || 'selected',
             };
             // Re-skin existing markers + redraw rings so a live config change
             // (no restart) takes effect on the next refresh without a reload.
