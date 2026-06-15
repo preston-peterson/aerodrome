@@ -40,20 +40,35 @@ FEEDER_SERVICE_NAME="aerodrome-synthetic-feeder"
 # The detection: if INSTALL_DIR's parent has a VERSION file and a main.py,
 # we're sitting in a subdirectory of an existing install. Refuse with a
 # clear pointer at the real install root.
-INSTALL_DIR_PARENT="$(dirname "$INSTALL_DIR")"
-INSTALL_DIR_BASENAME="$(basename "$INSTALL_DIR")"
-if [ "$INSTALL_DIR_BASENAME" = "update" ] \
-        && [ -f "$INSTALL_DIR_PARENT/VERSION" ] \
-        && [ -f "$INSTALL_DIR_PARENT/main.py" ]; then
+# Walk ancestors, not just the immediate parent. The original check only fired
+# when install.sh sat DIRECTLY in `update/` (basename == "update"). But the
+# GitHub/local staging flow extracts the release WITH its zip wrapper —
+# `update/aerodrome-vX.Y.Z/install.sh` — where the basename is the wrapper folder
+# and the immediate parent (`update/`) has no VERSION/main.py, so the guard
+# missed it (the very layout the in-app updater creates). Now: refuse if ANY
+# ancestor dir is named `update` whose parent is a real install (VERSION+main.py).
+_staging_root=""
+_probe="$INSTALL_DIR"
+while [ -n "$_probe" ] && [ "$_probe" != "/" ]; do
+    _probe_parent="$(dirname "$_probe")"
+    if [ "$(basename "$_probe")" = "update" ] \
+            && [ -f "$_probe_parent/VERSION" ] \
+            && [ -f "$_probe_parent/main.py" ]; then
+        _staging_root="$_probe_parent"
+        break
+    fi
+    _probe="$_probe_parent"
+done
+if [ -n "$_staging_root" ]; then
     echo -e "\033[31m\033[1mError:\033[0m install.sh is sitting inside an existing install's update/ staging directory:" >&2
     echo "  Current location: $INSTALL_DIR" >&2
-    echo "  Real install:     $INSTALL_DIR_PARENT" >&2
+    echo "  Real install:     $_staging_root" >&2
     echo "" >&2
     echo "Running install.sh from here would write a systemd unit pointing at" >&2
     echo "the staging directory and break your install. Run from the real install" >&2
     echo "root instead:" >&2
     echo "" >&2
-    echo "  cd $INSTALL_DIR_PARENT && ./install.sh" >&2
+    echo "  cd $_staging_root && ./install.sh" >&2
     echo "" >&2
     exit 2
 fi
@@ -590,10 +605,15 @@ if [ "$DEMO_MODE" = "true" ]; then
 fi
 
 echo -e "${CYAN}[5/5]${RESET} Starting the tracker..."
+# Use restart (not start) so re-running install.sh on an already-running install
+# actually picks up the new code/unit — `start` is a no-op on a live service,
+# which made the sudoers-drift "re-run install.sh" remediation appear not to take.
+# `restart` is identical to `start` on a fresh install (the unit was just enabled
+# above) and correct on re-runs. sudoers grants restart for both services.
 if [ "$DEMO_MODE" = "true" ]; then
-    sudo systemctl start ${FEEDER_SERVICE_NAME}
+    sudo systemctl restart ${FEEDER_SERVICE_NAME}
 fi
-sudo systemctl start ${SERVICE_NAME}
+sudo systemctl restart ${SERVICE_NAME}
 sleep 3
 
 if sudo systemctl is-active --quiet ${SERVICE_NAME}; then

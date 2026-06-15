@@ -181,7 +181,10 @@ echo -e "  ${GREEN}✓${RESET} Sudoers refreshed to SUDOERS_VERSION 5"
 # new grants immediately. Skipped if the service isn't installed (e.g.
 # you're running this on a host where aerodrome is being staged but
 # not yet servicified).
-if systemctl list-unit-files aerodrome.service 2>/dev/null | grep -q "^aerodrome\.service"; then
+# `systemctl cat` returns 0 iff the unit exists — more reliable across systemd
+# versions than `list-unit-files | grep`, which false-negatived on older Pi OS
+# (the unit existed but didn't match, so a refresh printed "not installed").
+if systemctl cat aerodrome.service >/dev/null 2>&1; then
     if systemctl restart aerodrome 2>/dev/null; then
         echo -e "  ${GREEN}✓${RESET} aerodrome service restarted"
     else
