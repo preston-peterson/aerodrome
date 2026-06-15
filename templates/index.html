@@ -1,4 +1,4 @@
-<!-- Version: 3.4.80 -->
+<!-- Version: 3.4.81 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -3924,7 +3924,7 @@ function _radarDrawCoverage(){
             if(!j || !j.available || !(j.points || []).length || !_radar.map || !radarCoverageOn()) return;
             _radar.coverageLayer = L.polygon(j.points, {
                 renderer: _radar.canvasRenderer, color: '#7dd3fc', weight: 1.5,
-                opacity: 0.75, fillColor: '#7dd3fc', fillOpacity: 0.06, interactive: false,
+                opacity: 0.75, fillColor: '#7dd3fc', fillOpacity: 0.02, interactive: false,
             }).addTo(_radar.map);
         })
         .catch(() => {});

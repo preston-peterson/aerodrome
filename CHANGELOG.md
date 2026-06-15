@@ -19,6 +19,11 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.81] — 2026-06-15
+
+### Changed
+- **The radar coverage overlay is easier to see through.** The ⬡ coverage outline now uses a much lighter fill, so the shape traces the edge of your reception without dimming the map, range rings, and aircraft underneath it. The outline itself stays crisp — only the shaded interior was toned down.
+
 ## [3.4.80] — 2026-06-15
 
 ### Added
