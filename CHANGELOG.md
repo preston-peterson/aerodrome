@@ -19,6 +19,11 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.82] — 2026-06-15
+
+### Changed
+- **Hardened against cross-site request forgery (CSRF).** Aerodrome is designed to run without a login on your trusted home network. To keep that simple model safe, requests that *change* something — saving configuration, applying an update, restarting, importing a backup — are now accepted only when they come from Aerodrome's own pages. A malicious website left open in another browser tab can no longer quietly reach across to your tracker and trigger those actions. Normal use is unchanged; the dashboard's own buttons keep working exactly as before. Every page and API response also now carries standard browser-hardening headers (framing denial and content-type protection) as an extra layer of defense.
+
 ## [3.4.81] — 2026-06-15
 
 ### Changed

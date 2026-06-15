@@ -1,4 +1,4 @@
-# Version: 3.4.81
+# Version: 3.4.82
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -30,6 +30,7 @@ import yaml
 from fastapi import FastAPI, Query, UploadFile, File, HTTPException, Request, BackgroundTasks
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from pydantic import BaseModel
+from urllib.parse import urlsplit
 
 # Local — ICAO code → friendly display name lookups for the Stats cards.
 from designators import airline_name, aircraft_type_name
@@ -1023,6 +1024,46 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     _RESOLVED_WATCHLIST_TAILS = _resolve_watchlist_tails(config, db_path)
 
     app = FastAPI(title="Aerodrome")
+
+    # v3.4.82: same-origin guard + baseline security headers.
+    #
+    # Aerodrome has no authentication by design (it trusts the local network —
+    # see the threat model in the docs). That trust model is fine for who can
+    # *reach* the app, but it leaves it open to CSRF: a malicious web page the
+    # operator happens to visit can make their browser fire state-changing
+    # requests at the app's guessable LAN address (e.g. http://<host>:8000),
+    # with no token to stop it. The reachable-from-a-page endpoints include the
+    # local-update apply path (which copies staged files over the live install
+    # and restarts — i.e. code execution) and config/backup overwrite, so this
+    # is the highest-impact gap even within the LAN-trust model.
+    #
+    # We can't require auth without breaking that model, so instead we reject
+    # *cross-origin* unsafe requests. Browsers always attach an Origin (or, as a
+    # fallback, Referer) header to cross-origin POST/PUT/DELETE/PATCH; we require
+    # that header's host:port to match the host the request was addressed to.
+    # Requests carrying NO Origin/Referer at all (curl, the updater calling
+    # itself, health checks — i.e. non-browser clients) are allowed, consistent
+    # with LAN-trust: the CSRF threat is specifically the victim's browser, and
+    # browsers do send Origin on cross-origin mutations. Same-origin UI fetches
+    # send a matching Origin, so the dashboard is unaffected.
+    _UNSAFE_METHODS = {"POST", "PUT", "DELETE", "PATCH"}
+
+    @app.middleware("http")
+    async def _same_origin_and_headers(request: Request, call_next):
+        if request.method in _UNSAFE_METHODS:
+            source = request.headers.get("origin") or request.headers.get("referer")
+            if source and urlsplit(source).netloc != request.url.netloc:
+                return JSONResponse(
+                    status_code=403,
+                    content={"error": "Cross-origin request rejected."},
+                )
+        response = await call_next(request)
+        # Defense-in-depth headers on every response. No Aerodrome page is ever
+        # framed (the admin UI is always top-level), so DENY is safe and blocks
+        # cross-origin clickjacking; nosniff is a backstop for the XSS sinks.
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        return response
 
     # v2.47.0: mount /static for shared assets (theme.css, theme.js). The
     # theme system lived duplicated across nine templates through v2.46.1;
