@@ -19,6 +19,16 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.61] — 2026-06-15
+
+### Fixed
+- **Re-running the installer on an existing install now restarts the service, so a re-run actually takes effect.** The final install step used `start`, which is a no-op when the service is already running — so re-running `install.sh` (for example, to refresh the sudoers rules after an upgrade prompt) appeared to do nothing, and an on-screen "update required" notice could linger even though the file had already been rewritten correctly. The installer now restarts both the tracker and, in demo mode, the synthetic feeder; on a fresh install this behaves exactly as before.
+- **The installer's guard against being run from inside an update-staging folder now covers the real staged layout.** The in-app updater unpacks a release into `update/aerodrome-vX.Y.Z/`, but the previous guard only caught the case where the installer sat directly in `update/` — so accidentally running the staged copy could have pointed the service at the staging folder and broken it. The guard now recognizes the nested wrapper layout too and refuses with a pointer to the real install directory.
+- **The sudoers recovery script detects the service more reliably.** On some systemd versions its "is the service installed?" check could misfire and skip the post-refresh restart with a "not installed" message even when the service was present; it now uses a more robust check.
+
+### Operational notes
+- Install-time and recovery-script changes only — no application, schema, config, or migration changes. The installer fixes take effect the next time you run `install.sh`; the recovery-script fix applies as soon as the updated script is in place.
+
 ## [3.4.60] — 2026-06-15
 
 ### Added
