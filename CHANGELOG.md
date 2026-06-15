@@ -19,6 +19,11 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.86] — 2026-06-15
+
+### Changed
+- **Clearer retention limits in Configuration.** Military history and Watchlist history can't be kept longer than All history (they're built from the same data, which is removed at the end of the All-history window). The Configuration page now caps those two fields at the current All-history value and, if you enter a larger number, shows a short, plain message — "Can't be longer than All history (N days)." — right on the field, instead of the previous wordy, jargon-filled error that only appeared when you tried to save. When there's a validation error, the save bar now names the field in plain language (e.g. "Military history") rather than its internal config path.
+
 ## [3.4.84] — 2026-06-15
 
 ### Changed

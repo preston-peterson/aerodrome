@@ -10,7 +10,7 @@ Usage:
         # each error: {"path": "receiver.port", "message": "Must be 1-65535"}
         return error_response(errors)
 """
-# Version: 3.4.84
+# Version: 3.4.86
 
 import re
 import socket
@@ -369,18 +369,12 @@ def validate_config(cfg: Any) -> Errors:
             if _is_int(md) and md > 0 and md > ad:
                 errs.append((
                     "retention.military_days",
-                    f"Must be ≤ retention.all_days ({ad}). "
-                    f"Military sightings are filtered from the broader "
-                    f"data stream — a longer retention isn't honored "
-                    f"because the underlying data ages out at all_days."
+                    f"Can't be longer than All history ({ad} days).",
                 ))
             if _is_int(wd) and wd > 0 and wd > ad:
                 errs.append((
                     "retention.watchlist_days",
-                    f"Must be ≤ retention.all_days ({ad}). "
-                    f"Watchlist sightings are filtered from the broader "
-                    f"data stream — a longer retention isn't honored "
-                    f"because the underlying data ages out at all_days."
+                    f"Can't be longer than All history ({ad} days).",
                 ))
 
     # --- data ---

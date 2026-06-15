@@ -1,4 +1,4 @@
-<!-- Version: 3.4.84 -->
+<!-- Version: 3.4.86 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -405,6 +405,10 @@ input[disabled] { opacity:.5; cursor:not-allowed; }
 let originalConfig = null;   // last-known-server version
 let workingConfig = null;    // user's in-progress edits
 let validationErrors = {};   // { path: message }
+// v3.4.85: path -> human label, populated by field() as each field renders.
+// Lets the save bar name the offending field ("Military history") instead of
+// the raw config path ("retention.military_days").
+let fieldLabels = {};        // { path: label }
 
 // Fields that require a service restart (mirrored from server's config_validator.py)
 const RESTART_FIELDS = new Set([
@@ -1102,6 +1106,7 @@ function setAt(obj, path, value) {
 // Section builder — render a labeled field
 // =============================================================================
 function field({label, hint, path, type='text', options=null, min=null, max=null, step=null, placeholder='', required=true, nullable=false}) {
+    if (path) fieldLabels[path] = label;   // for friendly save-bar error names
     const val = getAt(workingConfig, path);
     const restartTag = RESTART_FIELDS.has(path)
         ? '<span class="field-tag" title="Requires service restart">restart</span>'
@@ -1168,7 +1173,48 @@ function onFieldChange(el) {
         const errEl = el.parentElement.querySelector('.field-error');
         if (errEl) errEl.remove();
     }
+    // v3.4.85: the retention fields have a cross-field rule (Military/Watchlist
+    // history can't exceed All history), so re-check it live on any retention
+    // edit rather than only on save.
+    if (path && path.indexOf('retention.') === 0) validateRetentionLive();
     updateSaveBar();
+}
+
+// v3.4.85: live cross-field validation for the Retention tab. Military and
+// Watchlist history are filtered from the same data that ages out at All
+// history, so they can't be set longer than it. We cap each stepper's max at
+// the current All-history value and, if a larger number is entered anyway,
+// show a concise inline message and keep Save disabled. config_validator
+// enforces the same rule server-side as a backstop.
+function validateRetentionLive() {
+    const allInput = document.querySelector('[data-path="retention.all_days"]');
+    if (!allInput) return;
+    const ad = parseInt(allInput.value, 10);
+    const cap = (isFinite(ad) && ad > 0) ? ad : 3650;
+    ['retention.military_days', 'retention.watchlist_days'].forEach(path => {
+        const inp = document.querySelector(`[data-path="${path}"]`);
+        if (!inp) return;
+        inp.max = cap;  // stepper can't be nudged above All history
+        const v = parseInt(inp.value, 10);
+        const bad = isFinite(ad) && ad > 0 && isFinite(v) && v > ad;
+        const existing = inp.parentElement.querySelector('.field-error');
+        if (bad) {
+            const msg = `Can't be longer than All history (${ad} days).`;
+            validationErrors[path] = msg;
+            inp.classList.add('error');
+            if (existing) { existing.textContent = msg; }
+            else {
+                const d = document.createElement('div');
+                d.className = 'field-error';
+                d.textContent = msg;
+                inp.parentElement.appendChild(d);
+            }
+        } else {
+            delete validationErrors[path];
+            inp.classList.remove('error');
+            if (existing) existing.remove();
+        }
+    });
 }
 
 // =============================================================================
@@ -1341,6 +1387,10 @@ let _retentionCapacity = null;
 async function populateRetentionPreview() {
     const el = document.getElementById('retentionPreview');
     if (!el) return;
+    // v3.4.85: set the Military/Watchlist stepper caps (and flag any already-
+    // invalid stored values) as soon as the tab renders.
+    validateRetentionLive();
+    updateSaveBar();
     try {
         const r = await fetch('/api/capacity');
         const j = await r.json();
@@ -1844,7 +1894,8 @@ function updateSaveBar() {
             const firstPath = errPaths[0];
             const firstMsg = validationErrors[firstPath];
             const more = errPaths.length > 1 ? ` (+${errPaths.length - 1} more)` : '';
-            status.textContent = `${errPaths.length} error${errPaths.length === 1 ? '' : 's'} — ${firstPath}: ${firstMsg}${more}`;
+            const firstLabel = fieldLabels[firstPath] || firstPath;
+            status.textContent = `${errPaths.length} error${errPaths.length === 1 ? '' : 's'} — ${firstLabel}: ${firstMsg}${more}`;
             status.style.color = 'var(--red)';
         } else {
             status.textContent = 'Unsaved changes';
