@@ -1,4 +1,4 @@
-# Version: 3.4.83
+# Version: 3.4.84
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -1308,7 +1308,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     # --- Live (direct from receiver, no DB) ---
     @app.get("/api/live")
     def get_live():
-        from collector import is_military
+        from collector import is_military, clean_icao_hex
         receiver = CONFIG["receiver"]
         mil_cfg = CONFIG.get("military", {})
         specials = mil_cfg.get("special_aircraft", {})
@@ -1329,7 +1329,13 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                     continue
                 lat = ac.get("lat")
                 lon = ac.get("lon")
-                icao_up = ac.get("hex", "").strip().upper()
+                # v3.4.84: validate the hex at this ingest point too (get_live
+                # parses the feed independently of collector.normalize and
+                # reflects `icao` straight to the UI). Drop contacts whose hex
+                # isn't a real address — that's the stored/reflected-XSS guard.
+                icao_up = clean_icao_hex(ac.get("hex"))
+                if not icao_up:
+                    continue
 
                 # Detect military status using current config rules
                 is_mil, special_label = is_military(ac, CONFIG)

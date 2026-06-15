@@ -19,6 +19,11 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.84] — 2026-06-15
+
+### Changed
+- **Hardened against malformed aircraft identifiers from the feed.** The ICAO hex code for each aircraft — which comes from your receiver or aggregator — is now strictly validated the moment it enters Aerodrome: only genuine Mode S addresses (and dump1090's `~` markers for relayed TIS-B/MLAT targets) are accepted, and anything else is dropped. This keeps a misbehaving or tampered feed from slipping unexpected content into the live map or aircraft pages. Real aircraft are unaffected.
+
 ## [3.4.83] — 2026-06-15
 
 ### Changed

