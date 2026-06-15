@@ -1,4 +1,4 @@
-<!-- Version: 3.4.73 -->
+<!-- Version: 3.4.75 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -545,7 +545,7 @@
             display:block; border:2px solid var(--mil-ring, #ef4444);
         }
         .radar-marker.wl .rm-ring {
-            display:block; border:2px solid var(--wl-ring, #38bdf8);
+            display:block; border:2px solid var(--amber);
         }
         /* Label sits ABOVE the marker so the cursor doesn't cover it on
            hover (the marker itself is under the pointer). */
@@ -565,8 +565,8 @@
             color:#ef4444; border:1px solid rgba(239,68,68,.5);
         }
         .radar-marker.wl .rm-label {
-            display:block; background:rgba(56,189,248,.18);
-            color:#38bdf8; border:1px solid rgba(56,189,248,.5);
+            display:block; background:rgba(245,158,11,.18);
+            color:var(--amber); border:1px solid rgba(245,158,11,.5);
         }
         .radar-marker.selected .rm-glyph { filter:drop-shadow(0 0 4px var(--cyan)); }
         .radar-marker.selected .rm-label { display:block; }
@@ -707,6 +707,7 @@
         .rl-chev.sm { font-size:9px; } .rl-chev.md { font-size:13px; } .rl-chev.lg { font-size:17px; }
         .rl-swatch { width:13px; height:13px; flex:0 0 auto; border-radius:50%; display:inline-block; box-sizing:border-box; }
         .rl-mil { border:2px solid #ef4444; background:transparent; }
+        .rl-wl { border:2px solid var(--amber); background:transparent; }
         .rl-rx { background:var(--cyan); }
         /* Legend toggle button — same look as the theme/zoom controls. */
         #radarMap .map-legend-btn {
@@ -2076,7 +2077,7 @@
                  (CSS), where both panes show side by side. -->
             <div class="live-view-toggle" id="liveViewToggle" role="tablist" aria-label="Live view">
                 <button type="button" class="lv-seg on" data-view="list" onclick="setLiveView('list')">List</button>
-                <button type="button" class="lv-seg" data-view="map" onclick="setLiveView('map')">Map</button>
+                <button type="button" class="lv-seg" data-view="map" onclick="setLiveView('map')">Radar</button>
             </div>
             <div class="export-wrap">
                 <button class="btn btn-ghost" onclick="toggleExport('live', event)">Export ▾</button>
@@ -2112,7 +2113,7 @@
         <div class="live-map-pane" id="liveMapPane">
             <div id="radarMap"></div>
             <div class="radar-no-receiver" id="radarNoReceiver" style="display:none">
-                <div><strong>Map needs receiver coordinates.</strong></div>
+                <div><strong>Radar needs receiver coordinates.</strong></div>
                 <div style="margin-top:6px">Set <code>receiver.latitude</code> and <code>receiver.longitude</code> on the
                 <a href="/configuration#receiver">Configuration → Receiver</a> tab to see live aircraft plotted here.</div>
             </div>
@@ -2137,7 +2138,7 @@
             <!-- v3.5.0 (radar C): map legend — hidden by default, toggled by a
                  "Legend" control button (added in initRadarMap). -->
             <div class="radar-legend" id="radarLegend" hidden>
-                <div class="rl-head"><strong>Map legend</strong>
+                <div class="rl-head"><strong>Radar legend</strong>
                     <button type="button" class="rl-close" onclick="toggleRadarLegend()" aria-label="Close legend">✕</button></div>
                 <div class="rl-section">
                     <div class="rl-title">Altitude</div>
@@ -2153,6 +2154,7 @@
                 </div>
                 <div class="rl-section">
                     <div class="rl-row"><span class="rl-swatch rl-mil"></span> Military (red ring + MIL)</div>
+                    <div class="rl-row"><span class="rl-swatch rl-wl"></span> Watchlist (amber ring + WL)</div>
                     <div class="rl-row"><span class="rl-swatch rl-rx"></span> Receiver &amp; range rings</div>
                 </div>
             </div>
@@ -3367,8 +3369,8 @@ function initRadarMap(receiver){
             const btn = L.DomUtil.create('button', 'map-legend-btn');
             btn.type = 'button';
             btn.textContent = 'i';
-            btn.title = 'Map legend';
-            btn.setAttribute('aria-label', 'Toggle map legend');
+            btn.title = 'Radar legend';
+            btn.setAttribute('aria-label', 'Toggle radar legend');
             L.DomEvent.disableClickPropagation(btn);
             L.DomEvent.on(btn, 'click', toggleRadarLegend);
             return btn;
@@ -3444,13 +3446,19 @@ function _radarBuildIcon(ac){
     const size = _radarSize(ac);
     const color = _radarAltColor(ac.altitude);
     const isMil = !!ac.is_military;
+    // Watchlist pill — only for NON-military watchlisted aircraft (military
+    // takes precedence so the two coloured rings never collide; an aircraft
+    // that's both reads as military).
+    const isWl = !isMil && !!ac.is_watchlist;
     const track = (ac.track != null && !isNaN(ac.track)) ? Number(ac.track) : null;
     const rot = (track == null) ? 0 : track;
-    const cls = 'radar-marker' + (isMil ? ' mil' : '')
+    const cls = 'radar-marker' + (isMil ? ' mil' : '') + (isWl ? ' wl' : '')
         + (ac.icao === _radar.selectedIcao ? ' selected' : '');
-    // Label: military shows its pill label; others get the callsign (only
-    // visible on hover/selected via CSS).
-    const label = isMil ? (ac.mil_label || 'MIL') : (ac.callsign || ac.icao || '');
+    // Label: military + watchlist show their pill label (always visible via
+    // CSS); everyone else gets the callsign (visible on hover/selected only).
+    const label = isMil ? (ac.mil_label || 'MIL')
+        : isWl ? (ac.watchlist_label || 'WL')
+        : (ac.callsign || ac.icao || '');
     // Ring sized a little larger than the glyph.
     const ringPx = size + 8;
     const glyphTransform = `translate(-50%,-50%) rotate(${rot}deg)`;

@@ -1,4 +1,4 @@
-# Version: 3.4.73
+# Version: 3.4.75
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -1335,6 +1335,13 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                                       else ac.get("geom_rate")),
                     "category": ac.get("category") or None,
                 })
+            # v3.5.0 (radar C-wl): annotate watchlist membership on each live
+            # aircraft so the radar can show a WL pill (parallel to the MIL
+            # pill). _annotate_watchlist is a pure in-memory match against
+            # CONFIG['watchlist'] (no DB), so it's cheap per poll even at 100+
+            # contacts. Adds is_watchlist + watchlist_label to each entry.
+            for _e in result:
+                _annotate_watchlist(_e)
             # v3.5.0 (radar): expose the configured receiver position so the
             # map can drop a receiver marker + range rings. Null lat/lon when
             # the receiver location isn't configured — the frontend then skips

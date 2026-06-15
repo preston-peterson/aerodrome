@@ -19,6 +19,14 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.75] — 2026-06-15
+
+### Added
+- **Watchlisted aircraft now stand out on the radar.** Aircraft on your watchlist get an amber ring and a "WL" label on the map — the same amber the rest of the app uses for watchlist, mirroring how military contacts get the red MIL treatment. Military takes precedence if an aircraft is both, so the two never clash, and the legend shows the new marker.
+
+### Changed
+- **The Live map is now called the "radar" consistently.** The legend, the phone List/Radar toggle, the no-receiver prompt, and the aircraft detail page's "see on the radar" link all use the same name now — which also keeps it distinct from the *aircraft detail page's* own position-history map, so "radar" always means the live, all-aircraft view and "map" means one aircraft's history.
+
 ## [3.4.73] — 2026-06-15
 
 ### Added
