@@ -1,4 +1,4 @@
-<!-- Version: 3.4.75 -->
+<!-- Version: 3.4.76 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2464,6 +2464,12 @@ let waCfg = { enabled: true, trigger: 'continuous_dismissable', effect: 'pulse_d
 // leaves range or stops transmitting.
 // Stats tab state
 let statsCfg = { enabled: true, refresh_interval: 300, timezone: '', cards: {} };
+// v3.5.0: radar map prefs from /api/ui-config (Configuration → Map). Defaults
+// here match config.yaml.example so the radar behaves sensibly before the
+// first ui-config load. ring_distances is a resolved list of numbers (the
+// server handles the follow-range-rose option).
+let mapCfg = { show_range_rings: true, ring_distances: [50,100,150,200,250],
+               starting_view: 'fit_all', fixed_zoom: 9, default_theme: 'auto', labels: 'selected' };
 let statsTimer = null;        // setInterval id for auto-refresh
 let statsLastFetch = null;    // timestamp of last successful fetch
 let statsInflight = false;    // prevent overlapping fetches
@@ -3236,9 +3242,14 @@ const _radar = {
 // original "follow the global app theme" plan, at the maintainer's request.)
 const RADAR_MAP_THEME_KEY = 'aerodrome.map_theme';   // same key as the detail map
 function radarGetMapTheme(){
+    // The per-browser on-map toggle (localStorage) wins once the user uses it.
     try { const v = localStorage.getItem(RADAR_MAP_THEME_KEY);
           if(v === 'light' || v === 'dark') return v; } catch(e){}
-    return 'dark';
+    // Otherwise the configured default (Config → Map): light/dark, or "auto"
+    // = follow the app's light/dark theme.
+    const dt = (mapCfg && mapCfg.default_theme) || 'auto';
+    if(dt === 'light' || dt === 'dark') return dt;
+    return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
 }
 function radarSetMapTheme(t){
     try { localStorage.setItem(RADAR_MAP_THEME_KEY, t); } catch(e){}
@@ -3409,11 +3420,15 @@ function _radarDrawReceiver(receiver){
     }
     _radar.rangeRings.forEach(r => _radar.map.removeLayer(r));
     _radar.rangeRings = [];
+    // v3.5.0: range rings are configurable (Configuration → Map) — show/hide
+    // + distances come from mapCfg (the server resolves the distance list,
+    // incl. the follow-range-rose option). The receiver marker above always
+    // shows; only the rings are gated.
+    if(!mapCfg.show_range_rings) return;
     const unit = (receiver.distance_unit || 'mi').toLowerCase();
     const perUnitM = unit === 'km' ? 1000 : (unit === 'nm' ? 1852 : 1609.34);
-    // Rings at 50/100/150/200/250 (user's distance unit) — aligned with the
-    // Stats "range rose" bands so the two views read consistently.
-    [50, 100, 150, 200, 250].forEach(d => {
+    (mapCfg.ring_distances && mapCfg.ring_distances.length ? mapCfg.ring_distances
+        : [50, 100, 150, 200, 250]).forEach(d => {
         const ring = L.circle(ll, {
             radius: d * perUnitM, renderer: _radar.canvasRenderer,
             weight: 1, opacity: 0.32, fill: false,
@@ -3453,6 +3468,7 @@ function _radarBuildIcon(ac){
     const track = (ac.track != null && !isNaN(ac.track)) ? Number(ac.track) : null;
     const rot = (track == null) ? 0 : track;
     const cls = 'radar-marker' + (isMil ? ' mil' : '') + (isWl ? ' wl' : '')
+        + (mapCfg.labels === 'all' ? ' labeled' : '')
         + (ac.icao === _radar.selectedIcao ? ' selected' : '');
     // Label: military + watchlist show their pill label (always visible via
     // CSS); everyone else gets the callsign (visible on hover/selected only).
@@ -3525,17 +3541,32 @@ function radarSync(liveJ){
     });
 
     // Default initial view (by design): fit to EVERYTHING the
-    // receiver currently sees — all live contacts plus the receiver — once,
-    // on the first batch that has contacts. A maxZoom cap stops a lone
-    // distant contact from zooming the whole field out to nothing. After
-    // this single fit the user's own pan/zoom is left untouched ("see
-    // everything, then zoom in if needed"). A configurable starting view is
-    // the filed Map-settings work (HANDOFF (G)).
-    if(!_radar._fitOnce && bounds.length){
-        const fitPts = bounds.slice();
-        if(haveRx) fitPts.push([receiver.lat, receiver.lon]);
-        _radar.map.fitBounds(fitPts, { padding:[40,40], maxZoom:11 });
-        _radar._fitOnce = true;
+    // Initial framing (once), per the configured Starting view (Config → Map):
+    //   fixed_zoom — center on the receiver at the chosen zoom
+    //   fit_rings  — frame the outermost range ring
+    //   fit_all    — fit to all current contacts + the receiver (default); a
+    //                maxZoom cap stops a lone distant contact zooming out to
+    //                nothing. After this single fit the user's pan/zoom stays.
+    if(!_radar._fitOnce){
+        const sv = mapCfg.starting_view || 'fit_all';
+        if(sv === 'fixed_zoom' && haveRx){
+            _radar.map.setView([receiver.lat, receiver.lon], mapCfg.fixed_zoom || 9);
+            _radar._fitOnce = true;
+        } else if(sv === 'fit_rings' && haveRx && (mapCfg.ring_distances || []).length){
+            const u = (receiver.distance_unit || 'mi').toLowerCase();
+            const pm = u === 'km' ? 1000 : (u === 'nm' ? 1852 : 1609.34);
+            const maxM = Math.max.apply(null, mapCfg.ring_distances) * pm;
+            const dLat = maxM / 111320;
+            const dLon = maxM / ((111320 * Math.cos(receiver.lat * Math.PI / 180)) || 111320);
+            _radar.map.fitBounds([[receiver.lat - dLat, receiver.lon - dLon],
+                                  [receiver.lat + dLat, receiver.lon + dLon]], { padding:[20,20] });
+            _radar._fitOnce = true;
+        } else if(bounds.length){   // fit_all (default) — also the fallback
+            const fitPts = bounds.slice();
+            if(haveRx) fitPts.push([receiver.lat, receiver.lon]);
+            _radar.map.fitBounds(fitPts, { padding:[40,40], maxZoom:11 });
+            _radar._fitOnce = true;
+        }
     }
 
     // Keep an open details overlay live: refresh its telemetry from the
@@ -6526,6 +6557,26 @@ async function loadUiConfig(){
                     const raw = localStorage.getItem('nra-last-seen');
                     if(raw) nraLastSeen = JSON.parse(raw) || {};
                 } catch(e){ nraLastSeen = {}; }
+            }
+        }
+        // v3.5.0: radar map prefs (Configuration → Map). ring_distances is a
+        // resolved number list from the server.
+        if(j.map){
+            mapCfg = {
+                show_range_rings: j.map.show_range_rings !== false,
+                ring_distances: Array.isArray(j.map.ring_distances) && j.map.ring_distances.length
+                                ? j.map.ring_distances : [50,100,150,200,250],
+                starting_view: j.map.starting_view || 'fit_all',
+                fixed_zoom: parseInt(j.map.fixed_zoom, 10) || 9,
+                default_theme: j.map.default_theme || 'auto',
+                labels: j.map.labels || 'selected',
+            };
+            // Re-skin existing markers + redraw rings so a live config change
+            // (no restart) takes effect on the next refresh without a reload.
+            if(_radar.map){
+                if(_radar.receiver) _radarDrawReceiver(_radar.receiver);
+                _radarReskin();
+                _radarApplyTheme();
             }
         }
     }catch(e){ console.error('ui-config fetch failed', e); }

@@ -1,5 +1,5 @@
 # =============================================================================
-# Version: 3.4.75
+# Version: 3.4.76
 # Aerodrome — Example/Reference Configuration
 # =============================================================================
 # This is the canonical default config shipped with each Aerodrome release.
@@ -76,6 +76,37 @@ display:
   #   "24h"  — always 24-hour, regardless of locale.
   # Live-reloadable (no restart needed).
   time_format: "auto"
+
+# --- Live radar map ---
+# Settings for the "radar" view on the Live tab. All are live-reloadable
+# (no restart) — edit them in Configuration → Map.
+map:
+  # Show the concentric distance rings around the receiver.
+  show_range_rings: true
+  # Ring distances, comma-separated, in your configured distance unit
+  # (see receiver.distance_unit). Ignored when follow_range_rose is true.
+  ring_distances: "50, 100, 150, 200, 250"
+  # When true, the rings reuse the Stats range rose's distance bands
+  # (stats.range_rose.distance_buckets) so the two views stay aligned, and
+  # ring_distances above is ignored.
+  follow_range_rose: false
+  # How the radar frames its view the first time it opens:
+  #   "fit_all"    — fit to all current contacts + the receiver (default)
+  #   "fixed_zoom" — center on the receiver at fixed_zoom
+  #   "fit_rings"  — fit to the outermost range ring
+  starting_view: "fit_all"
+  # Zoom level (1-18), used only when starting_view is "fixed_zoom".
+  fixed_zoom: 9
+  # Default basemap tiles. The on-map sun/moon toggle overrides this per
+  # browser once used.
+  #   "auto"  — follow the app's light/dark theme
+  #   "light" — OSM light tiles
+  #   "dark"  — Carto dark tiles
+  default_theme: "auto"
+  # Aircraft callsign labels on the radar:
+  #   "selected" — only the selected/hovered aircraft (plus military/watchlist)
+  #   "all"      — every aircraft (can be crowded at 100+)
+  labels: "selected"
 
 # --- Data Retention (days) ---
 # Each tab keeps its own history. Data older than these limits is

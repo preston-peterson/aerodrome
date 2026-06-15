@@ -10,7 +10,7 @@ Usage:
         # each error: {"path": "receiver.port", "message": "Must be 1-65535"}
         return error_response(errors)
 """
-# Version: 3.4.75
+# Version: 3.4.76
 
 import re
 from typing import Any, List, Tuple
@@ -869,6 +869,52 @@ def validate_config(cfg: Any) -> Errors:
                 errs.append(("demo.enabled",
                              "Must be a boolean (true or false)"))
 
+    # --- map (live radar view) ---
+    mp = cfg.get("map")
+    if mp is not None:
+        if not isinstance(mp, dict):
+            errs.append(("map", "Must be a mapping"))
+        else:
+            for bkey in ("show_range_rings", "follow_range_rose"):
+                bv = mp.get(bkey)
+                if bv is not None and not isinstance(bv, bool):
+                    errs.append((f"map.{bkey}", "Must be true or false"))
+            rd = mp.get("ring_distances")
+            if rd is not None:
+                if not isinstance(rd, str):
+                    errs.append(("map.ring_distances",
+                                 "Must be a comma-separated list of distances"))
+                else:
+                    parts = [p.strip() for p in rd.split(",") if p.strip()]
+                    if not parts:
+                        errs.append(("map.ring_distances", "Enter at least one distance"))
+                    for p in parts:
+                        try:
+                            if float(p) <= 0:
+                                errs.append(("map.ring_distances",
+                                             "Distances must be positive numbers"))
+                                break
+                        except ValueError:
+                            errs.append(("map.ring_distances",
+                                         f"'{p}' isn't a number"))
+                            break
+            sv = mp.get("starting_view")
+            if sv is not None and sv not in ("fit_all", "fixed_zoom", "fit_rings"):
+                errs.append(("map.starting_view",
+                             "Must be fit_all, fixed_zoom, or fit_rings"))
+            fz = mp.get("fixed_zoom")
+            if fz is not None:
+                if not isinstance(fz, int) or isinstance(fz, bool):
+                    errs.append(("map.fixed_zoom", "Must be an integer"))
+                elif fz < 1 or fz > 18:
+                    errs.append(("map.fixed_zoom", "Must be between 1 and 18"))
+            dt = mp.get("default_theme")
+            if dt is not None and dt not in ("auto", "light", "dark"):
+                errs.append(("map.default_theme", "Must be auto, light, or dark"))
+            lb = mp.get("labels")
+            if lb is not None and lb not in ("selected", "all"):
+                errs.append(("map.labels", "Must be selected or all"))
+
     return errs
 # The collector re-reads these from CONFIG on each poll interval.
 LIVE_KEYS = {
@@ -901,6 +947,9 @@ LIVE_KEYS = {
     # the Live tab and (future patches) other time displays. "auto"
     # respects the user's browser locale.
     "display.time_format",
+    # v3.5.0: radar map display prefs — read by the frontend via
+    # /api/ui-config on each dashboard load; no service restart needed.
+    "map",
 }
 
 # Everything else requires a restart. The frontend uses this list to show

@@ -1,4 +1,4 @@
-# Version: 3.4.75
+# Version: 3.4.76
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -3547,6 +3547,29 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         # date_format is also available here, though most code paths
         # currently read it from the search-suggest endpoint instead.
         display_cfg = CONFIG.get("display") or {}
+        # v3.5.0: radar map prefs. Resolve the effective ring distances here
+        # (server-side) so the frontend just gets a clean list: follow the
+        # Stats range-rose bands when asked, else parse the comma-separated
+        # string. Defensive parse — the validator already guarantees the
+        # string is well-formed on save, but a hand-edited config shouldn't
+        # break the dashboard.
+        mp = CONFIG.get("map") or {}
+        if mp.get("follow_range_rose"):
+            _rings = (st.get("range_rose") or {}).get("distance_buckets") or [50, 100, 150, 200, 250]
+        else:
+            _rings = []
+            for _p in str(mp.get("ring_distances") or "50,100,150,200,250").split(","):
+                _p = _p.strip()
+                if not _p:
+                    continue
+                try:
+                    _v = float(_p)
+                except ValueError:
+                    continue
+                if _v > 0:
+                    _rings.append(int(_v) if _v == int(_v) else _v)
+            if not _rings:
+                _rings = [50, 100, 150, 200, 250]
         return {
             "distance_enabled": has_location,
             "distance_unit": (r.get("distance_unit") or "mi").lower(),
@@ -3590,6 +3613,14 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             "display": {
                 "date_format": display_cfg.get("date_format", "MDY"),
                 "time_format": display_cfg.get("time_format", "auto"),
+            },
+            "map": {
+                "show_range_rings": bool(mp.get("show_range_rings", True)),
+                "ring_distances": _rings,
+                "starting_view": mp.get("starting_view", "fit_all"),
+                "fixed_zoom": int(mp.get("fixed_zoom", 9) or 9),
+                "default_theme": mp.get("default_theme", "auto"),
+                "labels": mp.get("labels", "selected"),
             },
         }
 

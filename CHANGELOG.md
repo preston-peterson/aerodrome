@@ -19,6 +19,11 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.76] — 2026-06-15
+
+### Added
+- **A new "Map" section in Configuration puts the radar's look in your hands.** Open gear → Configuration → Map to control the live radar without touching any files: turn the **range rings** on or off and set their **distances** (or flip on "Match Stats range rose" to keep them aligned with that card's bands); choose the **starting view** (fit to all aircraft, a fixed zoom level, or fit to the range rings); set the **default map theme** (auto/light/dark — the on-map toggle still overrides per device); and pick whether callsign **labels** show for the selected aircraft only or for everyone. All of it applies live, no restart — and existing installs pick up the new section with sensible defaults that match how the radar already behaved.
+
 ## [3.4.75] — 2026-06-15
 
 ### Added

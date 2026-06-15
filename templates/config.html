@@ -1,4 +1,4 @@
-<!-- Version: 3.4.75 -->
+<!-- Version: 3.4.76 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -425,6 +425,7 @@ const TABS = [
     { id:'receiver',      label:'Receiver',         render:() => sectionReceiver(),         prefix:'receiver' },
     { id:'web',           label:'Web server',       render:() => sectionWeb(),              prefix:'web' },
     { id:'display',       label:'Display',          render:() => sectionDisplay(),          prefix:'display' },
+    { id:'map',           label:'Map',              render:() => sectionMap(),              prefix:'map' },
     { id:'retention',     label:'Retention',        render:() => sectionRetention(),        prefix:'retention' },
     { id:'data',          label:'Database',         render:() => sectionData(),             prefix:'data' },
     { id:'logging',       label:'Logging',          render:() => sectionLogging(),          prefix:'logging' },
@@ -1265,6 +1266,39 @@ function sectionDisplay() {
                 {value:'auto', label:'Auto — match browser locale'},
                 {value:'12h',  label:'12-hour with AM/PM (9:54 AM)'},
                 {value:'24h',  label:'24-hour (09:54)'},
+            ]})}
+        </div>
+    </div>`;
+}
+
+// =============================================================================
+// Section: Map  (v3.5.0 — the live "radar" view on the Live tab)
+// =============================================================================
+function sectionMap() {
+    return `
+    <div class="section">
+        <div class="section-head">
+            <div class="section-title">Map</div>
+            <div class="section-sub">the radar view on the Live tab</div>
+        </div>
+        <div class="form-grid">
+            ${field({label:'Range rings', hint:'show the concentric distance rings around your receiver', path:'map.show_range_rings', type:'checkbox'})}
+            ${field({label:'Ring distances', hint:'comma-separated, in your distance unit. Ignored when "Match Stats range rose" is on.', path:'map.ring_distances', placeholder:'50, 100, 150, 200, 250'})}
+            ${field({label:'Match Stats range rose', hint:'reuse the Stats range rose distance bands so the two views align (overrides Ring distances)', path:'map.follow_range_rose', type:'checkbox'})}
+            ${field({label:'Starting view', hint:'how the radar frames itself the first time it opens', path:'map.starting_view', type:'select', options:[
+                {value:'fit_all',    label:'Fit to all aircraft'},
+                {value:'fixed_zoom', label:'Fixed zoom level'},
+                {value:'fit_rings',  label:'Fit to range rings'},
+            ]})}
+            ${field({label:'Fixed zoom level', hint:'1–18, used only when Starting view is "Fixed zoom level"', path:'map.fixed_zoom', type:'number', min:1, max:18})}
+            ${field({label:'Default map theme', hint:'basemap tiles. The on-map sun/moon toggle overrides this per browser.', path:'map.default_theme', type:'select', options:[
+                {value:'auto',  label:'Auto — follow the app theme'},
+                {value:'light', label:'Light'},
+                {value:'dark',  label:'Dark'},
+            ]})}
+            ${field({label:'Aircraft labels', hint:'callsign labels on the markers (military & watchlist are always labeled)', path:'map.labels', type:'select', options:[
+                {value:'selected', label:'Selected / hovered only'},
+                {value:'all',      label:'All aircraft'},
             ]})}
         </div>
     </div>`;
