@@ -19,6 +19,16 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.73] — 2026-06-15
+
+### Added
+- **A "● Live" chip now ties the rest of the app to the map.** Watchlist, Military, and Search rows — and an aircraft's detail page — show a small pulsing **● Live** chip whenever that aircraft is being received right now. Click it and you jump straight to the Live map, centered on that aircraft with its details open, so you can go from "this is on my watchlist" to "here it is in the sky" in one click. (The chip only appears while the aircraft is actually overhead.)
+- **A map legend, one click away.** A new "i" button on the live map opens a compact legend explaining the markers — the altitude color scale, the size-by-class chevrons, the heading direction, and the military and receiver symbols. It stays out of the way until you ask for it.
+
+### Changed
+- **The selected aircraft now gets a pulsing ring, and the receiver has its own marker.** Clicking an aircraft on the map (or arriving via a Live chip) rings it with a soft pulse so it's easy to keep your eye on, and the receiver location is now shown as a distinct signal-origin marker instead of a generic map pin.
+- **The range rings are now labeled and spaced to match the Stats range rose.** Each ring carries its distance (50, 100, 150, 200, 250 in your unit) along the bottom, the rings use the same distance bands as the Stats range rose so the two views read consistently, and they're drawn in a clearer color that holds up against the map tiles.
+
 ## [3.4.69] — 2026-06-15
 
 ### Added

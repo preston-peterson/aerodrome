@@ -1,4 +1,4 @@
-<!-- Version: 3.4.69 -->
+<!-- Version: 3.4.73 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -440,7 +440,7 @@
             font:inherit; font-size:13px; padding:6px 14px; cursor:pointer;
         }
         .live-view-toggle .lv-seg + .lv-seg { border-left:1px solid var(--bdr); }
-        .live-view-toggle .lv-seg.on { background:var(--accent); color:#fff; }
+        .live-view-toggle .lv-seg.on { background:var(--cyan); color:#fff; }
 
         .live-split { display:flex; align-items:stretch; gap:0; }
         /* List pane width is user-draggable (the resizer below); default 58%.
@@ -461,6 +461,13 @@
             border-radius:10px; border:1px solid var(--bdr);
             background:var(--bg1); z-index:0;
         }
+        /* The "highlight on first click" is the browser's focus ring on the
+           keyboard-focusable Leaflet container. Browsers treat a mouse click
+           on the tabindex'd container as :focus-visible, so a :not() guard
+           didn't help — clear it unconditionally on the container itself.
+           (The zoom/theme/legend buttons are separate elements and keep their
+           own focus styles, so keyboard users still get focus feedback there.) */
+        #radarMap:focus { outline:none; }
         /* Draggable splitter between list + map. Drag to resize, double-click
            to collapse the list and hand the map full width. */
         .live-resizer {
@@ -472,7 +479,7 @@
             width:2px; transform:translateX(-50%); background:var(--bdr);
         }
         .live-resizer:hover::before, .live-resizer.dragging::before {
-            background:var(--accent); width:3px;
+            background:var(--cyan); width:3px;
         }
         .live-resizer::after {
             content:'⋮⋮'; position:absolute; left:50%; top:50%;
@@ -482,7 +489,7 @@
             background:var(--bg1); border:1px solid var(--bdr);
             border-radius:5px; padding:7px 2px;
         }
-        .live-resizer:hover::after { color:var(--t1); border-color:var(--accent); }
+        .live-resizer:hover::after { color:var(--t1); border-color:var(--cyan); }
         .live-split.list-collapsed .live-list-pane { display:none; }
         .live-split.list-collapsed .live-resizer::after { content:'›'; writing-mode:horizontal-tb; }
 
@@ -500,7 +507,7 @@
         #radarMap .leaflet-control-attribution {
             background:var(--bg1); color:var(--t3); font-size:10px;
         }
-        #radarMap .leaflet-control-attribution a { color:var(--accent); }
+        #radarMap .leaflet-control-attribution a { color:var(--cyan); }
         /* Match the aircraft-detail map's zoom control exactly. */
         #radarMap .leaflet-control-zoom a {
             background:var(--bg2); color:var(--t1); border-color:var(--bdr);
@@ -561,8 +568,46 @@
             display:block; background:rgba(56,189,248,.18);
             color:#38bdf8; border:1px solid rgba(56,189,248,.5);
         }
-        .radar-marker.selected .rm-glyph { filter:drop-shadow(0 0 4px var(--accent)); }
+        .radar-marker.selected .rm-glyph { filter:drop-shadow(0 0 4px var(--cyan)); }
         .radar-marker.selected .rm-label { display:block; }
+        /* Selected aircraft — matches the mockup: a static thin ring plus a
+           breathing pulse ring, both in the app's primary color (var(--t1)). */
+        .radar-marker.selected::before {
+            content:''; position:absolute; left:50%; top:50%;
+            width:34px; height:34px; transform:translate(-50%,-50%);
+            border-radius:50%; border:1.3px solid var(--t1); opacity:.5;
+            pointer-events:none;
+        }
+        .radar-marker.selected::after {
+            content:''; position:absolute; left:50%; top:50%;
+            transform:translate(-50%,-50%);
+            border-radius:50%; border:2px solid var(--t1);
+            pointer-events:none; animation:rm-selpulse 1.8s ease-in-out infinite;
+        }
+        @keyframes rm-selpulse {
+            0%,100% { width:28px; height:28px; opacity:.9; }
+            50%     { width:56px; height:56px; opacity:0; }
+        }
+        /* Receiver marker — a center dot + static ring ("signal origin"). */
+        .radar-rx-marker { overflow:visible; }
+        /* Matches the mockup: a solid cyan center dot inside a cyan ring. */
+        .radar-rx-marker .rx-dot {
+            position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+            width:8px; height:8px; border-radius:50%; background:var(--cyan);
+        }
+        .radar-rx-marker .rx-ring {
+            position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+            width:22px; height:22px; border-radius:50%;
+            border:1.5px solid var(--cyan); opacity:.7;
+        }
+        /* Range-ring distance label (sits on the ring's south edge). Dark
+           translucent pill + light text so it's legible on any map tiles. */
+        .radar-ring-label {
+            font-size:9px; font-weight:500; color:rgba(226,232,240,.42);
+            text-shadow:0 0 2px rgba(0,0,0,.75); background:none;
+            text-align:center; white-space:nowrap; line-height:14px;
+            pointer-events:none;
+        }
 
         /* ---- Details overlay (increment B) ---- */
         /* Desktop: right slide-in panel over the map. .live-map-pane is
@@ -603,8 +648,75 @@
         .ro-telemetry .sq-chip { display:block; margin-top:3px; font-size:9px; }
         .ro-note { font-size:11px; color:var(--t3); font-style:italic; }
         .ro-full { margin-top:auto; display:inline-block; font-size:13px;
-            color:var(--accent); text-decoration:none; padding-top:6px; }
+            color:var(--cyan); text-decoration:none; padding-top:6px; }
         .ro-full:hover { text-decoration:underline; }
+
+        /* ---- "● Live" cross-tab chip (increment C) ---- */
+        .live-chip {
+            display:inline-flex; align-items:center; gap:3px;
+            margin-left:6px; padding:1px 7px; border-radius:9px;
+            font-size:10px; font-weight:700; letter-spacing:.03em;
+            color:#22c55e; background:rgba(34,197,94,.15);
+            border:1px solid rgba(34,197,94,.45);
+            cursor:pointer; vertical-align:middle; white-space:nowrap; line-height:1.5;
+        }
+        .live-chip:hover { background:rgba(34,197,94,.28); }
+        .live-chip .lc-dot {
+            width:6px; height:6px; border-radius:50%; background:#22c55e;
+            animation:lc-pulse 1.4s ease-in-out infinite;
+        }
+        .live-chip .lc-arrow { opacity:0; width:0; overflow:hidden; transition:opacity .12s; }
+        .live-chip:hover .lc-arrow { opacity:1; width:auto; }
+        @keyframes lc-pulse {
+            0%,100% { opacity:1; box-shadow:0 0 0 0 rgba(34,197,94,.5); }
+            50%     { opacity:.45; box-shadow:0 0 0 3px rgba(34,197,94,0); }
+        }
+        /* Focus pulse on a marker arrived-at via a Live chip / deep-link. */
+        .radar-marker.focus-pulse .rm-glyph { animation:rm-focus .6s ease-out 3; }
+        @keyframes rm-focus {
+            0%,100% { filter:drop-shadow(0 0 1px rgba(0,0,0,.6)); }
+            50%     { filter:drop-shadow(0 0 9px var(--cyan)); }
+        }
+
+        /* ---- Map legend (increment C) — toggled, not always shown ---- */
+        .radar-legend {
+            position:absolute; left:10px; bottom:46px; z-index:3;
+            width:212px; max-width:calc(100% - 20px);
+            background:var(--bg1); border:1px solid var(--bdr); border-radius:8px;
+            box-shadow:0 6px 22px rgba(0,0,0,.3); padding:10px 12px;
+            font-size:11px; color:var(--t2);
+        }
+        .radar-legend[hidden] { display:none; }
+        .rl-head { display:flex; align-items:center; justify-content:space-between;
+            margin-bottom:4px; color:var(--t1); font-size:12px; }
+        .rl-close { border:0; background:transparent; color:var(--t3); cursor:pointer;
+            font-size:13px; line-height:1; padding:0 2px; }
+        .rl-close:hover { color:var(--t1); }
+        .rl-section { margin-top:9px; }
+        .rl-section:first-of-type { margin-top:2px; }
+        .rl-title { color:var(--t3); text-transform:uppercase; font-size:9px;
+            letter-spacing:.05em; margin-bottom:4px; }
+        .rl-gradient { height:8px; border-radius:4px;
+            background:linear-gradient(to right,#f97316,#facc15,#4ade80,#22d3ee,#60a5fa,#a78bfa); }
+        .rl-scale { display:flex; justify-content:space-between; color:var(--t3);
+            font-size:9px; margin-top:2px; }
+        .rl-row { display:flex; align-items:center; gap:7px; margin:3px 0; }
+        .rl-note { color:var(--t3); font-style:italic; margin-top:3px; font-size:10px; }
+        .rl-chev { display:inline-block; flex:0 0 14px; text-align:center; color:#60a5fa; line-height:1; }
+        .rl-chev::before { content:'▲'; }
+        .rl-chev.sm { font-size:9px; } .rl-chev.md { font-size:13px; } .rl-chev.lg { font-size:17px; }
+        .rl-swatch { width:13px; height:13px; flex:0 0 auto; border-radius:50%; display:inline-block; box-sizing:border-box; }
+        .rl-mil { border:2px solid #ef4444; background:transparent; }
+        .rl-rx { background:var(--cyan); }
+        /* Legend toggle button — same look as the theme/zoom controls. */
+        #radarMap .map-legend-btn {
+            background:var(--bg2); color:var(--t1);
+            border:1px solid var(--bdr); border-radius:4px;
+            width:30px; height:30px; padding:0; cursor:pointer;
+            display:flex; align-items:center; justify-content:center;
+            font-size:13px; font-weight:700; font-style:italic;
+        }
+        #radarMap .map-legend-btn:hover { background:var(--bg1); }
 
         /* Phone: panes stack, one at a time via the toggle. */
         @media (max-width: 900px) {
@@ -2022,6 +2134,28 @@
                 <div class="ro-note" id="roNote" style="display:none"></div>
                 <a class="ro-full" id="roFull" href="#">Full details →</a>
             </div>
+            <!-- v3.5.0 (radar C): map legend — hidden by default, toggled by a
+                 "Legend" control button (added in initRadarMap). -->
+            <div class="radar-legend" id="radarLegend" hidden>
+                <div class="rl-head"><strong>Map legend</strong>
+                    <button type="button" class="rl-close" onclick="toggleRadarLegend()" aria-label="Close legend">✕</button></div>
+                <div class="rl-section">
+                    <div class="rl-title">Altitude</div>
+                    <div class="rl-gradient"></div>
+                    <div class="rl-scale"><span>ground</span><span>45,000+ ft</span></div>
+                </div>
+                <div class="rl-section">
+                    <div class="rl-title">Aircraft (size = class)</div>
+                    <div class="rl-row"><span class="rl-chev sm"></span> Light / piston</div>
+                    <div class="rl-row"><span class="rl-chev md"></span> Jet</div>
+                    <div class="rl-row"><span class="rl-chev lg"></span> Heavy</div>
+                    <div class="rl-note">Chevron points the way the aircraft is heading.</div>
+                </div>
+                <div class="rl-section">
+                    <div class="rl-row"><span class="rl-swatch rl-mil"></span> Military (red ring + MIL)</div>
+                    <div class="rl-row"><span class="rl-swatch rl-rx"></span> Receiver &amp; range rings</div>
+                </div>
+            </div>
         </div>
     </div>
 </div>
@@ -2303,6 +2437,7 @@
 // State
 // =========================================================================
 let D = { live:[], watchlist:[], military:[] };
+let _liveHexSet = new Set();   // v3.5.0 (radar C): hexes currently being received
 let specials = {};
 let distUnit = 'mi';       // Updated from /api/ui-config on load
 let distEnabled = false;   // Hide Distance column unless receiver lat/lon configured
@@ -2955,6 +3090,9 @@ function render(tab) {
             icaoCell += ` <span class="sighting-count" title="${ct} sightings — click ICAO for full detail">(${ct})</span>`;
         }
         icaoCell += lbl;
+        // v3.5.0 (radar C): "● Live" chip when this aircraft is being received
+        // right now (Watchlist/Military rows; empty string when not live).
+        icaoCell += liveChipHtml(ac.icao);
 
         if(tab==='watchlist'){
             // v2.59.0: card-row layout. The wrapper element is a
@@ -3035,6 +3173,11 @@ async function fetchLive(){
         let [liveR, statusR]=await Promise.all([fetch('/api/live'),fetch('/api/status')]);
         let liveJ=await liveR.json(), statJ=await statusR.json();
         D.live=liveJ.aircraft||[];
+        // v3.5.0 (radar, increment C): the set of hexes being received RIGHT
+        // NOW, shared across tabs so Watchlist/Military/Search rows + the
+        // detail page can show a "● Live" chip. Uppercased for safe matching
+        // against the DB-stored (uppercase) icaos on those rows.
+        _liveHexSet = new Set((D.live||[]).map(a => (a.icao||'').toUpperCase()));
         document.getElementById('cLive').textContent=D.live.length;
         document.getElementById('liveStats').textContent=`${D.live.length.toLocaleString()} aircraft currently visible`;
         applyTabEmergencyState('live', 'cLive', document.getElementById('liveStats'));
@@ -3216,6 +3359,23 @@ function initRadarMap(receiver){
     });
     _radar.map.addControl(new ThemeControl());
 
+    // Legend toggle (bottom-left). Opens/closes the marker-key panel — the
+    // legend isn't shown by default, just a click away.
+    const LegendControl = L.Control.extend({
+        options: { position: 'bottomleft' },
+        onAdd: function(){
+            const btn = L.DomUtil.create('button', 'map-legend-btn');
+            btn.type = 'button';
+            btn.textContent = 'i';
+            btn.title = 'Map legend';
+            btn.setAttribute('aria-label', 'Toggle map legend');
+            L.DomEvent.disableClickPropagation(btn);
+            L.DomEvent.on(btn, 'click', toggleRadarLegend);
+            return btn;
+        }
+    });
+    _radar.map.addControl(new LegendControl());
+
     if(haveRx) _radarDrawReceiver(receiver);
 
     // Click the map background (not a marker — those stopPropagation) to
@@ -3231,11 +3391,13 @@ function initRadarMap(receiver){
 function _radarDrawReceiver(receiver){
     if(!_radar.map) return;
     const ll = [receiver.lat, receiver.lon];
-    const rxIcon = L.icon({
-        iconUrl: '/static/leaflet/images/marker-icon.png',
-        iconRetinaUrl: '/static/leaflet/images/marker-icon-2x.png',
-        shadowUrl: '/static/leaflet/images/marker-shadow.png',
-        iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], shadowSize: [41, 41],
+    // v3.5.0 (radar C): a distinct receiver marker — a center dot with a
+    // static ring (a "signal origin" look) instead of the generic Leaflet
+    // pin, so the receiver reads as the antenna site, not another contact.
+    const rxIcon = L.divIcon({
+        className: 'radar-rx-marker',
+        html: '<span class="rx-ring"></span><span class="rx-dot"></span>',
+        iconSize: [20, 20], iconAnchor: [10, 10],
     });
     if(!_radar.receiverMarker){
         _radar.receiverMarker = L.marker(ll, { icon: rxIcon, title: 'Receiver', zIndexOffset: 1000 })
@@ -3247,18 +3409,34 @@ function _radarDrawReceiver(receiver){
     _radar.rangeRings = [];
     const unit = (receiver.distance_unit || 'mi').toLowerCase();
     const perUnitM = unit === 'km' ? 1000 : (unit === 'nm' ? 1852 : 1609.34);
-    [25, 50, 100, 150].forEach(d => {
+    // Rings at 50/100/150/200/250 (user's distance unit) — aligned with the
+    // Stats "range rose" bands so the two views read consistently.
+    [50, 100, 150, 200, 250].forEach(d => {
         const ring = L.circle(ll, {
             radius: d * perUnitM, renderer: _radar.canvasRenderer,
-            color: 'var(--accent)', weight: 1, opacity: 0.35, fill: false,
+            weight: 1, opacity: 0.32, fill: false,
             interactive: false, dashArray: '4 5',
         });
-        // CSS vars don't resolve in SVG stroke; resolve to the computed value.
+        // Cyan range rings (saturated so they stay visible on both light and
+        // dark map tiles — the mockup's gray got lost on real dark tiles).
+        // The receiver stays the prominent SOLID cyan dot at the center, so
+        // the faint dashed rings don't compete with it. CSS vars don't resolve
+        // in an SVG stroke, so resolve --cyan to its computed value here.
         ring.setStyle({ color: getComputedStyle(document.documentElement)
-            .getPropertyValue('--accent').trim() || '#38bdf8' });
+            .getPropertyValue('--cyan').trim() || '#06b6d4' });
         ring.addTo(_radar.map);
-        ring.bindTooltip(`${d} ${unit}`, { permanent:false, direction:'top', className:'radar-ring-tip' });
         _radar.rangeRings.push(ring);
+        // Persistent distance label at the BOTTOM (due south) of each ring, so
+        // you can read how far out each ring is without hovering. 1° latitude
+        // ≈ 111,320 m — close enough to sit the label on the ring's south edge.
+        const southLat = receiver.lat - (d * perUnitM) / 111320;
+        const lbl = L.marker([southLat, receiver.lon], {
+            icon: L.divIcon({ className: 'radar-ring-label',
+                html: `${d} ${escapeHtml(unit)}`, iconSize: [44, 14], iconAnchor: [22, 7] }),
+            interactive: false, keyboard: false,
+        });
+        lbl.addTo(_radar.map);
+        _radar.rangeRings.push(lbl);   // cleared together with the rings
     });
 }
 
@@ -3530,6 +3708,61 @@ function _radarClearTrail(){
     _radar.trailLine = null;
 }
 
+// =========================================================================
+// v3.5.0 (radar C) — "● Live" cross-tab chip + focus deep-link
+// =========================================================================
+// liveChipHtml: a small pulsing pill for Watchlist/Military/Search rows (and
+// the detail page) shown ONLY when that hex is being received right now. The
+// pill IS the link — click → jump to the Live tab and focus the aircraft.
+// The Live tab itself omits it (every row there is already live).
+function liveChipHtml(icao){
+    if(!icao || !_liveHexSet.has(String(icao).toUpperCase())) return '';
+    const safe = escapeHtml(icao);
+    return `<span class="live-chip" role="button" tabindex="0"
+        title="Receiving now — show on the radar"
+        onclick="event.stopPropagation(); focusOnRadar('${safe}')"
+        onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();focusOnRadar('${safe}');}"
+        ><span class="lc-dot"></span>Live<span class="lc-arrow">→</span></span>`;
+}
+
+// Jump to the Live tab and focus one aircraft: center the map on it, pulse its
+// marker, open its overlay. Unlike a plain marker click (which deliberately
+// does NOT recenter), focusing is an explicit "take me to it" action, so
+// centering is the right behavior here.
+function focusOnRadar(hex){
+    const up = String(hex || '').toUpperCase();
+    go('live');
+    setTimeout(() => {
+        if(_radar.map) _radar.map.invalidateSize();
+        const ac = (D.live || []).find(a => (a.icao||'').toUpperCase() === up);
+        if(!ac || ac.lat == null || ac.lon == null || !_radar.map){
+            toast(`${up} isn't being received right now.`);
+            return;
+        }
+        _radar.map.setView([ac.lat, ac.lon],
+            Math.max(_radar.map.getZoom(), 10), { animate: true });
+        openRadarOverlay(ac.icao);
+        _radarPulse(ac.icao);
+    }, 140);
+}
+
+// Briefly pulse the focused marker so it's easy to spot.
+function _radarPulse(icao){
+    const m = _radar.markers[icao];
+    const el = m && m.getElement && m.getElement();
+    if(!el) return;
+    el.classList.add('focus-pulse');
+    setTimeout(() => { if(el) el.classList.remove('focus-pulse'); }, 2600);
+}
+
+// Hash deep-link: #radar?focus=HEX (or #live?focus=HEX) focuses an aircraft,
+// so the aircraft-detail page can link straight to "see it on the radar".
+function _radarHandleHash(){
+    const m = (location.hash || '').match(/^#(?:radar|live)\?focus=([0-9A-Fa-f]{6})\b/);
+    if(m) focusOnRadar(m[1]);
+}
+window.addEventListener('hashchange', _radarHandleHash);
+
 // Lifecycle: invalidate size when the Live tab/map becomes visible (Leaflet
 // can't measure a hidden container), and run a faster poll while viewing.
 let _radarPollTimer = null;
@@ -3565,6 +3798,12 @@ function toggleLiveListCollapsed(){
     if(!split) return;
     split.classList.toggle('list-collapsed');
     if(_radar.map) setTimeout(() => _radar.map.invalidateSize(), 60);
+}
+
+// v3.5.0 (radar C): show/hide the map legend (toggled by the "i" control).
+function toggleRadarLegend(){
+    const el = document.getElementById('radarLegend');
+    if(el) el.hidden = !el.hidden;
 }
 
 // Draggable splitter between the list and map panes (desktop). Drag adjusts
@@ -5064,7 +5303,9 @@ function _renderSearchCard(r){
         // by the .wl-pill max-width rule when the ICAO column is narrow.
         pills += `<span class="wl-pill" title="${escapeHtml(wlLabel)}">${escapeHtml(wlLabel)}</span>`;
     }
-    const icaoCell = `<span class="c-icao" onclick="event.stopPropagation()">${aircraftLink(icao)}${pills}</span>`;
+    // v3.5.0 (radar C): "● Live" chip when this search result is being
+    // received right now → click jumps to the radar and focuses it.
+    const icaoCell = `<span class="c-icao" onclick="event.stopPropagation()">${aircraftLink(icao)}${pills}${liveChipHtml(icao)}</span>`;
 
     // Description cell — type description + sightings count chip on
     // the right edge. v2.64.0: country chip removed from this cell —
@@ -6305,7 +6546,9 @@ async function refresh(){
 }
 // Load UI config + watchlist state first so buttons render with correct state on first paint
 Promise.all([loadUiConfig(), loadWLChips()]).then(()=>{
-    refresh();
+    // v3.5.0 (radar C): handle a #radar?focus=HEX deep-link once the first
+    // data load has populated D.live (e.g. arriving from the detail page).
+    refresh().then(() => _radarHandleHash());
     // v3.5.0 (radar): Live is the default tab on load — start its faster
     // map poll + size the map once the first paint settles.
     radarOnEnterLiveTab();

@@ -1,4 +1,4 @@
-<!-- Version: 3.4.69 -->
+<!-- Version: 3.4.73 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -131,6 +131,24 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
     border:1px solid var(--cyan); border-radius:6px;
 }
 .title-row .track-link:hover { background:rgba(6,182,212,0.1); }
+/* v3.5.0 (radar C): "Live — see on the radar" chip, shown when the aircraft
+   is being received right now. */
+.detail-live-chip {
+    display:inline-flex; align-items:center; gap:5px;
+    font-size:13px; font-weight:600; text-decoration:none;
+    color:#22c55e; background:rgba(34,197,94,0.13);
+    border:1px solid rgba(34,197,94,0.45); border-radius:14px;
+    padding:3px 11px; white-space:nowrap;
+}
+.detail-live-chip:hover { background:rgba(34,197,94,0.24); }
+.detail-live-chip .dlc-dot {
+    width:7px; height:7px; border-radius:50%; background:#22c55e;
+    animation:dlc-pulse 1.4s ease-in-out infinite;
+}
+@keyframes dlc-pulse {
+    0%,100% { opacity:1; box-shadow:0 0 0 0 rgba(34,197,94,0.5); }
+    50%     { opacity:0.45; box-shadow:0 0 0 4px rgba(34,197,94,0); }
+}
 
 .subtitle { color:var(--t3); font-size:13px; margin-bottom:24px; font-family:var(--mono); }
 
@@ -858,6 +876,7 @@ function renderDetail(d) {
             ${country ? `<span class="sep">·</span><span class="meta-text">${escapeHtml(country)}</span>` : ''}
             ${registration ? `<span class="sep">·</span><span class="meta-text">${escapeHtml(registration)}</span>` : ''}
             <a href="javascript:void(0)" class="track-link track-external-link" id="trackLink" data-icao="${escapeHtml((d.icao || '').toUpperCase())}">Track ↗</a>
+            <span id="liveChipSlot"></span>
             ${wlBtn}
         </div>
 
@@ -916,6 +935,30 @@ function renderDetail(d) {
     // lazily and fill in the owner line. Kept off the main detail payload
     // so the heavy detail query never waits on a hexdb call.
     maybeEnrichOwner(d.icao, owner);
+
+    // v3.5.0 (radar C): show a "● Live — see on the radar →" chip in the hero
+    // when this aircraft is being received right now, linking to the Live-tab
+    // map focused on it. Polls /api/live so it appears/disappears as the
+    // aircraft comes and goes while the page is open.
+    maybeShowLiveChip(d.icao);
+}
+
+let _liveChipTimer = null;
+function maybeShowLiveChip(icao) {
+    const slot = document.getElementById('liveChipSlot');
+    if (!slot) return;
+    const up = (icao || '').toUpperCase();
+    const check = () => fetch('/api/live')
+        .then(r => r.ok ? r.json() : null)
+        .then(j => {
+            const live = !!(j && (j.aircraft || []).some(a => (a.icao || '').toUpperCase() === up));
+            slot.innerHTML = live
+                ? `<a class="detail-live-chip" href="/#radar?focus=${encodeURIComponent(up)}" title="Receiving now — show it on the radar"><span class="dlc-dot"></span>Live — see on the radar →</a>`
+                : '';
+        })
+        .catch(() => { /* best-effort; leave the chip as-is */ });
+    check();
+    if (!_liveChipTimer) _liveChipTimer = setInterval(check, 15000);
 }
 
 function maybeEnrichOwner(icao, existingOwner) {
