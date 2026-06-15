@@ -222,7 +222,7 @@ STATS = {
         {"id":"composition","label":"Composition","cards":["top_aircraft","top_types","top_operators","military_branches","category_mix","top_countries"]},
         {"id":"patterns","label":"Patterns","cards":["hourly_histogram"]},
         {"id":"history","label":"History","cards":["first_time_seen","daily_counts_7d","watchlist_frequency"]},
-        {"id":"records","label":"All-time records","cards":["all_time_records"]},
+        {"id":"records","label":"All-time records","cards":["all_time_records","most_seen_alltime"]},
         {"id":"coverage","label":"Coverage","cards":["range_rose","distance_histogram"]},
     ],
     "cards": {
@@ -300,6 +300,13 @@ STATS = {
         "watchlist_frequency": [
             {"watchlist_label":"Friend's Cessna","total_hits":87,"unique_aircraft":3},
             {"watchlist_label":"Brother's airline","total_hits":34,"unique_aircraft":1},
+        ],
+        "most_seen_alltime": [
+            {"icao":"A9F31C","last_callsign":"UPS2877","aircraft_type":"B763","registration":"N363UP","operator":"UPS","n":51842},
+            {"icao":"ADE419","last_callsign":"AAL1148","aircraft_type":"B738","registration":"N916NN","operator":"AAL","n":48310},
+            {"icao":"AB22E8","last_callsign":"SKW5193","aircraft_type":"CRJ7","registration":"N728SK","operator":"SKW","n":44106},
+            {"icao":"A1B2C3","last_callsign":"N512JK","aircraft_type":"C172","registration":"N512JK","operator":"","n":39022},
+            {"icao":"AC8E40","last_callsign":"FFT1612","aircraft_type":"A321","registration":"N701FR","operator":"FFT","n":36774},
         ],
         "all_time_records": [
             {"record_type":"fastest_ever","value":614,"icao":"A45678","callsign":"UAL801","aircraft_type":"B77W","set_at":NOW-86400*3,"extra":""},

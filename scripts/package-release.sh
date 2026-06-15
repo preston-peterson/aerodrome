@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.4.59
+# Version: 3.4.60
 # =============================================================================
 # package-release.sh — Build the release zip + SHA256 for the current VERSION
 # =============================================================================
@@ -116,7 +116,8 @@ find "$RELEASE_DIR" -name '*.pyc' -delete 2>/dev/null || true
 # tree at runtime. The exclusion has been removed.
 rm -rf "$RELEASE_DIR/venv" \
        "$RELEASE_DIR/.git" \
-       "$RELEASE_DIR/.backups" 2>/dev/null || true
+       "$RELEASE_DIR/.backups" \
+       "$RELEASE_DIR/.claude" 2>/dev/null || true
 # Also strip any runtime DB / pid / config-backup files that may be present
 # if package-release.sh is run on a live install rather than a clean tree.
 # v3.4.33: HANDOFF files (any path matching *-HANDOFF*.md or HANDOFF.md) are
@@ -127,11 +128,18 @@ rm -rf "$RELEASE_DIR/venv" \
 # covers the workflow where bump-version.sh emits a HANDOFF alongside the
 # other release files; nested copies in docs/ or similar are intentionally
 # NOT stripped (those would be deliberate documentation, not session notes).
+# v3.4.60: also strip the maintainer-only files (gitignored, never public) —
+# CLAUDE.md, AGENT_GUARDRAILS.md, and ALL HANDOFF*.md (the old `*-HANDOFF*.md`
+# missed `HANDOFF-handheld.md`) — plus a live config.yaml if one is present
+# (its example template still ships). `.claude/` is removed in the rm -rf
+# above. Keep this set in sync with .gitignore's maintainer-only group and the
+# bump-version.sh PII-audit allowlist (Lesson 4.15: one policy, three files).
 find "$RELEASE_DIR" -maxdepth 1 \
     \( -name '.tracker.pid' \
     -o -name '*.db' -o -name '*.db-wal' -o -name '*.db-shm' \
-    -o -name 'config.yaml.bak.*' \
-    -o -name '*-HANDOFF*.md' -o -name 'HANDOFF.md' \) \
+    -o -name 'config.yaml' -o -name 'config.yaml.bak.*' \
+    -o -name 'HANDOFF*.md' -o -name '*-HANDOFF*.md' \
+    -o -name 'CLAUDE.md' -o -name 'AGENT_GUARDRAILS.md' \) \
     -delete 2>/dev/null || true
 
 # --- Zip ---

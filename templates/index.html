@@ -1,4 +1,4 @@
-<!-- Version: 3.4.59 -->
+<!-- Version: 3.4.60 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -5899,6 +5899,7 @@ const CARD_BUILDERS = {
     longest_track:    v => longestTrackCard(v),
     // Composition
     top_aircraft:      v => topAircraftCard(v),  // v3.4.36
+    most_seen_alltime: v => topAircraftCard(v, 'Most seen, all time', 'most_seen_alltime', 'no data yet'),
     top_types:         v => listCard('Top 5 aircraft types', v, r => r.name ? `${r.aircraft_type} — ${r.name}` : r.aircraft_type, r => r.n, 'top_types', r => r.aircraft_type, 'all_types'),
     top_operators:     v => listCard('Top 5 operators', v, r => r.name ? `${r.operator} — ${r.name}` : r.operator, r => r.n, 'top_operators', r => r.operator, 'all_operators'),
     military_branches: v => listCard('Military branches', v, r => r.branch, r => r.n, 'military_branches', null, 'all_military_branches'),
@@ -6094,6 +6095,7 @@ const DRILL_COLUMNS = {
     // every row is an individual aircraft, click jumps to its
     // detail page.
     all_aircraft:      { preset: 'aircraft_list' },
+    most_seen_alltime: { preset: 'aircraft_list' },
     all_military_branches: { preset: 'branch_list' },
     all_category_mix:  { preset: 'category_list' },
     // v2.50.27: full-country-list panel. Row clicks within route back
@@ -6434,6 +6436,7 @@ function titleForCard(cardId){
         all_category_mix: 'All categories',
         // v2.50.27
         all_countries: 'All countries',
+        most_seen_alltime: 'Most seen, all time',
     };
     return titles[cardId] || cardId;
 }
@@ -7679,12 +7682,14 @@ function longestTrackCard(data){
 // background click → all_aircraft panel inline below. Row clicks
 // stopPropagation via the anchor's native navigation, so card-bg
 // handler only fires on label/whitespace clicks.
-function topAircraftCard(items){
-    const allCardId = 'all_aircraft';
+function topAircraftCard(items, label='Top 5 frequent aircraft', allCardId='all_aircraft', emptyText='no data yet today'){
+    // v3.4.36: day-windowed "top_aircraft". Parameterized so the all-time
+    // companion card ("most_seen_alltime") reuses the exact same rendering +
+    // whole-card drill — only the label and the drill cardId differ.
     if(!items || !items.length){
         return `<div class="stat-card">
-            <div class="stat-label">Top 5 frequent aircraft</div>
-            <div class="stat-empty">no data yet today</div>
+            <div class="stat-label">${label}</div>
+            <div class="stat-empty">${emptyText}</div>
         </div>`;
     }
     const lis = items.slice(0, 5).map(r => {
@@ -7711,7 +7716,7 @@ function topAircraftCard(items){
     }).join('');
     return `<div class="stat-card drillable" data-drill-card="${allCardId}" onclick="toggleDrill(this, '${allCardId}')">
         <span class="drill-chev">▼</span>
-        <div class="stat-label">Top 5 frequent aircraft</div>
+        <div class="stat-label">${label}</div>
         <ul class="stat-list">${lis}</ul>
     </div>`;
 }

@@ -1,4 +1,4 @@
-# Version: 3.4.59
+# Version: 3.4.60
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -3597,7 +3597,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             "first_time_seen", "daily_counts_7d", "watchlist_frequency"
         ]),
         ("records",     "All-time records", [
-            "all_time_records"
+            "all_time_records", "most_seen_alltime"
         ]),
         ("coverage",    "Coverage", [
             "range_rose", "distance_histogram"
@@ -4185,6 +4185,42 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 # known) via the shared helper from v3.4.35. Same
                 # pattern as top_operators.
                 result["cards"]["top_aircraft"] = [
+                    _attach_airline_name(dict(r), r["operator"]) for r in rows
+                ]
+
+            # --- All-time records ---
+            if card_check("most_seen_alltime"):
+                # "Most seen, all time" — companion to top_aircraft (which
+                # windows to today). seen_aircraft.sighting_count is a running
+                # all-time per-aircraft total, incremented on every sighting in
+                # the collector upsert, and seen_aircraft is NEVER pruned by
+                # retention — so this is a true all-time count, even for
+                # aircraft whose rollup history has aged out. These are the
+                # regulars that are *always* overhead. Read the counter
+                # directly; no rollup aggregation needed.
+                #
+                # Deliberately NOT backed by an index on sighting_count:
+                # that column is incremented on the hot collector upsert path,
+                # so an index would add write amplification to EVERY sighting
+                # to save ~50ms on this once-per-stats-load top-5 scan — a bad
+                # trade. The 535K-row scan + top-5 sort is the cheaper side.
+                # The query is auto-timed via card_check, so if it ever shows
+                # up hot in /api/stats timings we can revisit.
+                rows = q("""
+                    SELECT icao,
+                           last_callsign,
+                           aircraft_type,
+                           aircraft_type_desc,
+                           operator,
+                           registration,
+                           sighting_count AS n
+                    FROM seen_aircraft
+                    ORDER BY sighting_count DESC
+                    LIMIT 5
+                """)
+                # Same enrichment + row shape as top_aircraft so the frontend
+                # reuses topAircraftCard unchanged.
+                result["cards"]["most_seen_alltime"] = [
                     _attach_airline_name(dict(r), r["operator"]) for r in rows
                 ]
 
@@ -5777,6 +5813,43 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 # builder below overrides len(rows). See the override at
                 # `if all_aircraft_total is not None` further down.
                 all_aircraft_total = _all_aircraft_total
+
+            elif card == "most_seen_alltime":
+                # Top-100 backing the "Most seen, all time" card's whole-card
+                # drill. Same metric as the card — all-time
+                # seen_aircraft.sighting_count read directly (no rollup sum),
+                # capped at 100. Mirrors the all_aircraft drill's row shape so
+                # the existing aircraft_list drill preset + clickable
+                # /aircraft/<icao> rows work unchanged. No index (see the card
+                # comment in get_stats).
+                ac_rows = q("""
+                    SELECT icao,
+                           last_callsign,
+                           aircraft_type,
+                           aircraft_type_desc,
+                           operator,
+                           registration,
+                           first_seen_at,
+                           last_seen_at,
+                           sighting_count AS n
+                    FROM seen_aircraft
+                    ORDER BY sighting_count DESC
+                    LIMIT 100
+                """)
+                for r in ac_rows:
+                    d = dict(r)
+                    d["callsign"] = (d.get("last_callsign") or "").strip()
+                    d["sightings"] = d.get("n") or 0
+                    d["sightings_fmt"] = f"{d['sightings']:,}"
+                    d["first_seen"] = d.get("first_seen_at")
+                    d["last_seen"]  = d.get("last_seen_at")
+                    d["seen_at"] = d["last_seen"]
+                    _attach_airline_name(d, d.get("operator"))
+                    rows.append(d)
+                # Honest population total for the panel footer ("top 100 of N").
+                # seen_aircraft is the all-time population (never pruned).
+                total_row = q("SELECT COUNT(*) AS n FROM seen_aircraft")
+                all_aircraft_total = total_row[0]["n"] if total_row else 0
 
             elif card == "all_types":
                 # v2.41.22: aggregate drill for aircraft types. Same shape as

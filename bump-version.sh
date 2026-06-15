@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.4.59
+# Version: 3.4.60
 # =============================================================================
 # bump-version.sh — Bump Aerodrome version + auto-update CHANGELOG.md
 # =============================================================================
@@ -642,8 +642,12 @@ SKIP_DIRS = {'.git', 'venv', '__pycache__', '.backups', 'node_modules',
 SKIP_EXT = {'.db', '.db-wal', '.db-shm', '.pyc', '.png', '.jpg', '.jpeg',
             '.gif', '.pdf', '.zip', '.sha256', '.ico'}
 def should_skip(fname):
-    # HANDOFF files don't ship in the zip; allowlist them.
-    if 'HANDOFF' in fname:
+    # Maintainer-only files (gitignored, and stripped by package-release.sh)
+    # never ship in the zip or get pushed, so they can't leak — allowlist
+    # them. Keep this set in sync with .gitignore's maintainer-only group
+    # and package-release.sh's strip list. (.claude/ is already pruned as a
+    # dot-dir in the walk below.)
+    if 'HANDOFF' in fname or fname in ('CLAUDE.md', 'AGENT_GUARDRAILS.md'):
         return True
     return any(fname.lower().endswith(e) for e in SKIP_EXT)
 

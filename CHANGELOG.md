@@ -19,6 +19,17 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.60] — 2026-06-15
+
+### Added
+- **A new "Most seen, all time" card on the Stats page surfaces the aircraft that turn up over your receiver the most — the regulars in your sky.** It sits in the All-time records group as a companion to the existing "Top 5 frequent aircraft" card, which only counts today: where that one answers "who's been busy today," this one answers "who is *always* overhead," ranking aircraft by the total number of times they've been recorded across the entire life of your install. Click the card to expand the full top-100 list — each aircraft's callsign, type, operator, registration, total sightings, and when it was first and last seen — and click any row to open that aircraft's detail page. Because the count is all-time and is never pruned, locally-based aircraft — flight-school trainers, nearby corporate flights, the regional carriers that work your area — tend to rise to the top over time, which is exactly what the card is meant to show.
+
+### Behind the scenes
+- The card reads a per-aircraft running total Aerodrome already maintains: every aircraft record carries a lifetime sighting count that's incremented as it's seen, so the new card and its top-100 drill add no new data collection and no new tables — they simply read and rank a number that was already being kept. The count is the same unit as the day-windowed card (individual observations), measured over all time rather than today.
+
+### Operational notes
+- No schema, config, or migration changes. Stats-page addition only.
+
 ## [3.4.59] — 2026-06-08
 
 ### Changed

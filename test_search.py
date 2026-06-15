@@ -662,7 +662,8 @@ def _make_test_db():
             last_lat REAL, last_lon REAL, last_seen_at INTEGER,
             sighting_count INTEGER NOT NULL DEFAULT 0,
             fts_dirty INTEGER NOT NULL DEFAULT 0,
-            last_distance REAL);
+            last_distance REAL,
+            registered_owner TEXT, manufacturer TEXT);
         CREATE INDEX idx_seen_country ON seen_aircraft(country);
         CREATE INDEX idx_seen_type ON seen_aircraft(aircraft_type);
         CREATE INDEX idx_seen_callsign ON seen_aircraft(last_callsign);
@@ -1517,8 +1518,12 @@ class TestDetailPageData(unittest.TestCase):
         from collector import init_db
         init_db(self.tmp.name)
         self.conn = _sq.connect(self.tmp.name)
-        from schema_migrations import _migration_v1_search_schema
-        _migration_v1_search_schema(self.conn)
+        # Apply the FULL migration chain (not just v1) so the test schema
+        # matches a real install — otherwise columns added by later
+        # migrations (e.g. v10's registered_owner/manufacturer, which
+        # detail_for_aircraft selects) are missing and the detail tests fail.
+        from schema_migrations import apply_schema_migrations
+        apply_schema_migrations(self.conn, "test")
 
     def tearDown(self):
         self.conn.close()
