@@ -1,4 +1,4 @@
-<!-- Version: 3.4.65 -->
+<!-- Version: 3.4.66 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -553,6 +553,45 @@
         .radar-marker.selected .rm-glyph { filter:drop-shadow(0 0 4px var(--accent)); }
         .radar-marker.selected .rm-label { display:block; }
 
+        /* ---- Details overlay (increment B) ---- */
+        /* Desktop: right slide-in panel over the map. .live-map-pane is
+           position:relative, so this anchors to it. Hidden = slid off-right. */
+        .radar-overlay {
+            position:absolute; top:10px; right:10px; bottom:10px;
+            width:300px; max-width:calc(100% - 20px);
+            display:flex; flex-direction:column; gap:8px;
+            padding:14px; z-index:2;
+            background:var(--bg1); border:1px solid var(--bd);
+            border-radius:10px; box-shadow:0 8px 30px rgba(0,0,0,.35);
+            transform:translateX(calc(100% + 16px)); opacity:0;
+            transition:transform .18s ease, opacity .18s ease;
+            pointer-events:none; overflow:auto;
+        }
+        .radar-overlay.open { transform:none; opacity:1; pointer-events:auto; }
+        .ro-head { display:flex; align-items:flex-start; gap:8px; }
+        .ro-title { flex:1; font-size:17px; font-weight:600; color:var(--t1);
+            display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+        .ro-badge { font-size:10px; font-weight:700; padding:2px 6px;
+            border-radius:5px; letter-spacing:.04em; }
+        .ro-badge.mil { background:rgba(239,68,68,.18); color:#ef4444; border:1px solid rgba(239,68,68,.5); }
+        .ro-badge.wl  { background:rgba(56,189,248,.18); color:#38bdf8; border:1px solid rgba(56,189,248,.5); }
+        .ro-close { flex:0 0 auto; border:0; background:transparent; cursor:pointer;
+            color:var(--t3); font-size:16px; line-height:1; padding:2px 4px; border-radius:4px; }
+        .ro-close:hover { color:var(--t1); background:var(--bg2); }
+        .ro-sub { font-size:12px; color:var(--t2); margin-top:-2px; }
+        .ro-owner { font-size:12px; color:var(--t2); }
+        .ro-owner .k { color:var(--t3); text-transform:uppercase; font-size:10px;
+            letter-spacing:.05em; display:block; }
+        .ro-owner .v { color:var(--t1); }
+        .ro-telemetry { display:grid; grid-template-columns:1fr 1fr; gap:8px 10px; margin-top:2px; }
+        .ro-telemetry .tcell .k { display:block; font-size:10px; color:var(--t3);
+            text-transform:uppercase; letter-spacing:.05em; }
+        .ro-telemetry .tcell .v { font-size:14px; color:var(--t1); font-weight:600; }
+        .ro-note { font-size:11px; color:var(--t3); font-style:italic; }
+        .ro-full { margin-top:auto; display:inline-block; font-size:13px;
+            color:var(--accent); text-decoration:none; padding-top:6px; }
+        .ro-full:hover { text-decoration:underline; }
+
         /* Phone: panes stack, one at a time via the toggle. */
         @media (max-width: 900px) {
             .live-view-toggle { display:inline-flex; }
@@ -568,6 +607,13 @@
             #radarMap { height:68vh; min-height:380px; }
             .live-split:not(.show-map) .live-map-pane { display:none; }
             .live-split.show-map .live-list-pane { display:none; }
+            /* Phone: details overlay becomes a bottom sheet sliding up. */
+            .radar-overlay {
+                top:auto; left:0; right:0; bottom:0; width:auto; max-width:none;
+                max-height:60%; border-radius:14px 14px 0 0;
+                transform:translateY(100%);
+            }
+            .radar-overlay.open { transform:none; }
         }
 
         .row-card.live-grid, .row-grid-header.live-grid {
@@ -1944,6 +1990,24 @@
                 <div style="margin-top:6px">Set <code>receiver.latitude</code> and <code>receiver.longitude</code> on the
                 <a href="/configuration#receiver">Configuration → Receiver</a> tab to see live aircraft plotted here.</div>
             </div>
+            <!-- v3.5.0 (radar, increment B): non-navigating details overlay.
+                 Desktop = right slide-in panel over the map; phone = bottom
+                 sheet. Opens on marker click, stays live while open, closes
+                 without leaving the tab. -->
+            <div class="radar-overlay" id="radarOverlay" aria-hidden="true">
+                <div class="ro-head">
+                    <div class="ro-title">
+                        <span id="roCallsign">—</span>
+                        <span class="ro-badge" id="roBadge" style="display:none"></span>
+                    </div>
+                    <button type="button" class="ro-close" onclick="closeRadarOverlay()" aria-label="Close details">✕</button>
+                </div>
+                <div class="ro-sub" id="roSub"></div>
+                <div class="ro-owner" id="roOwner"></div>
+                <div class="ro-telemetry" id="roTelemetry"></div>
+                <div class="ro-note" id="roNote" style="display:none"></div>
+                <a class="ro-full" id="roFull" href="#">Full details →</a>
+            </div>
         </div>
     </div>
 </div>
@@ -3085,6 +3149,13 @@ function initRadarMap(receiver){
     });
 
     if(haveRx) _radarDrawReceiver(receiver);
+
+    // Click the map background (not a marker — those stopPropagation) to
+    // dismiss the details overlay; Esc does the same.
+    _radar.map.on('click', () => closeRadarOverlay());
+    document.addEventListener('keydown', e => {
+        if(e.key === 'Escape' && _radar.selectedIcao) closeRadarOverlay();
+    });
 }
 
 // Receiver pin + concentric range rings. Ring radii are round numbers in
@@ -3182,15 +3253,13 @@ function radarSync(liveJ){
         let m = _radar.markers[ac.icao];
         if(!m){
             m = L.marker(ll, { icon: _radarBuildIcon(ac), riseOnHover: true });
-            m.on('click', () => _radarSelect(ac.icao));
-            m.bindPopup(_radarPopupHtml(ac));
+            const hex = ac.icao;
+            m.on('click', e => { L.DomEvent.stopPropagation(e); openRadarOverlay(hex); });
             m.addTo(_radar.map);
             _radar.markers[ac.icao] = m;
         } else {
             m.setLatLng(ll);
             m.setIcon(_radarBuildIcon(ac));
-            if(m.isPopupOpen && m.isPopupOpen()) m.setPopupContent(_radarPopupHtml(ac));
-            else m.bindPopup(_radarPopupHtml(ac));
         }
     });
     // Remove markers for aircraft no longer present.
@@ -3207,29 +3276,146 @@ function radarSync(liveJ){
         _radar.map.fitBounds(bounds, { padding:[40,40], maxZoom:10 });
         _radar._fitOnce = true;
     }
+
+    // Keep an open details overlay live: refresh its telemetry from the
+    // fresh data, and extend the selected aircraft's trail with the new fix.
+    if(_radar.selectedIcao){
+        const sel = live.find(a => a.icao === _radar.selectedIcao);
+        if(sel){
+            _radarRenderOverlay(sel);
+            if(_radar.trailLine && sel.lat != null && sel.lon != null){
+                _radar.trailLine.addLatLng([sel.lat, sel.lon]);
+            }
+        } else {
+            // Selected aircraft dropped out of range — note it, keep panel open.
+            const note = document.getElementById('roNote');
+            if(note){ note.style.display = ''; note.textContent = 'No longer being received — last known data shown.'; }
+        }
+    }
 }
 
-function _radarPopupHtml(ac){
-    const rows = [
-        ['Callsign', ac.callsign || '—'],
-        ['Type', ac.aircraft_type || '—'],
-        ['Altitude', fmtAlt(ac.altitude)],
-        ['Speed', fmtSpd(ac.speed)],
-        ['Distance', fmtDist(ac.distance)],
-    ];
-    return `<div class="radar-popup"><strong>${escapeHtml(ac.callsign || ac.icao || '')}</strong>`
-        + rows.map(([k,v]) => `<div>${k}: ${escapeHtml(String(v))}</div>`).join('')
-        + `<div style="margin-top:4px"><a href="/aircraft/${encodeURIComponent(ac.icao)}">Full details →</a></div></div>`;
-}
-
-function _radarSelect(icao){
-    _radar.selectedIcao = icao;
-    // Re-skin markers so the selected one picks up the .selected glow.
-    const ac = (D.live || []).find(a => a.icao === icao);
+// Re-skin every marker so the selected one picks up the .selected glow
+// (and a deselected one loses it).
+function _radarReskin(){
     Object.keys(_radar.markers).forEach(ic => {
         const a = (D.live || []).find(x => x.icao === ic);
         if(a) _radar.markers[ic].setIcon(_radarBuildIcon(a));
     });
+}
+
+// Open the non-navigating details overlay for one aircraft. Renders the
+// live telemetry we already have, fires a cheap owner lookup, draws the
+// recent trail, and pans the map so the aircraft stays visible beside the
+// panel. No navigation — the Live tab and map state are preserved.
+function openRadarOverlay(icao){
+    const ac = (D.live || []).find(a => a.icao === icao);
+    if(!ac) return;
+    _radar.selectedIcao = icao;
+    _radarReskin();
+    const note = document.getElementById('roNote');
+    if(note) note.style.display = 'none';
+    _radarRenderOverlay(ac);
+    _radarSetOwner('loading');
+    const ov = document.getElementById('radarOverlay');
+    if(ov){ ov.classList.add('open'); ov.setAttribute('aria-hidden', 'false'); }
+    // Cheap owner enrichment (separate from the heavy detail payload).
+    fetch(`/api/aircraft/${encodeURIComponent(icao)}/enrich`)
+        .then(r => r.ok ? r.json() : null)
+        .then(j => { if(_radar.selectedIcao === icao) _radarSetOwner(j); })
+        .catch(() => { if(_radar.selectedIcao === icao) _radarSetOwner(null); });
+    _radarDrawTrail(icao);
+    // Keep the aircraft in view (the panel covers the right edge on desktop,
+    // the bottom on phone — centering keeps it clear of both).
+    if(ac.lat != null && ac.lon != null && _radar.map){
+        _radar.map.panTo([ac.lat, ac.lon], { animate: true });
+    }
+}
+
+function closeRadarOverlay(){
+    _radar.selectedIcao = null;
+    const ov = document.getElementById('radarOverlay');
+    if(ov){ ov.classList.remove('open'); ov.setAttribute('aria-hidden', 'true'); }
+    _radarClearTrail();
+    _radarReskin();
+}
+
+// Fill the overlay panel from a live aircraft record.
+function _radarRenderOverlay(ac){
+    const set = (id, v) => { const el = document.getElementById(id); if(el) el.textContent = v; };
+    set('roCallsign', ac.callsign || ac.icao || '—');
+    const badge = document.getElementById('roBadge');
+    if(badge){
+        if(ac.is_military){ badge.style.display=''; badge.className='ro-badge mil'; badge.textContent = ac.mil_label || 'MIL'; }
+        else { badge.style.display='none'; }
+    }
+    const sub = [ac.icao, ac.aircraft_type, ac.type_desc].filter(Boolean).join(' · ');
+    set('roSub', sub);
+    const vr = ac.vertical_rate;
+    const vrTxt = (vr == null) ? '—' : (vr > 0 ? '↑ ' : (vr < 0 ? '↓ ' : '')) + Math.abs(vr).toLocaleString() + ' fpm';
+    const trkTxt = (ac.track == null) ? '—' : Math.round(ac.track) + '°';
+    const cells = [
+        ['Altitude', fmtAlt(ac.altitude)],
+        ['Speed', fmtSpd(ac.speed)],
+        ['Track', trkTxt],
+        ['Vert. rate', vrTxt],
+        ['Squawk', fmtSquawk(ac.squawk)],
+        ['Distance', fmtDist(ac.distance)],
+    ];
+    const tel = document.getElementById('roTelemetry');
+    if(tel){
+        tel.innerHTML = cells.map(([k,v]) =>
+            `<div class="tcell"><span class="k">${k}</span><span class="v">${escapeHtml(String(v))}</span></div>`
+        ).join('');
+    }
+    const full = document.getElementById('roFull');
+    if(full) full.href = `/aircraft/${encodeURIComponent(ac.icao)}`;
+}
+
+// Owner line. arg: 'loading' | null | {registered_owner, registration} | the
+// operator already on the live record is used as a fallback.
+function _radarSetOwner(info){
+    const el = document.getElementById('roOwner');
+    if(!el) return;
+    const ac = (D.live || []).find(a => a.icao === _radar.selectedIcao);
+    const op = ac && ac.operator ? ac.operator : '';
+    if(info === 'loading'){
+        el.innerHTML = `<span class="k">Owner / operator</span><span class="v">${op ? escapeHtml(op) : '…'}</span>`;
+        return;
+    }
+    const owner = (info && info.registered_owner) ? info.registered_owner : '';
+    const reg = (info && info.registration) ? info.registration : '';
+    const val = owner || op || '—';
+    const regTxt = reg ? ` <span style="color:var(--t3)">(${escapeHtml(reg)})</span>` : '';
+    el.innerHTML = `<span class="k">Owner / operator</span><span class="v">${escapeHtml(val)}${regTxt}</span>`;
+}
+
+// Selected-aircraft trail: a thin polyline of its recent (24h) track, drawn
+// on the main map. Extended live as new fixes arrive (see radarSync).
+function _radarDrawTrail(icao){
+    _radarClearTrail();
+    fetch(`/api/aircraft/${encodeURIComponent(icao)}/positions?window=24h`)
+        .then(r => r.ok ? r.json() : null)
+        .then(j => {
+            if(!j || !j.positions || _radar.selectedIcao !== icao || !_radar.map) return;
+            // positions = [[seen_at, lat, lon, alt], ...]; order by time asc
+            // so the line connects chronologically.
+            const pts = j.positions
+                .filter(p => p[1] != null && p[2] != null)
+                .sort((a,b) => a[0] - b[0])
+                .map(p => [p[1], p[2]]);
+            if(!pts.length) return;
+            const accent = getComputedStyle(document.documentElement)
+                .getPropertyValue('--accent').trim() || '#38bdf8';
+            _radar.trailLine = L.polyline(pts, {
+                renderer: _radar.canvasRenderer, color: accent,
+                weight: 2, opacity: 0.7, interactive: false,
+            }).addTo(_radar.map);
+        })
+        .catch(() => {});
+}
+function _radarClearTrail(){
+    if(_radar.trailLine && _radar.map){ _radar.map.removeLayer(_radar.trailLine); }
+    _radar.trailLine = null;
 }
 
 // Lifecycle: invalidate size when the Live tab/map becomes visible (Leaflet

@@ -19,6 +19,11 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.66] — 2026-06-15
+
+### Added
+- **Click an aircraft on the live map to see its details without leaving the Live tab.** A panel slides in (from the right on a desktop, up from the bottom on a phone) with the aircraft's callsign and type, its registered owner/operator, and a live telemetry readout — altitude, speed, heading, vertical rate, squawk, and distance — that keeps updating every few seconds as long as the panel's open. Its recent flight path is traced on the map so you can see where it came from, and a "Full details →" link jumps to the complete aircraft page if you want the history and charts. Close it with the ✕, the Esc key, or a click on the empty map — the map stays exactly where you left it, nothing reloads. If the aircraft stops being received while you're looking, the panel says so and keeps the last known readout.
+
 ## [3.4.65] — 2026-06-15
 
 ### Added
