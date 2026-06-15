@@ -19,6 +19,19 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.69] — 2026-06-15
+
+### Added
+- **A light/dark toggle for the live map.** A small sun/moon button on the map (top-right) switches the basemap between light and dark tiles, independent of the app's theme — so you can run the app dark but keep a light map, or vice versa. The choice sticks and is shared with the aircraft-detail map, so both honor the same preference.
+
+### Changed
+- **The live map opens framed on everything your receiver is currently seeing.** Instead of starting at a fixed zoom, the map fits its initial view to all the aircraft in range (and your receiver) the first time it loads, so you get the whole picture at a glance and can zoom in from there. It only auto-frames once — after that it stays wherever you pan or zoom it. (A configurable starting view and adjustable range rings are coming to a Map settings section.)
+- **Opening an aircraft's details shifts the map clear of the panel.** When the details panel slides in, the map nudges over so the aircraft field re-centers in the space beside it (left of the panel on desktop, above the sheet on phone) instead of hiding behind it — and shifts back when you close the panel. Clicking a plane still doesn't recenter the map on that plane; the view stays where you put it.
+
+### Fixed
+- **The details panel shows the squawk correctly, and the map controls match the rest of the app.** The panel's squawk readout, which briefly displayed as raw markup, now renders as the formatted code, and the map's zoom and theme buttons now use the same styling as the aircraft-detail map.
+- **A selected aircraft's trail now traces its current pass, not a tangle.** The on-map trail used to connect every position from the last 24 hours, which drew long straight lines jumping across the map whenever an aircraft had left and re-entered coverage. It now shows just the path of the transit you're watching — the most recent unbroken run of positions — so the trail follows the aircraft instead of cutting across gaps.
+
 ## [3.4.66] — 2026-06-15
 
 ### Added

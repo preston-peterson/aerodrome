@@ -1,4 +1,4 @@
-<!-- Version: 3.4.66 -->
+<!-- Version: 3.4.69 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -434,12 +434,12 @@
            ==================================================================== */
         .live-view-controls { display:flex; align-items:center; gap:10px; }
         /* Segmented List/Map toggle — phone only (hidden on desktop split). */
-        .live-view-toggle { display:none; border:1px solid var(--bd); border-radius:8px; overflow:hidden; }
+        .live-view-toggle { display:none; border:1px solid var(--bdr); border-radius:8px; overflow:hidden; }
         .live-view-toggle .lv-seg {
             border:0; background:var(--bg1); color:var(--t2);
             font:inherit; font-size:13px; padding:6px 14px; cursor:pointer;
         }
-        .live-view-toggle .lv-seg + .lv-seg { border-left:1px solid var(--bd); }
+        .live-view-toggle .lv-seg + .lv-seg { border-left:1px solid var(--bdr); }
         .live-view-toggle .lv-seg.on { background:var(--accent); color:#fff; }
 
         .live-split { display:flex; align-items:stretch; gap:0; }
@@ -458,7 +458,7 @@
         .live-map-pane { position:relative; flex:1 1 auto; min-width:280px; }
         #radarMap {
             height:74vh; min-height:460px; width:100%;
-            border-radius:10px; border:1px solid var(--bd);
+            border-radius:10px; border:1px solid var(--bdr);
             background:var(--bg1); z-index:0;
         }
         /* Draggable splitter between list + map. Drag to resize, double-click
@@ -469,7 +469,7 @@
         }
         .live-resizer::before {
             content:''; position:absolute; left:50%; top:0; bottom:0;
-            width:2px; transform:translateX(-50%); background:var(--bd);
+            width:2px; transform:translateX(-50%); background:var(--bdr);
         }
         .live-resizer:hover::before, .live-resizer.dragging::before {
             background:var(--accent); width:3px;
@@ -479,7 +479,7 @@
             transform:translate(-50%,-50%) rotate(0deg);
             writing-mode:vertical-rl; letter-spacing:-3px;
             color:var(--t3); font-size:11px; line-height:1;
-            background:var(--bg1); border:1px solid var(--bd);
+            background:var(--bg1); border:1px solid var(--bdr);
             border-radius:5px; padding:7px 2px;
         }
         .live-resizer:hover::after { color:var(--t1); border-color:var(--accent); }
@@ -491,20 +491,31 @@
             position:absolute; inset:0; display:flex; flex-direction:column;
             align-items:center; justify-content:center; text-align:center;
             padding:24px; gap:2px; color:var(--t2); font-size:13px;
-            background:var(--bg1); border-radius:10px; border:1px solid var(--bd);
+            background:var(--bg1); border-radius:10px; border:1px solid var(--bdr);
             z-index:1;
         }
         .radar-no-receiver code { color:var(--t1); }
 
         /* Leaflet chrome themed to match the app (mirrors #positionMap). */
         #radarMap .leaflet-control-attribution {
-            background:var(--bg1)cc; color:var(--t3); font-size:10px;
+            background:var(--bg1); color:var(--t3); font-size:10px;
         }
         #radarMap .leaflet-control-attribution a { color:var(--accent); }
+        /* Match the aircraft-detail map's zoom control exactly. */
         #radarMap .leaflet-control-zoom a {
-            background:var(--bg1); color:var(--t1); border-color:var(--bd);
+            background:var(--bg2); color:var(--t1); border-color:var(--bdr);
         }
-        #radarMap .leaflet-control-zoom a:hover { background:var(--bg2); }
+        #radarMap .leaflet-control-zoom a:hover { background:var(--bg1); }
+        /* Map light/dark toggle button — same style as the detail page's. */
+        #radarMap .map-theme-btn {
+            background:var(--bg2); color:var(--t1);
+            border:1px solid var(--bdr); border-radius:4px;
+            width:30px; height:30px; padding:0; cursor:pointer;
+            display:flex; align-items:center; justify-content:center;
+            transition:background 0.1s;
+        }
+        #radarMap .map-theme-btn:hover { background:var(--bg1); }
+        #radarMap .map-theme-btn svg { display:block; }
 
         /* Aircraft markers: directional chevron, rotated by heading, colored
            by altitude (fill set inline in JS), sized by class. Labels show
@@ -561,7 +572,7 @@
             width:300px; max-width:calc(100% - 20px);
             display:flex; flex-direction:column; gap:8px;
             padding:14px; z-index:2;
-            background:var(--bg1); border:1px solid var(--bd);
+            background:var(--bg1); border:1px solid var(--bdr);
             border-radius:10px; box-shadow:0 8px 30px rgba(0,0,0,.35);
             transform:translateX(calc(100% + 16px)); opacity:0;
             transition:transform .18s ease, opacity .18s ease;
@@ -586,7 +597,10 @@
         .ro-telemetry { display:grid; grid-template-columns:1fr 1fr; gap:8px 10px; margin-top:2px; }
         .ro-telemetry .tcell .k { display:block; font-size:10px; color:var(--t3);
             text-transform:uppercase; letter-spacing:.05em; }
-        .ro-telemetry .tcell .v { font-size:14px; color:var(--t1); font-weight:600; }
+        .ro-telemetry .tcell .v { font-size:14px; color:var(--t1); font-weight:600; overflow-wrap:anywhere; }
+        /* Emergency squawk chip drops below the value so it can't blow out
+           the 2-column telemetry grid. */
+        .ro-telemetry .sq-chip { display:block; margin-top:3px; font-size:9px; }
         .ro-note { font-size:11px; color:var(--t3); font-style:italic; }
         .ro-full { margin-top:auto; display:inline-block; font-size:13px;
             color:var(--accent); text-decoration:none; padding-top:6px; }
@@ -3067,9 +3081,37 @@ const _radar = {
     rangeRings: [],       // L.circle[]
     receiver: null,       // {lat, lon, distance_unit}
     selectedIcao: null,
-    themeObserver: null,
+    panelOpen: false,
     triedInit: false,
 };
+
+// v3.5.0 (radar): the live map carries its OWN light/dark toggle, matching
+// the aircraft-detail map and SHARING its persisted preference — so a light
+// basemap is available even when the app is in dark mode. (Revises the
+// original "follow the global app theme" plan, at the maintainer's request.)
+const RADAR_MAP_THEME_KEY = 'aerodrome.map_theme';   // same key as the detail map
+function radarGetMapTheme(){
+    try { const v = localStorage.getItem(RADAR_MAP_THEME_KEY);
+          if(v === 'light' || v === 'dark') return v; } catch(e){}
+    return 'dark';
+}
+function radarSetMapTheme(t){
+    try { localStorage.setItem(RADAR_MAP_THEME_KEY, t); } catch(e){}
+}
+const RADAR_SUN_ICON = `<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+  <circle cx="8" cy="8" r="3" fill="currentColor"/>
+  <line x1="8" y1="1" x2="8" y2="3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="8" y1="13" x2="8" y2="15" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="1" y1="8" x2="3" y2="8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="13" y1="8" x2="15" y2="8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="2.9" y1="2.9" x2="4.3" y2="4.3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="11.7" y1="11.7" x2="13.1" y2="13.1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="2.9" y1="13.1" x2="4.3" y2="11.7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="11.7" y1="4.3" x2="13.1" y2="2.9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+</svg>`;
+const RADAR_MOON_ICON = `<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+  <path d="M 12 8.5 A 5 5 0 1 1 7 3.5 A 4 4 0 0 0 12 8.5 Z" fill="currentColor"/>
+</svg>`;
 
 // Altitude → color. Bins mirror the aircraft-detail map's altitude legend
 // (ground → 45k+). Returns a hex string used as the chevron fill.
@@ -3102,16 +3144,30 @@ function _radarChevronSvg(color, px){
 }
 
 function _radarTheme(){
-    return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+    return radarGetMapTheme();   // the map's own preference, not the app theme
 }
 
 function _radarApplyTheme(){
     if(!_radar.map) return;
-    const want = (_radarTheme() === 'light') ? _radar.lightTiles : _radar.darkTiles;
-    if(want === _radar.activeTiles) return;
-    if(_radar.activeTiles) _radar.map.removeLayer(_radar.activeTiles);
-    want.addTo(_radar.map);
-    _radar.activeTiles = want;
+    const dark = _radarTheme() === 'dark';
+    const want = dark ? _radar.darkTiles : _radar.lightTiles;
+    if(want !== _radar.activeTiles){
+        if(_radar.activeTiles) _radar.map.removeLayer(_radar.activeTiles);
+        want.addTo(_radar.map);
+        _radar.activeTiles = want;
+    }
+    // Keep the toggle button's icon/label in sync (sun = "switch to light").
+    const btn = document.querySelector('#radarMap .map-theme-btn');
+    if(btn){
+        btn.innerHTML = dark ? RADAR_SUN_ICON : RADAR_MOON_ICON;
+        btn.title = dark ? 'Switch to light map' : 'Switch to dark map';
+        btn.setAttribute('aria-label', btn.title);
+    }
+}
+
+function _radarToggleMapTheme(){
+    radarSetMapTheme(_radarTheme() === 'dark' ? 'light' : 'dark');
+    _radarApplyTheme();
 }
 
 function initRadarMap(receiver){
@@ -3141,12 +3197,24 @@ function initRadarMap(receiver){
     });
     _radarApplyTheme();
 
-    // Follow the GLOBAL app theme (design decision E) — swap tiles whenever
-    // data-theme flips, rather than carrying a separate map toggle.
-    _radar.themeObserver = new MutationObserver(_radarApplyTheme);
-    _radar.themeObserver.observe(document.documentElement, {
-        attributes: true, attributeFilter: ['data-theme'],
+    // The map carries its OWN light/dark toggle (matching the aircraft-detail
+    // map; preference shared via radarGetMapTheme). A Leaflet control button
+    // in the top-right flips the basemap independent of the app theme.
+    const ThemeControl = L.Control.extend({
+        options: { position: 'topright' },
+        onAdd: function(){
+            const btn = L.DomUtil.create('button', 'map-theme-btn');
+            btn.type = 'button';
+            const dark = _radarTheme() === 'dark';
+            btn.innerHTML = dark ? RADAR_SUN_ICON : RADAR_MOON_ICON;
+            btn.title = dark ? 'Switch to light map' : 'Switch to dark map';
+            btn.setAttribute('aria-label', btn.title);
+            L.DomEvent.disableClickPropagation(btn);
+            L.DomEvent.on(btn, 'click', _radarToggleMapTheme);
+            return btn;
+        }
     });
+    _radar.map.addControl(new ThemeControl());
 
     if(haveRx) _radarDrawReceiver(receiver);
 
@@ -3270,10 +3338,17 @@ function radarSync(liveJ){
         }
     });
 
-    // First batch with no configured receiver: fit to the contacts so the
-    // user sees something useful instead of a blank world.
-    if(!haveRx && !_radar._fitOnce && bounds.length){
-        _radar.map.fitBounds(bounds, { padding:[40,40], maxZoom:10 });
+    // Default initial view (by design): fit to EVERYTHING the
+    // receiver currently sees — all live contacts plus the receiver — once,
+    // on the first batch that has contacts. A maxZoom cap stops a lone
+    // distant contact from zooming the whole field out to nothing. After
+    // this single fit the user's own pan/zoom is left untouched ("see
+    // everything, then zoom in if needed"). A configurable starting view is
+    // the filed Map-settings work (HANDOFF (G)).
+    if(!_radar._fitOnce && bounds.length){
+        const fitPts = bounds.slice();
+        if(haveRx) fitPts.push([receiver.lat, receiver.lon]);
+        _radar.map.fitBounds(fitPts, { padding:[40,40], maxZoom:11 });
         _radar._fitOnce = true;
     }
 
@@ -3310,6 +3385,7 @@ function _radarReskin(){
 function openRadarOverlay(icao){
     const ac = (D.live || []).find(a => a.icao === icao);
     if(!ac) return;
+    const wasOpen = _radar.panelOpen;
     _radar.selectedIcao = icao;
     _radarReskin();
     const note = document.getElementById('roNote');
@@ -3318,25 +3394,44 @@ function openRadarOverlay(icao){
     _radarSetOwner('loading');
     const ov = document.getElementById('radarOverlay');
     if(ov){ ov.classList.add('open'); ov.setAttribute('aria-hidden', 'false'); }
+    _radar.panelOpen = true;
     // Cheap owner enrichment (separate from the heavy detail payload).
     fetch(`/api/aircraft/${encodeURIComponent(icao)}/enrich`)
         .then(r => r.ok ? r.json() : null)
         .then(j => { if(_radar.selectedIcao === icao) _radarSetOwner(j); })
         .catch(() => { if(_radar.selectedIcao === icao) _radarSetOwner(null); });
     _radarDrawTrail(icao);
-    // Keep the aircraft in view (the panel covers the right edge on desktop,
-    // the bottom on phone — centering keeps it clear of both).
-    if(ac.lat != null && ac.lon != null && _radar.map){
-        _radar.map.panTo([ac.lat, ac.lon], { animate: true });
-    }
+    // The map does NOT recenter on the clicked aircraft (by design — the view
+    // stays anchored where the user left it). But when the panel FIRST opens,
+    // shift the field so it re-centers in the space left beside the panel
+    // (the panel covers the right edge on desktop / the bottom on phone), so
+    // the contacts aren't hidden behind it. Only on first open; closing
+    // reverses it.
+    if(!wasOpen) _radarShiftForPanel(true);
 }
 
 function closeRadarOverlay(){
     _radar.selectedIcao = null;
     const ov = document.getElementById('radarOverlay');
     if(ov){ ov.classList.remove('open'); ov.setAttribute('aria-hidden', 'true'); }
+    if(_radar.panelOpen){ _radarShiftForPanel(false); _radar.panelOpen = false; }
     _radarClearTrail();
     _radarReskin();
+}
+
+// Pan the map to recenter in the area NOT covered by the details panel:
+// shift left for the desktop right-panel, up for the phone bottom sheet.
+// Pixel-based (zoom-independent); reversed on close. Not aircraft-specific —
+// a fixed offset that compensates for the panel, not a per-plane recenter.
+function _radarShiftForPanel(opening){
+    if(!_radar.map) return;
+    const ov = document.getElementById('radarOverlay');
+    if(!ov) return;
+    const desktop = window.innerWidth > 900;
+    const dx = desktop ? (ov.offsetWidth || 300) / 2 : 0;
+    const dy = desktop ? 0 : (ov.offsetHeight || 0) / 2;
+    const sign = opening ? 1 : -1;
+    if(dx || dy) _radar.map.panBy([sign * dx, sign * dy], { animate: true });
 }
 
 // Fill the overlay panel from a live aircraft record.
@@ -3363,8 +3458,12 @@ function _radarRenderOverlay(ac){
     ];
     const tel = document.getElementById('roTelemetry');
     if(tel){
+        // Values come from trusted formatters (fmtAlt/fmtSpd/fmtDist return
+        // plain strings; fmtSquawk returns styled HTML) or our own numeric
+        // strings — insert as-is, exactly like the Live list does. Do NOT
+        // escapeHtml here: fmtSquawk's markup would render as literal text.
         tel.innerHTML = cells.map(([k,v]) =>
-            `<div class="tcell"><span class="k">${k}</span><span class="v">${escapeHtml(String(v))}</span></div>`
+            `<div class="tcell"><span class="k">${k}</span><span class="v">${v}</span></div>`
         ).join('');
     }
     const full = document.getElementById('roFull');
@@ -3397,13 +3496,26 @@ function _radarDrawTrail(icao){
         .then(r => r.ok ? r.json() : null)
         .then(j => {
             if(!j || !j.positions || _radar.selectedIcao !== icao || !_radar.map) return;
-            // positions = [[seen_at, lat, lon, alt], ...]; order by time asc
-            // so the line connects chronologically.
-            const pts = j.positions
+            // positions = [[seen_at, lat, lon, alt], ...], sorted by time asc.
+            // Draw only the CURRENT PASS — the most-recent contiguous run of
+            // fixes — not the whole 24h. Connecting every 24h fix into one
+            // line drew straight "teleport" segments across coverage gaps
+            // whenever an aircraft left and re-entered range (or made multiple
+            // passes). We walk back from the latest fix and stop at the first
+            // gap larger than TRAIL_GAP_SEC, so the trail is the path of the
+            // transit you're watching now. (Earlier passes are dropped; the
+            // aircraft-detail map shows the full multi-segment history.)
+            const TRAIL_GAP_SEC = 600;   // a hole > 10 min = a separate pass
+            const all = j.positions
                 .filter(p => p[1] != null && p[2] != null)
-                .sort((a,b) => a[0] - b[0])
-                .map(p => [p[1], p[2]]);
-            if(!pts.length) return;
+                .sort((a,b) => a[0] - b[0]);
+            if(!all.length) return;
+            let start = all.length - 1;
+            while(start > 0 && (all[start][0] - all[start-1][0]) <= TRAIL_GAP_SEC){
+                start--;
+            }
+            const pts = all.slice(start).map(p => [p[1], p[2]]);
+            if(pts.length < 2) return;   // a single fix has no path to draw
             const accent = getComputedStyle(document.documentElement)
                 .getPropertyValue('--accent').trim() || '#38bdf8';
             _radar.trailLine = L.polyline(pts, {
