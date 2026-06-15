@@ -1,4 +1,4 @@
-<!-- Version: 3.4.62 -->
+<!-- Version: 3.4.65 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -33,6 +33,11 @@
     <!-- v2.47.0: theme system extracted to /static/theme.css + theme.js.
          Palette variables and the gear-menu widget styles both live there. -->
     <link rel="stylesheet" href="/static/theme.css">
+    <!-- v3.5.0 (radar): Leaflet for the Live-tab map. Bundled locally
+         (not CDN) so the map works on LAN-only installs with no internet,
+         same as the aircraft-detail position map. -->
+    <link rel="stylesheet" href="/static/leaflet/leaflet.css">
+    <script src="/static/leaflet/leaflet.js" defer></script>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         
@@ -424,6 +429,147 @@
            "seconds ago" for everything or absent entirely). Same
            column ordering as Watchlist/Military for visual consistency
            when switching tabs. */
+        /* ====================================================================
+           v3.5.0 (radar): Live-tab split layout + live map markers.
+           ==================================================================== */
+        .live-view-controls { display:flex; align-items:center; gap:10px; }
+        /* Segmented List/Map toggle — phone only (hidden on desktop split). */
+        .live-view-toggle { display:none; border:1px solid var(--bd); border-radius:8px; overflow:hidden; }
+        .live-view-toggle .lv-seg {
+            border:0; background:var(--bg1); color:var(--t2);
+            font:inherit; font-size:13px; padding:6px 14px; cursor:pointer;
+        }
+        .live-view-toggle .lv-seg + .lv-seg { border-left:1px solid var(--bd); }
+        .live-view-toggle .lv-seg.on { background:var(--accent); color:#fff; }
+
+        .live-split { display:flex; align-items:stretch; gap:0; }
+        /* List pane width is user-draggable (the resizer below); default 58%.
+           flex:0 0 auto so the explicit width is authoritative and the map
+           pane takes the remainder. */
+        .live-list-pane {
+            flex:0 0 auto; width:58%; min-width:300px;
+            max-height:74vh; overflow:auto;
+        }
+        /* In the desktop split the list pane is its OWN scroll container, so
+           the sticky column header sticks to the pane top — not 93px down
+           where it stuck below the page header before the split existed. */
+        .live-list-pane .row-grid-header { top:0; }
+        /* Map pane fills the remaining width on desktop. */
+        .live-map-pane { position:relative; flex:1 1 auto; min-width:280px; }
+        #radarMap {
+            height:74vh; min-height:460px; width:100%;
+            border-radius:10px; border:1px solid var(--bd);
+            background:var(--bg1); z-index:0;
+        }
+        /* Draggable splitter between list + map. Drag to resize, double-click
+           to collapse the list and hand the map full width. */
+        .live-resizer {
+            flex:0 0 12px; align-self:stretch; position:relative;
+            cursor:col-resize; background:transparent; touch-action:none;
+        }
+        .live-resizer::before {
+            content:''; position:absolute; left:50%; top:0; bottom:0;
+            width:2px; transform:translateX(-50%); background:var(--bd);
+        }
+        .live-resizer:hover::before, .live-resizer.dragging::before {
+            background:var(--accent); width:3px;
+        }
+        .live-resizer::after {
+            content:'⋮⋮'; position:absolute; left:50%; top:50%;
+            transform:translate(-50%,-50%) rotate(0deg);
+            writing-mode:vertical-rl; letter-spacing:-3px;
+            color:var(--t3); font-size:11px; line-height:1;
+            background:var(--bg1); border:1px solid var(--bd);
+            border-radius:5px; padding:7px 2px;
+        }
+        .live-resizer:hover::after { color:var(--t1); border-color:var(--accent); }
+        .live-split.list-collapsed .live-list-pane { display:none; }
+        .live-split.list-collapsed .live-resizer::after { content:'›'; writing-mode:horizontal-tb; }
+
+        /* Receiver-not-configured placeholder, overlaid on the map surface. */
+        .radar-no-receiver {
+            position:absolute; inset:0; display:flex; flex-direction:column;
+            align-items:center; justify-content:center; text-align:center;
+            padding:24px; gap:2px; color:var(--t2); font-size:13px;
+            background:var(--bg1); border-radius:10px; border:1px solid var(--bd);
+            z-index:1;
+        }
+        .radar-no-receiver code { color:var(--t1); }
+
+        /* Leaflet chrome themed to match the app (mirrors #positionMap). */
+        #radarMap .leaflet-control-attribution {
+            background:var(--bg1)cc; color:var(--t3); font-size:10px;
+        }
+        #radarMap .leaflet-control-attribution a { color:var(--accent); }
+        #radarMap .leaflet-control-zoom a {
+            background:var(--bg1); color:var(--t1); border-color:var(--bd);
+        }
+        #radarMap .leaflet-control-zoom a:hover { background:var(--bg2); }
+
+        /* Aircraft markers: directional chevron, rotated by heading, colored
+           by altitude (fill set inline in JS), sized by class. Labels show
+           for selected/hovered/military only. */
+        .radar-marker { overflow:visible; }
+        .radar-marker .rm-glyph {
+            position:absolute; left:50%; top:50%;
+            transform-origin:center center;
+            /* translate(-50%,-50%) is baked into the inline transform with
+               the rotation so both compose; see radar JS. */
+            display:block; line-height:0; pointer-events:auto;
+            filter:drop-shadow(0 0 1px rgba(0,0,0,.6));
+        }
+        .radar-marker .rm-ring {
+            position:absolute; left:50%; top:50%;
+            transform:translate(-50%,-50%);
+            border-radius:50%; display:none; pointer-events:none;
+        }
+        .radar-marker.mil .rm-ring {
+            display:block; border:2px solid var(--mil-ring, #ef4444);
+        }
+        .radar-marker.wl .rm-ring {
+            display:block; border:2px solid var(--wl-ring, #38bdf8);
+        }
+        /* Label sits ABOVE the marker so the cursor doesn't cover it on
+           hover (the marker itself is under the pointer). */
+        .radar-marker .rm-label {
+            position:absolute; left:50%; bottom:100%;
+            transform:translateX(-50%); margin-bottom:5px;
+            display:none; white-space:nowrap;
+            font-size:10px; font-weight:600; line-height:1;
+            padding:2px 5px; border-radius:5px;
+            background:rgba(0,0,0,.55); color:#fff; pointer-events:none;
+        }
+        .radar-marker.labeled .rm-label,
+        .radar-marker:hover .rm-label { display:block; }
+        /* Military / watchlist always labeled, as pills. */
+        .radar-marker.mil .rm-label {
+            display:block; background:rgba(239,68,68,.18);
+            color:#ef4444; border:1px solid rgba(239,68,68,.5);
+        }
+        .radar-marker.wl .rm-label {
+            display:block; background:rgba(56,189,248,.18);
+            color:#38bdf8; border:1px solid rgba(56,189,248,.5);
+        }
+        .radar-marker.selected .rm-glyph { filter:drop-shadow(0 0 4px var(--accent)); }
+        .radar-marker.selected .rm-label { display:block; }
+
+        /* Phone: panes stack, one at a time via the toggle. */
+        @media (max-width: 900px) {
+            .live-view-toggle { display:inline-flex; }
+            .live-resizer { display:none; }
+            .live-split { display:block; }
+            .live-list-pane { width:auto; max-height:none; overflow:visible; }
+            /* Phone: page scrolls (not the pane), so the sticky header sits
+               below the page header again, like the other tabs. */
+            .live-list-pane .row-grid-header {
+                top: calc(var(--aerodrome-header-height, 58px) + var(--aerodrome-tabs-height, 35px));
+            }
+            .live-map-pane { margin-top:10px; }
+            #radarMap { height:68vh; min-height:380px; }
+            .live-split:not(.show-map) .live-map-pane { display:none; }
+            .live-split.show-map .live-list-pane { display:none; }
+        }
+
         .row-card.live-grid, .row-grid-header.live-grid {
             display: grid;
             grid-template-columns:
@@ -1752,7 +1898,14 @@
 <div class="panel on" id="p-live">
     <div class="tab-actions">
         <div class="stats-bar" id="liveStats"></div>
-        <div style="margin-left:auto">
+        <div class="live-view-controls" style="margin-left:auto">
+            <!-- v3.5.0 (radar): on phones the split is too tight, so a
+                 segmented List/Map toggle picks one pane. Hidden on desktop
+                 (CSS), where both panes show side by side. -->
+            <div class="live-view-toggle" id="liveViewToggle" role="tablist" aria-label="Live view">
+                <button type="button" class="lv-seg on" data-view="list" onclick="setLiveView('list')">List</button>
+                <button type="button" class="lv-seg" data-view="map" onclick="setLiveView('map')">Map</button>
+            </div>
             <div class="export-wrap">
                 <button class="btn btn-ghost" onclick="toggleExport('live', event)">Export ▾</button>
                 <div class="export-menu" id="expMenu-live">
@@ -1761,19 +1914,38 @@
             </div>
         </div>
     </div>
-    <div class="row-grid-header live-grid">
-        <span class="sortable col-icao" data-c="icao" onclick="srt('live','icao')">ICAO<span class="arr"></span></span>
-        <span class="sortable col-callsign" data-c="callsign" onclick="srt('live','callsign')">Callsign<span class="arr"></span></span>
-        <span class="sortable col-type" data-c="aircraft_type" onclick="srt('live','aircraft_type')">Type<span class="arr"></span></span>
-        <span class="sortable col-desc" data-c="type_desc" onclick="srt('live','type_desc')">Description<span class="arr"></span></span>
-        <span class="sortable num col-speed" data-c="speed" onclick="srt('live','speed')">Speed<span class="arr"></span></span>
-        <span class="sortable num col-altitude" data-c="altitude" onclick="srt('live','altitude')">Altitude<span class="arr"></span></span>
-        <span class="sortable num col-distance" data-c="distance" onclick="srt('live','distance')">Distance<span class="arr"></span></span>
-        <span class="sortable num col-squawk" data-c="squawk" onclick="srt('live','squawk')">Squawk<span class="arr"></span></span>
-        <span class="col-track">Track</span>
-        <span class="col-wl" style="text-align:center">WL</span>
+    <!-- v3.5.0 (radar): Live tab is a responsive split — aircraft list +
+         live map. Desktop shows both with a collapse arrow to hand the full
+         width to the map; phone shows one pane via the toggle above. The
+         list pane is the existing Live list, unchanged. -->
+    <div class="live-split" id="liveSplit">
+        <div class="live-list-pane" id="liveListPane">
+            <div class="row-grid-header live-grid">
+                <span class="sortable col-icao" data-c="icao" onclick="srt('live','icao')">ICAO<span class="arr"></span></span>
+                <span class="sortable col-callsign" data-c="callsign" onclick="srt('live','callsign')">Callsign<span class="arr"></span></span>
+                <span class="sortable col-type" data-c="aircraft_type" onclick="srt('live','aircraft_type')">Type<span class="arr"></span></span>
+                <span class="sortable col-desc" data-c="type_desc" onclick="srt('live','type_desc')">Description<span class="arr"></span></span>
+                <span class="sortable num col-speed" data-c="speed" onclick="srt('live','speed')">Speed<span class="arr"></span></span>
+                <span class="sortable num col-altitude" data-c="altitude" onclick="srt('live','altitude')">Altitude<span class="arr"></span></span>
+                <span class="sortable num col-distance" data-c="distance" onclick="srt('live','distance')">Distance<span class="arr"></span></span>
+                <span class="sortable num col-squawk" data-c="squawk" onclick="srt('live','squawk')">Squawk<span class="arr"></span></span>
+                <span class="col-track">Track</span>
+                <span class="col-wl" style="text-align:center">WL</span>
+            </div>
+            <div class="row-card-list" id="bLive"></div>
+        </div>
+        <div class="live-resizer" id="liveResizer"
+             title="Drag to resize · double-click to collapse the list"
+             role="separator" aria-label="Resize aircraft list"></div>
+        <div class="live-map-pane" id="liveMapPane">
+            <div id="radarMap"></div>
+            <div class="radar-no-receiver" id="radarNoReceiver" style="display:none">
+                <div><strong>Map needs receiver coordinates.</strong></div>
+                <div style="margin-top:6px">Set <code>receiver.latitude</code> and <code>receiver.longitude</code> on the
+                <a href="/configuration#receiver">Configuration → Receiver</a> tab to see live aircraft plotted here.</div>
+            </div>
+        </div>
     </div>
-    <div class="row-card-list" id="bLive"></div>
 </div>
 
 <!-- ======== WATCHLIST ======== -->
@@ -2124,6 +2296,10 @@ function go(t) {
     document.querySelectorAll('.tab').forEach(e => e.classList.toggle('on', e.dataset.t===t));
     document.querySelectorAll('.panel').forEach(e => e.classList.toggle('on', e.id===`p-${t}`));
     if (t==='search') _searchOnOpen();
+    // v3.5.0 (radar): start/stop the faster live-map poll + fix map sizing
+    // when entering/leaving the Live tab (Leaflet can't measure a hidden
+    // container, so invalidateSize must run once the panel is visible).
+    if (t === 'live') radarOnEnterLiveTab(); else radarOnLeaveLiveTab();
     // If the user switched to the Watchlist tab, dismiss any pending alert
     if (t === 'watchlist') dismissWatchlistAlert();
     // Stats tab — fetch fresh data, set up auto-refresh.
@@ -2787,6 +2963,9 @@ async function fetchLive(){
         updateHealthIndicator(statJ);
         document.getElementById('ts').textContent=fmtTime(liveJ.last_updated);
         render('live');
+        // v3.5.0 (radar): feed the live map from the same /api/live payload
+        // (carries receiver coords + per-aircraft track/category).
+        radarSync(liveJ);
         // In "live" trigger mode, the alert depends on D.live — re-evaluate
         // every time the live feed updates so the dot tracks transmission.
         if(waCfg.trigger === 'live') evaluateWatchlistAlert();
@@ -2794,6 +2973,352 @@ async function fetchLive(){
         console.error(e);
         updateHealthIndicator(null);  // treat fetch failure as unhealthy
     }
+}
+
+// =========================================================================
+// v3.5.0 — Live "radar" map
+// =========================================================================
+// A Leaflet map of CURRENT contacts on the Live tab, fed by the same
+// /api/live payload the list uses. Markers are directional chevrons
+// rotated by ground track, colored by altitude, sized by aircraft class;
+// military aircraft get a red ring + MIL pill. Receiver marker + range
+// rings anchor the view. Follows the global app theme (data-theme) by
+// swapping OSM-light / Carto-dark tiles.
+//
+// Rendering note: at this fleet scale (~77 here, 100+ on the Pi target)
+// DOM divIcon markers stay smooth and let us draw the full design —
+// rotation, per-altitude color, class size, labels, mil ring/pill — which
+// Leaflet's canvas renderer can't do for non-circle shapes. The data model
+// is renderer-agnostic, so a canvas pass is a drop-in later if Pi profiling
+// shows jank. (Marker click → a minimal popup for now; the richer
+// non-navigating details overlay is the next radar increment.)
+const _radar = {
+    map: null,
+    canvasRenderer: null,
+    lightTiles: null,
+    darkTiles: null,
+    activeTiles: null,
+    markers: {},          // icao -> L.marker
+    receiverMarker: null,
+    rangeRings: [],       // L.circle[]
+    receiver: null,       // {lat, lon, distance_unit}
+    selectedIcao: null,
+    themeObserver: null,
+    triedInit: false,
+};
+
+// Altitude → color. Bins mirror the aircraft-detail map's altitude legend
+// (ground → 45k+). Returns a hex string used as the chevron fill.
+function _radarAltColor(alt){
+    if(alt == null || isNaN(alt)) return '#9ca3af';        // unknown — grey
+    const a = Number(alt);
+    if(a <  1000) return '#f97316';   // orange  — on/near ground
+    if(a < 10000) return '#facc15';   // yellow  — low
+    if(a < 20000) return '#4ade80';   // green   — mid
+    if(a < 30000) return '#22d3ee';   // cyan    — high
+    if(a < 40000) return '#60a5fa';   // blue    — very high
+    return '#a78bfa';                 // violet  — 40k+
+}
+
+// ADS-B emitter category (or type fallback) → one of 3 discrete sizes.
+// A1/A2 = light/small, A3/A4 = jet, A5+/B/C heavies & specials = large.
+function _radarSize(ac){
+    const c = (ac.category || '').toUpperCase();
+    if(c === 'A1' || c === 'A2' || c === 'B1' || c === 'B2') return 13;  // light
+    if(c === 'A5' || c === 'A6' || c === 'A7' || c.startsWith('B') || c.startsWith('C')) return 24; // heavy/special
+    if(c === 'A3' || c === 'A4') return 19;  // jet
+    return 17;  // unknown — medium default
+}
+
+// Chevron SVG pointing "up" (north); the wrapper rotates it by track.
+function _radarChevronSvg(color, px){
+    return `<svg width="${px}" height="${px}" viewBox="0 0 24 24" aria-hidden="true">`
+        + `<path d="M12 2 L21 22 L12 17 L3 22 Z" fill="${color}" `
+        + `stroke="rgba(0,0,0,.45)" stroke-width="1" stroke-linejoin="round"/></svg>`;
+}
+
+function _radarTheme(){
+    return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+}
+
+function _radarApplyTheme(){
+    if(!_radar.map) return;
+    const want = (_radarTheme() === 'light') ? _radar.lightTiles : _radar.darkTiles;
+    if(want === _radar.activeTiles) return;
+    if(_radar.activeTiles) _radar.map.removeLayer(_radar.activeTiles);
+    want.addTo(_radar.map);
+    _radar.activeTiles = want;
+}
+
+function initRadarMap(receiver){
+    if(_radar.map || typeof L === 'undefined') return;  // not ready / already done
+    const el = document.getElementById('radarMap');
+    if(!el) return;
+    _radar.triedInit = true;
+
+    // Center: receiver if we have it, else a neutral world view that the
+    // first marker batch will fit to.
+    const haveRx = receiver && receiver.lat != null && receiver.lon != null;
+    const center = haveRx ? [receiver.lat, receiver.lon] : [0, 0];
+
+    _radar.canvasRenderer = L.canvas({ padding: 0.5 });
+    _radar.map = L.map('radarMap', {
+        preferCanvas: true, zoomControl: true, attributionControl: true,
+        worldCopyJump: true,
+    }).setView(center, haveRx ? 9 : 2);
+
+    _radar.lightTiles = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 18,
+        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    });
+    _radar.darkTiles = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+        maxZoom: 19, subdomains: 'abcd',
+        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>',
+    });
+    _radarApplyTheme();
+
+    // Follow the GLOBAL app theme (design decision E) — swap tiles whenever
+    // data-theme flips, rather than carrying a separate map toggle.
+    _radar.themeObserver = new MutationObserver(_radarApplyTheme);
+    _radar.themeObserver.observe(document.documentElement, {
+        attributes: true, attributeFilter: ['data-theme'],
+    });
+
+    if(haveRx) _radarDrawReceiver(receiver);
+}
+
+// Receiver pin + concentric range rings. Ring radii are round numbers in
+// the user's distance unit, converted to meters for L.circle.
+function _radarDrawReceiver(receiver){
+    if(!_radar.map) return;
+    const ll = [receiver.lat, receiver.lon];
+    const rxIcon = L.icon({
+        iconUrl: '/static/leaflet/images/marker-icon.png',
+        iconRetinaUrl: '/static/leaflet/images/marker-icon-2x.png',
+        shadowUrl: '/static/leaflet/images/marker-shadow.png',
+        iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], shadowSize: [41, 41],
+    });
+    if(!_radar.receiverMarker){
+        _radar.receiverMarker = L.marker(ll, { icon: rxIcon, title: 'Receiver', zIndexOffset: 1000 })
+            .addTo(_radar.map).bindPopup('Your receiver');
+    } else {
+        _radar.receiverMarker.setLatLng(ll);
+    }
+    _radar.rangeRings.forEach(r => _radar.map.removeLayer(r));
+    _radar.rangeRings = [];
+    const unit = (receiver.distance_unit || 'mi').toLowerCase();
+    const perUnitM = unit === 'km' ? 1000 : (unit === 'nm' ? 1852 : 1609.34);
+    [25, 50, 100, 150].forEach(d => {
+        const ring = L.circle(ll, {
+            radius: d * perUnitM, renderer: _radar.canvasRenderer,
+            color: 'var(--accent)', weight: 1, opacity: 0.35, fill: false,
+            interactive: false, dashArray: '4 5',
+        });
+        // CSS vars don't resolve in SVG stroke; resolve to the computed value.
+        ring.setStyle({ color: getComputedStyle(document.documentElement)
+            .getPropertyValue('--accent').trim() || '#38bdf8' });
+        ring.addTo(_radar.map);
+        ring.bindTooltip(`${d} ${unit}`, { permanent:false, direction:'top', className:'radar-ring-tip' });
+        _radar.rangeRings.push(ring);
+    });
+}
+
+function _radarBuildIcon(ac){
+    const size = _radarSize(ac);
+    const color = _radarAltColor(ac.altitude);
+    const isMil = !!ac.is_military;
+    const track = (ac.track != null && !isNaN(ac.track)) ? Number(ac.track) : null;
+    const rot = (track == null) ? 0 : track;
+    const cls = 'radar-marker' + (isMil ? ' mil' : '')
+        + (ac.icao === _radar.selectedIcao ? ' selected' : '');
+    // Label: military shows its pill label; others get the callsign (only
+    // visible on hover/selected via CSS).
+    const label = isMil ? (ac.mil_label || 'MIL') : (ac.callsign || ac.icao || '');
+    // Ring sized a little larger than the glyph.
+    const ringPx = size + 8;
+    const glyphTransform = `translate(-50%,-50%) rotate(${rot}deg)`;
+    const html =
+        `<span class="rm-ring" style="width:${ringPx}px;height:${ringPx}px"></span>`
+        + `<span class="rm-glyph" style="width:${size}px;height:${size}px;transform:${glyphTransform}">`
+        + _radarChevronSvg(color, size) + `</span>`
+        + `<span class="rm-label">${escapeHtml(label)}</span>`;
+    return L.divIcon({
+        // The class carries radar-marker (+ mil/selected) — REQUIRED: the
+        // .rm-glyph positioning/`display:block` lives under `.radar-marker`,
+        // and CSS transform (the heading rotation) is ignored on a default
+        // inline <span>, so without display:block the chevrons don't rotate.
+        className: cls, html,
+        iconSize: [size, size], iconAnchor: [size/2, size/2],
+    });
+}
+
+// Reconcile markers against the current D.live: update existing, add new,
+// remove gone. Called every poll (~5s while the Live tab is active).
+function radarSync(liveJ){
+    if(typeof L === 'undefined') return;          // Leaflet not loaded yet
+    const receiver = (liveJ && liveJ.receiver) || _radar.receiver;
+    _radar.receiver = receiver;
+    const haveRx = receiver && receiver.lat != null && receiver.lon != null;
+
+    // Toggle the no-receiver placeholder. Without coords we still render the
+    // map and markers (fit-to-bounds), but show a gentle nudge.
+    const nudge = document.getElementById('radarNoReceiver');
+    if(nudge) nudge.style.display = haveRx ? 'none' : '';
+
+    if(!_radar.map){ initRadarMap(receiver); }
+    if(!_radar.map) return;                        // still couldn't init
+    if(haveRx && !_radar.receiverMarker) _radarDrawReceiver(receiver);
+
+    const live = (D.live || []);
+    const seen = {};
+    let withPos = 0;
+    const bounds = [];
+    live.forEach(ac => {
+        if(ac.lat == null || ac.lon == null) return;
+        withPos++;
+        seen[ac.icao] = true;
+        const ll = [ac.lat, ac.lon];
+        bounds.push(ll);
+        let m = _radar.markers[ac.icao];
+        if(!m){
+            m = L.marker(ll, { icon: _radarBuildIcon(ac), riseOnHover: true });
+            m.on('click', () => _radarSelect(ac.icao));
+            m.bindPopup(_radarPopupHtml(ac));
+            m.addTo(_radar.map);
+            _radar.markers[ac.icao] = m;
+        } else {
+            m.setLatLng(ll);
+            m.setIcon(_radarBuildIcon(ac));
+            if(m.isPopupOpen && m.isPopupOpen()) m.setPopupContent(_radarPopupHtml(ac));
+            else m.bindPopup(_radarPopupHtml(ac));
+        }
+    });
+    // Remove markers for aircraft no longer present.
+    Object.keys(_radar.markers).forEach(icao => {
+        if(!seen[icao]){
+            _radar.map.removeLayer(_radar.markers[icao]);
+            delete _radar.markers[icao];
+        }
+    });
+
+    // First batch with no configured receiver: fit to the contacts so the
+    // user sees something useful instead of a blank world.
+    if(!haveRx && !_radar._fitOnce && bounds.length){
+        _radar.map.fitBounds(bounds, { padding:[40,40], maxZoom:10 });
+        _radar._fitOnce = true;
+    }
+}
+
+function _radarPopupHtml(ac){
+    const rows = [
+        ['Callsign', ac.callsign || '—'],
+        ['Type', ac.aircraft_type || '—'],
+        ['Altitude', fmtAlt(ac.altitude)],
+        ['Speed', fmtSpd(ac.speed)],
+        ['Distance', fmtDist(ac.distance)],
+    ];
+    return `<div class="radar-popup"><strong>${escapeHtml(ac.callsign || ac.icao || '')}</strong>`
+        + rows.map(([k,v]) => `<div>${k}: ${escapeHtml(String(v))}</div>`).join('')
+        + `<div style="margin-top:4px"><a href="/aircraft/${encodeURIComponent(ac.icao)}">Full details →</a></div></div>`;
+}
+
+function _radarSelect(icao){
+    _radar.selectedIcao = icao;
+    // Re-skin markers so the selected one picks up the .selected glow.
+    const ac = (D.live || []).find(a => a.icao === icao);
+    Object.keys(_radar.markers).forEach(ic => {
+        const a = (D.live || []).find(x => x.icao === ic);
+        if(a) _radar.markers[ic].setIcon(_radarBuildIcon(a));
+    });
+}
+
+// Lifecycle: invalidate size when the Live tab/map becomes visible (Leaflet
+// can't measure a hidden container), and run a faster poll while viewing.
+let _radarPollTimer = null;
+function radarOnEnterLiveTab(){
+    initLiveResizer();       // one-time (guarded) — wire the drag splitter
+    setLiveView(_liveView);  // re-assert the current phone view
+    // Defer to let the panel become visible before measuring.
+    setTimeout(() => {
+        if(_radar.map) _radar.map.invalidateSize();
+    }, 60);
+    // Faster live cadence while the tab is open (design B: 2–5s). The 60s
+    // global refresh keeps covering the other tabs + health.
+    if(!_radarPollTimer){
+        _radarPollTimer = setInterval(() => { if(activeTab === 'live') fetchLive(); }, 5000);
+    }
+}
+function radarOnLeaveLiveTab(){
+    if(_radarPollTimer){ clearInterval(_radarPollTimer); _radarPollTimer = null; }
+}
+
+// Phone List/Map toggle + desktop list-collapse.
+let _liveView = 'list';   // phone-only; desktop shows both
+function setLiveView(view){
+    _liveView = view;
+    const split = document.getElementById('liveSplit');
+    if(split) split.classList.toggle('show-map', view === 'map');
+    document.querySelectorAll('#liveViewToggle .lv-seg').forEach(b =>
+        b.classList.toggle('on', b.getAttribute('data-view') === view));
+    if(view === 'map' && _radar.map) setTimeout(() => _radar.map.invalidateSize(), 60);
+}
+function toggleLiveListCollapsed(){
+    const split = document.getElementById('liveSplit');
+    if(!split) return;
+    split.classList.toggle('list-collapsed');
+    if(_radar.map) setTimeout(() => _radar.map.invalidateSize(), 60);
+}
+
+// Draggable splitter between the list and map panes (desktop). Drag adjusts
+// the list pane width (persisted); double-click collapses to a full-width
+// map. Pointer events so it works for mouse + touch + pen. Guarded so it
+// only wires up once.
+let _liveResizerInit = false;
+function initLiveResizer(){
+    if(_liveResizerInit) return;
+    const split = document.getElementById('liveSplit');
+    const pane  = document.getElementById('liveListPane');
+    const rez   = document.getElementById('liveResizer');
+    if(!split || !pane || !rez) return;
+    _liveResizerInit = true;
+
+    // Restore a previously dragged width.
+    try {
+        const saved = localStorage.getItem('liveListW');
+        if(saved) pane.style.width = saved;
+    } catch(e){}
+
+    let dragging = false;
+    rez.addEventListener('pointerdown', e => {
+        if(split.classList.contains('list-collapsed')) return;
+        dragging = true;
+        rez.classList.add('dragging');
+        try { rez.setPointerCapture(e.pointerId); } catch(_){}
+        document.body.style.userSelect = 'none';
+        document.body.style.cursor = 'col-resize';
+        e.preventDefault();
+    });
+    rez.addEventListener('pointermove', e => {
+        if(!dragging) return;
+        const r = split.getBoundingClientRect();
+        let w = e.clientX - r.left;
+        const min = 300, max = r.width - 280;   // leave the map ≥280px
+        w = Math.max(min, Math.min(max, w));
+        pane.style.width = w + 'px';
+        if(_radar.map) _radar.map.invalidateSize();
+    });
+    function endDrag(){
+        if(!dragging) return;
+        dragging = false;
+        rez.classList.remove('dragging');
+        document.body.style.userSelect = '';
+        document.body.style.cursor = '';
+        try { localStorage.setItem('liveListW', pane.style.width); } catch(e){}
+        if(_radar.map) setTimeout(() => _radar.map.invalidateSize(), 30);
+    }
+    rez.addEventListener('pointerup', endDrag);
+    rez.addEventListener('pointercancel', endDrag);
+    rez.addEventListener('dblclick', () => toggleLiveListCollapsed());
 }
 
 // =========================================================================
@@ -5483,6 +6008,9 @@ async function refresh(){
 // Load UI config + watchlist state first so buttons render with correct state on first paint
 Promise.all([loadUiConfig(), loadWLChips()]).then(()=>{
     refresh();
+    // v3.5.0 (radar): Live is the default tab on load — start its faster
+    // map poll + size the map once the first paint settles.
+    radarOnEnterLiveTab();
 });
 setInterval(refresh, 60000);
 

@@ -19,6 +19,14 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.65] — 2026-06-15
+
+### Added
+- **The Live tab now has a map.** Alongside the familiar aircraft list, you get a live radar-style view of everything your receiver is hearing right now — so you can see *where* the traffic is, not just read it off in a table. Each aircraft is a directional chevron that points the way it's heading, colored by altitude (a ground-to-45,000-ft gradient, so a glance tells you who's low and who's high) and sized by class so heavies read larger than light singles. Military contacts keep the app's red treatment — a red ring and an always-on MIL label — and your receiver sits at the center inside range rings (25/50/100/150 in your distance unit) so you can gauge how far out each contact is. Click any aircraft for a quick summary with a link straight to its full detail page. On a desktop the list and map sit side by side with a draggable divider you can slide to widen either one — double-click it to collapse the list entirely and give the map the full width; on a phone a List / Map toggle swaps between them. The map follows your app theme automatically — light tiles in light mode, dark in dark — and refreshes every few seconds while you're on the tab. The aircraft list itself is unchanged: same columns, same sorting, same coloring.
+
+### Behind the scenes
+- The map is Leaflet (already bundled for the aircraft-detail position map, so no new dependency and it still works on a LAN with no internet) fed by the same `/api/live` poll the list uses — that endpoint now also reports each aircraft's ground track, vertical rate, and ADS-B emitter category, plus the receiver's coordinates, which the markers and rings render from. Markers are lightweight DOM elements at this fleet size; the data model is renderer-agnostic so the drawing layer can be swapped later if a much larger fleet ever needs it. No database, schema, or config changes — the map reads only live receiver data, and shows a short setup note if the receiver's latitude/longitude aren't configured yet.
+
 ## [3.4.62] — 2026-06-15
 
 ### Fixed

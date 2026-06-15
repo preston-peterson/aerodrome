@@ -1,4 +1,4 @@
-# Version: 3.4.62
+# Version: 3.4.65
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -1318,11 +1318,45 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                     "mil_label": mil_label,
                     "mil_color": mil_color,
                     "squawk": _normalize_squawk_str(ac.get("squawk")),
+                    # v3.5.0 (radar): directional + classification fields the
+                    # live map needs at render time. `track` is true ground
+                    # track in degrees (chevron rotation; falls back to
+                    # true_heading when a feeder omits track on a poll).
+                    # `vertical_rate` (ft/min) is barometric-preferred,
+                    # geometric fallback — for the overlay telemetry and the
+                    # eventual dead-reckoning glide. `category` is the ADS-B
+                    # emitter category ("A1".."C7") that drives marker size
+                    # (light/jet/heavy). All may be None — the frontend treats
+                    # missing track as "no rotation" and missing category as
+                    # the medium default.
+                    "track": ac.get("track") if ac.get("track") is not None
+                             else ac.get("true_heading"),
+                    "vertical_rate": (ac.get("baro_rate") if ac.get("baro_rate") is not None
+                                      else ac.get("geom_rate")),
+                    "category": ac.get("category") or None,
                 })
-            return {"aircraft": result, "count": len(result), "last_updated": int(time.time())}
+            # v3.5.0 (radar): expose the configured receiver position so the
+            # map can drop a receiver marker + range rings. Null lat/lon when
+            # the receiver location isn't configured — the frontend then skips
+            # the receiver marker/rings and just centers on the aircraft.
+            _rx = CONFIG.get("receiver", {})
+            return {
+                "aircraft": result,
+                "count": len(result),
+                "last_updated": int(time.time()),
+                "receiver": {
+                    "lat": _rx.get("latitude"),
+                    "lon": _rx.get("longitude"),
+                    "distance_unit": (_rx.get("distance_unit") or "mi").lower(),
+                },
+            }
         except Exception as e:
             logger.error(f"Live fetch failed: {e}")
-            return {"aircraft": [], "count": 0, "last_updated": int(time.time()), "error": str(e)}
+            _rx = CONFIG.get("receiver", {})
+            return {"aircraft": [], "count": 0, "last_updated": int(time.time()),
+                    "receiver": {"lat": _rx.get("latitude"), "lon": _rx.get("longitude"),
+                                 "distance_unit": (_rx.get("distance_unit") or "mi").lower()},
+                    "error": str(e)}
 
     # --- Military ---
     # v3.4.48: NON-async (plain def), same rationale as /api/watchlist below
