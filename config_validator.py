@@ -10,9 +10,12 @@ Usage:
         # each error: {"path": "receiver.port", "message": "Must be 1-65535"}
         return error_response(errors)
 """
-# Version: 3.4.82
+# Version: 3.4.83
 
 import re
+import socket
+import ipaddress
+from urllib.parse import urlsplit
 from typing import Any, List, Tuple
 
 Errors = List[Tuple[str, str]]
@@ -227,6 +230,44 @@ def _validate_url_scheme(value: Any, path: str, required: bool = False) -> Error
     rest = v.split("://", 1)[1]
     if not rest or rest.startswith("/"):
         return [(path, "URL must include a host (e.g. http://localhost:2586/topic)")]
+    return []
+
+
+def _validate_outbound_url(value: Any, path: str) -> Errors:
+    """SSRF guard for URLs the SERVER itself will fetch (e.g. notifications.url,
+    which the notifier POSTs to on every event).
+
+    Blocks addresses that have no legitimate notification use and exist mainly
+    as SSRF pivots: link-local (which includes 169.254.169.254 cloud-metadata),
+    multicast, reserved, and the unspecified address. Loopback (the bundled
+    local ntfy at http://localhost:2586/...) and private LAN ranges (a
+    self-hosted ntfy elsewhere on the network) are intentionally ALLOWED —
+    those are real, supported setups, so we don't break them.
+
+    Empty / non-string / scheme problems are left to _validate_url_scheme; this
+    only adds the address-class check. A name that can't be resolved right now
+    is NOT rejected (transient DNS shouldn't block a save) — the notifier
+    re-checks at send time."""
+    if value is None or (isinstance(value, str) and value.strip() == ""):
+        return []
+    if not _is_str(value):
+        return []
+    host = urlsplit(value.strip()).hostname
+    if not host:
+        return []
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return []  # unresolvable now — don't block the save; send-time re-checks
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            continue
+        if ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+            return [(path, "URL resolves to a blocked address (link-local/"
+                           "metadata, multicast, or reserved). Use your ntfy "
+                           "server's normal address.")]
     return []
 
 
@@ -619,6 +660,12 @@ def validate_config(cfg: Any) -> Errors:
             errs += _validate_url_scheme(
                 nt.get("url"), "notifications.url", required=url_required
             )
+            # v3.4.83: SSRF guard — the server POSTs to this URL on every event,
+            # so block metadata/link-local/multicast/reserved targets at save
+            # time (loopback + LAN ntfy stay allowed). public_url below is NOT
+            # fetched by the server (it only goes into the ntfy Click header for
+            # the user's phone), so it does not get this check.
+            errs += _validate_outbound_url(nt.get("url"), "notifications.url")
 
             # v2.43.0: public_url — always optional. When set, enables tap-to-open
             # actions on notifications. Empty string is fine (disables the feature);

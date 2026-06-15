@@ -19,6 +19,11 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.83] — 2026-06-15
+
+### Changed
+- **Hardened push-notification delivery against server-side request forgery (SSRF).** Aerodrome sends notifications by POSTing to your configured ntfy URL. That URL is now checked — both when you save it and when a notification is sent — so the server won't be tricked into making requests to link-local, cloud-metadata, multicast, or reserved addresses. Your normal ntfy setups are unaffected: the bundled local ntfy (`localhost`) and a self-hosted ntfy elsewhere on your network both keep working. Notification requests also no longer follow redirects, and a failed send now reports only the HTTP status code rather than echoing back the response body.
+
 ## [3.4.82] — 2026-06-15
 
 ### Changed

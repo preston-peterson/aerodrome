@@ -38,6 +38,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 
+from config_validator import _validate_outbound_url
+
 log = logging.getLogger("aerodrome.notifier")
 
 # ntfy's accepted priority names in order. If a caller passes a level we
@@ -736,9 +738,19 @@ class Notifier:
             # Already sanitized by _build_actions
             headers["Actions"] = actions
 
+        # v3.4.83: SSRF guard at send time (covers the configured URL AND the
+        # /api/notifications/test path, where the URL is user-supplied). Blocks
+        # metadata/link-local/multicast/reserved targets; loopback + LAN ntfy
+        # stay allowed. This is the last line of defense even if a bad URL got
+        # into config out-of-band.
+        if _validate_outbound_url(url, "notifications.url"):
+            return False, 0, "Blocked: notification URL targets a disallowed address"
+
         try:
+            # allow_redirects=False: a 30x to an internal host would otherwise
+            # bypass the address check above.
             r = requests.post(url, data=body.encode("utf-8"),
-                              headers=headers, timeout=5)
+                              headers=headers, timeout=5, allow_redirects=False)
         except requests.Timeout:
             return False, 0, "Timeout (5s) reaching ntfy"
         except requests.ConnectionError as e:
@@ -748,9 +760,11 @@ class Notifier:
 
         if 200 <= r.status_code < 300:
             return True, r.status_code, ""
-        # ntfy returns JSON errors; include the body to aid debugging.
-        snippet = (r.text or "")[:200].strip()
-        return False, r.status_code, f"HTTP {r.status_code}: {snippet}"
+        # v3.4.83: report only the status code, never the response body. Echoing
+        # the body turned this into an SSRF response-oracle (the body of whatever
+        # the server fetched leaked back to the caller). The status code alone is
+        # enough to debug a misconfigured ntfy topic/auth.
+        return False, r.status_code, f"HTTP {r.status_code}"
 
     # ---------------------------------------------------------------
     # Observability
