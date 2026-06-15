@@ -128,15 +128,18 @@ SORTABLE_COLUMNS = {
     "seen_at":        "seen_aircraft.last_seen_at",
     "first_seen_at":  "seen_aircraft.first_seen_at",
     "sightings":      "seen_aircraft.sighting_count",
-    # v2.81.0: track length is computed on-the-fly from the two
-    # timestamps that are already on every seen_aircraft row. No
-    # stored column, no schema migration, no backfill — sorting cost
-    # is the arithmetic in the ORDER BY plus the existing index reads,
-    # measured at sub-millisecond on production-scale fleets. NULL
-    # handling falls out of the existing `<col> IS NULL` prefix in
-    # _build_order_by_clauses (rows where either timestamp is NULL
-    # sort last, matching every other user-chosen sort).
-    "track_length":   "(seen_aircraft.last_seen_at - seen_aircraft.first_seen_at)",
+    # v3.4.62: track length = the all-time longest single continuous
+    # track (session) for the aircraft, read from the stored
+    # seen_aircraft.best_track_seconds column (maintained by the
+    # collector from the aircraft_track_daily rollup; migration v11).
+    # Through v3.4.61 this was `last_seen_at - first_seen_at` — the
+    # lifetime span from first-ever to most-recent sighting, which for
+    # a regular reads ~the retention window, not a track duration. A
+    # stored column lets the ORDER BY sort the FULL result set (same
+    # reason last_distance and sighting_count are stored). NULL (no
+    # tracked session) falls out of the existing `<col> IS NULL` prefix
+    # in the ORDER BY construction, sorting last like every other sort.
+    "track_length":   "seen_aircraft.best_track_seconds",
 }
 
 # Per-column sensible default direction when the user hasn't specified
@@ -1109,7 +1112,7 @@ def execute_search(conn: sqlite3.Connection, parsed: Dict[str, Any],
         seen_aircraft.last_seen_at, seen_aircraft.sighting_count,
         seen_aircraft.first_seen_at,
         latest_h.last_speed, latest_h.last_altitude, latest_h.last_squawk,
-        seen_aircraft.last_distance
+        seen_aircraft.last_distance, seen_aircraft.best_track_seconds
     """
 
     # Correlated subquery: per-icao, the most recent hour_bucket's
@@ -1195,7 +1198,12 @@ def execute_search(conn: sqlite3.Connection, parsed: Dict[str, Any],
                 # v2.60.1: stored last_distance in canonical km. server.py
                 # converts to user-unit at response-annotation time.
                 "last_distance_km": r[15],
-                "score": r[16],
+                # v3.4.62: all-time longest single continuous track, in
+                # seconds (NULL if no session has been tracked). Replaces
+                # the client-side last_seen_at − first_seen_at computation
+                # that used to back the Search "Track length" column.
+                "track_length_sec": r[16],
+                "score": r[17],
             })
         return {
             "total_count": total_count,

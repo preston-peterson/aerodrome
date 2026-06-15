@@ -663,7 +663,8 @@ def _make_test_db():
             sighting_count INTEGER NOT NULL DEFAULT 0,
             fts_dirty INTEGER NOT NULL DEFAULT 0,
             last_distance REAL,
-            registered_owner TEXT, manufacturer TEXT);
+            registered_owner TEXT, manufacturer TEXT,
+            best_track_seconds INTEGER);
         CREATE INDEX idx_seen_country ON seen_aircraft(country);
         CREATE INDEX idx_seen_type ON seen_aircraft(aircraft_type);
         CREATE INDEX idx_seen_callsign ON seen_aircraft(last_callsign);
@@ -684,22 +685,25 @@ def _make_test_db():
 
     now = int(time.time())
     fixtures = [
-        # icao, registration, callsign, type, desc, operator, country, sighting_count, last_seen_offset
-        ("A12345", "N12345", "UAL2024", "B738", "Boeing 737-800", "United Airlines", "United States", 50, -3600),
-        ("A12346", "N98765", "UAL101",  "B738", "Boeing 737-800", "United Airlines", "United States", 30, -7200),
-        ("A22222", "N22222", "DAL550",  "B739", "Boeing 737-900", "Delta Air Lines", "United States", 20, -10800),
-        ("C00001", "C-FAAA", "ACA847",  "B738", "Boeing 737-800", "Air Canada",      "Canada",        100, -1800),
-        ("C00002", "C-FBBB", "ACA101",  "A320", "Airbus A320",    "Air Canada",      "Canada",        15, -86400),
-        ("400001", "G-AAAA", "BAW100",  "B789", "Boeing 787-9",   "British Airways", "United Kingdom",75, -2400),
+        # icao, registration, callsign, type, desc, operator, country, sighting_count, last_seen_offset, best_track_seconds
+        # best_track_seconds = all-time longest single track (v3.4.62); distinct
+        # per row so sort tests have a deterministic order.
+        ("A12345", "N12345", "UAL2024", "B738", "Boeing 737-800", "United Airlines", "United States", 50, -3600, 1800),
+        ("A12346", "N98765", "UAL101",  "B738", "Boeing 737-800", "United Airlines", "United States", 30, -7200, 3600),
+        ("A22222", "N22222", "DAL550",  "B739", "Boeing 737-900", "Delta Air Lines", "United States", 20, -10800, 600),
+        ("C00001", "C-FAAA", "ACA847",  "B738", "Boeing 737-800", "Air Canada",      "Canada",        100, -1800, 7200),
+        ("C00002", "C-FBBB", "ACA101",  "A320", "Airbus A320",    "Air Canada",      "Canada",        15, -86400, 300),
+        ("400001", "G-AAAA", "BAW100",  "B789", "Boeing 787-9",   "British Airways", "United Kingdom",75, -2400, 5400),
     ]
-    for ic, reg, cs, atype, desc, op, country, count, ts_offset in fixtures:
+    for ic, reg, cs, atype, desc, op, country, count, ts_offset, best_track in fixtures:
         conn.execute("""INSERT INTO seen_aircraft (
             icao, first_seen_at, first_callsign, first_aircraft_type,
             registration, last_callsign, aircraft_type, aircraft_type_desc,
-            operator, country, last_lat, last_lon, last_seen_at, sighting_count, fts_dirty
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)""",
+            operator, country, last_lat, last_lon, last_seen_at, sighting_count, fts_dirty,
+            best_track_seconds
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)""",
         (ic, now + ts_offset - 86400*30, cs, atype, reg, cs, atype, desc, op, country,
-         37.5, -122.1, now + ts_offset, count))
+         37.5, -122.1, now + ts_offset, count, best_track))
     # Populate FTS
     conn.execute("""INSERT INTO seen_aircraft_fts (rowid, icao, registration, last_callsign,
         aircraft_type, aircraft_type_desc, operator, country)
@@ -1336,40 +1340,44 @@ class TestExecutor(unittest.TestCase):
 
     def test_sort_by_track_length_desc_default(self):
         """Default direction for track_length is DESC (longest first).
-        Insert a row with a 365-day track and confirm it sorts to the
-        top when no explicit direction is passed."""
+        Insert a row with a very long single track (best_track_seconds)
+        and confirm it sorts to the top when no explicit direction is
+        passed. Also confirms the value is served as track_length_sec."""
         now = int(time.time())
         self.conn.execute(
             "INSERT INTO seen_aircraft ("
             "icao, first_seen_at, first_callsign, first_aircraft_type, "
             "registration, last_callsign, aircraft_type, aircraft_type_desc, "
-            "operator, country, last_lat, last_lon, last_seen_at, sighting_count, fts_dirty"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+            "operator, country, last_lat, last_lon, last_seen_at, sighting_count, "
+            "fts_dirty, best_track_seconds"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)",
             ("L00001", now - 365 * 86400, "LONG1", "B777", "N-LONG", "LONG1",
              "B777", "Boeing 777", "TestOp", "TestCountry",
-             37.5, -122.1, now, 999),
+             37.5, -122.1, now, 999, 36000),  # 10h — longest in the set
         )
         self.conn.commit()
         # direction=None → uses _SORT_DEFAULT_DIR['track_length'] = 'desc'
         r = execute_search(self.conn, parse_query(""),
                             order="track_length", direction=None)
         self.assertEqual(r["rows"][0]["icao"], "L00001")
+        self.assertEqual(r["rows"][0]["track_length_sec"], 36000)
 
     def test_sort_by_track_length_asc_short_first(self):
         """ASC puts shortest tracks first. Useful for spotting
         one-sighting aircraft / brief flyovers."""
         now = int(time.time())
-        # 60-second track length — a typical "passed through the
-        # coverage area once" aircraft.
+        # 60-second longest track — a typical "passed through the
+        # coverage area once" aircraft; smaller than every base fixture.
         self.conn.execute(
             "INSERT INTO seen_aircraft ("
             "icao, first_seen_at, first_callsign, first_aircraft_type, "
             "registration, last_callsign, aircraft_type, aircraft_type_desc, "
-            "operator, country, last_lat, last_lon, last_seen_at, sighting_count, fts_dirty"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+            "operator, country, last_lat, last_lon, last_seen_at, sighting_count, "
+            "fts_dirty, best_track_seconds"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)",
             ("S00001", now - 60, "SHORT1", "C172", "N-SHRT", "SHORT1",
              "C172", "Cessna 172", "TestOp", "TestCountry",
-             37.5, -122.1, now, 2),
+             37.5, -122.1, now, 2, 60),
         )
         self.conn.commit()
         r = execute_search(self.conn, parse_query(""),
@@ -1377,49 +1385,56 @@ class TestExecutor(unittest.TestCase):
         self.assertEqual(r["rows"][0]["icao"], "S00001")
 
     def test_sort_by_track_length_null_sorts_last(self):
-        """When the (last_seen_at - first_seen_at) expression
-        evaluates to NULL (e.g. last_seen_at is NULL), the row sorts
-        LAST regardless of direction. The fixture's first_seen_at
-        column is NOT NULL so we exercise the NULL-last-seen path —
-        same effect on the expression."""
+        """When best_track_seconds is NULL (no session ever tracked —
+        a legacy row that predates the v11 backfill, or an aircraft
+        with no aircraft_track_daily rows), the row sorts LAST in both
+        directions via the `<col> IS NULL` ORDER BY prefix, matching
+        every other column's NULL-last behavior."""
         now = int(time.time())
         self.conn.execute(
             "INSERT INTO seen_aircraft ("
             "icao, first_seen_at, first_callsign, first_aircraft_type, "
             "registration, last_callsign, aircraft_type, aircraft_type_desc, "
-            "operator, country, last_lat, last_lon, last_seen_at, sighting_count, fts_dirty"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 0)",
+            "operator, country, last_lat, last_lon, last_seen_at, sighting_count, "
+            "fts_dirty, best_track_seconds"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)",
             ("N00001", now - 86400, "NULL1", "C172", "N-NULL", "NULL1",
              "C172", "Cessna 172", "TestOp", "TestCountry",
-             37.5, -122.1, 1),
+             37.5, -122.1, now, 1),
         )
         self.conn.commit()
         # DESC: NULL row at the end. SQLite's default for DESC already
         # sorts NULL last, so the IS-NULL guard is defensive for this
-        # direction — but exercising it confirms the guard is in
-        # effect rather than the implicit behavior.
+        # direction — but exercising it confirms the guard is in effect.
         r_desc = execute_search(self.conn, parse_query(""),
                                  order="track_length", direction="desc")
         self.assertEqual(r_desc["rows"][-1]["icao"], "N00001")
-        # ASC: NULL row also at the end. SQLite's default for ASC
-        # would sort NULL FIRST (which is the wrong UX — "shortest
-        # tracks" shouldn't lead with rows that have no track at
-        # all). The IS-NULL guard inverts the default and keeps NULL
-        # rows at the bottom.
+        # ASC: NULL would default to FIRST (the wrong UX — "shortest
+        # tracks" shouldn't lead with rows that have no track at all).
+        # The IS-NULL guard inverts the default and keeps NULL last.
         r_asc = execute_search(self.conn, parse_query(""),
                                 order="track_length", direction="asc")
         self.assertEqual(r_asc["rows"][-1]["icao"], "N00001")
 
+    def test_sort_by_track_length_value_and_order(self):
+        """track_length_sec is served straight from best_track_seconds,
+        and DESC orders the full browse set by it. C00001 (7200s) is
+        the longest base fixture, C00002 (300s) the shortest."""
+        r = execute_search(self.conn, parse_query(""),
+                           order="track_length", direction="desc")
+        self.assertEqual(r["rows"][0]["icao"], "C00001")
+        self.assertEqual(r["rows"][0]["track_length_sec"], 7200)
+        vals = [row["track_length_sec"] for row in r["rows"]]
+        self.assertEqual(vals, sorted(vals, reverse=True))
+
     def test_sort_by_track_length_with_filter(self):
         """Sort applies within the filtered subset. Canada filter
-        narrows to C00001 and C00002; both have identical 30-day
-        track length so the score-DESC tie-break determines order
-        and total_count is still correct."""
+        narrows to C00001 (7200s) and C00002 (300s); DESC orders the
+        longer track first and total_count is still correct."""
         r = execute_search(self.conn, parse_query("Canada"),
                             order="track_length", direction="desc")
         self.assertEqual(r["total_count"], 2)
-        icaos = {row["icao"] for row in r["rows"]}
-        self.assertEqual(icaos, {"C00001", "C00002"})
+        self.assertEqual([row["icao"] for row in r["rows"]], ["C00001", "C00002"])
 
     # v2.62.0 (Phase 1E): URL-supplied date-range filtering.
     def test_from_ts_filters_to_window(self):
@@ -1674,7 +1689,8 @@ class TestPeakToday(unittest.TestCase):
                 last_lat REAL, last_lon REAL, last_seen_at INTEGER,
                 sighting_count INTEGER NOT NULL DEFAULT 0,
                 fts_dirty INTEGER NOT NULL DEFAULT 0,
-                last_distance REAL);
+                last_distance REAL,
+                best_track_seconds INTEGER);
             CREATE INDEX idx_seen_country ON seen_aircraft(country);
             CREATE INDEX idx_seen_type ON seen_aircraft(aircraft_type);
             CREATE INDEX idx_seen_last ON seen_aircraft(last_seen_at);

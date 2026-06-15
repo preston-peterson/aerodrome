@@ -1,4 +1,4 @@
-# Version: 3.4.61
+# Version: 3.4.62
 """
 collector.py — ADS-B data fetcher and classifier.
 
@@ -3475,13 +3475,24 @@ def fetch_and_store(config: Dict, watchlist_lookup: Dict):
         # classification is 'military', the result stays 'military'.
         # That means a feeder flicker (dbFlags missing on one poll)
         # can't downgrade a known military aircraft to commercial.
+        # v3.4.62: best_track_seconds is the all-time longest single
+        # continuous track (session) for this aircraft, in seconds. We
+        # already computed today's best session (atd_best_dur) just above
+        # for aircraft_track_daily, so we fold a MAX into this existing
+        # UPSERT rather than adding a statement to the hot path. It's a
+        # high-water mark: ON CONFLICT keeps the larger of the stored value
+        # and today's best, so it never regresses even after the day that
+        # set the record ages out of the aircraft_track_daily retention
+        # window. COALESCE(..., 0) handles the NULL stored on legacy rows
+        # (scalar MAX() returns NULL if any argument is NULL). Like
+        # sighting_count, it is intentionally unindexed (see migration v11).
         conn.execute("""
             INSERT INTO seen_aircraft (
                 icao, first_seen_at, first_callsign, first_aircraft_type,
                 last_callsign, aircraft_type, aircraft_type_desc, operator, country,
                 last_lat, last_lon, last_distance, last_seen_at, sighting_count,
-                fts_dirty, category
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?)
+                fts_dirty, category, best_track_seconds
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)
             ON CONFLICT(icao) DO UPDATE SET
                 last_callsign = COALESCE(NULLIF(excluded.last_callsign, ''), last_callsign),
                 aircraft_type = COALESCE(NULLIF(excluded.aircraft_type, ''), aircraft_type),
@@ -3493,6 +3504,10 @@ def fetch_and_store(config: Dict, watchlist_lookup: Dict):
                 last_distance = COALESCE(excluded.last_distance, last_distance),
                 last_seen_at = excluded.last_seen_at,
                 sighting_count = sighting_count + 1,
+                best_track_seconds = MAX(
+                    COALESCE(seen_aircraft.best_track_seconds, 0),
+                    excluded.best_track_seconds
+                ),
                 category = CASE
                     WHEN excluded.category = 'military' THEN 'military'
                     WHEN seen_aircraft.category = 'military' THEN 'military'
@@ -3508,7 +3523,8 @@ def fetch_and_store(config: Dict, watchlist_lookup: Dict):
                 END
         """, (ac["hex"], now, _cs, _atype,
               _cs, _atype, _adesc, _operator, _country,
-              ac.get("lat"), ac.get("lon"), _distance_km, now, _category))
+              ac.get("lat"), ac.get("lon"), _distance_km, now, _category,
+              atd_best_dur))
 
         # Update all-time records (Wave 3). Each check is a single SELECT and
         # an UPDATE only on the rare case of a new record. No noticeable cost.

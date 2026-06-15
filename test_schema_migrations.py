@@ -289,7 +289,7 @@ class TestFreshV250Db(unittest.TestCase):
         for expected in ("registration", "last_callsign", "aircraft_type",
                          "aircraft_type_desc", "operator", "country",
                          "last_lat", "last_lon", "last_seen_at",
-                         "sighting_count"):
+                         "sighting_count", "best_track_seconds"):
             self.assertIn(expected, cols, f"Missing column: {expected}")
 
     def test_indexes_created(self):
@@ -737,6 +737,132 @@ class TestMigrationV2OperatorBackfill(unittest.TestCase):
         ).fetchone()[0]
         self.assertEqual(op1, "UAL")
         self.assertEqual(op2, "UAL")
+
+
+class TestMigrationV11BestTrackSeconds(unittest.TestCase):
+    """Migration v11 adds seen_aircraft.best_track_seconds (the all-time
+    longest single track per aircraft) and backfills it once from the
+    existing aircraft_track_daily rollup.
+
+    Test approach mirrors the v2 backfill tests: build a minimal pre-v11
+    schema with just the two tables the migration touches (seen_aircraft
+    WITHOUT the new column, plus aircraft_track_daily), seed known data,
+    then call the migration directly.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp.close()
+        self.conn = sqlite3.connect(self.tmp.name)
+        # Minimal pre-v11 schema: seen_aircraft has NO best_track_seconds
+        # column; aircraft_track_daily holds the per-day session rollup the
+        # backfill reads (best_session_duration per (icao, day_bucket)).
+        self.conn.executescript("""
+            CREATE TABLE seen_aircraft (
+                icao TEXT PRIMARY KEY,
+                first_seen_at INTEGER NOT NULL,
+                last_seen_at INTEGER,
+                sighting_count INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE aircraft_track_daily (
+                icao TEXT NOT NULL,
+                day_bucket INTEGER NOT NULL,
+                callsign TEXT, aircraft_type TEXT,
+                current_session_start INTEGER NOT NULL,
+                current_session_last  INTEGER NOT NULL,
+                best_session_start    INTEGER NOT NULL,
+                best_session_end      INTEGER NOT NULL,
+                best_session_duration INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (icao, day_bucket)
+            );
+        """)
+        self.conn.commit()
+
+    def tearDown(self):
+        self.conn.close()
+        os.unlink(self.tmp.name)
+
+    def _run_v11(self):
+        from schema_migrations import _migration_v11_best_track_seconds
+        _migration_v11_best_track_seconds(self.conn)
+
+    def _seed_seen(self, icaos):
+        for ic in icaos:
+            self.conn.execute(
+                "INSERT INTO seen_aircraft (icao, first_seen_at, last_seen_at, "
+                "sighting_count) VALUES (?, ?, ?, ?)",
+                (ic, 1700000000, 1700000000, 1))
+        self.conn.commit()
+
+    def _seed_track(self, rows):
+        """rows = [(icao, day_bucket, best_session_duration), ...]"""
+        for ic, day, dur in rows:
+            self.conn.execute(
+                "INSERT INTO aircraft_track_daily ("
+                "icao, day_bucket, current_session_start, current_session_last, "
+                "best_session_start, best_session_end, best_session_duration) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (ic, day, 0, dur, 0, dur, dur))
+        self.conn.commit()
+
+    def _best(self, icao):
+        return self.conn.execute(
+            "SELECT best_track_seconds FROM seen_aircraft WHERE icao = ?",
+            (icao,)).fetchone()[0]
+
+    def test_v11_adds_column(self):
+        self._run_v11()
+        cols = {row[1] for row in self.conn.execute(
+            "PRAGMA table_info(seen_aircraft)").fetchall()}
+        self.assertIn("best_track_seconds", cols)
+
+    def test_v11_backfills_max_session_per_icao(self):
+        """best_track_seconds = MAX(best_session_duration) across all the
+        aircraft's days, not the latest or the sum."""
+        self._seed_seen(["A00001", "A00002"])
+        self._seed_track([
+            ("A00001", 100, 600),   # day 1: 10m
+            ("A00001", 101, 1800),  # day 2: 30m — the all-time best
+            ("A00001", 102, 900),   # day 3: 15m
+            ("A00002", 100, 300),   # single day: 5m
+        ])
+        self._run_v11()
+        self.assertEqual(self._best("A00001"), 1800)
+        self.assertEqual(self._best("A00002"), 300)
+
+    def test_v11_no_track_rows_stays_null(self):
+        """An aircraft with no aircraft_track_daily rows keeps NULL (no
+        tracked session) — the WHERE EXISTS guard skips it. NULL renders
+        as '—' and sorts last."""
+        self._seed_seen(["A00003"])  # no track rows seeded for it
+        self._run_v11()
+        self.assertIsNone(self._best("A00003"))
+
+    def test_v11_rerun_does_not_regress_high_water_mark(self):
+        """Re-running the migration must NOT re-backfill: once the column
+        exists, an aircraft whose record session has aged out of the
+        retention window keeps its stored high-water mark instead of being
+        lowered to the max of surviving days."""
+        self._seed_seen(["A00004"])
+        self._seed_track([("A00004", 100, 1200)])
+        self._run_v11()
+        self.assertEqual(self._best("A00004"), 1200)
+        # Simulate the collector having recorded a longer session whose day
+        # later aged out of aircraft_track_daily: stored mark is higher than
+        # anything left in the rollup.
+        self.conn.execute(
+            "UPDATE seen_aircraft SET best_track_seconds = 9000 WHERE icao = 'A00004'")
+        self.conn.commit()
+        self._run_v11()  # column already exists → backfill must NOT run
+        self.assertEqual(self._best("A00004"), 9000)
+
+    def test_v11_idempotent_column_add(self):
+        """Calling the migration twice tolerates the duplicate column."""
+        self._run_v11()
+        self._run_v11()  # must not raise
+        cols = {row[1] for row in self.conn.execute(
+            "PRAGMA table_info(seen_aircraft)").fetchall()}
+        self.assertIn("best_track_seconds", cols)
 
 
 if __name__ == "__main__":

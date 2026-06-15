@@ -1,4 +1,4 @@
-<!-- Version: 3.4.61 -->
+<!-- Version: 3.4.62 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -4267,15 +4267,19 @@ function _renderSearchCard(r){
     // the drill when clicking Track.
     const trackCell = `<span class="c-track" onclick="event.stopPropagation()">${trackLink(icao)}</span>`;
 
-    // v2.81.0: track-length cell. Computed on-the-fly from
-    // first_seen_at / last_seen_at — no stored column, no schema
-    // bump. Renders via _fmtDuration: "Xh Ym" / "Xm" / "<1m" / "—".
-    // Zero-duration (one-sighting aircraft) renders as dim "—" rather
-    // than "0m" because a literal zero is more visual noise than
-    // signal in a typical browse view; users sorting ASC will still
-    // see those rows clustered at the top via the SQL ORDER BY.
-    const trackLengthSec = (r.first_seen_at != null && r.last_seen_at != null)
-        ? (r.last_seen_at - r.first_seen_at) : null;
+    // v3.4.62: track-length cell. Now the all-time longest single
+    // continuous track (one pass overhead), served as r.track_length_sec
+    // from the stored seen_aircraft.best_track_seconds column (collector-
+    // maintained from the aircraft_track_daily rollup). Previously this
+    // was last_seen_at − first_seen_at — the lifetime span, which for a
+    // regular read ~the retention window, not a track duration.
+    // Renders via _fmtDuration: "Xh Ym" / "Xm" / "<1m" / "—".
+    // Zero/NULL (one-sighting aircraft, or no session tracked) renders as
+    // dim "—" rather than "0m" because a literal zero is more visual
+    // noise than signal in a typical browse view; users sorting ASC will
+    // still see those rows clustered at the top via the SQL ORDER BY.
+    const trackLengthSec = (r.track_length_sec != null)
+        ? r.track_length_sec : null;
     const trackLengthCell = (trackLengthSec != null && trackLengthSec > 0)
         ? `<span class="c-num c-tracklength">${escapeHtml(_fmtDuration(trackLengthSec))}</span>`
         : `<span class="c-num c-tracklength dim">—</span>`;
@@ -6804,9 +6808,9 @@ function renderOptionCDrillPanel(cardId, response, context){
     } else if (!isAggregate) {
         // Category B: aircraft drill panel. Redirect to Search with the
         // appropriate today/sort combination. Helper returns null for
-        // cards without a meaningful Search mapping (e.g. longest_track
-        // when Search lacks a track-length sort — but that's filed as
-        // a known limitation rather than dropping the button entirely).
+        // cards without a meaningful Search mapping (e.g. longest_track,
+        // whose today-scoped ranking doesn't match Search's all-time
+        // track-length sort — see _searchRedirectForExtremesCard).
         const redirect = _searchRedirectForExtremesCard(cardId);
         if (redirect) {
             allBtnHtml = `<button type="button" class="drill-all-link"
@@ -7022,17 +7026,18 @@ async function expandCompositionDrill(cardId, ev){
 // mapping. Uses v2.65.0's `today` parser token; sort columns must be
 // in _SEARCH_SORT_DEFAULT_DIR (frontend allowlist).
 //
-// v2.68.0: longest_track removed from this map. Search has no track-
-// length sort, and the v2.66.0 fallback ("today" sorted by seen_at
-// desc) returned aircraft in arrival order — meaningfully different
-// from the card's track-length ordering. Showing a "View in Search →"
-// button that lands the user on a different ranking than the panel
-// they came from is misleading. Following the first_time_seen_today
-// precedent: the drill panel itself already shows top-25 ranked by
-// track length (server-side aggregate computes it), and that's the
-// honest answer to "show me the longest tracks today." Returning
-// null here causes renderOptionCDrillPanel to suppress the footer
-// button entirely for this card.
+// v2.68.0 / v3.4.62: longest_track stays out of this map. Search does
+// now have a track-length sort (added v2.81.0), but as of v3.4.62 it
+// ranks by ALL-TIME longest single track (seen_aircraft.best_track_seconds)
+// while this Stats card shows TODAY's longest — so a "View in Search →"
+// button would still land the user on a different ranking than the panel
+// they came from, which is misleading. (The original v2.66.0 fallback —
+// "today" sorted by seen_at desc — was arrival order, also wrong.)
+// Following the first_time_seen_today precedent: the drill panel itself
+// already shows top-25 ranked by track length (server-side aggregate
+// computes it), and that's the honest answer to "show me the longest
+// tracks today." Returning null here causes renderOptionCDrillPanel to
+// suppress the footer button entirely for this card.
 //
 // Honest limitations remaining:
 //  - (peak_simultaneous closed in v2.82.0 — the peak_today token now

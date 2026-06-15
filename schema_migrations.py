@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 # Current schema version. Bump whenever a new migration is added.
 # v2.51.0 introduces schema version 1 (the search-feature schema).
 # Any DB without a schema_version table is implicitly at version 0.
-CURRENT_SCHEMA_VERSION = 10
+CURRENT_SCHEMA_VERSION = 11
 
 
 # A migration is a (target_version, description, callable) tuple.
@@ -1265,6 +1265,79 @@ def _migration_v10_registry_enrichment(conn: sqlite3.Connection) -> None:
                     raise
 
 
+def _migration_v11_best_track_seconds(conn: sqlite3.Connection) -> None:
+    """v3.4.62: add `best_track_seconds` to seen_aircraft — the all-time
+    longest single continuous track (session) we've ever observed for each
+    aircraft, in seconds.
+
+    This is the value behind the Search "Track length" column. Through
+    v3.4.61 that column was computed as `last_seen_at - first_seen_at`,
+    i.e. the calendar span from an aircraft's first-ever sighting to its
+    most recent one — for a regular in your airspace that's ~the retention
+    window, not a track duration. The real "how long was it overhead in one
+    pass" data already lives in the `aircraft_track_daily` rollup
+    (`best_session_duration`, per icao per day, maintained by the collector
+    on every poll — see migration v6); we just never surfaced its all-time
+    max on the search row.
+
+    Why a stored column rather than a join/subquery at query time: Search
+    sorts the FULL result set on this column, so the ORDER BY needs the
+    value for every matching row — the same reason `last_distance` (v3) and
+    `sighting_count` became stored columns on seen_aircraft. The collector
+    already upserts seen_aircraft every poll and already computes today's
+    best session just above that upsert, so maintaining this is a MAX folded
+    into the existing UPSERT (no new statement on the hot path) — and like
+    `sighting_count`, it is deliberately NOT indexed (sorting is an explicit
+    user action; a scan-and-sort is the cheaper trade against write cost).
+
+    Backfill: a one-time `MAX(best_session_duration) GROUP BY icao` from the
+    existing aircraft_track_daily rows, applied ONLY when the column is
+    freshly added. It must not re-run on a re-invocation: once the collector
+    is maintaining the column forward, an aircraft whose longest session has
+    since aged out of aircraft_track_daily's retention window would have its
+    stored all-time max silently REGRESSED to the max of surviving days. The
+    `column_added` gate (mirrors v6's "backfill only when empty") prevents
+    that — the stored value is a high-water mark, the rollup is windowed.
+
+    Idempotent: the ALTER tolerates "duplicate column name"; the backfill is
+    gated on a genuine fresh add.
+    """
+    column_added = False
+    try:
+        conn.execute(
+            "ALTER TABLE seen_aircraft ADD COLUMN best_track_seconds INTEGER"
+        )
+        column_added = True
+        logger.info("Migration v11: added seen_aircraft.best_track_seconds column")
+    except sqlite3.OperationalError as e:
+        if "duplicate column" in str(e).lower():
+            logger.info("Migration v11: seen_aircraft.best_track_seconds "
+                        "already exists (re-run no-op)")
+        else:
+            raise
+
+    if column_added:
+        # One-time high-water-mark backfill from the rollup. Correlated
+        # MAX uses aircraft_track_daily's PK (icao, day_bucket) to seek
+        # each icao's day rows. WHERE EXISTS leaves aircraft with no
+        # tracked session at NULL (renders as "—", sorts last) rather
+        # than writing a redundant NULL.
+        conn.execute("""
+            UPDATE seen_aircraft
+            SET best_track_seconds = (
+                SELECT MAX(best_session_duration)
+                FROM aircraft_track_daily atd
+                WHERE atd.icao = seen_aircraft.icao
+            )
+            WHERE EXISTS (
+                SELECT 1 FROM aircraft_track_daily atd
+                WHERE atd.icao = seen_aircraft.icao
+            )
+        """)
+        logger.info("Migration v11: backfilled best_track_seconds from "
+                    "aircraft_track_daily")
+
+
 # Ordered list of all migrations. NEVER edit a shipped migration —
 # always add a new one. The list is the source of truth for what
 # CURRENT_SCHEMA_VERSION should be.
@@ -1289,6 +1362,8 @@ MIGRATIONS: List[Migration] = [
      _migration_v9_seen_furthest_covering_index),
     (10, "registry enrichment: registered_owner + manufacturer columns on seen_aircraft/hexdb_cache (v3.4.58)",
      _migration_v10_registry_enrichment),
+    (11, "best_track_seconds column: all-time longest single track per aircraft for the Search track-length column (v3.4.62)",
+     _migration_v11_best_track_seconds),
 ]
 
 

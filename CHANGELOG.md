@@ -19,6 +19,14 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.62] — 2026-06-15
+
+### Fixed
+- **Search's "Track length" column now reports how long an aircraft was actually overhead in a single pass, not how long it has been on file.** Previously the column measured the span from an aircraft's first-ever sighting to its most recent one — so a regular you'd been seeing for weeks read as a track length of weeks, which described how long the aircraft had been known to your install rather than anything about a flight. It now shows the longest single continuous track ever recorded for that aircraft: the longest unbroken stretch it spent in your coverage in one go. Sorting works the same way — "longest first" surfaces the aircraft that loitered the most (circling traffic, holds, nearby trainers doing laps), and "shortest first" surfaces the brief flyovers. This also brings the column in line with the Stats page's "Longest track" card, which has always measured a single session. Aircraft with no tracked session yet show "—" and sort to the bottom, as before.
+
+### Behind the scenes
+- The value now comes from a stored column on each aircraft's record, maintained by the collector from the per-day session rollup that already powers the "Longest track" Stats card — so sorting the whole search by track length stays fast, the same approach distance and total-sightings already use. It is a high-water mark: once an aircraft sets a personal-best session, that value sticks even after the day it happened ages out of the rollup's retention window. Existing installs fill the column once on upgrade from the session history already on disk; an aircraft seen only before session tracking existed starts blank and fills in the next time it's overhead.
+
 ## [3.4.61] — 2026-06-15
 
 ### Fixed
