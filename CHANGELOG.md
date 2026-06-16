@@ -19,6 +19,11 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.91] — 2026-06-16
+
+### Changed
+- **The radar's aircraft track is now altitude-colored.** When you click an aircraft on the radar, its trail is drawn in the same altitude colors as the markers — so a climb or descent reads as a color gradient along the path (violet/blue up high, easing through cyan/green/yellow to orange near the ground) instead of one flat blue line.
+
 ## [3.4.90] — 2026-06-16
 
 ### Fixed

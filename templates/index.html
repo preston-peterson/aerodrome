@@ -1,4 +1,4 @@
-<!-- Version: 3.4.90 -->
+<!-- Version: 3.4.91 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -3643,8 +3643,10 @@ function radarSync(liveJ){
         const sel = live.find(a => a.icao === _radar.selectedIcao);
         if(sel){
             _radarRenderOverlay(sel);
-            if(_radar.trailLine && sel.lat != null && sel.lon != null){
-                _radar.trailLine.addLatLng([sel.lat, sel.lon]);
+            if(_radar.trailLast && sel.lat != null && sel.lon != null &&
+               (_radar.trailLast[0] !== sel.lat || _radar.trailLast[1] !== sel.lon)){
+                _radarAddTrailSeg(_radar.trailLast, [sel.lat, sel.lon], sel.altitude);
+                _radar.trailLast = [sel.lat, sel.lon];
             }
         } else {
             // Selected aircraft dropped out of range — note it, keep panel open.
@@ -3773,8 +3775,20 @@ function _radarSetOwner(info){
     el.innerHTML = `<span class="k">Owner / operator</span><span class="v">${escapeHtml(val)}${regTxt}</span>`;
 }
 
-// Selected-aircraft trail: a thin polyline of its recent (24h) track, drawn
-// on the main map. Extended live as new fixes arrive (see radarSync).
+// Add one altitude-coloured trail segment (p1→p2) for the selected aircraft.
+// Colour follows the same _radarAltColor scale as the markers, so the track
+// reads as an altitude profile. Segments are tracked in _radar.trailSegs.
+function _radarAddTrailSeg(p1, p2, alt){
+    if(!_radar.map) return;
+    const line = L.polyline([p1, p2], {
+        renderer: _radar.canvasRenderer, color: _radarAltColor(alt),
+        weight: 2, opacity: 0.75, interactive: false,
+    }).addTo(_radar.map);
+    (_radar.trailSegs = _radar.trailSegs || []).push(line);
+}
+
+// Selected-aircraft trail: its recent (24h) track drawn on the main map,
+// altitude-coloured. Extended live as new fixes arrive (see radarSync).
 function _radarDrawTrail(icao){
     _radarClearTrail();
     fetch(`/api/aircraft/${encodeURIComponent(icao)}/positions?window=24h`)
@@ -3799,20 +3813,27 @@ function _radarDrawTrail(icao){
             while(start > 0 && (all[start][0] - all[start-1][0]) <= TRAIL_GAP_SEC){
                 start--;
             }
-            const pts = all.slice(start).map(p => [p[1], p[2]]);
-            if(pts.length < 2) return;   // a single fix has no path to draw
-            const accent = getComputedStyle(document.documentElement)
-                .getPropertyValue('--accent').trim() || '#38bdf8';
-            _radar.trailLine = L.polyline(pts, {
-                renderer: _radar.canvasRenderer, color: accent,
-                weight: 2, opacity: 0.7, interactive: false,
-            }).addTo(_radar.map);
+            // v3.4.91: altitude-colour the trail. positions carry per-fix alt
+            // (p[3]), so draw one short segment per pair coloured by that
+            // segment's altitude (same scale as the markers) instead of one
+            // flat line. _radar.trailLast tracks the newest point so the live
+            // poll below can extend the trail with a new coloured segment.
+            const seg = all.slice(start);   // [[t,lat,lon,alt], ...]
+            if(seg.length < 2) return;       // a single fix has no path to draw
+            for(let i = 0; i < seg.length - 1; i++){
+                _radarAddTrailSeg([seg[i][1], seg[i][2]],
+                                  [seg[i+1][1], seg[i+1][2]], seg[i][3]);
+            }
+            _radar.trailLast = [seg[seg.length-1][1], seg[seg.length-1][2]];
         })
         .catch(() => {});
 }
 function _radarClearTrail(){
-    if(_radar.trailLine && _radar.map){ _radar.map.removeLayer(_radar.trailLine); }
-    _radar.trailLine = null;
+    if(_radar.trailSegs && _radar.map){
+        _radar.trailSegs.forEach(s => _radar.map.removeLayer(s));
+    }
+    _radar.trailSegs = [];
+    _radar.trailLast = null;
 }
 
 // =========================================================================
