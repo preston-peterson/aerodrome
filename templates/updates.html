@@ -1,4 +1,4 @@
-<!-- Version: 3.4.89 -->
+<!-- Version: 3.4.90 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1469,6 +1469,23 @@ function escapeHtml(s){
     return div.innerHTML;
 }
 
+// v3.4.90: parse a JSON response defensively. Reads the body as text first,
+// then JSON.parses it — so a non-JSON body (a 500 HTML error page, a proxy
+// error, an empty body) throws a clear "server returned HTTP <status> …
+// <snippet>" instead of the bare, useless "unexpected character at line 1
+// column 1" that a raw r.json() emits (which hid the real failure). A valid
+// JSON error body (e.g. {ok:false,error:…} with a non-2xx status) still parses
+// and is returned, so callers keep inspecting j.ok/j.error as before.
+async function readJsonOrThrow(r){
+    const txt = await r.text();
+    try {
+        return JSON.parse(txt);
+    } catch (e) {
+        const snippet = (txt || '').trim().slice(0, 200) || '(empty body)';
+        throw new Error(`server returned HTTP ${r.status} with a non-JSON response: ${snippet}`);
+    }
+}
+
 // =========================================================================
 // Release-notes modal — shown when user clicks the new version to read
 // what's changing before applying. Fetches from the STAGED changelog in
@@ -1839,11 +1856,11 @@ async function applyGithubUpdate(tag){
         const snapshot = getSnapshotDbFlag();
         const applyUrl = '/api/updates/github/apply' + (snapshot ? '?snapshot_db=true' : '');
         const r = await fetch(applyUrl, { method: 'POST' });
-        j = await r.json();
+        j = await readJsonOrThrow(r);
     } catch(e){
         _ghBadge('error', 'err');
         status.innerHTML = `<div class="status-msg err">
-            Network error during apply: ${escapeHtml(e.message)}
+            Apply failed: ${escapeHtml(e.message)}
         </div>`;
         // Offer to re-check so the user can recover
         const recheckBtn = document.createElement('button');

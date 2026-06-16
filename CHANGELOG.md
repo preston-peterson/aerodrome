@@ -19,6 +19,11 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.90] — 2026-06-16
+
+### Fixed
+- **Clearer errors when applying an update fails.** If the server returns a non-JSON response while applying an update (e.g. an error page), the Updates page now shows the actual HTTP status and message instead of a cryptic "unexpected character at line 1 column 1" that hid what really went wrong.
+
 ## [3.4.89] — 2026-06-16
 
 ### Changed
