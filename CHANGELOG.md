@@ -19,6 +19,11 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.89] — 2026-06-16
+
+### Changed
+- **Helicopters stand out on the radar.** Rotorcraft (ADS-B emitter category A7) now render as a distinct rotor-disc marker instead of the directional airplane chevron — so you can pick out helicopters at a glance. Because a hovering helicopter has no meaningful ground track, the marker is drawn heading-agnostic (it doesn't rotate). The radar legend gains a matching "Helicopter" key. Still altitude-colored like every other contact.
+
 ## [3.4.88] — 2026-06-15
 
 ### Changed

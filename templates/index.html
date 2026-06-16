@@ -1,4 +1,4 @@
-<!-- Version: 3.4.88 -->
+<!-- Version: 3.4.89 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -706,6 +706,7 @@
         .rl-chev::before { content:'▲'; }
         .rl-chev.sm { font-size:9px; } .rl-chev.md { font-size:13px; } .rl-chev.lg { font-size:17px; }
         .rl-swatch { width:13px; height:13px; flex:0 0 auto; border-radius:50%; display:inline-block; box-sizing:border-box; }
+        .rl-heli { display:inline-flex; flex:0 0 18px; align-items:center; justify-content:center; line-height:1; }
         .rl-mil { border:2px solid #ef4444; background:transparent; }
         .rl-wl { border:2px solid var(--amber); background:transparent; }
         .rl-rx { background:var(--cyan); }
@@ -2181,7 +2182,8 @@
                     <div class="rl-row"><span class="rl-chev sm"></span> Light / piston</div>
                     <div class="rl-row"><span class="rl-chev md"></span> Jet</div>
                     <div class="rl-row"><span class="rl-chev lg"></span> Heavy</div>
-                    <div class="rl-note">Chevron points the way the aircraft is heading.</div>
+                    <div class="rl-row"><span class="rl-heli"><svg width="18" height="18" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="none" stroke="#94a3b8" stroke-width="2"/><g stroke="#94a3b8" stroke-width="1.6" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/><line x1="12" y1="5" x2="12" y2="19"/></g><circle cx="12" cy="12" r="2.6" fill="#94a3b8"/></svg></span> Helicopter (rotor disc)</div>
+                    <div class="rl-note">Chevron points the way the aircraft is heading; helicopters show as a rotor disc (no heading).</div>
                 </div>
                 <div class="rl-section">
                     <div class="rl-row"><span class="rl-swatch rl-mil"></span> Military (red ring + MIL)</div>
@@ -3332,6 +3334,20 @@ function _radarChevronSvg(color, px){
         + `stroke="rgba(0,0,0,.45)" stroke-width="1" stroke-linejoin="round"/></svg>`;
 }
 
+// Helicopter (ADS-B emitter category A7) glyph — an outlined rotor disc with
+// crossed blades + a center hub. Rotorcraft hover and have no meaningful
+// ground track, so this is drawn heading-agnostic (NOT rotated by track), and
+// its round outline reads as clearly "not a plane" next to the solid chevrons.
+function _radarHeliSvg(color, px){
+    const dk = 'rgba(0,0,0,.45)';
+    return `<svg width="${px}" height="${px}" viewBox="0 0 24 24" aria-hidden="true">`
+        + `<circle cx="12" cy="12" r="10" fill="none" stroke="${dk}" stroke-width="3"/>`
+        + `<circle cx="12" cy="12" r="10" fill="none" stroke="${color}" stroke-width="1.8"/>`
+        + `<g stroke="${color}" stroke-width="1.6" stroke-linecap="round" opacity=".85">`
+        + `<line x1="5" y1="12" x2="19" y2="12"/><line x1="12" y1="5" x2="12" y2="19"/></g>`
+        + `<circle cx="12" cy="12" r="2.6" fill="${color}" stroke="${dk}" stroke-width="1"/></svg>`;
+}
+
 function _radarTheme(){
     return radarGetMapTheme();   // the map's own preference, not the app theme
 }
@@ -3514,8 +3530,11 @@ function _radarBuildIcon(ac){
     // takes precedence so the two coloured rings never collide; an aircraft
     // that's both reads as military).
     const isWl = !isMil && !!ac.is_watchlist;
+    // Helicopters (category A7) get a distinct rotor-disc glyph, drawn
+    // heading-agnostic (rotorcraft hover — no meaningful ground track).
+    const isHeli = (ac.category || '').toUpperCase() === 'A7';
     const track = (ac.track != null && !isNaN(ac.track)) ? Number(ac.track) : null;
-    const rot = (track == null) ? 0 : track;
+    const rot = (isHeli || track == null) ? 0 : track;
     const cls = 'radar-marker' + (isMil ? ' mil' : '') + (isWl ? ' wl' : '')
         + (radarLabelsMode() === 'all' ? ' labeled' : '')
         + (ac.icao === _radar.selectedIcao ? ' selected' : '');
@@ -3530,7 +3549,7 @@ function _radarBuildIcon(ac){
     const html =
         `<span class="rm-ring" style="width:${ringPx}px;height:${ringPx}px"></span>`
         + `<span class="rm-glyph" style="width:${size}px;height:${size}px;transform:${glyphTransform}">`
-        + _radarChevronSvg(color, size) + `</span>`
+        + (isHeli ? _radarHeliSvg(color, size) : _radarChevronSvg(color, size)) + `</span>`
         + `<span class="rm-label">${escapeHtml(label)}</span>`;
     return L.divIcon({
         // The class carries radar-marker (+ mil/selected) — REQUIRED: the
