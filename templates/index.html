@@ -1,4 +1,4 @@
-<!-- Version: 3.4.94 -->
+<!-- Version: 3.4.96 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -493,6 +493,58 @@
         .live-split.list-collapsed .live-list-pane { display:none; }
         .live-split.list-collapsed .live-resizer::after { content:'›'; writing-mode:horizontal-tb; }
 
+        /* ===== Dockable map (radar) — the map can dock to any side of the
+           Live split. DOM order is list → resizer → map, so flex-direction
+           alone re-orients it: right=row (default), left=row-reverse,
+           bottom=column, top=column-reverse. Side is chosen by the on-map
+           4-way dock control and persisted; desktop-only. */
+        .live-split.dock-left   { flex-direction:row-reverse; }
+        .live-split.dock-bottom { flex-direction:column; }
+        .live-split.dock-top    { flex-direction:column-reverse; }
+        /* Vertical docks: the split owns the height; the list becomes a
+           full-width height-bounded strip, the map fills the rest, and the
+           resizer turns horizontal. */
+        .live-split.dock-top, .live-split.dock-bottom { height:74vh; }
+        .live-split.dock-top    .live-list-pane,
+        .live-split.dock-bottom .live-list-pane {
+            width:auto; height:32vh; max-height:none; min-width:0;
+        }
+        .live-split.dock-top    .live-map-pane,
+        .live-split.dock-bottom .live-map-pane { min-width:0; }
+        .live-split.dock-top    #radarMap,
+        .live-split.dock-bottom #radarMap { height:100%; min-height:0; }
+        .live-split.dock-top    .live-resizer,
+        .live-split.dock-bottom .live-resizer { flex-basis:12px; cursor:row-resize; }
+        .live-split.dock-top    .live-resizer::before,
+        .live-split.dock-bottom .live-resizer::before {
+            left:0; right:0; top:50%; bottom:auto; width:auto; height:2px;
+            transform:translateY(-50%);
+        }
+        .live-split.dock-top    .live-resizer::after,
+        .live-split.dock-bottom .live-resizer::after {
+            writing-mode:horizontal-tb; letter-spacing:normal; padding:2px 7px;
+        }
+
+        /* The on-map 4-way dock control (interaction model B — pick a side). */
+        #radarMap .radar-dock-ctl {
+            display:grid; grid-template-columns:repeat(3,22px);
+            grid-template-rows:repeat(3,22px);
+            background:var(--bg2); border:1px solid var(--bdr); border-radius:6px;
+            overflow:hidden; box-shadow:var(--shadow);
+        }
+        #radarMap .radar-dock-ctl button {
+            border:0; background:transparent; color:var(--t2); cursor:pointer;
+            font-size:10px; line-height:1; padding:0;
+            display:flex; align-items:center; justify-content:center;
+        }
+        #radarMap .radar-dock-ctl button:hover { color:var(--cyan); background:var(--bg1); }
+        #radarMap .radar-dock-ctl button.on { color:var(--cyan); background:rgba(6,182,212,.16); }
+        #radarMap .radar-dock-ctl .dock-mid {
+            color:var(--t3); font-size:7px; letter-spacing:.2px; text-transform:uppercase;
+            display:flex; align-items:center; justify-content:center;
+        }
+        #radarMap .radar-dock-ctl .dock-empty { visibility:hidden; }
+
         /* Receiver-not-configured placeholder, overlaid on the map surface. */
         .radar-no-receiver {
             position:absolute; inset:0; display:flex; flex-direction:column;
@@ -766,6 +818,9 @@
         @media (max-width: 900px) {
             .live-view-toggle { display:inline-flex; }
             .live-resizer { display:none; }
+            /* Docking is desktop-only — phone stacks panes via the List/Radar
+               toggle, so the dock control and any dock-* class are inert here. */
+            #radarMap .radar-dock-ctl { display:none; }
             .live-split { display:block; }
             .live-list-pane { width:auto; max-height:none; overflow:visible; }
             /* Phone: page scrolls (not the pane), so the sticky header sits
@@ -3463,10 +3518,34 @@ function initRadarMap(receiver){
                'Cycle aircraft labels (all / selected / off)', radarCycleLabels);
             mk('map-trails-btn' + (radarTrailsOn() ? ' on' : ''), '&#8605;',
                'Toggle aircraft trails', toggleRadarTrails);
+            // 4-way dock control (interaction model B) — pick which side of the
+            // Live split the map sits on. Appended LAST in this tool column so
+            // it sits in the corner, with the smaller toggle buttons stacked
+            // above it. A 3×3 pad: arrows N/E/S/W around a "dock" centre.
+            const dock = L.DomUtil.create('div', 'radar-dock-ctl', wrap);
+            const curDock = radarDock();
+            const cells = [
+                ['', ''],            ['top', '▲'],    ['', ''],
+                ['left', '◀'],       ['mid', 'dock'], ['right', '▶'],
+                ['', ''],            ['bottom', '▼'], ['', ''],
+            ];
+            cells.forEach(c => {
+                if(c[0] === 'mid'){ const m = L.DomUtil.create('span', 'dock-mid', dock); m.textContent = c[1]; return; }
+                if(c[0] === ''){ L.DomUtil.create('span', 'dock-empty', dock); return; }
+                const b = L.DomUtil.create('button', (curDock === c[0] ? 'on' : ''), dock);
+                b.type = 'button';
+                b.setAttribute('data-dock', c[0]);
+                b.innerHTML = c[1];
+                b.title = 'Dock map to ' + c[0];
+                b.setAttribute('aria-label', 'Dock map to ' + c[0]);
+                L.DomEvent.disableClickPropagation(b);
+                L.DomEvent.on(b, 'click', () => setRadarDock(c[0]));
+            });
             return wrap;
         }
     });
     _radar.map.addControl(new RadarToolsControl());
+    _radarApplyDock(radarDock());                 // apply persisted dock side
 
     if(haveRx) _radarDrawReceiver(receiver);
     if(radarCoverageOn()) _radarDrawCoverage();   // restore persisted overlay
@@ -3958,6 +4037,46 @@ function toggleLiveListCollapsed(){
     if(_radar.map) setTimeout(() => _radar.map.invalidateSize(), 60);
 }
 
+// =========================================================================
+// Dockable map (radar) — choose which side of the Live split the map sits on
+// via the on-map 4-way control (▲ ◀ ▶ ▼). Persisted per browser, desktop-only
+// (phone uses the List/Radar toggle). DOM order is list → resizer → map, so a
+// dock-* class on #liveSplit re-orients everything via flex-direction; the
+// resizer (initLiveResizer) reads the dock to know which axis it's resizing.
+// =========================================================================
+const RADAR_DOCK_KEY = 'aerodrome.radar_dock';
+function radarDock(){
+    try { const v = localStorage.getItem(RADAR_DOCK_KEY);
+          if(v==='left'||v==='right'||v==='top'||v==='bottom') return v; } catch(e){}
+    return 'right';
+}
+function _radarApplyDock(pos){
+    const split = document.getElementById('liveSplit');
+    const pane  = document.getElementById('liveListPane');
+    if(!split) return;
+    split.classList.remove('dock-right','dock-left','dock-top','dock-bottom');
+    split.classList.add('dock-' + pos);
+    // The list pane carries an inline size from resizer drags. Width and height
+    // are saved on separate keys so switching axes restores the right one and
+    // clears the other — else a saved width would crush the vertical strip.
+    if(pane){
+        const vertical = (pos==='top' || pos==='bottom');
+        pane.style.width = '';
+        pane.style.height = '';
+        try {
+            const v = localStorage.getItem(vertical ? 'liveListH' : 'liveListW');
+            if(v){ if(vertical) pane.style.height = v; else pane.style.width = v; }
+        } catch(e){}
+    }
+    document.querySelectorAll('.radar-dock-ctl button[data-dock]').forEach(b =>
+        b.classList.toggle('on', b.getAttribute('data-dock') === pos));
+    if(_radar.map) setTimeout(() => _radar.map.invalidateSize(), 60);
+}
+function setRadarDock(pos){
+    try { localStorage.setItem(RADAR_DOCK_KEY, pos); } catch(e){}
+    _radarApplyDock(pos);
+}
+
 // v3.5.0 (radar C): show/hide the map legend (toggled by the "i" control).
 function toggleRadarLegend(){
     const el = document.getElementById('radarLegend');
@@ -4176,11 +4295,9 @@ function initLiveResizer(){
     if(!split || !pane || !rez) return;
     _liveResizerInit = true;
 
-    // Restore a previously dragged width.
-    try {
-        const saved = localStorage.getItem('liveListW');
-        if(saved) pane.style.width = saved;
-    } catch(e){}
+    // Apply the persisted dock side, which also restores the saved size for
+    // the active axis. (Also called from initRadarMap; idempotent.)
+    _radarApplyDock(radarDock());
 
     let dragging = false;
     rez.addEventListener('pointerdown', e => {
@@ -4189,16 +4306,29 @@ function initLiveResizer(){
         rez.classList.add('dragging');
         try { rez.setPointerCapture(e.pointerId); } catch(_){}
         document.body.style.userSelect = 'none';
-        document.body.style.cursor = 'col-resize';
+        const vert = (radarDock() === 'top' || radarDock() === 'bottom');
+        document.body.style.cursor = vert ? 'row-resize' : 'col-resize';
         e.preventDefault();
     });
     rez.addEventListener('pointermove', e => {
         if(!dragging) return;
         const r = split.getBoundingClientRect();
-        let w = e.clientX - r.left;
-        const min = 300, max = r.width - 280;   // leave the map ≥280px
-        w = Math.max(min, Math.min(max, w));
-        pane.style.width = w + 'px';
+        const dock = radarDock();
+        if(dock === 'top' || dock === 'bottom'){
+            // Resize the list's HEIGHT. The list is at the bottom for dock-top
+            // (column-reverse) and the top for dock-bottom (column).
+            let h = (dock === 'top') ? (r.bottom - e.clientY) : (e.clientY - r.top);
+            const min = 90, max = r.height - 220;   // leave the map ≥220px
+            h = Math.max(min, Math.min(max, h));
+            pane.style.height = h + 'px';
+        } else {
+            // Resize the list's WIDTH. The list is on the right for dock-left
+            // (row-reverse) and on the left for the default dock-right.
+            let w = (dock === 'left') ? (r.right - e.clientX) : (e.clientX - r.left);
+            const min = 300, max = r.width - 280;   // leave the map ≥280px
+            w = Math.max(min, Math.min(max, w));
+            pane.style.width = w + 'px';
+        }
         if(_radar.map) _radar.map.invalidateSize();
     });
     function endDrag(){
@@ -4207,7 +4337,11 @@ function initLiveResizer(){
         rez.classList.remove('dragging');
         document.body.style.userSelect = '';
         document.body.style.cursor = '';
-        try { localStorage.setItem('liveListW', pane.style.width); } catch(e){}
+        try {
+            const vert = (radarDock() === 'top' || radarDock() === 'bottom');
+            localStorage.setItem(vert ? 'liveListH' : 'liveListW',
+                                 vert ? pane.style.height : pane.style.width);
+        } catch(e){}
         if(_radar.map) setTimeout(() => _radar.map.invalidateSize(), 30);
     }
     rez.addEventListener('pointerup', endDrag);

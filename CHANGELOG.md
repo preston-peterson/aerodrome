@@ -19,6 +19,14 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.96] — 2026-06-16
+
+### Added
+- **Dock the radar map to any side.** On the Live tab, the map can now sit on the left, right, top, or bottom of the aircraft list — your pick. A small 4-way control on the map (▲ ◀ ▶ ▼), tucked under the map's other buttons, snaps it to the side you choose; the list reflows to fill the rest, and the divider still fine-tunes the split after. It's a click rather than a drag, so changing the layout never fights with panning the map to follow a plane. Your choice is remembered per browser. (A desktop feature — on a phone the Live tab keeps its List/Radar toggle.)
+
+### Behind the scenes
+- No server, schema, or config change — the layout is pure CSS re-orientation of the existing list/map split (the four sides map to flex-direction), and the same divider you already drag becomes height-aware when the map is docked top or bottom.
+
 ## [3.4.94] — 2026-06-16
 
 ### Added
