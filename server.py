@@ -1,4 +1,4 @@
-# Version: 3.4.86
+# Version: 3.4.87
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -1010,6 +1010,67 @@ def compose_daily_summary_data(db_path: str, config: dict,
     return result
 
 
+# v3.4.87: cap the in-memory request body for non-multipart requests. JSON/form
+# bodies are buffered whole and parsed (~2x peak RAM), so an unbounded POST can
+# exhaust memory on a small host (e.g. a 4 GB Pi) and crash-loop the service.
+# Multipart uploads are EXEMPT — Starlette streams those to a spooled temp file
+# and the upload endpoints enforce their own (larger) caps (_read_upload_bounded
+# / the 2 GB backup cap). We reject an oversized Content-Length up front, and
+# also count bytes as the body streams (so a chunked or mis-declared request
+# can't slip past), returning 413 before the body ever reaches an endpoint. The
+# read-ahead buffer is itself bounded by max_bytes, so the guard can't OOM.
+_MAX_JSON_BODY_BYTES = 2 * 1024 * 1024  # 2 MB — config.yaml is documented < 256 KB
+
+
+class _BodySizeLimitMiddleware:
+    def __init__(self, app, max_bytes: int = _MAX_JSON_BODY_BYTES):
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def _reject(self, send):
+        await send({"type": "http.response.start", "status": 413,
+                    "headers": [(b"content-type", b"application/json")]})
+        await send({"type": "http.response.body",
+                    "body": b'{"error":"Request body too large."}'})
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http" or scope.get("method") in ("GET", "HEAD", "OPTIONS", "TRACE"):
+            await self.app(scope, receive, send)
+            return
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1")
+                   for k, v in scope.get("headers", [])}
+        # Multipart uploads stream to disk and are bounded at the endpoint.
+        if headers.get("content-type", "").startswith("multipart/form-data"):
+            await self.app(scope, receive, send)
+            return
+        # Fast path: reject an oversized declared length before reading a byte.
+        clen = headers.get("content-length")
+        if clen and clen.isdigit() and int(clen) > self.max_bytes:
+            await self._reject(send)
+            return
+        # Read-ahead: buffer up to the cap (covers chunked / mis-declared
+        # length), counting bytes; reject if exceeded, else replay to the app.
+        buffered = []
+        total = 0
+        while True:
+            message = await receive()
+            if message["type"] != "http.request":
+                buffered.append(message)
+                break
+            total += len(message.get("body", b""))
+            if total > self.max_bytes:
+                await self._reject(send)
+                return
+            buffered.append(message)
+            if not message.get("more_body", False):
+                break
+
+        async def replay():
+            if buffered:
+                return buffered.pop(0)
+            return await receive()
+        await self.app(scope, replay, send)
+
 
 def get_app(config: dict, config_path: str) -> FastAPI:
     global CONFIG, CONFIG_PATH, _RESOLVED_WATCHLIST_TAILS
@@ -1064,6 +1125,10 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         return response
+
+    # v3.4.87: cap oversized request bodies (DoS guard). Added last so it wraps
+    # outermost and rejects a too-large body before anything else reads it.
+    app.add_middleware(_BodySizeLimitMiddleware)
 
     # v2.47.0: mount /static for shared assets (theme.css, theme.js). The
     # theme system lived duplicated across nine templates through v2.46.1;

@@ -19,6 +19,11 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.87] — 2026-06-15
+
+### Changed
+- **Guarded against oversized API requests.** Aerodrome now rejects an unreasonably large request body (over 2 MB) with a "request too large" response instead of trying to read it all into memory — so a single bad or malicious request can't exhaust RAM and knock the service into a restart loop, which mattered most on small boxes like a Raspberry Pi. File uploads (config import, backup restore, local update) are unaffected and keep their own, larger limits.
+
 ## [3.4.86] — 2026-06-15
 
 ### Changed
