@@ -1,4 +1,4 @@
-<!-- Version: 3.4.101 -->
+<!-- Version: 3.4.104 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -796,6 +796,49 @@
         #radarMap .map-trails-btn.on {
             color:var(--cyan); border-color:var(--cyan); background:rgba(6,182,212,.12);
         }
+        /* Weather (precip) overlay — toggle button + the animated-loop panel
+           (opacity slider, frame timeline, play/pause). v3.5.x. */
+        #radarMap .map-weather-btn {
+            background:var(--bg2); color:var(--t1);
+            border:1px solid var(--bdr); border-radius:4px;
+            width:30px; height:30px; padding:0; cursor:pointer;
+            display:flex; align-items:center; justify-content:center; line-height:1;
+        }
+        #radarMap .map-weather-btn svg { display:block; }
+        #radarMap .map-weather-btn:hover { background:var(--bg1); }
+        #radarMap .map-weather-btn.on {
+            color:var(--cyan); border-color:var(--cyan); background:rgba(6,182,212,.12);
+        }
+        /* The floating weather panel — bottom-left, beside the tools column. */
+        .radar-weather-panel {
+            position:absolute; left:48px; bottom:10px; z-index:3;
+            width:212px; padding:9px 11px;
+            background:var(--bg1); border:1px solid var(--bdr); border-radius:8px;
+            box-shadow:0 8px 30px rgba(0,0,0,.35); font-size:11px;
+        }
+        .radar-weather-panel .rw-head {
+            display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;
+        }
+        .radar-weather-panel .rw-title { color:var(--t1); font-weight:600; }
+        .radar-weather-panel .rw-frame { color:var(--cyan); font-size:10px; }
+        .radar-weather-panel .rw-row { display:flex; align-items:center; gap:8px; }
+        .radar-weather-panel .rw-play {
+            flex:0 0 auto; width:22px; height:22px; padding:0; cursor:pointer;
+            background:var(--bg2); color:var(--cyan); border:1px solid var(--bdr);
+            border-radius:4px; font-size:10px; line-height:1;
+            display:flex; align-items:center; justify-content:center;
+        }
+        .radar-weather-panel .rw-play:hover { background:var(--bg1); }
+        .radar-weather-panel .rw-timeline { flex:1; display:flex; gap:3px; }
+        .radar-weather-panel .rw-timeline .dot {
+            flex:1; height:3px; border-radius:2px; background:var(--bg3);
+        }
+        .radar-weather-panel .rw-timeline .dot.cur { background:var(--cyan); }
+        .radar-weather-panel .rw-oplabel {
+            color:var(--t3); text-transform:uppercase; letter-spacing:.4px;
+            font-size:10px; margin:9px 0 4px;
+        }
+        .radar-weather-panel .rw-opacity { width:100%; accent-color:var(--cyan); cursor:pointer; }
         /* Labels control — cycles All → Selected → Off (state shown by the
            button's look). When the map carries .labels-off, every marker label
            is hidden but the MIL/WL rings stay (they're .rm-ring, untouched). */
@@ -2215,6 +2258,24 @@
                 <div style="margin-top:6px">Set <code>receiver.latitude</code> and <code>receiver.longitude</code> on the
                 <a href="/configuration#receiver">Configuration → Receiver</a> tab to see live aircraft plotted here.</div>
             </div>
+            <!-- Weather (precip) overlay control panel — shown when the ↝-style
+                 weather toggle is on. Opacity slider + animation timeline +
+                 play/pause for the RainViewer loop. -->
+            <div class="radar-weather-panel" id="radarWeatherPanel" style="display:none">
+                <div class="rw-head">
+                    <span class="rw-title">Weather radar</span>
+                    <span class="rw-frame" id="rwFrame">—</span>
+                </div>
+                <div class="rw-row">
+                    <button type="button" class="rw-play" id="rwPlay" title="Pause"
+                            aria-label="Pause animation" onclick="_radarWeatherPlayPause()">&#10074;&#10074;</button>
+                    <div class="rw-timeline" id="rwTimeline"></div>
+                </div>
+                <div class="rw-oplabel">Opacity</div>
+                <input type="range" class="rw-opacity" id="rwOpacity" min="10" max="100" step="5"
+                       value="55" aria-label="Weather overlay opacity"
+                       oninput="_radarSetWeatherOpacity(this.value)">
+            </div>
             <!-- v3.5.0 (radar, increment B): non-navigating details overlay.
                  Desktop = right slide-in panel over the map; phone = bottom
                  sheet. Opens on marker click, stays live while open, closes
@@ -3520,6 +3581,13 @@ function initRadarMap(receiver){
                'Cycle aircraft labels (all / selected / off)', radarCycleLabels);
             mk('map-trails-btn' + (radarTrailsOn() ? ' on' : ''), '&#8605;',
                'Toggle aircraft trails', toggleRadarTrails);
+            mk('map-weather-btn' + (radarWeatherOn() ? ' on' : ''),
+               '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" '
+             + 'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+             + '<path d="M7 16a4 4 0 0 1 .5-7.97A5 5 0 0 1 17 7.5a3.5 3.5 0 0 1 .5 6.97"/>'
+             + '<line x1="8" y1="19" x2="8" y2="21"/><line x1="12" y1="19.5" x2="12" y2="21.5"/>'
+             + '<line x1="16" y1="19" x2="16" y2="21"/></svg>',
+               'Toggle weather radar (precipitation)', toggleRadarWeather);
             // 4-way dock control (interaction model B) — pick which side of the
             // Live split the map sits on. Appended LAST in this tool column so
             // it sits in the corner, with the smaller toggle buttons stacked
@@ -3552,6 +3620,7 @@ function initRadarMap(receiver){
     if(haveRx) _radarDrawReceiver(receiver);
     if(radarCoverageOn()) _radarDrawCoverage();   // restore persisted overlay
     _radarApplyLabels();                          // apply persisted labels state
+    if(radarWeatherOn()) _radarWeatherStart();    // restore persisted weather loop
 
     // Click the map background (not a marker — those stopPropagation) to
     // dismiss the details overlay; Esc does the same.
@@ -4296,6 +4365,177 @@ function _radarUpdateAllTrails(live){
     });
     // Drop trails for aircraft no longer present.
     Object.keys(_radar.fleetBuf).forEach(ic => { if(!seen[ic]) _radarDropTrail(ic); });
+}
+
+// =========================================================================
+// Weather (precipitation) radar overlay — the rain-cloud toggle. An animated
+// RainViewer loop (free, no key) of the last ~2h of radar frames, with
+// play/pause + an opacity slider so the weather never buries the aircraft.
+// The tiles sit just above the basemap (below the rings/trails/markers), OFF
+// by default, persisted per browser.
+// =========================================================================
+const RADAR_WEATHER_KEY = 'aerodrome.radar_weather';
+const RADAR_WEATHER_OPACITY_KEY = 'aerodrome.radar_weather_opacity';
+const _RAINVIEWER_API = 'https://api.rainviewer.com/public/weather-maps.json';
+const _WX_COLOR = 4;                    // RainViewer colour scheme (0-8)
+const _WX_FRAME_MS = 600;               // animation: ms per frame
+const _WX_REFRESH_MS = 5 * 60 * 1000;   // re-fetch the frame list (frames age out ~10 min)
+const _radarWx = {
+    layers: {}, frames: [], host: '', idx: 0, curIdx: null, sig: '',
+    playing: true, animTimer: null, refreshTimer: null,
+};
+function radarWeatherOn(){
+    try { return localStorage.getItem(RADAR_WEATHER_KEY) === '1'; } catch(e){ return false; }
+}
+function radarWeatherOpacity(){
+    try { const v = parseInt(localStorage.getItem(RADAR_WEATHER_OPACITY_KEY), 10);
+          if(v >= 10 && v <= 100) return v; } catch(e){}
+    return 55;
+}
+function _radarSyncWeatherBtn(){
+    const btn = document.querySelector('#radarMap .map-weather-btn');
+    if(btn) btn.classList.toggle('on', radarWeatherOn());
+}
+function toggleRadarWeather(){
+    const on = !radarWeatherOn();
+    try { localStorage.setItem(RADAR_WEATHER_KEY, on ? '1' : '0'); } catch(e){}
+    _radarSyncWeatherBtn();
+    if(on) _radarWeatherStart(); else _radarWeatherStop();
+}
+function _radarWeatherStart(){
+    if(!_radar.map) return;
+    const panel = document.getElementById('radarWeatherPanel');
+    if(panel) panel.style.display = '';
+    const op = document.getElementById('rwOpacity');
+    if(op) op.value = radarWeatherOpacity();
+    _radarWx.playing = true;
+    _radarWeatherSyncPlayBtn();
+    _radarFetchWeatherFrames();
+    if(_radarWx.refreshTimer) clearInterval(_radarWx.refreshTimer);
+    _radarWx.refreshTimer = setInterval(_radarFetchWeatherFrames, _WX_REFRESH_MS);
+}
+function _radarWeatherStop(){
+    if(_radarWx.animTimer){ clearInterval(_radarWx.animTimer); _radarWx.animTimer = null; }
+    if(_radarWx.refreshTimer){ clearInterval(_radarWx.refreshTimer); _radarWx.refreshTimer = null; }
+    _radarWeatherClearLayers();
+    _radarWx.frames = []; _radarWx.sig = ''; _radarWx.curIdx = null;
+    const panel = document.getElementById('radarWeatherPanel');
+    if(panel) panel.style.display = 'none';
+}
+function _radarWeatherClearLayers(){
+    Object.keys(_radarWx.layers).forEach(k => {
+        if(_radar.map) _radar.map.removeLayer(_radarWx.layers[k]);
+    });
+    _radarWx.layers = {};
+}
+// Pull the RainViewer frame index (past + any nowcast frames). If the list is
+// unchanged we leave the running animation alone (so the periodic refresh
+// doesn't disrupt it); otherwise we (re)build one preloaded tile layer per
+// frame and resume.
+function _radarFetchWeatherFrames(){
+    fetch(_RAINVIEWER_API)
+        .then(r => r.ok ? r.json() : null)
+        .then(j => {
+            if(!j || !radarWeatherOn() || !_radar.map) return;
+            const radar = j.radar || {};
+            const frames = (radar.past || []).concat(radar.nowcast || []);
+            if(!frames.length) return;
+            const host = j.host || 'https://tilecache.rainviewer.com';
+            const sig = host + '|' + frames.map(f => f.path).join(',');
+            if(sig === _radarWx.sig && Object.keys(_radarWx.layers).length) return;
+            _radarWx.sig = sig;
+            _radarWx.host = host;
+            _radarWx.frames = frames;
+            if(_radarWx.idx >= frames.length) _radarWx.idx = frames.length - 1;
+            _radarWeatherBuildLayers();
+            _radarBuildWeatherTimeline();
+            _radarWx.curIdx = null;
+            _radarWeatherShowFrame(_radarWx.idx);
+            _radarWeatherStartAnim();
+        })
+        .catch(() => {});
+}
+function _radarWeatherTileUrl(frame){
+    return _radarWx.host + frame.path + '/256/{z}/{x}/{y}/' + _WX_COLOR + '/1_1.png';
+}
+// Preload EVERY frame as its own tile layer at opacity 0, added up front.
+// Animating is then a flicker-free opacity hand-off between two already-loaded
+// layers — no setUrl (which drops the old tiles before the new ones load, the
+// cause of the flashing).
+function _radarWeatherBuildLayers(){
+    _radarWeatherClearLayers();
+    _radarWx.frames.forEach((f, i) => {
+        _radarWx.layers[i] = L.tileLayer(_radarWeatherTileUrl(f), {
+            opacity: 0, zIndex: 250,
+            // RainViewer's radar tiles only exist up to zoom 7 (z>=8 returns a
+            // "Zoom Level Not Supported" placeholder). Cap the native zoom so
+            // Leaflet upscales the z7 tiles past that instead of showing the
+            // error tiles — coarser, but the precip stays visible.
+            maxNativeZoom: 7,
+            attribution: '<a href="https://www.rainviewer.com/">RainViewer</a>',
+        }).addTo(_radar.map);
+    });
+}
+// Show frame idx by fading its preloaded layer up to the target opacity and the
+// previous one down to 0 — both already loaded, so the swap is seamless.
+function _radarWeatherShowFrame(idx){
+    const frames = _radarWx.frames;
+    if(!frames.length || !_radar.map) return;
+    idx = ((idx % frames.length) + frames.length) % frames.length;
+    const op = radarWeatherOpacity() / 100;
+    const prev = _radarWx.curIdx;
+    if(_radarWx.layers[idx]) _radarWx.layers[idx].setOpacity(op);
+    if(prev != null && prev !== idx && _radarWx.layers[prev]) _radarWx.layers[prev].setOpacity(0);
+    _radarWx.curIdx = idx;
+    _radarWx.idx = idx;
+    const fr = document.getElementById('rwFrame');
+    if(fr) fr.textContent = _radarWeatherFmtTime(frames[idx].time);
+    document.querySelectorAll('#rwTimeline .dot').forEach((d, i) =>
+        d.classList.toggle('cur', i === idx));
+}
+// Frame time in the AERODROME-CONFIGURED timezone (statsCfg.timezone), honouring
+// the 12h/24h preference — NOT the browser's zone (matches the configured tz).
+function _radarWeatherFmtTime(ts){
+    const opts = { hour: '2-digit', minute: '2-digit', hour12: !!window._timeFormatIs12h };
+    const tz = (typeof statsCfg !== 'undefined' && statsCfg.timezone) || '';
+    if(tz) opts.timeZone = tz;
+    try { return new Date(ts * 1000).toLocaleString(undefined, opts); }
+    catch(e){ return new Date(ts * 1000).toLocaleString(undefined,
+        { hour: '2-digit', minute: '2-digit', hour12: !!window._timeFormatIs12h }); }
+}
+function _radarBuildWeatherTimeline(){
+    const tl = document.getElementById('rwTimeline');
+    if(!tl) return;
+    tl.innerHTML = '';
+    _radarWx.frames.forEach((f, i) => {
+        const dot = document.createElement('span');
+        dot.className = 'dot' + (i === _radarWx.idx ? ' cur' : '');
+        tl.appendChild(dot);
+    });
+}
+function _radarWeatherStartAnim(){
+    if(_radarWx.animTimer) clearInterval(_radarWx.animTimer);
+    if(!_radarWx.playing) return;
+    _radarWx.animTimer = setInterval(() => _radarWeatherShowFrame(_radarWx.idx + 1), _WX_FRAME_MS);
+}
+function _radarWeatherSyncPlayBtn(){
+    const btn = document.getElementById('rwPlay');
+    if(!btn) return;
+    btn.innerHTML = _radarWx.playing ? '&#10074;&#10074;' : '&#9654;';
+    const lbl = _radarWx.playing ? 'Pause' : 'Play';
+    btn.title = lbl; btn.setAttribute('aria-label', lbl + ' animation');
+}
+function _radarWeatherPlayPause(){
+    _radarWx.playing = !_radarWx.playing;
+    _radarWeatherSyncPlayBtn();
+    if(_radarWx.playing) _radarWeatherStartAnim();
+    else if(_radarWx.animTimer){ clearInterval(_radarWx.animTimer); _radarWx.animTimer = null; }
+}
+function _radarSetWeatherOpacity(v){
+    const op = parseInt(v, 10);
+    try { localStorage.setItem(RADAR_WEATHER_OPACITY_KEY, String(op)); } catch(e){}
+    const cur = _radarWx.layers[_radarWx.curIdx];
+    if(cur) cur.setOpacity(op / 100);
 }
 
 // v3.5.0: the SINGLE labels control — an on-map button that cycles three

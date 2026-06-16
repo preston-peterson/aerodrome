@@ -19,6 +19,14 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.104] — 2026-06-16
+
+### Added
+- **Weather radar on the live map.** A new rain-cloud button in the radar's on-map controls overlays animated precipitation — the last ~2 hours of weather radar, looping smoothly so you can watch storms move. A small panel gives you a **play/pause**, a **timeline** of the frames (with the current frame's time shown in your configured timezone), and an **opacity slider** so the weather never buries the aircraft. It's off by default and remembered per browser. The data is free public weather radar (RainViewer) — no account or key needed; it just needs internet, like the map tiles.
+
+### Behind the scenes
+- The overlay sits just above the basemap (below the aircraft, rings and trails). Frames are preloaded as separate tile layers and the animation hands off between them by opacity — so it cross-fades cleanly instead of blanking out and reloading on each step. The frame list refreshes every few minutes as frames age out (without disrupting the running loop); green→yellow→red follows RainViewer's light→heavy scale. RainViewer's radar has data up to zoom 7, so past that the overlay softens (upscales) rather than dropping out.
+
 ## [3.4.101] — 2026-06-16
 
 ### Changed
