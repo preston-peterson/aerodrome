@@ -528,3 +528,31 @@ input, select, textarea, button {
 .menu-item + .menu-item {
     border-top: 1px solid var(--bdr);
 }
+
+/* =============================================================================
+   Shared live-map elements — used by BOTH the Live RADAR (index.html) and the
+   aircraft-detail POSITION map (aircraft.html), so they stay visually
+   consistent from one source (moved here from index.html in the live-map
+   consistency pass; previously index.html-only).
+   ============================================================================= */
+/* Receiver marker — a solid cyan centre dot inside a cyan ring ("signal
+   origin"), instead of the generic Leaflet pin, so the receiver reads as the
+   antenna site rather than another contact. */
+.radar-rx-marker { overflow:visible; }
+.radar-rx-marker .rx-dot {
+    position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+    width:8px; height:8px; border-radius:50%; background:var(--cyan);
+}
+.radar-rx-marker .rx-ring {
+    position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+    width:22px; height:22px; border-radius:50%;
+    border:1.5px solid var(--cyan); opacity:.7;
+}
+/* Range-ring distance label (sits on the ring's south edge). Dark translucent
+   text so it's legible on any map tiles. */
+.radar-ring-label {
+    font-size:9px; font-weight:500; color:rgba(226,232,240,.42);
+    text-shadow:0 0 2px rgba(0,0,0,.75); background:none;
+    text-align:center; white-space:nowrap; line-height:14px;
+    pointer-events:none;
+}

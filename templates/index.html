@@ -1,4 +1,4 @@
-<!-- Version: 3.4.99 -->
+<!-- Version: 3.4.101 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -640,26 +640,9 @@
             0%,100% { width:28px; height:28px; opacity:.9; }
             50%     { width:56px; height:56px; opacity:0; }
         }
-        /* Receiver marker — a center dot + static ring ("signal origin"). */
-        .radar-rx-marker { overflow:visible; }
-        /* Matches the mockup: a solid cyan center dot inside a cyan ring. */
-        .radar-rx-marker .rx-dot {
-            position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
-            width:8px; height:8px; border-radius:50%; background:var(--cyan);
-        }
-        .radar-rx-marker .rx-ring {
-            position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
-            width:22px; height:22px; border-radius:50%;
-            border:1.5px solid var(--cyan); opacity:.7;
-        }
-        /* Range-ring distance label (sits on the ring's south edge). Dark
-           translucent pill + light text so it's legible on any map tiles. */
-        .radar-ring-label {
-            font-size:9px; font-weight:500; color:rgba(226,232,240,.42);
-            text-shadow:0 0 2px rgba(0,0,0,.75); background:none;
-            text-align:center; white-space:nowrap; line-height:14px;
-            pointer-events:none;
-        }
+        /* Receiver marker (.radar-rx-marker) + range-ring label
+           (.radar-ring-label) moved to static/theme.css — now SHARED with the
+           aircraft-detail position map so the two maps stay consistent. */
 
         /* ---- Details overlay (increment B) ---- */
         /* Desktop: right slide-in panel over the map. .live-map-pane is

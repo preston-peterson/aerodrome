@@ -1,4 +1,4 @@
-<!-- Version: 3.4.99 -->
+<!-- Version: 3.4.101 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -609,12 +609,12 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
 }
 .map-altitude-legend .gradient {
     flex:1; height:8px; border-radius:2px;
-    /* Match the BIN_COLORS array in loadPositions() — green at ground,
-       yellow at ~10kft, orange at ~25kft, red at ~40kft+. Same six
-       perceptually-ordered stops the JS uses for polyline segments. */
+    /* Matches the BIN_COLORS array in loadPositions() AND the radar's
+       _radarAltColor scale (index.html): orange near the ground → yellow →
+       green → cyan → blue → violet at 40k+. Keep in lockstep with both. */
     background:linear-gradient(to right,
-        #22c55e 0%, #84cc16 20%, #eab308 40%,
-        #f97316 60%, #ef4444 80%, #dc2626 100%);
+        #f97316 0%, #facc15 20%, #4ade80 40%,
+        #22d3ee 60%, #60a5fa 80%, #a78bfa 100%);
 }
 </style>
 </head>
@@ -1926,7 +1926,7 @@ function initPositionMap(icao) {
             <span>Altitude:</span>
             <span>0 ft</span>
             <div class="gradient"></div>
-            <span>45,000+ ft</span>
+            <span>40,000+ ft</span>
         </div>
     `;
 
@@ -2031,22 +2031,43 @@ async function loadPositions(window) {
             : _posMapState.darkTiles;
         initialTiles.addTo(_posMapState.map);
 
-        // Receiver marker: standard Leaflet default-icon pin so it's
-        // visually distinct from the colored sighting dots. Uses the
-        // bundled marker images from /static/leaflet/images.
-        const receiverIcon = L.icon({
-            iconUrl: '/static/leaflet/images/marker-icon.png',
-            iconRetinaUrl: '/static/leaflet/images/marker-icon-2x.png',
-            shadowUrl: '/static/leaflet/images/marker-shadow.png',
-            iconSize: [25, 41],
-            iconAnchor: [12, 41],
-            popupAnchor: [1, -34],
-            shadowSize: [41, 41],
+        // Receiver marker — the SAME cyan dot + ring as the radar (shared
+        // .radar-rx-marker class in theme.css), instead of the old default
+        // Leaflet pin, so the two maps are consistent.
+        const receiverIcon = L.divIcon({
+            className: 'radar-rx-marker',
+            html: '<span class="rx-ring"></span><span class="rx-dot"></span>',
+            iconSize: [20, 20], iconAnchor: [10, 10],
         });
         _posMapState.receiverMarker = L.marker(
             [data.receiver.lat, data.receiver.lon],
-            { icon: receiverIcon, title: 'Receiver location' }
+            { icon: receiverIcon, title: 'Receiver', zIndexOffset: 1000 }
         ).addTo(_posMapState.map).bindPopup('Your receiver');
+
+        // Range rings — match the radar: cyan dashed rings + a south-edge
+        // distance label per ring, from the server-resolved config (same
+        // _resolved_ring_distances() the radar's /api/ui-config uses). Gated on
+        // show_range_rings, centered on the receiver.
+        if (data.show_range_rings && (data.ring_distances || []).length) {
+            const unit = (data.distance_unit || 'mi').toLowerCase();
+            const perUnitM = unit === 'km' ? 1000 : (unit === 'nm' ? 1852 : 1609.34);
+            const cyan = getComputedStyle(document.documentElement)
+                .getPropertyValue('--cyan').trim() || '#06b6d4';
+            data.ring_distances.forEach(dist => {
+                L.circle([data.receiver.lat, data.receiver.lon], {
+                    radius: dist * perUnitM, renderer: _posMapState.canvasRenderer,
+                    color: cyan, weight: 1, opacity: 0.32, fill: false,
+                    interactive: false, dashArray: '4 5',
+                }).addTo(_posMapState.map);
+                const southLat = data.receiver.lat - (dist * perUnitM) / 111320;
+                L.marker([southLat, data.receiver.lon], {
+                    icon: L.divIcon({ className: 'radar-ring-label',
+                        html: `${dist} ${escapeHtml(unit)}`,
+                        iconSize: [44, 14], iconAnchor: [22, 7] }),
+                    interactive: false, keyboard: false,
+                }).addTo(_posMapState.map);
+            });
+        }
 
         // v2.86.1: expand/collapse control. Toggles #positionMap's
         // height between the default 420px and an expanded 840px so
@@ -2122,8 +2143,13 @@ async function loadPositions(window) {
     // shown in the .map-altitude-legend strip in the page CSS — any
     // change here must be mirrored in that gradient's stops (and vice
     // versa) or the legend will drift from the colors on the map.
-    const BIN_THRESHOLDS = [1000, 10000, 25000, 35000, 45000];
-    const BIN_COLORS = ['#22c55e', '#84cc16', '#eab308', '#f97316', '#ef4444', '#dc2626'];
+    // Map-consistency: these MUST match the radar's _radarAltColor scale
+    // (index.html) so an aircraft's track is coloured identically on both maps
+    // — orange near the ground → yellow → green → cyan → blue → violet at 40k+.
+    // Keep these two arrays + the .map-altitude-legend gradient in lockstep
+    // with _radarAltColor; if that scale changes, change it here too.
+    const BIN_THRESHOLDS = [1000, 10000, 20000, 30000, 40000];
+    const BIN_COLORS = ['#f97316', '#facc15', '#4ade80', '#22d3ee', '#60a5fa', '#a78bfa'];
 
     function _rawBin(alt) {
         if (alt == null) return 0;

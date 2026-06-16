@@ -1,4 +1,4 @@
-# Version: 3.4.99
+# Version: 3.4.101
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -3636,6 +3636,30 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         )
 
     # --- UI config (what the frontend needs to know about settings) ---
+    def _resolved_ring_distances():
+        """Effective range-ring distances, resolved server-side. Shared by the
+        radar (/api/ui-config) AND the aircraft-detail position map
+        (/api/aircraft/{icao}/positions) so the two maps draw identical rings.
+        Follows the Stats range-rose bands when configured, else parses the
+        comma-separated map.ring_distances string; defaults to 50/100/150/200/250.
+        Defensive parse — a hand-edited config shouldn't break either map."""
+        mp = CONFIG.get("map") or {}
+        if mp.get("follow_range_rose"):
+            return ((CONFIG.get("stats") or {}).get("range_rose") or {}).get(
+                "distance_buckets") or [50, 100, 150, 200, 250]
+        rings = []
+        for p in str(mp.get("ring_distances") or "50,100,150,200,250").split(","):
+            p = p.strip()
+            if not p:
+                continue
+            try:
+                v = float(p)
+            except ValueError:
+                continue
+            if v > 0:
+                rings.append(int(v) if v == int(v) else v)
+        return rings or [50, 100, 150, 200, 250]
+
     @app.get("/api/ui-config")
     def get_ui_config():
         r = CONFIG.get("receiver", {})
@@ -3666,22 +3690,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         # string is well-formed on save, but a hand-edited config shouldn't
         # break the dashboard.
         mp = CONFIG.get("map") or {}
-        if mp.get("follow_range_rose"):
-            _rings = (st.get("range_rose") or {}).get("distance_buckets") or [50, 100, 150, 200, 250]
-        else:
-            _rings = []
-            for _p in str(mp.get("ring_distances") or "50,100,150,200,250").split(","):
-                _p = _p.strip()
-                if not _p:
-                    continue
-                try:
-                    _v = float(_p)
-                except ValueError:
-                    continue
-                if _v > 0:
-                    _rings.append(int(_v) if _v == int(_v) else _v)
-            if not _rings:
-                _rings = [50, 100, 150, 200, 250]
+        _rings = _resolved_ring_distances()
         return {
             "distance_enabled": has_location,
             "distance_unit": (r.get("distance_unit") or "mi").lower(),
@@ -11094,6 +11103,11 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             "positions": positions,
             "receiver": receiver,
             "truncated": truncated,
+            # Map-consistency: the detail map draws the same cyan receiver
+            # marker + range rings as the radar, from the same resolved config.
+            "distance_unit": (CONFIG.get("receiver", {}).get("distance_unit") or "mi").lower(),
+            "show_range_rings": bool((CONFIG.get("map") or {}).get("show_range_rings", True)),
+            "ring_distances": _resolved_ring_distances(),
         }
 
     @app.get("/diagnostics", response_class=HTMLResponse)

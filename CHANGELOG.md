@@ -19,6 +19,14 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.101] — 2026-06-16
+
+### Changed
+- **The two maps now match.** The aircraft detail page's position-history map has been brought in line with the live radar in three ways: the receiver is now the same cyan "signal origin" dot-and-ring (not the old generic map pin); it gains the same faint range rings with distance labels at your configured distances; and an aircraft's track is now colored by the **same altitude scale** as the radar's trails — orange near the ground through yellow, green, cyan and blue up to violet at 40,000 ft. So whether you're watching the live radar or reviewing one aircraft's history, the receiver, the rings, and the altitude colors all read identically.
+
+### Behind the scenes
+- The receiver-marker styling moved into the shared `theme.css`; the effective ring distances are resolved once on the server and handed to both maps; and the detail map's altitude bins now mirror the radar's `_radarAltColor` scale — so the two maps stay consistent rather than drifting apart.
+
 ## [3.4.99] — 2026-06-16
 
 ### Added
