@@ -1,4 +1,4 @@
-# Version: 3.4.91
+# Version: 3.4.94
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -3790,6 +3790,93 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         }
         _coverage_cache["ts"] = now
         _coverage_cache["payload"] = payload
+        return payload
+
+    # =========================================================================
+    # /api/live/trails — bulk recent tracks for the radar fleet-trails (↝)
+    # =========================================================================
+    _live_trails_cache = {"ts": 0.0, "window": None, "payload": None}
+    @app.get("/api/live/trails")
+    def get_live_trails(window: int = 3600):
+        """Recent ground track for EVERY aircraft seen in the window — the data
+        behind the radar's fleet-trails overlay (the ↝ toggle).
+
+        One indexed query over all_sightings instead of N per-aircraft
+        /positions calls: the client fetches this ONCE when the toggle goes on
+        to seed each contact's existing track, then grows the trails forward
+        from the /api/live poll it already runs — so this endpoint is hit
+        rarely (a short cache covers re-toggles / multiple browsers).
+
+        Each aircraft's track is trimmed server-side to its CURRENT PASS — the
+        most-recent contiguous run of fixes, cut at the first gap larger than
+        TRAIL_GAP_SEC (the same 10-minute rule the single-plane trail uses) —
+        and evenly downsampled to at most TRAIL_MAX_PTS points so 100+ contacts
+        stay light on the wire and on the phone's canvas. The fleet view is
+        therefore a little coarser than clicking one plane (which stays
+        full-resolution and un-thinned).
+
+        window — look-back seconds (default 3600 = 1h, clamped to [60, 6h]).
+                 Bounds the scan; a current pass longer than the window is
+                 clipped to it.
+
+        Response: {"ok": True, "trails": {ICAO: [[seen_at, lat, lon, alt], ...]}}
+        positions ascending by time — the same [t, lat, lon, alt] shape as the
+        single-aircraft /positions endpoint.
+        """
+        TRAIL_GAP_SEC = 600          # a hole > 10 min = a separate pass
+        TRAIL_MAX_PTS = 90           # even-downsample target per aircraft
+        window = max(60, min(int(window or 3600), 6 * 3600))
+        now = int(time.time())
+        nowf = time.time()
+        if (_live_trails_cache["payload"] is not None
+                and _live_trails_cache["window"] == window
+                and (nowf - _live_trails_cache["ts"]) < 4):
+            return _live_trails_cache["payload"]
+
+        conn = _open_db_conn(CONFIG["data"]["db_file"])
+        try:
+            # idx_all_seen_icao(seen_at, icao) makes this a range scan that also
+            # yields rows in seen_at order — so per-icao lists below come out
+            # already sorted ascending, no extra sort needed.
+            rows = conn.execute(
+                "SELECT icao, seen_at, lat, lon, altitude FROM all_sightings "
+                "WHERE seen_at >= ? AND lat IS NOT NULL AND lon IS NOT NULL "
+                "ORDER BY seen_at",
+                (now - window,),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        by_icao = {}
+        for icao, t, lat, lon, alt in rows:
+            by_icao.setdefault(icao, []).append([t, lat, lon, alt])
+
+        trails = {}
+        total = 0
+        for icao, pts in by_icao.items():
+            # Current pass: walk back from the latest fix, stop at the first
+            # gap > TRAIL_GAP_SEC. (pts is ascending by seen_at.)
+            start = len(pts) - 1
+            while start > 0 and (pts[start][0] - pts[start - 1][0]) <= TRAIL_GAP_SEC:
+                start -= 1
+            seg = pts[start:]
+            if len(seg) < 2:
+                continue             # a single fix has no path to draw
+            # Even-downsample to the cap, always keeping the most-recent fix so
+            # the leading end of the trail lands on the plane's current spot.
+            if len(seg) > TRAIL_MAX_PTS:
+                stride = (len(seg) + TRAIL_MAX_PTS - 1) // TRAIL_MAX_PTS
+                sampled = seg[::stride]
+                if sampled[-1] is not seg[-1]:
+                    sampled.append(seg[-1])
+                seg = sampled
+            trails[icao] = seg
+            total += len(seg)
+
+        payload = {"ok": True, "trails": trails, "window": window, "count": total}
+        _live_trails_cache["ts"] = nowf
+        _live_trails_cache["window"] = window
+        _live_trails_cache["payload"] = payload
         return payload
 
     # =========================================================================

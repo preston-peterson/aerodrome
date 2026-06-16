@@ -19,6 +19,14 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.94] — 2026-06-16
+
+### Added
+- **Trails for every aircraft on the radar.** A new trails button (↝) in the radar's bottom-left controls draws each contact's recent flight path behind it, colored by altitude just like the markers and the single-aircraft track. Switch it on and every plane immediately shows where it's come from — its current pass through your coverage — then keeps extending as new positions arrive. It's off by default and clears when you switch it off; the radar legend gains a matching key. With a sky full of traffic the fleet view is drawn a touch coarser than clicking one aircraft (which stays full-resolution), so the map stays smooth.
+
+### Behind the scenes
+- Switching trails on pulls every current contact's recent track in one query, so full trails appear at once instead of slowly growing from nothing; after that each trail extends from the live poll the radar already runs, with no extra per-aircraft requests. Each path is trimmed to the current pass — cut wherever the aircraft dropped out of range and returned — and lightly thinned, so a crowded map stays responsive even on a Raspberry Pi. Only aircraft currently on the radar are drawn (planes that have left range don't leave a lingering trail), and clicking a single aircraft still shows its track at full resolution.
+
 ## [3.4.91] — 2026-06-16
 
 ### Changed

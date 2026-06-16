@@ -1,4 +1,4 @@
-<!-- Version: 3.4.91 -->
+<!-- Version: 3.4.94 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -732,6 +732,17 @@
         #radarMap .map-coverage-btn:hover { background:var(--bg1); }
         #radarMap .map-coverage-btn.on {
             color:#7dd3fc; border-color:#7dd3fc; background:rgba(125,211,252,.12);
+        }
+        #radarMap .map-trails-btn {
+            background:var(--bg2); color:var(--t1);
+            border:1px solid var(--bdr); border-radius:4px;
+            width:30px; height:30px; padding:0; cursor:pointer;
+            display:flex; align-items:center; justify-content:center;
+            font-size:15px; line-height:1;
+        }
+        #radarMap .map-trails-btn:hover { background:var(--bg1); }
+        #radarMap .map-trails-btn.on {
+            color:var(--cyan); border-color:var(--cyan); background:rgba(6,182,212,.12);
         }
         /* Labels control — cycles All → Selected → Off (state shown by the
            button's look). When the map carries .labels-off, every marker label
@@ -2190,6 +2201,7 @@
                     <div class="rl-row"><span class="rl-swatch rl-wl"></span> Watchlist (amber ring + WL)</div>
                     <div class="rl-row"><span class="rl-swatch rl-rx"></span> Receiver &amp; range rings</div>
                     <div class="rl-row"><span class="rl-swatch rl-cov"></span> Coverage outline (⬡ toggle)</div>
+                    <div class="rl-row"><span style="flex:0 0 16px;height:4px;border-radius:2px;background:linear-gradient(90deg,#a78bfa,#22d3ee,#4ade80,#f97316)"></span> Aircraft trails (↝ toggle)</div>
                 </div>
             </div>
         </div>
@@ -3269,6 +3281,8 @@ const _radar = {
     selectedIcao: null,
     panelOpen: false,
     triedInit: false,
+    fleetBuf: {},         // icao -> [[lat,lon,alt], ...]  fleet-trail points (↝)
+    fleetSeg: {},         // icao -> [L.polyline, ...]      fleet-trail segments
 };
 
 // v3.5.0 (radar): the live map carries its OWN light/dark toggle, matching
@@ -3447,6 +3461,8 @@ function initRadarMap(receiver){
                'Toggle max-range coverage outline', toggleRadarCoverage);
             mk('map-labels-btn lbl-' + radarLabelsMode(), 'Aa',
                'Cycle aircraft labels (all / selected / off)', radarCycleLabels);
+            mk('map-trails-btn' + (radarTrailsOn() ? ' on' : ''), '&#8605;',
+               'Toggle aircraft trails', toggleRadarTrails);
             return wrap;
         }
     });
@@ -3654,6 +3670,9 @@ function radarSync(liveJ){
             if(note){ note.style.display = ''; note.textContent = 'No longer being received — last known data shown.'; }
         }
     }
+
+    // v3.4.94: accumulate + redraw the all-aircraft trails (no-op when off).
+    _radarUpdateAllTrails(live);
 }
 
 // Re-skin every marker so the selected one picks up the .selected glow
@@ -3979,6 +3998,132 @@ function _radarDrawCoverage(){
             }).addTo(_radar.map);
         })
         .catch(() => {});
+}
+
+// v3.4.94: ALL-aircraft trails (tar1090-style) — the ↝ on-map toggle. When ON,
+// every contact shows its recent flight path (current pass), altitude-coloured
+// in the same per-segment style as the clicked-aircraft track.
+//
+// Data flow (mirrors what we told the design through): when you toggle on we
+// SEED each contact's existing track from ONE bulk query (/api/live/trails),
+// so a full trail appears immediately — not a stub that grows from zero. After
+// that the trails GROW FORWARD from the /api/live poll we already run (one new
+// segment per moved aircraft per poll — no full-canvas re-draw), since the
+// poll already hands us each plane's new position for free. A plane that
+// arrives after you toggle on has no back-history anyway, so growing it forward
+// IS its complete trail. Per-aircraft points are capped (TRAIL_MAX_PTS) so a
+// sky full of traffic stays light on the wire and the phone canvas. OFF by
+// default, persisted per browser.
+const RADAR_TRAILS_KEY = 'aerodrome.radar_trails';
+const TRAIL_MAX_PTS = 90;            // rolling current-pass fixes kept per aircraft
+function radarTrailsOn(){
+    try { return localStorage.getItem(RADAR_TRAILS_KEY) === '1'; } catch(e){ return false; }
+}
+function _radarSyncTrailsBtn(){
+    const btn = document.querySelector('#radarMap .map-trails-btn');
+    if(btn) btn.classList.toggle('on', radarTrailsOn());
+}
+// Remove one aircraft's drawn segments + buffered points.
+function _radarDropTrail(icao){
+    const segs = (_radar.fleetSeg || {})[icao];
+    if(segs && _radar.map) segs.forEach(s => _radar.map.removeLayer(s));
+    delete (_radar.fleetSeg || {})[icao];
+    delete (_radar.fleetBuf || {})[icao];
+}
+function _radarClearAllTrails(){
+    if(_radar.fleetSeg && _radar.map){
+        Object.keys(_radar.fleetSeg).forEach(ic =>
+            _radar.fleetSeg[ic].forEach(s => _radar.map.removeLayer(s)));
+    }
+    _radar.fleetSeg = {};
+    _radar.fleetBuf = {};
+}
+// Draw one altitude-coloured segment for an aircraft and remember it.
+function _radarAddFleetSeg(icao, p1, p2, alt){
+    const line = L.polyline([p1, p2], {
+        renderer: _radar.canvasRenderer, color: _radarAltColor(alt),
+        weight: 2, opacity: 0.55, interactive: false,
+    }).addTo(_radar.map);
+    (_radar.fleetSeg[icao] = _radar.fleetSeg[icao] || []).push(line);
+}
+function toggleRadarTrails(){
+    const on = !radarTrailsOn();
+    try { localStorage.setItem(RADAR_TRAILS_KEY, on ? '1' : '0'); } catch(e){}
+    _radarSyncTrailsBtn();
+    if(on) _radarSeedAllTrails();     // pull existing tracks → full trails appear now
+    else _radarClearAllTrails();
+}
+// Toggle-on seed: one bulk query for every contact's current pass, drawn as
+// altitude-coloured segments. After this the per-poll grow takes over.
+function _radarSeedAllTrails(){
+    _radarClearAllTrails();
+    if(!_radar.map) return;
+    fetch('/api/live/trails')
+        .then(r => r.ok ? r.json() : null)
+        .then(j => {
+            if(!j || !j.trails || !radarTrailsOn() || !_radar.map) return;
+            const sel = _radar.selectedIcao;
+            // Only seed aircraft that are CURRENTLY on the radar. The endpoint
+            // returns everyone seen in its look-back window (incl. planes that
+            // have since left range), so without this filter their trails flash
+            // on at toggle and only vanish on the next poll's prune.
+            const liveSet = {};
+            (D.live || []).forEach(a => { if(a && a.icao) liveSet[a.icao] = true; });
+            Object.keys(j.trails).forEach(ic => {
+                if(ic === sel) return;            // its dedicated track covers it
+                if(!liveSet[ic]) return;          // not currently received — skip
+                const pts = j.trails[ic];         // [[t,lat,lon,alt], ...] ascending
+                if(!pts || pts.length < 2) return;
+                // Keep the most-recent TRAIL_MAX_PTS so the rolling cap matches
+                // the live grow below.
+                const from = Math.max(0, pts.length - TRAIL_MAX_PTS);
+                const buf = [];
+                for(let i = from; i < pts.length; i++) buf.push([pts[i][1], pts[i][2], pts[i][3]]);
+                _radar.fleetBuf[ic] = buf;
+                _radar.fleetSeg[ic] = [];
+                for(let i = 0; i < buf.length - 1; i++){
+                    _radarAddFleetSeg(ic, [buf[i][0], buf[i][1]],
+                                          [buf[i+1][0], buf[i+1][1]], buf[i][2]);
+                }
+            });
+        })
+        .catch(() => {});
+}
+// Called every poll from radarSync. Extends each contact's trail by ONE segment
+// when it has moved (no full re-draw), capped to TRAIL_MAX_PTS. Skips the
+// SELECTED aircraft (its dedicated full-pass track already covers it). No-op
+// (and clears) when the toggle is off.
+function _radarUpdateAllTrails(live){
+    if(!_radar.map) return;
+    if(!radarTrailsOn()){
+        if(Object.keys(_radar.fleetBuf || {}).length ||
+           Object.keys(_radar.fleetSeg || {}).length){
+            _radarClearAllTrails();
+        }
+        return;
+    }
+    _radar.fleetBuf = _radar.fleetBuf || {};
+    _radar.fleetSeg = _radar.fleetSeg || {};
+    const seen = {};
+    const sel = _radar.selectedIcao;
+    (live || []).forEach(a => {
+        if(a.lat == null || a.lon == null) return;
+        seen[a.icao] = true;
+        if(a.icao === sel){ _radarDropTrail(a.icao); return; }
+        const buf = _radar.fleetBuf[a.icao] || (_radar.fleetBuf[a.icao] = []);
+        const last = buf.length ? buf[buf.length - 1] : null;
+        if(last && last[0] === a.lat && last[1] === a.lon) return;   // not moved
+        if(last) _radarAddFleetSeg(a.icao, [last[0], last[1]], [a.lat, a.lon], last[2]);
+        buf.push([a.lat, a.lon, a.altitude]);
+        // Roll the window: drop oldest point + its now-dangling oldest segment.
+        while(buf.length > TRAIL_MAX_PTS){
+            buf.shift();
+            const segs = _radar.fleetSeg[a.icao];
+            if(segs && segs.length) _radar.map.removeLayer(segs.shift());
+        }
+    });
+    // Drop trails for aircraft no longer present.
+    Object.keys(_radar.fleetBuf).forEach(ic => { if(!seen[ic]) _radarDropTrail(ic); });
 }
 
 // v3.5.0: the SINGLE labels control — an on-map button that cycles three
