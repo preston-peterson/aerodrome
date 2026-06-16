@@ -19,6 +19,11 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.88] — 2026-06-15
+
+### Changed
+- **Extra hardening, two spots.** (1) When applying an update from GitHub, Aerodrome now refuses any archive entry whose path would land outside the staging folder — so a tampered release archive can't drop files elsewhere on disk. (2) Aircraft hex identifiers are now sanitized again right before they're placed into the page (links, buttons, list rows), on top of the validation already done when the data arrives. Both are belt-and-suspenders measures; normal use is unchanged.
+
 ## [3.4.87] — 2026-06-15
 
 ### Changed

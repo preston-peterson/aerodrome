@@ -1,4 +1,4 @@
-<!-- Version: 3.4.87 -->
+<!-- Version: 3.4.88 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2971,7 +2971,7 @@ function _renderAddWlButtonInline(ac){
     if(wlIcaos.has(icao)){
         return `<button class="add-wl-btn added" title="Already in watchlist" disabled>✓</button>`;
     }
-    return `<button class="add-wl-btn" title="Add to watchlist" onclick="openAddWl('${icao}')">+</button>`;
+    return `<button class="add-wl-btn" title="Add to watchlist" onclick="openAddWl('${safeIcao(icao)}')">+</button>`;
 }
 
 // =========================================================================
@@ -3803,9 +3803,20 @@ function _radarClearTrail(){
 // the detail page) shown ONLY when that hex is being received right now. The
 // pill IS the link — click → jump to the Live tab and focus the aircraft.
 // The Live tab itself omits it (every row there is already live).
+// v3.4.88: defense-in-depth output encoding for an ICAO hex before it is
+// interpolated into an HTML attribute or an inline-handler JS-string. Ingest
+// validation (clean_icao_hex, v3.4.84) already guarantees a safe value, but
+// encoding at the sink too means a quote / markup / script character can never
+// break out of these contexts even if some future data path skips validation.
+// A charset strip (not escapeHtml) is used deliberately: escapeHtml turns ' into
+// &#39;, which the HTML parser decodes back to ' BEFORE the inline-handler JS
+// runs — so it does NOT protect a JS-string context. Real ICAOs (~?[0-9A-F]{6})
+// pass through unchanged, so this is a no-op for valid data.
+function safeIcao(h){ return String(h == null ? '' : h).replace(/[^0-9A-Za-z~]/g, ''); }
+
 function liveChipHtml(icao){
     if(!icao || !_liveHexSet.has(String(icao).toUpperCase())) return '';
-    const safe = escapeHtml(icao);
+    const safe = safeIcao(icao);
     return `<span class="live-chip" role="button" tabindex="0"
         title="Receiving now — show on the radar"
         onclick="event.stopPropagation(); focusOnRadar('${safe}')"
@@ -5518,7 +5529,7 @@ function _renderSearchCard(r){
     }</span>`;
 
     return `
-        <div class="search-card${expanded ? ' expanded' : ''}" id="search-card-${icao}" onclick="toggleSearchDrill('${icao}')">
+        <div class="search-card${expanded ? ' expanded' : ''}" id="search-card-${safeIcao(icao)}" onclick="toggleSearchDrill('${safeIcao(icao)}')">
             <div class="search-row-grid">
                 ${icaoCell}
                 <span class="c-type">${escapeHtml(type || '—')}</span>
@@ -5535,7 +5546,7 @@ function _renderSearchCard(r){
                 ${trackCell}
                 ${wlCell}
             </div>
-            ${expanded ? `<div class="search-drill" id="search-drill-${icao}"><div class="search-drill-loading">Loading detail…</div></div>` : ''}
+            ${expanded ? `<div class="search-drill" id="search-drill-${safeIcao(icao)}"><div class="search-drill-loading">Loading detail…</div></div>` : ''}
         </div>`;
 }
 
@@ -5557,7 +5568,7 @@ function _renderSearchAddWlButton(r){
     if (onWl){
         return `<button class="add-wl-btn added" title="Already on watchlist" disabled>+</button>`;
     }
-    return `<button class="add-wl-btn" title="Add to watchlist" onclick="openAddWl('${icao}')">+</button>`;
+    return `<button class="add-wl-btn" title="Add to watchlist" onclick="openAddWl('${safeIcao(icao)}')">+</button>`;
 }
 
 // Open or close the drill panel on a card. Only one drill at a time —
@@ -5607,7 +5618,7 @@ function _renderSearchDrill(d){
         items.push(`<div class="search-drill-item">
             <div class="l">Sightings</div>
             <div class="v" onclick="event.stopPropagation()">
-                <a href="javascript:void(0)" class="link" onclick="toggleSightingsExpansion('${icao}', event)">${sightingCount} sightings ↗</a>
+                <a href="javascript:void(0)" class="link" onclick="toggleSightingsExpansion('${safeIcao(icao)}', event)">${sightingCount} sightings ↗</a>
             </div>
         </div>`);
     } else {
@@ -5656,7 +5667,7 @@ function _renderSearchDrill(d){
     // Empty initially; toggleSightingsExpansion() fills it lazily on
     // first click. Subsequent clicks toggle visibility (don't refetch).
     if (icao){
-        items.push(`<div class="search-sightings-region" id="search-sightings-${icao}" style="display:none"></div>`);
+        items.push(`<div class="search-sightings-region" id="search-sightings-${safeIcao(icao)}" style="display:none"></div>`);
     }
     return items.join('');
 }
@@ -5790,7 +5801,7 @@ function _renderSightingsRegion(icao, data, mode){
         // when in 30d mode. Cheap UX, predictable.
         head = `<div class="search-sightings-head">
             <span class="search-sightings-title">${modeLabel} <span class="count">${sightings.length}${truncated ? ' of ' + total : ''}</span></span>
-            <span class="expand-link" onclick="expandSightingsToLifetime('${icao}', event)">Expand to lifetime ↗</span>
+            <span class="expand-link" onclick="expandSightingsToLifetime('${safeIcao(icao)}', event)">Expand to lifetime ↗</span>
         </div>`;
     } else {
         head = `<div class="search-sightings-head">

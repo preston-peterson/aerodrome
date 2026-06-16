@@ -1,4 +1,4 @@
-# Version: 3.4.87
+# Version: 3.4.88
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -10120,6 +10120,16 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 else:
                     has_common_prefix = False
 
+                # v3.4.88: zip-slip guard. Mirror the local-upload path's
+                # containment check (which this GitHub-staging path was missing):
+                # resolve each destination and refuse anything that lands outside
+                # update/. The wrapper-strip above turns a crafted
+                # "aerodrome-vX/../evil.py" into "../evil.py", which would escape
+                # the staging dir — and the sha256 is an integrity check, not an
+                # authenticity one, so a tampered release / defeated TLS to GitHub
+                # shouldn't be able to write outside update/.
+                target_root = update_dir.resolve()
+
                 for member in zf.namelist():
                     if has_common_prefix:
                         # Strip the wrapper folder
@@ -10129,6 +10139,15 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                         dest_path = update_dir / stripped
                     else:
                         dest_path = update_dir / member
+
+                    if "\x00" in member:
+                        raise ValueError(f"Release zip entry has a null byte: {member!r}")
+                    try:
+                        dest_path.resolve().relative_to(target_root)
+                    except ValueError:
+                        raise ValueError(
+                            f"Release zip entry escapes the staging directory: {member!r}"
+                        )
 
                     if member.endswith("/"):
                         dest_path.mkdir(parents=True, exist_ok=True)
