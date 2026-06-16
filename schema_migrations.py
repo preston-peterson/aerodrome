@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 # Current schema version. Bump whenever a new migration is added.
 # v2.51.0 introduces schema version 1 (the search-feature schema).
 # Any DB without a schema_version table is implicitly at version 0.
-CURRENT_SCHEMA_VERSION = 11
+CURRENT_SCHEMA_VERSION = 12
 
 
 # A migration is a (target_version, description, callable) tuple.
@@ -1338,6 +1338,46 @@ def _migration_v11_best_track_seconds(conn: sqlite3.Connection) -> None:
                     "aircraft_track_daily")
 
 
+def _migration_v12_route_cache(conn: sqlite3.Connection) -> None:
+    """v3.4.99: add the `route_cache` table — a callsign→flight-route cache
+    behind the new route-enrichment feature (origin → destination shown on
+    the aircraft detail page + the radar overlay card).
+
+    ADS-B does NOT broadcast a route; flight trackers derive it from a
+    callsign→route database. So this enrichment is keyed by CALLSIGN — NOT
+    by ICAO hex like hexdb_cache/owner enrichment — because a route belongs
+    to a flight, not an airframe: one airframe flies many callsigns, and the
+    same callsign (e.g. SWA2178) flies the same scheduled route most days.
+    A callsign-keyed cache is therefore shared across every airframe flying
+    that callsign and gets dense fast. Source is adsbdb.com (free, no key).
+
+    Like hexdb_cache, this carries a NEGATIVE-cache marker: a callsign with
+    no scheduled route (GA/private flights, and adsbdb 404s) is stored with
+    last_outcome='miss' and empty route fields, so the same dead callsign
+    isn't re-queried on every view. A 'hit' stores origin/dest ICAO + the
+    airport names (for hover) + the operating airline.
+
+    Standalone table (not columns on seen_aircraft) precisely because the
+    key is the callsign, not the per-airframe seen_aircraft icao.
+
+    Idempotent: CREATE TABLE IF NOT EXISTS — a re-run is a no-op.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS route_cache (
+            callsign     TEXT PRIMARY KEY NOT NULL,
+            origin_icao  TEXT,
+            origin_name  TEXT,
+            dest_icao    TEXT,
+            dest_name    TEXT,
+            airline      TEXT,
+            resolved_at  INTEGER NOT NULL,
+            last_outcome TEXT NOT NULL,
+            hit_count    INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    logger.info("Migration v12: ensured route_cache table exists")
+
+
 # Ordered list of all migrations. NEVER edit a shipped migration —
 # always add a new one. The list is the source of truth for what
 # CURRENT_SCHEMA_VERSION should be.
@@ -1364,6 +1404,8 @@ MIGRATIONS: List[Migration] = [
      _migration_v10_registry_enrichment),
     (11, "best_track_seconds column: all-time longest single track per aircraft for the Search track-length column (v3.4.62)",
      _migration_v11_best_track_seconds),
+    (12, "route_cache table: callsign→flight-route cache (origin/dest + airline) for route enrichment (v3.4.99)",
+     _migration_v12_route_cache),
 ]
 
 

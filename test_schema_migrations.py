@@ -865,5 +865,113 @@ class TestMigrationV11BestTrackSeconds(unittest.TestCase):
         self.assertIn("best_track_seconds", cols)
 
 
+class TestRouteCacheMigration(unittest.TestCase):
+    """v12 (v3.4.99): route_cache — the callsign→flight-route cache behind
+    route enrichment. Standalone + callsign-keyed, with a negative-cache
+    (last_outcome='miss') marker for callsigns with no scheduled route."""
+
+    EXPECTED_COLS = {"callsign", "origin_icao", "origin_name", "dest_icao",
+                     "dest_name", "airline", "resolved_at", "last_outcome",
+                     "hit_count"}
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.db')
+        self.tmp.close()
+
+    def tearDown(self):
+        os.unlink(self.tmp.name)
+
+    def _cols(self, conn):
+        return {r[1] for r in conn.execute(
+            "PRAGMA table_info(route_cache)").fetchall()}
+
+    def _tables(self, conn):
+        return {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+
+    def test_v12_direct_creates_table_with_columns(self):
+        from schema_migrations import _migration_v12_route_cache
+        conn = sqlite3.connect(self.tmp.name)
+        try:
+            _migration_v12_route_cache(conn)
+            self.assertEqual(self._cols(conn), self.EXPECTED_COLS)
+        finally:
+            conn.close()
+
+    def test_fresh_install_creates_route_cache(self):
+        # Fresh install: the full chain (0 → CURRENT) lands route_cache.
+        conn = _make_v2_50_db(self.tmp.name)
+        try:
+            result = apply_schema_migrations(conn, "test")
+            self.assertTrue(result["ok"], result.get("error"))
+            self.assertEqual(result["ending_version"], CURRENT_SCHEMA_VERSION)
+            self.assertEqual(self._cols(conn), self.EXPECTED_COLS)
+        finally:
+            conn.close()
+
+    def test_upgrade_from_v11_runs_only_v12(self):
+        # Simulated prior-version upgrade: stamp the DB at v11, so the apply
+        # runs ONLY migration 12 and lands route_cache.
+        conn = _make_v2_50_db(self.tmp.name)
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS schema_version (
+                    version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL,
+                    description TEXT NOT NULL, app_version TEXT NOT NULL)""")
+            conn.execute(
+                "INSERT INTO schema_version (version, applied_at, description, app_version) "
+                "VALUES (11, 1700000000, 'test-stamp', 'test')")
+            conn.commit()
+            result = apply_schema_migrations(conn, "test")
+            self.assertTrue(result["ok"], result.get("error"))
+            self.assertEqual(result["starting_version"], 11)
+            self.assertEqual(result["ending_version"], CURRENT_SCHEMA_VERSION)
+            self.assertEqual(len(result["applied"]), 1)  # only v12 ran
+            self.assertIn("route_cache", self._tables(conn))
+        finally:
+            conn.close()
+
+    def test_read_path_hit_and_negative_miss(self):
+        from schema_migrations import _migration_v12_route_cache
+        conn = sqlite3.connect(self.tmp.name)
+        try:
+            _migration_v12_route_cache(conn)
+            conn.execute(
+                "INSERT INTO route_cache (callsign, origin_icao, origin_name, "
+                "dest_icao, dest_name, airline, resolved_at, last_outcome, hit_count) "
+                "VALUES ('SWA2178','KSJC','San Jose','KLAX','Los Angeles',"
+                "'Southwest Airlines',1700000000,'hit',3)")
+            conn.execute(
+                "INSERT INTO route_cache (callsign, resolved_at, last_outcome) "
+                "VALUES ('N900RH',1700000000,'miss')")
+            conn.commit()
+            self.assertEqual(
+                conn.execute("SELECT origin_icao, dest_icao, airline, last_outcome, "
+                             "hit_count FROM route_cache WHERE callsign='SWA2178'").fetchone(),
+                ('KSJC', 'KLAX', 'Southwest Airlines', 'hit', 3))
+            # negative cache: route fields NULL, hit_count defaults to 0
+            self.assertEqual(
+                conn.execute("SELECT origin_icao, dest_icao, last_outcome, hit_count "
+                             "FROM route_cache WHERE callsign='N900RH'").fetchone(),
+                (None, None, 'miss', 0))
+        finally:
+            conn.close()
+
+    def test_v12_idempotent_rerun_preserves_data(self):
+        from schema_migrations import _migration_v12_route_cache
+        conn = sqlite3.connect(self.tmp.name)
+        try:
+            _migration_v12_route_cache(conn)
+            conn.execute("INSERT INTO route_cache (callsign, resolved_at, last_outcome) "
+                         "VALUES ('SWA1',1700000000,'miss')")
+            conn.commit()
+            _migration_v12_route_cache(conn)  # CREATE TABLE IF NOT EXISTS → no-op
+            self.assertEqual(self._cols(conn), self.EXPECTED_COLS)
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM route_cache").fetchone()[0], 1)
+        finally:
+            conn.close()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

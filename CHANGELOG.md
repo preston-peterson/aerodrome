@@ -19,6 +19,14 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.99] — 2026-06-16
+
+### Added
+- **Flight routes — where each plane is going.** Open an aircraft on the **radar** (click its marker) or on its **detail page**, and you'll now see the flight's route — origin → destination — with each airport shown as its **code over the city name** (e.g. "KSJC / San Jose → KLAX / Los Angeles") and the operating airline. ADS-B doesn't broadcast a route, so it's looked up by callsign from a public flight-route database (adsbdb.com) the first time you open a flight, then cached, so it's instant after that. Scheduled airline flights resolve well; private/GA flights have no scheduled route and simply show no route line. No setup or key required.
+
+### Behind the scenes
+- The lookup is keyed by callsign (a route belongs to a flight, not an airframe) and cached in a new `route_cache` table, including a negative-cache for callsigns with no route so dead lookups aren't repeated. It mirrors the existing owner-enrichment discipline: a monthly TTL on hits, a shorter one on misses, transient network errors are never cached (they retry), and the lookup runs lazily off the main page queries so it never blocks the map or the detail view. The radar overlay stacks the route to fit the narrow card; the wider detail page shows it inline.
+
 ## [3.4.96] — 2026-06-16
 
 ### Added

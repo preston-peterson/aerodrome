@@ -1,4 +1,4 @@
-# Version: 3.4.96
+# Version: 3.4.99
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -10943,6 +10943,44 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
         cur = _read() or cur
         return {"ok": True, "icao": key, **cur}
+
+    @app.get("/api/callsign/{callsign}/route")
+    async def get_callsign_route(callsign: str):
+        """v3.4.97: resolve + return the origin→destination route for one
+        flight callsign — the route line on the radar overlay + detail page.
+
+        ADS-B carries no route; it's looked up by CALLSIGN from adsbdb.com
+        (free, no key) and cached in route_cache (callsign-keyed, with a
+        negative-cache for callsigns that have no scheduled route). Lazy: the
+        UI calls this when an aircraft is opened, OFF the main payloads so a
+        network call never blocks the detail/live queries. The blocking lookup
+        runs in a thread with a short budget, mirroring /enrich.
+
+        Returns {ok, found, callsign[, origin_icao, origin_name, dest_icao,
+        dest_name, airline], cached}. found=False (the UI shows no route row)
+        for GA/private/unknown callsigns and for a transient lookup failure."""
+        cs = (callsign or "").upper().strip()
+        # Fast-reject obvious non-callsigns before spending a thread/conn; the
+        # resolver re-validates with its [A-Z0-9]{2,8} charset rule.
+        if not (2 <= len(cs) <= 8) or not cs.isalnum():
+            return {"ok": True, "found": False, "callsign": cs}
+
+        def _resolve():
+            import route_resolver as _route_resolver
+            conn = _open_db_conn(CONFIG["data"]["db_file"])
+            try:
+                return _route_resolver.resolve_route(conn, cs)
+            finally:
+                conn.close()
+
+        import asyncio as _asyncio
+        try:
+            return await _asyncio.wait_for(_asyncio.to_thread(_resolve), timeout=7.0)
+        except _asyncio.TimeoutError:
+            return {"ok": True, "found": False, "callsign": cs}
+        except Exception as e:
+            logger.debug(f"route resolve failed for {cs}: {e}")
+            return {"ok": True, "found": False, "callsign": cs}
 
     @app.get("/api/aircraft/{icao}/positions")
     def get_aircraft_positions(icao: str, window: str = "24h"):

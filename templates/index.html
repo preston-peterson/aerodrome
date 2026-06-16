@@ -1,4 +1,4 @@
-<!-- Version: 3.4.96 -->
+<!-- Version: 3.4.99 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -691,6 +691,23 @@
         .ro-owner .k { color:var(--t3); text-transform:uppercase; font-size:10px;
             letter-spacing:.05em; display:block; }
         .ro-owner .v { color:var(--t1); }
+        /* Route line (v3.4.99) — origin → dest as a subtle cyan chip, each
+           airport stacked as ICAO code over city. Hidden (with the airline
+           line below) when there's no scheduled route. */
+        .ro-route { display:flex; align-items:center; gap:8px;
+            background:rgba(6,182,212,.08); border:1px solid rgba(6,182,212,.25);
+            border-radius:6px; padding:7px 10px; }
+        .ro-route .ep { display:flex; flex-direction:column; line-height:1.2;
+            min-width:0; flex:1; }
+        .ro-route .ep.dest { align-items:flex-end; text-align:right; }
+        .ro-route .ep .ap { font-size:14px; font-weight:600; color:var(--t1);
+            letter-spacing:.02em; }
+        .ro-route .ep .city { font-size:10.5px; color:var(--t3); max-width:100%;
+            overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .ro-route .arr { color:var(--cyan); font-size:16px; flex:0 0 auto; }
+        .ro-route.loading { display:block; color:var(--t3); font-style:italic;
+            background:none; border-color:transparent; padding:2px 0; }
+        .ro-airline { font-size:10.5px; color:var(--t3); margin-top:-4px; padding-left:1px; }
         .ro-telemetry { display:grid; grid-template-columns:1fr 1fr; gap:8px 10px; margin-top:2px; }
         .ro-telemetry .tcell .k { display:block; font-size:10px; color:var(--t3);
             text-transform:uppercase; letter-spacing:.05em; }
@@ -2228,6 +2245,8 @@
                     <button type="button" class="ro-close" onclick="closeRadarOverlay()" aria-label="Close details">✕</button>
                 </div>
                 <div class="ro-sub" id="roSub"></div>
+                <div class="ro-route" id="roRoute" style="display:none"></div>
+                <div class="ro-airline" id="roAirline" style="display:none"></div>
                 <div class="ro-owner" id="roOwner"></div>
                 <div class="ro-telemetry" id="roTelemetry"></div>
                 <div class="ro-note" id="roNote" style="display:none"></div>
@@ -3785,6 +3804,18 @@ function openRadarOverlay(icao){
         .then(r => r.ok ? r.json() : null)
         .then(j => { if(_radar.selectedIcao === icao) _radarSetOwner(j); })
         .catch(() => { if(_radar.selectedIcao === icao) _radarSetOwner(null); });
+    // Route enrichment (v3.4.99) — origin→dest via the callsign. Lazy, like the
+    // owner line. No callsign (or a GA/unknown one) → the row stays hidden.
+    const _cs = (ac.callsign || '').trim();
+    if(_cs){
+        _radarSetRoute('loading');
+        fetch(`/api/callsign/${encodeURIComponent(_cs)}/route`)
+            .then(r => r.ok ? r.json() : null)
+            .then(j => { if(_radar.selectedIcao === icao) _radarSetRoute(j); })
+            .catch(() => { if(_radar.selectedIcao === icao) _radarSetRoute(null); });
+    } else {
+        _radarSetRoute(null);
+    }
     _radarDrawTrail(icao);
     // The map does NOT recenter on the clicked aircraft (by design — the view
     // stays anchored where the user left it). But when the panel FIRST opens,
@@ -3871,6 +3902,45 @@ function _radarSetOwner(info){
     const val = owner || op || '—';
     const regTxt = reg ? ` <span style="color:var(--t3)">(${escapeHtml(reg)})</span>` : '';
     el.innerHTML = `<span class="k">Owner / operator</span><span class="v">${escapeHtml(val)}${regTxt}</span>`;
+}
+
+// Route line (v3.4.99): origin → dest from the callsign→route lookup. Each
+// airport is stacked ICAO-code-over-city ("KSJC / San Jose → KLAX / Los
+// Angeles"); the operating airline shows as a quiet line below. The chip + the
+// airline line are hidden entirely when there's no scheduled route
+// (GA/private/unknown callsign) or the lookup fails — no empty rows.
+function _radarSetRoute(info){
+    const el  = document.getElementById('roRoute');
+    const air = document.getElementById('roAirline');
+    if(!el) return;
+    const hideAirline = () => { if(air){ air.style.display = 'none'; air.textContent = ''; } };
+    if(info === 'loading'){
+        el.style.display = '';
+        el.className = 'ro-route loading';
+        el.textContent = 'Route …';
+        hideAirline();
+        return;
+    }
+    if(info && info.found && info.origin_icao && info.dest_icao){
+        el.style.display = '';
+        el.className = 'ro-route';
+        const ep = (icao, city, dest) =>
+            `<span class="ep${dest ? ' dest' : ''}">`
+          + `<span class="ap">${escapeHtml(icao)}</span>`
+          + (city ? `<span class="city">${escapeHtml(city)}</span>` : '')
+          + `</span>`;
+        el.innerHTML = ep(info.origin_icao, info.origin_name, false)
+                     + `<span class="arr">→</span>`
+                     + ep(info.dest_icao, info.dest_name, true);
+        if(air){
+            if(info.airline){ air.style.display = ''; air.textContent = info.airline; }
+            else hideAirline();
+        }
+        return;
+    }
+    el.style.display = 'none';
+    el.innerHTML = '';
+    hideAirline();
 }
 
 // Add one altitude-coloured trail segment (p1→p2) for the selected aircraft.

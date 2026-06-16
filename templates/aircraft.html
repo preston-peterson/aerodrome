@@ -1,4 +1,4 @@
-<!-- Version: 3.4.96 -->
+<!-- Version: 3.4.99 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -160,6 +160,13 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
    into the title row's baseline; it now sits as a normal line. */
 .owner-line { color:var(--t2); font-size:13px; margin:0 0 10px 0; font-family:var(--mono); }
 .owner-line .owner-label { color:var(--t3); text-transform:uppercase; font-size:11px; letter-spacing:.04em; margin-right:8px; }
+/* v3.4.99: route line (origin → dest by callsign). Inline on this wide page —
+   ICAO code bright, city muted alongside, cyan arrow, airline trailing. Hidden
+   until/unless a scheduled route resolves. */
+.route-line .route-val .ap { color:var(--t1); }
+.route-line .route-val .city { color:var(--t3); }
+.route-line .route-val .arr { color:var(--cyan); margin:0 5px; }
+.route-line .route-val .airline { color:var(--t3); margin-left:9px; }
 
 .metrics-grid {
     display:grid; grid-template-columns:repeat(5, 1fr);
@@ -884,6 +891,10 @@ function renderDetail(d) {
             <span class="owner-label">Owner</span><span class="owner-name">${owner ? escapeHtml(owner) : '\u2014'}</span>
         </div>
 
+        <div class="owner-line route-line" id="routeLine" style="display:none">
+            <span class="owner-label">Route</span><span class="route-val"></span>
+        </div>
+
         <div class="subtitle">
             First seen ${fmtRelativeTime(d.first_seen_at)} · Last seen ${fmtRelativeTime(d.last_seen_at)}
         </div>
@@ -935,6 +946,9 @@ function renderDetail(d) {
     // lazily and fill in the owner line. Kept off the main detail payload
     // so the heavy detail query never waits on a hexdb call.
     maybeEnrichOwner(d.icao, owner);
+    // v3.4.99: same idea for the flight route, keyed by the (most recent)
+    // callsign — fills the route line in if a scheduled route resolves.
+    maybeEnrichRoute(callsign);
 
     // v3.5.0 (radar C): show a "● Live — see on the radar →" chip in the hero
     // when this aircraft is being received right now, linking to the Live-tab
@@ -977,6 +991,29 @@ function maybeEnrichOwner(icao, existingOwner) {
             if (nameEl) nameEl.textContent = j.registered_owner;
         })
         .catch(() => { /* enrichment is best-effort; leave the placeholder */ });
+}
+
+function maybeEnrichRoute(callsign) {
+    // Lazy callsign→route lookup (v3.4.99), mirroring maybeEnrichOwner. The
+    // route line stays hidden until a scheduled route resolves; a GA/private/
+    // unknown callsign (or a lookup failure) leaves it hidden — no empty row.
+    const cs = (callsign || '').trim();
+    if (!cs) return;
+    fetch(`/api/callsign/${encodeURIComponent(cs)}/route`)
+        .then(r => r.ok ? r.json() : null)
+        .then(j => {
+            if (!j || !j.found || !j.origin_icao || !j.dest_icao) return;
+            const line = document.getElementById('routeLine');
+            const val = line && line.querySelector('.route-val');
+            if (!val) return;
+            const ap = (icao, city) => `<span class="ap">${escapeHtml(icao)}</span>`
+                + (city ? ` <span class="city">${escapeHtml(city)}</span>` : '');
+            const air = j.airline ? `<span class="airline">${escapeHtml(j.airline)}</span>` : '';
+            val.innerHTML = ap(j.origin_icao, j.origin_name)
+                + `<span class="arr">→</span>` + ap(j.dest_icao, j.dest_name) + air;
+            line.style.display = '';
+        })
+        .catch(() => { /* best-effort; leave the line hidden */ });
 }
 
 function buildTrackUrl(icao, registration) {
