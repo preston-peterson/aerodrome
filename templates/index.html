@@ -1,4 +1,4 @@
-<!-- Version: 3.4.104 -->
+<!-- Version: 3.4.105 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -3856,18 +3856,14 @@ function openRadarOverlay(icao){
         .then(r => r.ok ? r.json() : null)
         .then(j => { if(_radar.selectedIcao === icao) _radarSetOwner(j); })
         .catch(() => { if(_radar.selectedIcao === icao) _radarSetOwner(null); });
-    // Route enrichment (v3.4.99) — origin→dest via the callsign. Lazy, like the
-    // owner line. No callsign (or a GA/unknown one) → the row stays hidden.
-    const _cs = (ac.callsign || '').trim();
-    if(_cs){
-        _radarSetRoute('loading');
-        fetch(`/api/callsign/${encodeURIComponent(_cs)}/route`)
-            .then(r => r.ok ? r.json() : null)
-            .then(j => { if(_radar.selectedIcao === icao) _radarSetRoute(j); })
-            .catch(() => { if(_radar.selectedIcao === icao) _radarSetRoute(null); });
-    } else {
-        _radarSetRoute(null);
-    }
+    // Route line DISABLED v3.4.105: the adsbdb callsign→route data proved
+    // ~68% unreliable vs an independent source (callsigns get reused / multi-
+    // leg, DBs hold different snapshots), so we stopped showing it rather than
+    // display likely-wrong routes. Backend (/api/callsign + route_cache) is
+    // kept dormant; the display (_radarSetRoute / roRoute) stays ready to
+    // re-enable once a trustworthy source lands (adsb.lol investigation — see
+    // HANDOFF). Keep the row hidden meanwhile.
+    _radarSetRoute(null);
     _radarDrawTrail(icao);
     // The map does NOT recenter on the clicked aircraft (by design — the view
     // stays anchored where the user left it). But when the panel FIRST opens,

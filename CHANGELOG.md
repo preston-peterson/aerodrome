@@ -19,6 +19,11 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.105] — 2026-06-17
+
+### Changed
+- **Flight route line removed (for now).** The recently-added origin → destination line has been pulled from the radar and the aircraft detail page. The public route data it relied on turned out to be unreliable — cross-checking against an independent database, the two disagreed on the majority of flights (callsign reuse, multi-leg routes, and stale schedules make callsign→route lookups error-prone). Rather than confidently show wrong routes, we've taken the line down until it can be sourced dependably. Everything else about the aircraft views is unchanged.
+
 ## [3.4.104] — 2026-06-16
 
 ### Added

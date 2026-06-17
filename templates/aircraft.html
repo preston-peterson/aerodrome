@@ -1,4 +1,4 @@
-<!-- Version: 3.4.104 -->
+<!-- Version: 3.4.105 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -946,9 +946,10 @@ function renderDetail(d) {
     // lazily and fill in the owner line. Kept off the main detail payload
     // so the heavy detail query never waits on a hexdb call.
     maybeEnrichOwner(d.icao, owner);
-    // v3.4.99: same idea for the flight route, keyed by the (most recent)
-    // callsign — fills the route line in if a scheduled route resolves.
-    maybeEnrichRoute(callsign);
+    // Route line DISABLED v3.4.105: adsbdb callsign→route data ~68% unreliable
+    // (see HANDOFF / index.html note). maybeEnrichRoute + #routeLine stay ready
+    // to re-enable once a trustworthy source lands (adsb.lol investigation).
+    // maybeEnrichRoute(callsign);
 
     // v3.5.0 (radar C): show a "● Live — see on the radar →" chip in the hero
     // when this aircraft is being received right now, linking to the Live-tab
