@@ -19,6 +19,14 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.106] — 2026-06-19
+
+### Changed
+- **Sharper fleet trails.** With the all-aircraft trails toggle on, each plane's trail now hugs its real path more closely — turns, holds and approach curves keep their shape instead of being rounded off, while long straight cruise legs stay light. Trails can also carry more points than before, so a busy sky reads crisper without slowing the map down.
+
+### Behind the scenes
+- The server seed (`/api/live/trails`) previously thinned each track with a blind even-stride sampler, which spends its point budget uniformly — keeping redundant points down the straights and dropping the very corner fixes that define a turn. It now uses Douglas-Peucker simplification: endpoints are always kept and interior fixes survive only where dropping them would move the line past a ~100 m tolerance, so the point budget lands where the path actually bends. Longitude deltas are cosine-latitude scaled so the tolerance is true ground distance. A higher hard cap (150) still backstops a pathologically wandering track, and the client's rolling per-trail cap was raised to match.
+
 ## [3.4.105] — 2026-06-17
 
 ### Changed

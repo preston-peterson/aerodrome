@@ -1,4 +1,4 @@
-# Version: 3.4.105
+# Version: 3.4.106
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -69,6 +69,75 @@ _NOTIFIER = None
 # raw config, so resolved tails behave identically to icao-direct
 # entries from the user's perspective.
 _RESOLVED_WATCHLIST_TAILS: Dict[str, str] = {}
+
+
+def _dp_simplify_track(pts: list, eps_deg: float) -> list:
+    """Douglas-Peucker line simplification for a ground track.
+
+    `pts` is a list of [t, lat, lon, alt] fixes in time order; returns a
+    subset preserving the shape of the path: endpoints are always kept, and
+    interior points are kept only where dropping them would move the line by
+    more than `eps_deg` (perpendicular distance, in degrees). Turns and
+    curves survive; long straight cruise legs collapse to their endpoints.
+
+    This beats blind even-downsampling for trails — a stride sampler throws
+    away the very corner points that define a track's shape and keeps
+    redundant ones along the straights. DP spends its point budget where the
+    path actually bends, so the same (or fewer) points read as a sharper
+    trail.
+
+    Longitude deltas are scaled by cos(lat) so a degree of lon counts for the
+    real ground distance it covers at this latitude — otherwise east-west
+    wander near the poles would be over-weighted and north-south under-. The
+    altitude channel rides along on the kept fixes but is not part of the
+    distance metric (we simplify the 2-D ground path, not the climb profile).
+
+    Iterative (explicit stack) so a pathologically long track can't blow the
+    recursion limit.
+    """
+    n = len(pts)
+    if n < 3:
+        return pts[:]
+    # cos(lat) at the track's mid-latitude — one factor for the whole segment
+    # is plenty at trail scales (a single pass spans a few tenths of a degree).
+    mid_lat = pts[n // 2][1]
+    cos_lat = math.cos(math.radians(mid_lat)) or 1e-6
+    eps2 = eps_deg * eps_deg
+
+    keep = [False] * n
+    keep[0] = keep[n - 1] = True
+    stack = [(0, n - 1)]
+    while stack:
+        lo, hi = stack.pop()
+        if hi - lo < 2:
+            continue
+        ax, ay = pts[lo][2] * cos_lat, pts[lo][1]
+        bx, by = pts[hi][2] * cos_lat, pts[hi][1]
+        dx, dy = bx - ax, by - ay
+        seg_len2 = dx * dx + dy * dy
+        max_d2 = -1.0
+        max_i = lo
+        for i in range(lo + 1, hi):
+            px, py = pts[i][2] * cos_lat, pts[i][1]
+            if seg_len2 <= 1e-18:
+                # endpoints coincide — fall back to point distance
+                ex, ey = px - ax, py - ay
+                d2 = ex * ex + ey * ey
+            else:
+                # perpendicular distance from point to the A-B line
+                t = ((px - ax) * dx + (py - ay) * dy) / seg_len2
+                t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
+                cx, cy = ax + t * dx, ay + t * dy
+                ex, ey = px - cx, py - cy
+                d2 = ex * ex + ey * ey
+            if d2 > max_d2:
+                max_d2 = d2
+                max_i = i
+        if max_d2 > eps2:
+            keep[max_i] = True
+            stack.append((lo, max_i))
+            stack.append((max_i, hi))
+    return [pts[i] for i in range(n) if keep[i]]
 
 
 def _attach_airline_name(row: dict, operator_code: str | None) -> dict:
@@ -3819,10 +3888,13 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         Each aircraft's track is trimmed server-side to its CURRENT PASS — the
         most-recent contiguous run of fixes, cut at the first gap larger than
         TRAIL_GAP_SEC (the same 10-minute rule the single-plane trail uses) —
-        and evenly downsampled to at most TRAIL_MAX_PTS points so 100+ contacts
-        stay light on the wire and on the phone's canvas. The fleet view is
-        therefore a little coarser than clicking one plane (which stays
-        full-resolution and un-thinned).
+        then shape-simplified with Douglas-Peucker (TRAIL_DP_EPS_DEG): corners
+        and curves are kept, straight cruise legs collapse to their endpoints,
+        so the trail reads sharp while staying light. A safety cap of
+        TRAIL_MAX_PTS still applies to a pathologically wandering track. The
+        fleet view is a touch coarser than clicking one plane (which stays
+        full-resolution and un-thinned), but far closer than the old blind
+        stride sampler.
 
         window — look-back seconds (default 3600 = 1h, clamped to [60, 6h]).
                  Bounds the scan; a current pass longer than the window is
@@ -3833,7 +3905,8 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         single-aircraft /positions endpoint.
         """
         TRAIL_GAP_SEC = 600          # a hole > 10 min = a separate pass
-        TRAIL_MAX_PTS = 90           # even-downsample target per aircraft
+        TRAIL_DP_EPS_DEG = 0.0009    # Douglas-Peucker tolerance (~100 m)
+        TRAIL_MAX_PTS = 150          # hard safety cap per aircraft
         window = max(60, min(int(window or 3600), 6 * 3600))
         now = int(time.time())
         nowf = time.time()
@@ -3871,8 +3944,14 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             seg = pts[start:]
             if len(seg) < 2:
                 continue             # a single fix has no path to draw
-            # Even-downsample to the cap, always keeping the most-recent fix so
-            # the leading end of the trail lands on the plane's current spot.
+            # Shape-simplify: keep corners/curves, collapse straights. Endpoints
+            # are preserved by DP, so the leading end stays on the plane's
+            # current spot and the trailing end on where the pass began.
+            if len(seg) > 2:
+                seg = _dp_simplify_track(seg, TRAIL_DP_EPS_DEG)
+            # Safety net: a track that genuinely wanders (holding pattern, survey
+            # grid) can still exceed the budget after DP — even-thin to the cap,
+            # always keeping the most-recent fix.
             if len(seg) > TRAIL_MAX_PTS:
                 stride = (len(seg) + TRAIL_MAX_PTS - 1) // TRAIL_MAX_PTS
                 sampled = seg[::stride]
