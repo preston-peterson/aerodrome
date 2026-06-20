@@ -12,13 +12,15 @@
 #      scenes:" → dev voice). See any recent v2.50.x+ entry as a model.
 #   4. bash scripts/package-release.sh    ← you are here
 #
-# Produces, in the parent of the project directory:
-#   ../aerodrome-vX.Y.Z.zip          — the release tree, with __pycache__
-#                                       and *.pyc stripped, in a top-level
-#                                       aerodrome-vX.Y.Z/ wrapper folder.
-#   ../aerodrome-vX.Y.Z.zip.sha256   — checksum file in `sha256sum -c` format,
-#                                       so the curl-install bootstrap can
-#                                       verify the download with one call.
+# Produces, in an aerodrome-packages/ dir alongside the project directory
+# (../aerodrome-packages/ — created on first run, shared by every build so
+# artifacts don't litter the repo's parent):
+#   aerodrome-vX.Y.Z.zip          — the release tree, with __pycache__
+#                                    and *.pyc stripped, in a top-level
+#                                    aerodrome-vX.Y.Z/ wrapper folder.
+#   aerodrome-vX.Y.Z.zip.sha256   — checksum file in `sha256sum -c` format,
+#                                    so the curl-install bootstrap can
+#                                    verify the download with one call.
 #
 # Refuses to clobber existing artifacts at those paths — remove them first
 # if you really want to repackage. This protects against silently
@@ -76,8 +78,12 @@ if [ -z "$VERSION" ]; then
 fi
 
 RELEASE_DIR_NAME="aerodrome-v${VERSION}"
-RELEASE_DIR="${PARENT_DIR}/${RELEASE_DIR_NAME}"
-RELEASE_ZIP="${PARENT_DIR}/${RELEASE_DIR_NAME}.zip"
+RELEASE_DIR="${PARENT_DIR}/${RELEASE_DIR_NAME}"          # temp staging tree (removed after zip)
+# Finished artifacts collect in a dedicated sibling dir so they don't litter
+# the repo's parent — one folder holds every release/RC zip + sidecar. The
+# staging tree above still lives directly in PARENT_DIR (it's transient).
+PACKAGES_DIR="${PARENT_DIR}/aerodrome-packages"
+RELEASE_ZIP="${PACKAGES_DIR}/${RELEASE_DIR_NAME}.zip"
 RELEASE_SHA="${RELEASE_ZIP}.sha256"
 
 echo "Packaging aerodrome v${VERSION}..."
@@ -143,12 +149,17 @@ find "$RELEASE_DIR" -maxdepth 1 \
     -delete 2>/dev/null || true
 
 # --- Zip ---
-( cd "$PARENT_DIR" && zip -rq "${RELEASE_DIR_NAME}.zip" "$RELEASE_DIR_NAME" )
+# Write the finished zip straight into the packages dir; archive the staging
+# tree by its relative name from PARENT_DIR so the zip's internal paths stay
+# the clean single-wrapper layout.
+mkdir -p "$PACKAGES_DIR"
+( cd "$PARENT_DIR" && zip -rq "$RELEASE_ZIP" "$RELEASE_DIR_NAME" )
 
 # --- SHA256 ---
-# Generated in path-relative form so `sha256sum -c <name>.sha256` works in
-# the same directory as the zip without path massaging.
-( cd "$PARENT_DIR" && sha256sum "${RELEASE_DIR_NAME}.zip" > "${RELEASE_DIR_NAME}.zip.sha256" )
+# Generated in path-relative (bare-name) form, sitting beside the zip in the
+# packages dir, so `sha256sum -c <name>.sha256` works in that directory
+# without path massaging.
+( cd "$PACKAGES_DIR" && sha256sum "${RELEASE_DIR_NAME}.zip" > "${RELEASE_DIR_NAME}.zip.sha256" )
 
 # --- Clean up staging directory ---
 rm -rf "$RELEASE_DIR"
