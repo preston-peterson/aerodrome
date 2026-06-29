@@ -107,3 +107,5 @@ HANDOFF.md
 HANDOFF*.md
 *-HANDOFF.md
 AGENT_GUARDRAILS.md
+# Local repo-audit reports (gh-audit) — maintainer-only, may name local paths
+audits/
