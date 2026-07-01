@@ -1,4 +1,4 @@
-<!-- Version: 3.4.106 -->
+<!-- Version: 3.4.108 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -702,6 +702,20 @@
         .ro-full { margin-top:auto; display:inline-block; font-size:13px;
             color:var(--cyan); text-decoration:none; padding-top:6px; }
         .ro-full:hover { text-decoration:underline; }
+        /* v3.4.108: aircraft photo in the overlay, below the telemetry (same
+           planespotters source as the detail page). Full panel width; :empty
+           reserves no space when there's no photo/fallback. */
+        .ro-photo:empty { display:none; }
+        .ro-photo-link { display:block; border:1px solid var(--bdr); border-radius:8px;
+            overflow:hidden; background:var(--bg2); text-decoration:none; line-height:0; }
+        .ro-photo-link img { display:block; width:100%; height:auto; }
+        .ro-photo-attr { display:block; font-size:10px; color:var(--t3);
+            padding:5px 8px; background:var(--bg0); line-height:1.3; }
+        .ro-photo-link:hover .ro-photo-attr { color:var(--t2); }
+        .ro-photo-fallback { display:inline-flex; align-items:center; gap:6px;
+            color:var(--cyan); font-size:12px; border:1px dashed var(--bdr);
+            border-radius:8px; padding:8px 10px; text-decoration:none; }
+        .ro-photo-fallback:hover { background:var(--bg2); }
 
         /* ---- "● Live" cross-tab chip (increment C) ---- */
         .live-chip {
@@ -2293,6 +2307,7 @@
                 <div class="ro-airline" id="roAirline" style="display:none"></div>
                 <div class="ro-owner" id="roOwner"></div>
                 <div class="ro-telemetry" id="roTelemetry"></div>
+                <div class="ro-photo" id="roPhoto"></div>
                 <div class="ro-note" id="roNote" style="display:none"></div>
                 <a class="ro-full" id="roFull" href="#">Full details →</a>
             </div>
@@ -3856,6 +3871,14 @@ function openRadarOverlay(icao){
         .then(r => r.ok ? r.json() : null)
         .then(j => { if(_radar.selectedIcao === icao) _radarSetOwner(j); })
         .catch(() => { if(_radar.selectedIcao === icao) _radarSetOwner(null); });
+    // v3.4.108: aircraft photo below the telemetry (planespotters, same lazy
+    // /photo endpoint as the detail page). Fetched once on open; a stale click
+    // (selection changed) is ignored via the selectedIcao guard.
+    _radarSetPhoto('loading');
+    fetch(`/api/aircraft/${encodeURIComponent(icao)}/photo`)
+        .then(r => r.ok ? r.json() : null)
+        .then(j => { if(_radar.selectedIcao === icao) _radarSetPhoto(j, ac); })
+        .catch(() => { if(_radar.selectedIcao === icao) _radarSetPhoto(null, ac); });
     // Route line DISABLED v3.4.105: the adsbdb callsign→route data proved
     // ~68% unreliable vs an independent source (callsigns get reused / multi-
     // leg, DBs hold different snapshots), so we stopped showing it rather than
@@ -3950,6 +3973,29 @@ function _radarSetOwner(info){
     const val = owner || op || '—';
     const regTxt = reg ? ` <span style="color:var(--t3)">(${escapeHtml(reg)})</span>` : '';
     el.innerHTML = `<span class="k">Owner / operator</span><span class="v">${escapeHtml(val)}${regTxt}</span>`;
+}
+
+// v3.4.108: aircraft photo in the overlay (same planespotters source + endpoint
+// as the detail page). Shows a thumbnail below the telemetry when the exact
+// airframe has a photo, else a "Photos of <type>" search link, else nothing.
+// Fetched once on open (openRadarOverlay), not per live poll.
+function _radarSetPhoto(info, ac){
+    const el = document.getElementById('roPhoto');
+    if(!el) return;
+    if(info === 'loading'){ el.innerHTML = ''; return; }
+    if(info && info.found && info.thumbnail_url){
+        const photog = info.photographer ? escapeHtml(info.photographer) : 'planespotters.net';
+        const link = info.photo_link || 'https://www.planespotters.net/';
+        el.innerHTML =
+            `<a class="ro-photo-link" href="${escapeHtml(link)}" target="_blank" rel="noopener" title="View on planespotters.net">`
+            + `<img src="${escapeHtml(info.thumbnail_url)}" alt="Aircraft photo" loading="lazy">`
+            + `<span class="ro-photo-attr">Photo © ${photog} · planespotters.net ↗</span></a>`;
+        return;
+    }
+    const typeName = ac && (ac.type_desc || ac.aircraft_type);
+    el.innerHTML = typeName
+        ? `<a class="ro-photo-fallback" href="https://www.planespotters.net/search?q=${encodeURIComponent(typeName)}" target="_blank" rel="noopener">📷 Photos of ${escapeHtml(typeName)} ↗</a>`
+        : '';
 }
 
 // Route line (v3.4.99): origin → dest from the callsign→route lookup. Each

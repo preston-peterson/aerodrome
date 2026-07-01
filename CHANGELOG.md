@@ -19,6 +19,11 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.108] — 2026-07-01
+
+### Added
+- **See a photo of the aircraft.** Both the aircraft detail page (beside its header) and the radar's aircraft popout (below the telemetry) now show a photo of the airframe, sourced from planespotters.net and credited to the photographer. When planespotters doesn't have a photo of that exact aircraft, you instead get a "Photos of &lt;type&gt;" link to search for the model. Photos are looked up on demand and cached, so it's easy on the network — and both surfaces work exactly as before when there's nothing to show.
+
 ## [3.4.106] — 2026-06-19
 
 ### Changed

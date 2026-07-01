@@ -1,4 +1,4 @@
-# Version: 3.4.106
+# Version: 3.4.108
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -11069,6 +11069,44 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         except Exception as e:
             logger.debug(f"route resolve failed for {cs}: {e}")
             return {"ok": True, "found": False, "callsign": cs}
+
+    @app.get("/api/aircraft/{icao}/photo")
+    async def get_aircraft_photo(icao: str):
+        """v3.4.107: resolve + return an aircraft photo for one airframe — the
+        thumbnail shown on the aircraft detail page.
+
+        Keyed by ICAO hex; looked up from planespotters.net's free photo API
+        (needs a descriptive User-Agent) and cached in photo_cache (with a
+        negative-cache for airframes planespotters has no photo of). Lazy: the
+        UI calls this when an aircraft is opened, OFF the main payloads so a
+        network call never blocks the detail query. The blocking lookup runs in
+        a thread with a short budget, mirroring /enrich and /route.
+
+        Returns {ok, found, icao[, thumbnail_url, photo_link, photographer],
+        cached}. found=False (the UI shows the by-type fallback link instead)
+        for unphotographed airframes and for a transient lookup failure."""
+        hexid = (icao or "").upper().strip()
+        # Fast-reject non-hex before spending a thread/conn; the resolver
+        # re-validates with its ^[0-9A-F]{6}$ rule.
+        if len(hexid) != 6 or any(c not in "0123456789ABCDEF" for c in hexid):
+            return {"ok": True, "found": False, "icao": hexid}
+
+        def _resolve():
+            import photo_resolver as _photo_resolver
+            conn = _open_db_conn(CONFIG["data"]["db_file"])
+            try:
+                return _photo_resolver.resolve_photo(conn, hexid)
+            finally:
+                conn.close()
+
+        import asyncio as _asyncio
+        try:
+            return await _asyncio.wait_for(_asyncio.to_thread(_resolve), timeout=7.0)
+        except _asyncio.TimeoutError:
+            return {"ok": True, "found": False, "icao": hexid}
+        except Exception as e:
+            logger.debug(f"photo resolve failed for {hexid}: {e}")
+            return {"ok": True, "found": False, "icao": hexid}
 
     @app.get("/api/aircraft/{icao}/positions")
     def get_aircraft_positions(icao: str, window: str = "24h"):

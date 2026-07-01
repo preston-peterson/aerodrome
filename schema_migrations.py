@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 # Current schema version. Bump whenever a new migration is added.
 # v2.51.0 introduces schema version 1 (the search-feature schema).
 # Any DB without a schema_version table is implicitly at version 0.
-CURRENT_SCHEMA_VERSION = 12
+CURRENT_SCHEMA_VERSION = 13
 
 
 # A migration is a (target_version, description, callable) tuple.
@@ -1378,6 +1378,37 @@ def _migration_v12_route_cache(conn: sqlite3.Connection) -> None:
     logger.info("Migration v12: ensured route_cache table exists")
 
 
+def _migration_v13_photo_cache(conn: sqlite3.Connection) -> None:
+    """v3.4.107: add the `photo_cache` table — an ICAO-hex→aircraft-photo cache
+    behind the new photo-enrichment feature (a thumbnail of the airframe on the
+    aircraft detail page).
+
+    Keyed by ICAO hex (the 24-bit Mode S address), because a photo belongs to a
+    specific AIRFRAME. Source is planespotters.net's free photo API. Like
+    route_cache/hexdb_cache this carries a NEGATIVE-cache marker: an airframe
+    planespotters has no photo of is stored with last_outcome='miss' and empty
+    photo fields so the same unphotographed hex isn't re-queried every view. A
+    'hit' stores the thumbnail URL + the photo page link + the photographer
+    (attribution is required by planespotters' terms).
+
+    Standalone table (not columns on seen_aircraft) so the cache is independent
+    of the sightings row and can be pruned/refreshed on its own TTL, matching
+    route_cache. Idempotent: CREATE TABLE IF NOT EXISTS — a re-run is a no-op.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS photo_cache (
+            icao          TEXT PRIMARY KEY NOT NULL,
+            thumbnail_url TEXT,
+            photo_link    TEXT,
+            photographer  TEXT,
+            resolved_at   INTEGER NOT NULL,
+            last_outcome  TEXT NOT NULL,
+            hit_count     INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    logger.info("Migration v13: ensured photo_cache table exists")
+
+
 # Ordered list of all migrations. NEVER edit a shipped migration —
 # always add a new one. The list is the source of truth for what
 # CURRENT_SCHEMA_VERSION should be.
@@ -1406,6 +1437,8 @@ MIGRATIONS: List[Migration] = [
      _migration_v11_best_track_seconds),
     (12, "route_cache table: callsign→flight-route cache (origin/dest + airline) for route enrichment (v3.4.99)",
      _migration_v12_route_cache),
+    (13, "photo_cache table: ICAO-hex→aircraft-photo cache (planespotters thumbnail) for photo enrichment (v3.4.107)",
+     _migration_v13_photo_cache),
 ]
 
 

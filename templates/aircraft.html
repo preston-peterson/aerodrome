@@ -1,4 +1,4 @@
-<!-- Version: 3.4.106 -->
+<!-- Version: 3.4.108 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -160,6 +160,20 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
    into the title row's baseline; it now sits as a normal line. */
 .owner-line { color:var(--t2); font-size:13px; margin:0 0 10px 0; font-family:var(--mono); }
 .owner-line .owner-label { color:var(--t3); text-transform:uppercase; font-size:11px; letter-spacing:.04em; margin-right:8px; }
+/* v3.4.107: aircraft photo (planespotters thumbnail) beside the header — placement A.
+   The identity block grows; the photo sits to the right and stacks below on narrow
+   screens. The slot is empty until maybeEnrichPhoto() fills it (thumbnail or a
+   by-type fallback link); :empty keeps it from reserving space when there's neither. */
+.detail-hero { display:flex; gap:20px; align-items:flex-start; flex-wrap:wrap; }
+.detail-hero-main { flex:1 1 340px; min-width:0; }
+.detail-photo { flex:0 0 auto; }
+.detail-photo:empty { display:none; }
+.detail-photo-link { display:block; width:280px; max-width:100%; border:1px solid var(--bdr); border-radius:8px; overflow:hidden; background:var(--bg2); text-decoration:none; line-height:0; }
+.detail-photo-link img { display:block; width:100%; height:auto; }
+.detail-photo-attr { display:block; font-size:10.5px; color:var(--t3); padding:5px 8px; background:var(--bg1); line-height:1.3; }
+.detail-photo-link:hover .detail-photo-attr { color:var(--t2); }
+.detail-photo-fallback { display:inline-flex; align-items:center; gap:7px; color:var(--cyan); font-size:13px; border:1px dashed var(--bdr); border-radius:8px; padding:9px 12px; text-decoration:none; background:var(--bg1); }
+.detail-photo-fallback:hover { background:var(--bg2); }
 /* v3.4.99: route line (origin → dest by callsign). Inline on this wide page —
    ICAO code bright, city muted alongside, cyan arrow, airline trailing. Hidden
    until/unless a scheduled route resolves. */
@@ -874,6 +888,7 @@ function renderDetail(d) {
         : `<button class="add-wl-btn" id="awlDetailBtn" title="Add to watchlist" onclick="openAddWlFromDetail()">+</button>`;
 
     let html = `
+        <div class="detail-hero"><div class="detail-hero-main">
         <div class="title-row">
             <h1>${escapeHtml(d.icao)}</h1>
             ${callsign ? `<span class="callsign-pill">${escapeHtml(callsign)}</span>` : ''}
@@ -898,6 +913,7 @@ function renderDetail(d) {
         <div class="subtitle">
             First seen ${fmtRelativeTime(d.first_seen_at)} · Last seen ${fmtRelativeTime(d.last_seen_at)}
         </div>
+        </div><div class="detail-photo" id="photoSlot"></div></div>
     `;
 
     if (d.mode === 'sparse') {
@@ -946,6 +962,7 @@ function renderDetail(d) {
     // lazily and fill in the owner line. Kept off the main detail payload
     // so the heavy detail query never waits on a hexdb call.
     maybeEnrichOwner(d.icao, owner);
+    maybeEnrichPhoto(d.icao, aircraftType);
     // Route line DISABLED v3.4.105: adsbdb callsign→route data ~68% unreliable
     // (see HANDOFF / index.html note). maybeEnrichRoute + #routeLine stay ready
     // to re-enable once a trustworthy source lands (adsb.lol investigation).
@@ -1015,6 +1032,36 @@ function maybeEnrichRoute(callsign) {
             line.style.display = '';
         })
         .catch(() => { /* best-effort; leave the line hidden */ });
+}
+
+function maybeEnrichPhoto(icao, typeName) {
+    // Lazy ICAO-hex→photo lookup (v3.4.107), mirroring maybeEnrichOwner/Route.
+    // Fills the header photo slot with a planespotters thumbnail (+ required
+    // attribution) when the exact airframe has a photo; otherwise falls back to
+    // a "Photos of <type> ↗" link to a planespotters search (their photo API is
+    // hex/reg-only, so a type has no thumbnail — only a link). Leaves the slot
+    // empty on a transient failure or when we have neither a photo nor a type.
+    const slot = document.getElementById('photoSlot');
+    if (!slot || !icao) return;
+    fetch(`/api/aircraft/${encodeURIComponent(icao)}/photo`)
+        .then(r => r.ok ? r.json() : null)
+        .then(j => {
+            if (j && j.found && j.thumbnail_url) {
+                const photog = j.photographer ? escapeHtml(j.photographer) : 'planespotters.net';
+                const link = j.photo_link || 'https://www.planespotters.net/';
+                slot.innerHTML =
+                    `<a class="detail-photo-link" href="${escapeHtml(link)}" target="_blank" rel="noopener" title="View on planespotters.net">`
+                    + `<img src="${escapeHtml(j.thumbnail_url)}" alt="Aircraft photo" loading="lazy">`
+                    + `<span class="detail-photo-attr">Photo © ${photog} · planespotters.net ↗</span></a>`;
+            } else if (typeName) {
+                const q = encodeURIComponent(typeName);
+                slot.innerHTML =
+                    `<a class="detail-photo-fallback" href="https://www.planespotters.net/search?q=${q}" `
+                    + `target="_blank" rel="noopener">📷 Photos of ${escapeHtml(typeName)} ↗</a>`;
+            }
+            // else: no photo and no type → leave the slot empty (CSS hides it)
+        })
+        .catch(() => { /* best-effort; leave the slot empty */ });
 }
 
 function buildTrackUrl(icao, registration) {

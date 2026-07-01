@@ -926,7 +926,7 @@ class TestRouteCacheMigration(unittest.TestCase):
             self.assertTrue(result["ok"], result.get("error"))
             self.assertEqual(result["starting_version"], 11)
             self.assertEqual(result["ending_version"], CURRENT_SCHEMA_VERSION)
-            self.assertEqual(len(result["applied"]), 1)  # only v12 ran
+            self.assertEqual(len(result["applied"]), 2)  # v12 (route_cache) + v13 (photo_cache, v3.4.107)
             self.assertIn("route_cache", self._tables(conn))
         finally:
             conn.close()
@@ -969,6 +969,112 @@ class TestRouteCacheMigration(unittest.TestCase):
             self.assertEqual(self._cols(conn), self.EXPECTED_COLS)
             self.assertEqual(
                 conn.execute("SELECT COUNT(*) FROM route_cache").fetchone()[0], 1)
+        finally:
+            conn.close()
+
+
+class TestPhotoCacheMigration(unittest.TestCase):
+    """v13 (v3.4.107): photo_cache — the ICAO-hex→aircraft-photo cache behind
+    photo enrichment. Standalone + hex-keyed, with a negative-cache
+    (last_outcome='miss') marker for airframes planespotters has no photo of."""
+
+    EXPECTED_COLS = {"icao", "thumbnail_url", "photo_link", "photographer",
+                     "resolved_at", "last_outcome", "hit_count"}
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.db')
+        self.tmp.close()
+
+    def tearDown(self):
+        os.unlink(self.tmp.name)
+
+    def _cols(self, conn):
+        return {r[1] for r in conn.execute(
+            "PRAGMA table_info(photo_cache)").fetchall()}
+
+    def _tables(self, conn):
+        return {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+
+    def test_v13_direct_creates_table_with_columns(self):
+        from schema_migrations import _migration_v13_photo_cache
+        conn = sqlite3.connect(self.tmp.name)
+        try:
+            _migration_v13_photo_cache(conn)
+            self.assertEqual(self._cols(conn), self.EXPECTED_COLS)
+        finally:
+            conn.close()
+
+    def test_fresh_install_creates_photo_cache(self):
+        # Fresh install: the full chain (0 → CURRENT) lands photo_cache.
+        conn = _make_v2_50_db(self.tmp.name)
+        try:
+            result = apply_schema_migrations(conn, "test")
+            self.assertTrue(result["ok"], result.get("error"))
+            self.assertEqual(result["ending_version"], CURRENT_SCHEMA_VERSION)
+            self.assertEqual(self._cols(conn), self.EXPECTED_COLS)
+        finally:
+            conn.close()
+
+    def test_upgrade_from_v12_runs_only_v13(self):
+        # Simulated prior-version upgrade: stamp at v12, so the apply runs
+        # ONLY migration 13 and lands photo_cache.
+        conn = _make_v2_50_db(self.tmp.name)
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS schema_version (
+                    version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL,
+                    description TEXT NOT NULL, app_version TEXT NOT NULL)""")
+            conn.execute(
+                "INSERT INTO schema_version (version, applied_at, description, app_version) "
+                "VALUES (12, 1700000000, 'test-stamp', 'test')")
+            conn.commit()
+            result = apply_schema_migrations(conn, "test")
+            self.assertTrue(result["ok"], result.get("error"))
+            self.assertEqual(result["starting_version"], 12)
+            self.assertEqual(result["ending_version"], CURRENT_SCHEMA_VERSION)
+            self.assertEqual(len(result["applied"]), 1)  # only v13 ran
+            self.assertIn("photo_cache", self._tables(conn))
+        finally:
+            conn.close()
+
+    def test_read_path_hit_and_negative_miss(self):
+        from schema_migrations import _migration_v13_photo_cache
+        conn = sqlite3.connect(self.tmp.name)
+        try:
+            _migration_v13_photo_cache(conn)
+            conn.execute(
+                "INSERT INTO photo_cache (icao, thumbnail_url, photo_link, "
+                "photographer, resolved_at, last_outcome, hit_count) "
+                "VALUES ('AA7FA1','https://t/x.jpg','https://p/1','OMGcat',1700000000,'hit',3)")
+            conn.execute(
+                "INSERT INTO photo_cache (icao, resolved_at, last_outcome) "
+                "VALUES ('A1B2C3',1700000000,'miss')")
+            conn.commit()
+            self.assertEqual(
+                conn.execute("SELECT thumbnail_url, photographer, last_outcome, "
+                             "hit_count FROM photo_cache WHERE icao='AA7FA1'").fetchone(),
+                ('https://t/x.jpg', 'OMGcat', 'hit', 3))
+            # negative cache: photo fields NULL, hit_count defaults to 0
+            self.assertEqual(
+                conn.execute("SELECT thumbnail_url, photographer, last_outcome, hit_count "
+                             "FROM photo_cache WHERE icao='A1B2C3'").fetchone(),
+                (None, None, 'miss', 0))
+        finally:
+            conn.close()
+
+    def test_v13_idempotent_rerun_preserves_data(self):
+        from schema_migrations import _migration_v13_photo_cache
+        conn = sqlite3.connect(self.tmp.name)
+        try:
+            _migration_v13_photo_cache(conn)
+            conn.execute("INSERT INTO photo_cache (icao, resolved_at, last_outcome) "
+                         "VALUES ('AA1',1700000000,'miss')")
+            conn.commit()
+            _migration_v13_photo_cache(conn)  # CREATE TABLE IF NOT EXISTS → no-op
+            self.assertEqual(self._cols(conn), self.EXPECTED_COLS)
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM photo_cache").fetchone()[0], 1)
         finally:
             conn.close()
 

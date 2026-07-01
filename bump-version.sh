@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.4.106
+# Version: 3.4.108
 # =============================================================================
 # bump-version.sh — Bump Aerodrome version + auto-update CHANGELOG.md
 # =============================================================================
@@ -638,7 +638,7 @@ def is_ip_pii(o1, o2, o3, o4):
 # Skip build/cache/data dirs that don't ship in the release, plus HANDOFF
 # files (Claude-to-Claude session continuity, not public release artifacts).
 SKIP_DIRS = {'.git', 'venv', '__pycache__', '.backups', 'node_modules',
-             'logs', 'update', '.tracker.pid'}
+             'logs', 'update', '.tracker.pid', 'audits'}
 SKIP_EXT = {'.db', '.db-wal', '.db-shm', '.pyc', '.png', '.jpg', '.jpeg',
             '.gif', '.pdf', '.zip', '.sha256', '.ico'}
 def should_skip(fname):
