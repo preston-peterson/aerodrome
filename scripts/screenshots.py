@@ -22,10 +22,40 @@ To add a new screenshot:
 import asyncio
 import json
 import random
+import subprocess
 import time
+import urllib.request
 from pathlib import Path
 
 from playwright.async_api import async_playwright
+
+# Playwright's BUNDLED Chromium has no build for some newer Linux distros
+# (e.g. Ubuntu 26.04), so `p.chromium.launch()` fails there. On those hosts we
+# fall back to driving the flatpak ungoogled-chromium (the same browser the
+# mockup render wrapper uses) over the DevTools protocol. No sudo, no extra
+# download — just needs the flatpak app installed.
+_FLATPAK_CHROMIUM = "io.github.ungoogled_software.ungoogled_chromium"
+
+
+def _start_flatpak_chromium(port=9222):
+    """Launch headless flatpak chromium with remote debugging; return
+    (proc, cdp_url) once its CDP endpoint answers. Raises on timeout."""
+    subprocess.run(["pkill", "-f", f"remote-debugging-port={port}"],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    proc = subprocess.Popen(
+        ["flatpak", "run", "--filesystem=/tmp", _FLATPAK_CHROMIUM,
+         "--headless=new", f"--remote-debugging-port={port}",
+         "--no-first-run", "--no-default-browser-check", "about:blank"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    url = f"http://127.0.0.1:{port}"
+    for _ in range(40):
+        try:
+            urllib.request.urlopen(f"{url}/json/version", timeout=1).read()
+            return proc, url
+        except Exception:
+            time.sleep(0.5)
+    proc.terminate()
+    raise RuntimeError("flatpak chromium CDP endpoint never came up")
 
 # ---------------------------------------------------------------------------
 # Paths and constants
@@ -101,6 +131,19 @@ LIVE_AIRCRAFT = [
     {"icao":"480C41","callsign":"MMF50","speed":220,"lat":37.55,"lon":-122.19,"altitude":15000,"aircraft_type":"A332","type_desc":"Airbus A330-200","distance":24.0,"is_military":True,"mil_color":"#ef4444","mil_label":"MIL","seen_at":NOW},
     {"icao":"A67890","callsign":"ASQ567","speed":421,"lat":37.28,"lon":-122.42,"altitude":31000,"aircraft_type":"E175","type_desc":"Embraer E175","distance":16.9,"is_military":False,"seen_at":NOW},
 ]
+
+# v3.4.108: give the synthetic contacts a heading (track) + emitter category so
+# the radar markers rotate + size realistically in the docs shot (without these
+# the chevrons all point north at the medium default size). Deterministic +
+# cosmetic — no real data. Light types (C1xx/C56X) → A2, widebodies → A5, else jet.
+_SHOT_TRACKS = [45, 120, 200, 310, 30, 260, 90, 175, 350, 140, 215, 60, 285]
+for _i, _ac in enumerate(LIVE_AIRCRAFT):
+    _ac.setdefault("track", _SHOT_TRACKS[_i % len(_SHOT_TRACKS)])
+    _ac.setdefault("vertical_rate", 0)
+    _t = _ac.get("aircraft_type", "")
+    _ac.setdefault("category",
+                   "A2" if (_t.startswith("C1") or _t == "C56X")
+                   else "A5" if _t in ("B777", "A332", "C17") else "A3")
 
 # --- Watchlist tab (grouped {latest, sightings}) ---------------------------
 WATCHLIST_GROUPS = [
@@ -814,7 +857,13 @@ def _build_fetch_stub() -> str:
     payloads = {
         'ui_config':     UI_CFG,
         'stats':         STATS,
-        'live':          {"aircraft": LIVE_AIRCRAFT, "last_updated": NOW},
+        'live':          {"aircraft": LIVE_AIRCRAFT, "last_updated": NOW,
+                          "count": len(LIVE_AIRCRAFT),
+                          # v3.4.108: the radar map needs receiver coords in the
+                          # /api/live response (else it shows "needs receiver
+                          # coordinates"). Doc-safe San Mateo coords, matching
+                          # the config stub — NOT a real receiver location.
+                          "receiver": {"lat": 37.5, "lon": -122.1, "distance_unit": "mi"}},
         'military':      {"aircraft": MILITARY_AIRCRAFT, "last_updated": NOW, "retention_days": 30},
         'watchlist':     {"aircraft": WATCHLIST_GROUPS, "last_updated": NOW, "retention_days": 30},
         'wl_entries':    {"entries": WL_ENTRIES},
@@ -1365,12 +1414,23 @@ async def main():
         screenshot_aircraft_details,  # v3.4.33
     ]
     async with async_playwright() as p:
-        browser = await p.chromium.launch()
-        for fn in renderers:
-            out = await fn(browser)
-            size = out.stat().st_size
-            print(f"  ✓ {out.name} ({size:,} bytes)")
-        await browser.close()
+        flatpak_proc = None
+        try:
+            browser = await p.chromium.launch()
+        except Exception as e:
+            print(f"  bundled Chromium unavailable ({e}); "
+                  f"falling back to flatpak chromium over CDP")
+            flatpak_proc, cdp_url = _start_flatpak_chromium()
+            browser = await p.chromium.connect_over_cdp(cdp_url)
+        try:
+            for fn in renderers:
+                out = await fn(browser)
+                size = out.stat().st_size
+                print(f"  ✓ {out.name} ({size:,} bytes)")
+        finally:
+            await browser.close()
+            if flatpak_proc is not None:
+                flatpak_proc.terminate()
     print(f"Done. {len(renderers)} screenshots written.")
 
 

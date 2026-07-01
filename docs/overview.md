@@ -64,7 +64,7 @@ The throughline has been "build the tool you want to use yourself, not the produ
 The main tracker interface has five tabs across the top.
 
 :::feature
-Live: what's in the sky right now. Refreshes every few seconds. ICAO, callsign, type, altitude, speed, distance. Military aircraft are highlighted; watchlist entries are tagged. Click any aircraft to see an expanded drill-down with a tracking link to an external map.
+Live: what's in the sky right now — a sortable list beside a live radar map, refreshing every few seconds. The list shows ICAO, callsign, type, altitude, speed and distance, with military aircraft highlighted and watchlist entries tagged. The map plots each contact as a chevron coloured by altitude, rotated to its heading and sized by aircraft class (helicopters get their own rotor marker), with red military and amber watchlist rings, receiver range rings, an optional max-range coverage outline, per-aircraft trails, and a weather-radar overlay. Click a plane — on the map or in the list — for an in-place panel with its registered owner, live telemetry, a photo of the airframe, and a link to full details; the map itself can be docked to any side of the split.
 :::
 
 :::feature
