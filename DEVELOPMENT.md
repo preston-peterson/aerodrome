@@ -182,7 +182,7 @@ This looks for documentation drift (version strings that fell out of sync, missi
 python3 scripts/tech_debt_audit.py
 ```
 
-Static scan for dead Python functions, orphan endpoints, dead JS, stale version comments. Not required to run before PRs, but good to run after a big change to confirm you didn't leave something behind. Report lands at `docs/tech-debt-audit.md`.
+Static scan for dead Python functions, orphan endpoints, dead JS, stale version comments. Not required to run before PRs, but good to run after a big change to confirm you didn't leave something behind. The report lands at `docs/tech-debt-audit.md` locally — it is not tracked or shipped (findings age fast; run the tool against the code you actually have).
 
 ## Screenshots
 

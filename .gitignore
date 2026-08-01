@@ -109,6 +109,8 @@ HANDOFF*.md
 AGENT_GUARDRAILS.md
 # Local repo-audit reports (gh-audit) — maintainer-only, may name local paths
 audits/
+# Tech-debt audit report — local maintainer output; run scripts/tech_debt_audit.py to generate
+docs/tech-debt-audit.md
 # Local graphify knowledge-graph index — machine-generated, embeds local paths
 graphify-out/
 .graphifyignore

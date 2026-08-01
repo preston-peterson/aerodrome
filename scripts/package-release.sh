@@ -125,7 +125,8 @@ rm -rf "$RELEASE_DIR/venv" \
        "$RELEASE_DIR/.backups" \
        "$RELEASE_DIR/.claude" \
        "$RELEASE_DIR/audits" \
-       "$RELEASE_DIR/graphify-out" 2>/dev/null || true
+       "$RELEASE_DIR/graphify-out" \
+       "$RELEASE_DIR/docs/tech-debt-audit.md" 2>/dev/null || true
 # Also strip any runtime DB / pid / config-backup files that may be present
 # if package-release.sh is run on a live install rather than a clean tree.
 # v3.4.33: HANDOFF files (any path matching *-HANDOFF*.md or HANDOFF.md) are
