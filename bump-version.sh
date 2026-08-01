@@ -577,7 +577,7 @@ fi
 # a release cycle or two to surface false positives before becoming a
 # blocker. Three releases later (v3.4.30, v3.4.31, v3.4.32) all ran the
 # audit clean with no false positives — the documentation allowlist
-# (RFC 5737, common docs subnets, 10.254.254.254) covers every legitimate
+# (RFC 5737, common docs subnets, 10.254.254.254) covers every legitimate  (pii-ok)
 # documentation use. v3.4.33 graduates the audit to required: a findings
 # print is now followed by a non-zero exit, which under `set -e` halts
 # the bump. If a future legitimate documentation pattern trips this,
@@ -590,7 +590,7 @@ fi
 #   • Concrete RFC1918 IPs that aren't in the documentation allowlist.
 #     RFC 5737 ranges (192.0.2.x, 198.51.100.x, 203.0.113.x), the common
 #     docs subnets 192.168.0.x / 192.168.1.x / 10.0.0.x, and the special
-#     unroutable 10.254.254.254 (used by ntfy_installer.py's
+#     unroutable 10.254.254.254 (used by ntfy_installer.py's  (pii-ok)
 #     _detect_lan_ip kernel-route trick) are all skipped.
 #
 # Expected hits: LICENSE (MIT copyright holder) and templates/about.html
@@ -696,7 +696,7 @@ if ip_hits:
         print(f'    • {path}:{lno}  {ip}')
         print(f'        {ctx}')
 else:
-    print('  ✓ Private IPs: clean (docs subnets + 10.254.254.254 allowlisted)')
+    print('  ✓ Private IPs: clean (docs subnets + 10.254.254.254 allowlisted)')  # pii-ok
 
 if not clean:
     print('  (REQUIRED check: scrub the worked tree and re-run the bump)')

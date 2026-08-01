@@ -1,0 +1,10 @@
+# Files that may legitimately contain the maintainer name / matched patterns.
+# One path glob per line. LICENSE is always allowed implicitly.
+# Example (uncomment if this repo has an about/credits page):
+# templates/about.html
+# about.md
+# Approved attribution surface (copyright line) — policy §2a
+templates/about.html
+# Historical release prose with documentation-subnet examples; still gated by
+# bump-version.sh's tuned PII audit (docs subnets + 10.254.254.254 allowlisted)
+CHANGELOG.md

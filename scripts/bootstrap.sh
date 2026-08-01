@@ -743,7 +743,7 @@ fi
 # Receiver IP (required)
 if [ "$RECV_IP_SET" = false ]; then
     while [ -z "$RECV_IP" ]; do
-        ask_default "ADS-B receiver IP address (e.g. 192.168.1.50)" "" RECV_IP
+        ask_default "ADS-B receiver IP address (e.g. 192.168.1.50)" "" RECV_IP  # pii-ok
         if [ -z "$RECV_IP" ]; then
             log_warn "Receiver IP is required for Aerodrome to do anything useful."
         fi

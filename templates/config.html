@@ -1228,7 +1228,7 @@ function sectionReceiver() {
             <div class="section-sub">upstream ADS-B source</div>
         </div>
         <div class="form-grid">
-            ${field({label:'IP or hostname', hint:'Your ADS-B receiver', path:'receiver.ip', placeholder:'192.168.1.100'})}
+            ${field({label:'IP or hostname', hint:'Your ADS-B receiver', path:'receiver.ip', placeholder:'192.168.1.100'}) /* pii-ok */}
             ${field({label:'Port', path:'receiver.port', type:'number', min:1, max:65535, placeholder:'8080'})}
             ${field({label:'Path', hint:'JSON endpoint', path:'receiver.path', placeholder:'/data/aircraft.json'})}
             ${field({label:'Poll interval', hint:'seconds between fetches (5-3600)', path:'receiver.poll_interval', type:'number', min:5, max:3600})}
@@ -3946,7 +3946,7 @@ async function nfInstallNtfy() {
 // server.yml + restarts ntfy.
 //
 // Args:
-//   detectedIp — string, e.g. "192.168.1.50"
+//   detectedIp — string, e.g. "192.168.1.50"  (pii-ok)
 //   port       — int (default 2586)
 //   uiHooks    — { btn, status, onSuccess } DOM refs/callback. btn is
 //                disabled during the request. status (a span) shows

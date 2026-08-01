@@ -114,3 +114,10 @@ docs/tech-debt-audit.md
 # Local graphify knowledge-graph index — machine-generated, embeds local paths
 graphify-out/
 .graphifyignore
+
+# --- pii-guard: maintainer-only docs + local secrets ---
+.env
+.env.*
+*.local.yaml
+config.local.*
+secrets.*

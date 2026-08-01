@@ -473,7 +473,7 @@ def start(config: dict):
     app = get_app(config, str(CONFIG_PATH))
 
     # v2.50.35: pre-flight bind validation. Catches the install footgun
-    # where web.host is set to a specific LAN IP (e.g. "192.168.1.50")
+    # where web.host is set to a specific LAN IP (e.g. "192.168.1.50")  (pii-ok)
     # that isn't actually bindable on this machine — the IP changed,
     # the interface is down, or the config was copied from a different
     # machine. Without this check, uvicorn.run() would attempt the bind

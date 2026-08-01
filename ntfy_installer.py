@@ -530,9 +530,9 @@ def _detect_lan_ip() -> Tuple[Optional[str], Optional[str]]:
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             try:
-                # 10.254.254.254 is unreachable in any normal config; the
+                # 10.254.254.254 is unreachable in any normal config; the  (pii-ok)
                 # kernel still does a route lookup to decide a source IP.
-                s.connect(("10.254.254.254", 1))
+                s.connect(("10.254.254.254", 1))  # pii-ok
                 ip = s.getsockname()[0]
             finally:
                 s.close()
