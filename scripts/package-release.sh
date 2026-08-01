@@ -100,7 +100,18 @@ if [ -e "$RELEASE_DIR" ] || [ -e "$RELEASE_ZIP" ] || [ -e "$RELEASE_SHA" ]; then
 fi
 
 # --- Stage the release tree in the canonical wrapper-folder layout ---
-cp -r "$PROJECT_DIR" "$RELEASE_DIR"
+# 2026-08-01: staged from `git ls-files` (tracked files ONLY), not `cp -r` of the
+# working tree. cp -r made every untracked local file a release passenger unless a
+# strip rule below named it — which is how audits/ shipped in the published
+# v3.4.108 zip and a runtime logs/tracker.log shipped in v3.4.109. Tracked-only
+# staging ends the class at the source; the strip rules below become
+# belt-and-suspenders and the gate after them is the proof.
+mkdir -p "$RELEASE_DIR"
+( cd "$PROJECT_DIR" && git ls-files -z | \
+  while IFS= read -r -d '' f; do
+      mkdir -p "$RELEASE_DIR/$(dirname "$f")"
+      cp -p "$f" "$RELEASE_DIR/$f"
+  done )
 
 # Strip Python caches.
 find "$RELEASE_DIR" -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
@@ -151,6 +162,26 @@ find "$RELEASE_DIR" -maxdepth 1 \
     -o -name 'CLAUDE.md' -o -name 'AGENT_GUARDRAILS.md' \
     -o -name '.graphifyignore' \) \
     -delete 2>/dev/null || true
+
+# --- Tracked-files-only gate (2026-08-01) ---
+# The strip lists above are a DENYLIST, and denylists lose: every new local-only
+# dir is a leak by default until someone remembers to add it (audits/ shipped in
+# the published v3.4.108 zip exactly this way; graphify-out/ nearly followed).
+# This gate is the ALLOWLIST that ends the class: every file in the staging tree
+# must be one git tracks. Anything untracked in the zip → hard fail, listing the
+# offenders. Structural, zero curation. (Lesson 4.15 retired for packaging: the
+# policy is now "git ls-files", not three hand-synced lists.)
+UNTRACKED_IN_ZIP=$(comm -23 \
+    <(cd "$RELEASE_DIR" && find . -type f | sed 's|^\./||' | LC_ALL=C sort) \
+    <(cd "$PROJECT_DIR" && git ls-files | LC_ALL=C sort))
+if [ -n "$UNTRACKED_IN_ZIP" ]; then
+    echo -e "  ${RED}✗${RESET} Refusing to package: the staging tree contains files git does not track:"
+    echo "$UNTRACKED_IN_ZIP" | sed 's/^/      /'
+    echo "  If a file SHOULD ship, commit it. If it's local-only, it never belongs in a zip."
+    rm -rf "$RELEASE_DIR"
+    exit 1
+fi
+echo -e "  ${GREEN}✓${RESET} Tracked-files-only gate: every staged file is git-tracked"
 
 # --- Zip ---
 # Write the finished zip straight into the packages dir; archive the staging
