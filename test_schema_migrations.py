@@ -900,12 +900,13 @@ class TestRouteCacheMigration(unittest.TestCase):
 
     def test_fresh_install_creates_route_cache(self):
         # Fresh install: the full chain (0 → CURRENT) lands route_cache.
+        # v14 adds airports_json on top of v12's base columns.
         conn = _make_v2_50_db(self.tmp.name)
         try:
             result = apply_schema_migrations(conn, "test")
             self.assertTrue(result["ok"], result.get("error"))
             self.assertEqual(result["ending_version"], CURRENT_SCHEMA_VERSION)
-            self.assertEqual(self._cols(conn), self.EXPECTED_COLS)
+            self.assertEqual(self._cols(conn), self.EXPECTED_COLS | {"airports_json"})
         finally:
             conn.close()
 
@@ -926,7 +927,7 @@ class TestRouteCacheMigration(unittest.TestCase):
             self.assertTrue(result["ok"], result.get("error"))
             self.assertEqual(result["starting_version"], 11)
             self.assertEqual(result["ending_version"], CURRENT_SCHEMA_VERSION)
-            self.assertEqual(len(result["applied"]), 2)  # v12 (route_cache) + v13 (photo_cache, v3.4.107)
+            self.assertEqual(len(result["applied"]), 3)  # v12 (route_cache) + v13 (photo_cache) + v14 (airports_json, v3.4.109)
             self.assertIn("route_cache", self._tables(conn))
         finally:
             conn.close()
@@ -1033,7 +1034,7 @@ class TestPhotoCacheMigration(unittest.TestCase):
             self.assertTrue(result["ok"], result.get("error"))
             self.assertEqual(result["starting_version"], 12)
             self.assertEqual(result["ending_version"], CURRENT_SCHEMA_VERSION)
-            self.assertEqual(len(result["applied"]), 1)  # only v13 ran
+            self.assertEqual(len(result["applied"]), 2)  # v13 (photo_cache) + v14 (route airports_json)
             self.assertIn("photo_cache", self._tables(conn))
         finally:
             conn.close()
@@ -1075,6 +1076,120 @@ class TestPhotoCacheMigration(unittest.TestCase):
             self.assertEqual(self._cols(conn), self.EXPECTED_COLS)
             self.assertEqual(
                 conn.execute("SELECT COUNT(*) FROM photo_cache").fetchone()[0], 1)
+        finally:
+            conn.close()
+
+
+class TestRouteAirportsMigration(unittest.TestCase):
+    """v14 (v3.4.109): route enrichment re-sourced from adsbdb to adsb.lol —
+    route_cache gains airports_json (the full ordered multi-leg airport
+    chain) and every adsbdb-era row is cleared (the old source's data is the
+    unreliability the swap exists to eliminate)."""
+
+    EXPECTED_COLS = {"callsign", "origin_icao", "origin_name", "dest_icao",
+                     "dest_name", "airline", "airports_json", "resolved_at",
+                     "last_outcome", "hit_count"}
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.db')
+        self.tmp.close()
+
+    def tearDown(self):
+        os.unlink(self.tmp.name)
+
+    def _cols(self, conn):
+        return {r[1] for r in conn.execute(
+            "PRAGMA table_info(route_cache)").fetchall()}
+
+    def _v13_db_with_adsbdb_rows(self, conn):
+        # A v13-era route_cache holding adsbdb-sourced rows.
+        from schema_migrations import _migration_v12_route_cache
+        _migration_v12_route_cache(conn)
+        conn.execute(
+            "INSERT INTO route_cache (callsign, origin_icao, origin_name, "
+            "dest_icao, dest_name, airline, resolved_at, last_outcome, hit_count) "
+            "VALUES ('SWA2178','KSJC','San Jose','KLAX','Los Angeles',"
+            "'Southwest Airlines',1700000000,'hit',3)")
+        conn.execute(
+            "INSERT INTO route_cache (callsign, resolved_at, last_outcome) "
+            "VALUES ('N900RH',1700000000,'miss')")
+        conn.commit()
+
+    def test_v14_direct_adds_column_and_clears_rows(self):
+        from schema_migrations import _migration_v14_route_airports
+        conn = sqlite3.connect(self.tmp.name)
+        try:
+            self._v13_db_with_adsbdb_rows(conn)
+            _migration_v14_route_airports(conn)
+            self.assertEqual(self._cols(conn), self.EXPECTED_COLS)
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM route_cache").fetchone()[0], 0)
+        finally:
+            conn.close()
+
+    def test_v14_idempotent_rerun(self):
+        from schema_migrations import _migration_v14_route_airports
+        conn = sqlite3.connect(self.tmp.name)
+        try:
+            self._v13_db_with_adsbdb_rows(conn)
+            _migration_v14_route_airports(conn)
+            _migration_v14_route_airports(conn)  # duplicate-column tolerated
+            self.assertEqual(self._cols(conn), self.EXPECTED_COLS)
+        finally:
+            conn.close()
+
+    def test_upgrade_from_v13_runs_only_v14_and_clears_cache(self):
+        # Simulated prior-version upgrade: stamp at v13, so the apply runs
+        # ONLY migration 14 — the column lands and old rows are gone.
+        conn = _make_v2_50_db(self.tmp.name)
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS schema_version (
+                    version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL,
+                    description TEXT NOT NULL, app_version TEXT NOT NULL)""")
+            conn.execute(
+                "INSERT INTO schema_version (version, applied_at, description, app_version) "
+                "VALUES (13, 1700000000, 'test-stamp', 'test')")
+            self._v13_db_with_adsbdb_rows(conn)
+            result = apply_schema_migrations(conn, "test")
+            self.assertTrue(result["ok"], result.get("error"))
+            self.assertEqual(result["starting_version"], 13)
+            self.assertEqual(result["ending_version"], CURRENT_SCHEMA_VERSION)
+            self.assertEqual(len(result["applied"]), 1)  # only v14 ran
+            self.assertEqual(self._cols(conn), self.EXPECTED_COLS)
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM route_cache").fetchone()[0], 0)
+        finally:
+            conn.close()
+
+    def test_read_path_multi_leg_round_trip(self):
+        # The post-v14 read path: a multi-leg hit's airports_json round-trips
+        # through SQLite intact and in order.
+        import json as _json
+        from schema_migrations import (_migration_v12_route_cache,
+                                       _migration_v14_route_airports)
+        conn = sqlite3.connect(self.tmp.name)
+        try:
+            _migration_v12_route_cache(conn)
+            _migration_v14_route_airports(conn)
+            chain = [
+                {"icao": "KMSP", "name": "Minneapolis", "lat": 44.882, "lon": -93.2218},
+                {"icao": "KPHL", "name": "Philadelphia", "lat": 39.8719, "lon": -75.2411},
+                {"icao": "KMSP", "name": "Minneapolis", "lat": 44.882, "lon": -93.2218},
+            ]
+            conn.execute(
+                "INSERT INTO route_cache (callsign, origin_icao, origin_name, "
+                "dest_icao, dest_name, airline, airports_json, resolved_at, "
+                "last_outcome, hit_count) "
+                "VALUES ('DAL2688','KMSP','Minneapolis','KMSP','Minneapolis',"
+                "'Delta Air Lines',?,1700000000,'hit',0)",
+                (_json.dumps(chain),))
+            conn.commit()
+            row = conn.execute(
+                "SELECT origin_icao, dest_icao, airports_json FROM route_cache "
+                "WHERE callsign='DAL2688'").fetchone()
+            self.assertEqual((row[0], row[1]), ("KMSP", "KMSP"))
+            self.assertEqual(_json.loads(row[2]), chain)
         finally:
             conn.close()
 

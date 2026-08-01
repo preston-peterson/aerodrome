@@ -19,6 +19,42 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.109] — 2026-07-31
+
+### Added
+- **Flight routes are back.** Click an airliner on the radar (or open its detail
+  page) and you'll again see where the flight is going — "KMSP → Minneapolis →
+  KPHL → Philadelphia" style, with the operating airline underneath. The route
+  display was removed in an earlier release because the data source behind it
+  disagreed with reality too often to trust; it returns rebuilt on a
+  substantially more accurate source (adsb.lol's community route data), which
+  won a head-to-head comparison against live traffic by a wide margin. As
+  before, routes only appear for flights with a known scheduled route — GA and
+  private aircraft simply don't show the row.
+- **Multi-leg flights show the leg being flown.** Many flight numbers fly more
+  than one hop in a day (an out-and-back like KMSP→KPHL→KMSP is common). When
+  the aircraft is in the air, Aerodrome compares its position and heading
+  against each leg's path and shows just the leg it's actually flying; when
+  that can't be determined confidently, the full chain is shown instead of a
+  guess. Old single-pair route databases are guaranteed wrong on half of every
+  out-and-back — this is the case that motivated the source switch.
+- **Data sources credited on the About page.** The About page's "Built with"
+  list now credits adsb.lol (flight routes), planespotters.net (aircraft
+  photos), and RainViewer (weather radar) alongside the existing entries.
+
+### Behind the scenes
+- The resolver now fetches adsb.lol's static VRS standing-data JSON directly
+  (the `/api/0/route` endpoint is deprecated upstream and just redirects
+  there); 404 = clean negative-cache, transient errors retry, same TTL
+  discipline as before. Schema migration v14 adds `route_cache.airports_json`
+  (the full ordered airport chain with coordinates) and clears all rows cached
+  from the previous source. Current-leg inference is server-side: great-circle
+  cross-track distance per leg, with the plane's track breaking the
+  outbound-vs-return tie on out-and-backs, and an ambiguity threshold that
+  falls back to showing the whole chain. Airline names come from the local
+  designator table (the source only supplies codes), so nothing new is fetched
+  for them.
+
 ## [3.4.108] — 2026-07-01
 
 ### Added

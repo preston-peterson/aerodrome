@@ -1,4 +1,4 @@
-<!-- Version: 3.4.108 -->
+<!-- Version: 3.4.109 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -963,10 +963,11 @@ function renderDetail(d) {
     // so the heavy detail query never waits on a hexdb call.
     maybeEnrichOwner(d.icao, owner);
     maybeEnrichPhoto(d.icao, aircraftType);
-    // Route line DISABLED v3.4.105: adsbdb callsign→route data ~68% unreliable
-    // (see HANDOFF / index.html note). maybeEnrichRoute + #routeLine stay ready
-    // to re-enable once a trustworthy source lands (adsb.lol investigation).
-    // maybeEnrichRoute(callsign);
+    // v3.4.109: route line re-enabled on the adsb.lol source (display was
+    // pulled v3.4.105 while adsbdb was the source and its data proved
+    // unreliable). The icao rides along so a live aircraft's position can
+    // drive the multi-leg current-leg inference.
+    maybeEnrichRoute(callsign, d.icao);
 
     // v3.5.0 (radar C): show a "● Live — see on the radar →" chip in the hero
     // when this aircraft is being received right now, linking to the Live-tab
@@ -1011,24 +1012,50 @@ function maybeEnrichOwner(icao, existingOwner) {
         .catch(() => { /* enrichment is best-effort; leave the placeholder */ });
 }
 
-function maybeEnrichRoute(callsign) {
-    // Lazy callsign→route lookup (v3.4.99), mirroring maybeEnrichOwner. The
-    // route line stays hidden until a scheduled route resolves; a GA/private/
-    // unknown callsign (or a lookup failure) leaves it hidden — no empty row.
+function maybeEnrichRoute(callsign, icao) {
+    // Lazy callsign→route lookup (v3.4.99; re-sourced to adsb.lol v3.4.109),
+    // mirroring maybeEnrichOwner. The route line stays hidden until a
+    // scheduled route resolves; a GA/private/unknown callsign (or a lookup
+    // failure) leaves it hidden — no empty row. If the aircraft is being
+    // received right now, its live position rides along so a multi-leg
+    // flight number ("KMSP-KPHL-KMSP") shows only the leg it's actually
+    // flying; without a confident leg the full chain renders.
     const cs = (callsign || '').trim();
     if (!cs) return;
-    fetch(`/api/callsign/${encodeURIComponent(cs)}/route`)
+    const up = (icao || '').toUpperCase();
+    fetch('/api/live')
         .then(r => r.ok ? r.json() : null)
+        .catch(() => null)
+        .then(live => {
+            const ac = live && (live.aircraft || []).find(a => (a.icao || '').toUpperCase() === up);
+            const q = (ac && ac.lat != null && ac.lon != null)
+                ? `?lat=${encodeURIComponent(ac.lat)}&lon=${encodeURIComponent(ac.lon)}`
+                  + (ac.track != null ? `&track=${encodeURIComponent(ac.track)}` : '')
+                : '';
+            return fetch(`/api/callsign/${encodeURIComponent(cs)}/route${q}`);
+        })
+        .then(r => r && r.ok ? r.json() : null)
         .then(j => {
-            if (!j || !j.found || !j.origin_icao || !j.dest_icao) return;
+            if (!j || !j.found) return;
+            // Stops to draw: inferred current leg → full chain → origin/dest.
+            let stops = null;
+            if (j.current_leg && j.current_leg.origin_icao && j.current_leg.dest_icao) {
+                stops = [{icao: j.current_leg.origin_icao, name: j.current_leg.origin_name},
+                         {icao: j.current_leg.dest_icao,   name: j.current_leg.dest_name}];
+            } else if (Array.isArray(j.airports) && j.airports.length >= 2) {
+                stops = j.airports;
+            } else if (j.origin_icao && j.dest_icao) {
+                stops = [{icao: j.origin_icao, name: j.origin_name},
+                         {icao: j.dest_icao,   name: j.dest_name}];
+            }
+            if (!stops) return;
             const line = document.getElementById('routeLine');
             const val = line && line.querySelector('.route-val');
             if (!val) return;
-            const ap = (icao, city) => `<span class="ap">${escapeHtml(icao)}</span>`
-                + (city ? ` <span class="city">${escapeHtml(city)}</span>` : '');
+            const ap = (s) => `<span class="ap">${escapeHtml(s.icao)}</span>`
+                + (s.name ? ` <span class="city">${escapeHtml(s.name)}</span>` : '');
             const air = j.airline ? `<span class="airline">${escapeHtml(j.airline)}</span>` : '';
-            val.innerHTML = ap(j.origin_icao, j.origin_name)
-                + `<span class="arr">→</span>` + ap(j.dest_icao, j.dest_name) + air;
+            val.innerHTML = stops.map(ap).join(`<span class="arr">→</span>`) + air;
             line.style.display = '';
         })
         .catch(() => { /* best-effort; leave the line hidden */ });

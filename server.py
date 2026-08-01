@@ -1,4 +1,4 @@
-# Version: 3.4.108
+# Version: 3.4.109
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -11033,28 +11033,45 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         return {"ok": True, "icao": key, **cur}
 
     @app.get("/api/callsign/{callsign}/route")
-    async def get_callsign_route(callsign: str):
-        """v3.4.97: resolve + return the origin→destination route for one
-        flight callsign — the route line on the radar overlay + detail page.
+    async def get_callsign_route(callsign: str,
+                                 lat: Optional[float] = None,
+                                 lon: Optional[float] = None,
+                                 track: Optional[float] = None):
+        """v3.4.97: resolve + return the route for one flight callsign — the
+        route line on the radar overlay + detail page. v3.4.109: re-sourced
+        from adsbdb.com to adsb.lol's VRS standing data (the old source
+        proved unreliable — display was pulled v3.4.105), which also brings
+        MULTI-LEG itineraries ("KMSP-KPHL-KMSP") and per-airport coordinates.
 
-        ADS-B carries no route; it's looked up by CALLSIGN from adsbdb.com
-        (free, no key) and cached in route_cache (callsign-keyed, with a
-        negative-cache for callsigns that have no scheduled route). Lazy: the
-        UI calls this when an aircraft is opened, OFF the main payloads so a
-        network call never blocks the detail/live queries. The blocking lookup
-        runs in a thread with a short budget, mirroring /enrich.
+        ADS-B carries no route; it's looked up by CALLSIGN and cached in
+        route_cache (callsign-keyed, with a negative-cache for callsigns that
+        have no scheduled route). Lazy: the UI calls this when an aircraft is
+        opened, OFF the main payloads so a network call never blocks the
+        detail/live queries. The blocking lookup runs in a thread with a
+        short budget, mirroring /enrich.
+
+        Optional lat/lon/track = the aircraft's current position + heading.
+        For a multi-leg chain they drive current-leg inference (which leg is
+        this plane actually flying — cross-track distance to each leg's
+        great-circle path, heading to split an out-and-back's two opposite
+        legs); the UI shows just that leg, falling back to the full chain
+        when inference is ambiguous or no position was given.
 
         Returns {ok, found, callsign[, origin_icao, origin_name, dest_icao,
-        dest_name, airline], cached}. found=False (the UI shows no route row)
-        for GA/private/unknown callsigns and for a transient lookup failure."""
+        dest_name, airline, airports, current_leg], cached}. origin/dest are
+        the chain's first/last stops; `airports` is the full ordered chain;
+        `current_leg` is {origin_icao, origin_name, dest_icao, dest_name} or
+        None. found=False (the UI shows no route row) for GA/private/unknown
+        callsigns and for a transient lookup failure."""
         cs = (callsign or "").upper().strip()
         # Fast-reject obvious non-callsigns before spending a thread/conn; the
         # resolver re-validates with its [A-Z0-9]{2,8} charset rule.
         if not (2 <= len(cs) <= 8) or not cs.isalnum():
             return {"ok": True, "found": False, "callsign": cs}
 
+        import route_resolver as _route_resolver
+
         def _resolve():
-            import route_resolver as _route_resolver
             conn = _open_db_conn(CONFIG["data"]["db_file"])
             try:
                 return _route_resolver.resolve_route(conn, cs)
@@ -11063,12 +11080,29 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
         import asyncio as _asyncio
         try:
-            return await _asyncio.wait_for(_asyncio.to_thread(_resolve), timeout=7.0)
+            result = await _asyncio.wait_for(_asyncio.to_thread(_resolve), timeout=7.0)
         except _asyncio.TimeoutError:
             return {"ok": True, "found": False, "callsign": cs}
         except Exception as e:
             logger.debug(f"route resolve failed for {cs}: {e}")
             return {"ok": True, "found": False, "callsign": cs}
+
+        # Current-leg inference (pure math, no I/O — fine on the loop). Only
+        # meaningful for a 3+-stop chain; a plain A→B route IS its own leg.
+        airports = result.get("airports") if result.get("found") else None
+        if airports and len(airports) > 2:
+            leg = _route_resolver.pick_current_leg(airports, lat, lon, track)
+            if leg is not None:
+                o, d = airports[leg], airports[leg + 1]
+                result["current_leg"] = {
+                    "origin_icao": o["icao"], "origin_name": o["name"] or "",
+                    "dest_icao": d["icao"], "dest_name": d["name"] or "",
+                }
+            else:
+                result["current_leg"] = None
+        elif airports:
+            result["current_leg"] = None
+        return result
 
     @app.get("/api/aircraft/{icao}/photo")
     async def get_aircraft_photo(icao: str):

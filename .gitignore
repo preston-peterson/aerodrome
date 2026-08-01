@@ -109,3 +109,6 @@ HANDOFF*.md
 AGENT_GUARDRAILS.md
 # Local repo-audit reports (gh-audit) — maintainer-only, may name local paths
 audits/
+# Local graphify knowledge-graph index — machine-generated, embeds local paths
+graphify-out/
+.graphifyignore

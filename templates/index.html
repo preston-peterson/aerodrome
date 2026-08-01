@@ -1,4 +1,4 @@
-<!-- Version: 3.4.108 -->
+<!-- Version: 3.4.109 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -3879,14 +3879,26 @@ function openRadarOverlay(icao){
         .then(r => r.ok ? r.json() : null)
         .then(j => { if(_radar.selectedIcao === icao) _radarSetPhoto(j, ac); })
         .catch(() => { if(_radar.selectedIcao === icao) _radarSetPhoto(null, ac); });
-    // Route line DISABLED v3.4.105: the adsbdb callsign→route data proved
-    // ~68% unreliable vs an independent source (callsigns get reused / multi-
-    // leg, DBs hold different snapshots), so we stopped showing it rather than
-    // display likely-wrong routes. Backend (/api/callsign + route_cache) is
-    // kept dormant; the display (_radarSetRoute / roRoute) stays ready to
-    // re-enable once a trustworthy source lands (adsb.lol investigation — see
-    // HANDOFF). Keep the row hidden meanwhile.
-    _radarSetRoute(null);
+    // v3.4.109: route line re-enabled on the adsb.lol source (display was
+    // pulled v3.4.105 when the old source proved unreliable). The plane's
+    // position rides along so a multi-leg flight number ("KMSP-KPHL-KMSP")
+    // shows the leg it's actually flying; when the server can't pick one
+    // confidently, the full chain renders instead. Callsign-less contacts
+    // skip the lookup entirely — the row stays hidden.
+    const roCs = (ac.callsign || '').trim();
+    if(roCs){
+        _radarSetRoute('loading');
+        const roQ = (ac.lat != null && ac.lon != null)
+            ? `?lat=${encodeURIComponent(ac.lat)}&lon=${encodeURIComponent(ac.lon)}`
+              + (ac.track != null ? `&track=${encodeURIComponent(ac.track)}` : '')
+            : '';
+        fetch(`/api/callsign/${encodeURIComponent(roCs)}/route${roQ}`)
+            .then(r => r.ok ? r.json() : null)
+            .then(j => { if(_radar.selectedIcao === icao) _radarSetRoute(j); })
+            .catch(() => { if(_radar.selectedIcao === icao) _radarSetRoute(null); });
+    } else {
+        _radarSetRoute(null);
+    }
     _radarDrawTrail(icao);
     // The map does NOT recenter on the clicked aircraft (by design — the view
     // stays anchored where the user left it). But when the panel FIRST opens,
@@ -3998,11 +4010,32 @@ function _radarSetPhoto(info, ac){
         : '';
 }
 
-// Route line (v3.4.99): origin → dest from the callsign→route lookup. Each
-// airport is stacked ICAO-code-over-city ("KSJC / San Jose → KLAX / Los
-// Angeles"); the operating airline shows as a quiet line below. The chip + the
-// airline line are hidden entirely when there's no scheduled route
-// (GA/private/unknown callsign) or the lookup fails — no empty rows.
+// Route line (v3.4.99, re-enabled v3.4.109 on adsb.lol): the stops from the
+// callsign→route lookup, each stacked ICAO-code-over-city ("KSJC / San Jose
+// → KLAX / Los Angeles"); the operating airline shows as a quiet line below.
+// A multi-leg flight number renders just its inferred current leg when the
+// server could pick one from the plane's position, else the full chain
+// ("KMSP → KPHL → KMSP"). The chip + the airline line are hidden entirely
+// when there's no scheduled route (GA/private/unknown callsign) or the
+// lookup fails — no empty rows.
+function _radarRouteStops(info){
+    // Shared stop-picking logic for the route renderers: inferred current
+    // leg → full chain → legacy origin/dest pair. Returns [{icao, name}...]
+    // (2+ entries) or null when the payload has no usable route.
+    if(!info || !info.found) return null;
+    if(info.current_leg && info.current_leg.origin_icao && info.current_leg.dest_icao){
+        const c = info.current_leg;
+        return [{icao: c.origin_icao, name: c.origin_name},
+                {icao: c.dest_icao,   name: c.dest_name}];
+    }
+    if(Array.isArray(info.airports) && info.airports.length >= 2) return info.airports;
+    if(info.origin_icao && info.dest_icao){
+        return [{icao: info.origin_icao, name: info.origin_name},
+                {icao: info.dest_icao,   name: info.dest_name}];
+    }
+    return null;
+}
+
 function _radarSetRoute(info){
     const el  = document.getElementById('roRoute');
     const air = document.getElementById('roAirline');
@@ -4015,7 +4048,8 @@ function _radarSetRoute(info){
         hideAirline();
         return;
     }
-    if(info && info.found && info.origin_icao && info.dest_icao){
+    const stops = _radarRouteStops(info);
+    if(stops){
         el.style.display = '';
         el.className = 'ro-route';
         const ep = (icao, city, dest) =>
@@ -4023,9 +4057,9 @@ function _radarSetRoute(info){
           + `<span class="ap">${escapeHtml(icao)}</span>`
           + (city ? `<span class="city">${escapeHtml(city)}</span>` : '')
           + `</span>`;
-        el.innerHTML = ep(info.origin_icao, info.origin_name, false)
-                     + `<span class="arr">→</span>`
-                     + ep(info.dest_icao, info.dest_name, true);
+        el.innerHTML = stops.map((s, i) =>
+            ep(s.icao, s.name, i === stops.length - 1)
+        ).join(`<span class="arr">→</span>`);
         if(air){
             if(info.airline){ air.style.display = ''; air.textContent = info.airline; }
             else hideAirline();

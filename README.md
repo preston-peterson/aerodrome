@@ -1,5 +1,5 @@
 # Aerodrome
-<!-- Version: 3.4.108 -->
+<!-- Version: 3.4.109 -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -113,6 +113,8 @@ aerodrome/
 ├── countries.py                  ICAO range → country lookup
 ├── designators.py                aircraft type and operator decoders
 ├── hexdb_resolver.py             registration lookup (hexdb.io client)
+├── route_resolver.py             callsign → flight-route lookup (adsb.lol client)
+├── photo_resolver.py             aircraft photo lookup (planespotters.net client)
 ├── slow_query_log.py             query-timing instrumentation
 ├── ntfy_installer.py             interactive ntfy onboarding helper
 ├── config.yaml.example           shipped template for config.yaml
@@ -140,12 +142,16 @@ aerodrome/
 ├── .github/                      issue templates, PR template, repo-setup guide
 ├── test_categorize.py            unit tests — military/civil classification
 ├── test_designators.py           unit tests — aircraft type and operator decoders
+├── test_icao_hex.py              unit tests — ICAO hex ingest validation
 ├── test_migration_v7.py          unit tests — schema migration v7
+├── test_photo_resolver.py        unit tests — photo enrichment cache logic
 ├── test_preflight.py             unit tests — startup config validation
+├── test_route_resolver.py        unit tests — route enrichment + current-leg inference
 ├── test_schema_migrations.py     unit tests — migration framework
 ├── test_search.py                unit tests — search query language
 ├── test_search_v2_91_tokens.py   unit tests — search token grammar (v2.91 additions)
 ├── test_session_track.py         unit tests — session-aware track stitching
+├── test_stats_most_seen.py       unit tests — all-time most-seen stats card
 ├── README.md                     this file
 ├── CHANGELOG.md                  per-release entries, bottom-up additions
 ├── CONTRIBUTING.md               bug-report checklist, why PRs are disabled

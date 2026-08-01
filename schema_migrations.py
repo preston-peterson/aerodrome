@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 # Current schema version. Bump whenever a new migration is added.
 # v2.51.0 introduces schema version 1 (the search-feature schema).
 # Any DB without a schema_version table is implicitly at version 0.
-CURRENT_SCHEMA_VERSION = 13
+CURRENT_SCHEMA_VERSION = 14
 
 
 # A migration is a (target_version, description, callable) tuple.
@@ -1409,6 +1409,47 @@ def _migration_v13_photo_cache(conn: sqlite3.Connection) -> None:
     logger.info("Migration v13: ensured photo_cache table exists")
 
 
+def _migration_v14_route_airports(conn: sqlite3.Connection) -> None:
+    """v3.4.109: route enrichment re-sourced from adsbdb.com to adsb.lol's
+    VRS standing-data (the display was disabled in v3.4.105 because adsbdb's
+    callsign→route data proved ~68% unreliable against an independent
+    check; adsb.lol matched aircraft's actual positions ~4× better in the
+    head-to-head validation).
+
+    Two changes to route_cache:
+
+    1. New `airports_json` column — the FULL ordered airport chain for the
+       callsign, as a JSON list of {icao, name, lat, lon}. adsb.lol stores
+       multi-leg itineraries ("KMSP-KPHL-KMSP" — one flight number flying
+       an out-and-back), which the old origin/dest pair can't represent.
+       origin/dest columns stay populated (first/last of the chain) so the
+       single-leg read path is unchanged. The lat/lon per airport feed the
+       current-leg inference (which leg is this plane actually flying?).
+
+    2. Clear all existing rows. Every cached route came from adsbdb — the
+       source we're abandoning for being wrong too often to display. Serving
+       those rows through their remaining TTL would show exactly the bad
+       data the source swap exists to eliminate, so the cache restarts
+       empty and repopulates lazily from adsb.lol.
+
+    Idempotent: the ALTER tolerates "duplicate column name"; the DELETE is
+    harmlessly re-runnable (the migration runner only applies it once).
+    Self-sufficient: ensures the base table first (v12's CREATE IF NOT
+    EXISTS) so this migration never depends on the DB's prior shape.
+    """
+    _migration_v12_route_cache(conn)
+    try:
+        conn.execute("ALTER TABLE route_cache ADD COLUMN airports_json TEXT")
+        logger.info("Migration v14: added route_cache.airports_json column")
+    except sqlite3.OperationalError as e:
+        if "duplicate column" in str(e).lower():
+            logger.info("Migration v14: route_cache.airports_json already present")
+        else:
+            raise
+    cleared = conn.execute("DELETE FROM route_cache").rowcount
+    logger.info(f"Migration v14: cleared {cleared} adsbdb-era route_cache rows")
+
+
 # Ordered list of all migrations. NEVER edit a shipped migration —
 # always add a new one. The list is the source of truth for what
 # CURRENT_SCHEMA_VERSION should be.
@@ -1439,6 +1480,8 @@ MIGRATIONS: List[Migration] = [
      _migration_v12_route_cache),
     (13, "photo_cache table: ICAO-hex→aircraft-photo cache (planespotters thumbnail) for photo enrichment (v3.4.107)",
      _migration_v13_photo_cache),
+    (14, "route_cache airports_json column + adsbdb-era cache clear: route enrichment re-sourced to adsb.lol (v3.4.109)",
+     _migration_v14_route_airports),
 ]
 
 
