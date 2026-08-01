@@ -123,7 +123,9 @@ find "$RELEASE_DIR" -name '*.pyc' -delete 2>/dev/null || true
 rm -rf "$RELEASE_DIR/venv" \
        "$RELEASE_DIR/.git" \
        "$RELEASE_DIR/.backups" \
-       "$RELEASE_DIR/.claude" 2>/dev/null || true
+       "$RELEASE_DIR/.claude" \
+       "$RELEASE_DIR/audits" \
+       "$RELEASE_DIR/graphify-out" 2>/dev/null || true
 # Also strip any runtime DB / pid / config-backup files that may be present
 # if package-release.sh is run on a live install rather than a clean tree.
 # v3.4.33: HANDOFF files (any path matching *-HANDOFF*.md or HANDOFF.md) are
@@ -145,7 +147,8 @@ find "$RELEASE_DIR" -maxdepth 1 \
     -o -name '*.db' -o -name '*.db-wal' -o -name '*.db-shm' \
     -o -name 'config.yaml' -o -name 'config.yaml.bak.*' \
     -o -name 'HANDOFF*.md' -o -name '*-HANDOFF*.md' \
-    -o -name 'CLAUDE.md' -o -name 'AGENT_GUARDRAILS.md' \) \
+    -o -name 'CLAUDE.md' -o -name 'AGENT_GUARDRAILS.md' \
+    -o -name '.graphifyignore' \) \
     -delete 2>/dev/null || true
 
 # --- Zip ---
