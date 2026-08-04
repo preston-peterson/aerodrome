@@ -581,6 +581,9 @@ def check_screenshot_freshness(report: DriftReport, verbose: bool = False):
         ("screenshot-performance.png",    "templates/performance.html"),
         ("screenshot-logs.png",           "templates/logs.html"),
         ("screenshot-docs.png",           "templates/docs.html"),
+        ("screenshot-board-radar.png",    "templates/board.html"),
+        ("screenshot-board-flight.png",   "templates/board.html"),
+        ("screenshot-board-hybrid.png",   "templates/board.html"),
     ]
     for shot_name, tpl_name in pairs:
         shot = REPO_ROOT / "docs" / shot_name

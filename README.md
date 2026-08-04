@@ -75,6 +75,22 @@ callsign, ICAO, type, country, or operator. Use parser tokens like
 `watchlist`, `commercial`, `helicopter`. Sortable columns, date-range
 presets, page-size control, CSV export, and shareable hash URLs.
 
+## The display board
+
+![Display board — hybrid layout](docs/screenshot-board-hybrid.png)
+
+Open `/board` on any screen you want to leave running — an FBO lounge, an
+office, a hangar — and Aerodrome becomes a full-screen wall display: no
+menus, big type readable from across the room, a live clock, and automatic
+recovery if the receiver or browser hiccups. Three layouts, chosen per
+screen: a full-screen **radar wall**, an airport-arrivals-style **flight
+board** (below), and a **hybrid** with a rotating spotlight showing a photo
+of an aircraft overhead right now (above). The first visit shows a picker;
+`/board?mode=radar|board|hybrid` skips it for kiosk autostart, and a 1080p
+TV on a Raspberry Pi is all the hardware it needs.
+
+![Display board — flight-board layout](docs/screenshot-board-flight.png)
+
 ## Architecture
 
 ```

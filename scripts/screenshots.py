@@ -83,6 +83,11 @@ random.seed(42)
 UI_CFG = {
     "distance_enabled": True,
     "distance_unit": "mi",
+    # v3.4.111: ring distances sized to the synthetic fleet (all within
+    # ~23 mi of the receiver) so the display board's scope fills the frame
+    # instead of huddling every contact inside the innermost default ring.
+    "map": {"ring_distances": [8, 16, 24], "show_range_rings": True},
+    "display": {"wallboard_layout": "ask"},
     "track_link_provider": "airplanes_live",
     # v2.50.24: the harness was missing these — without them the UI's
     # track_link rendering falls through to "—" because it can't look up
@@ -137,13 +142,84 @@ LIVE_AIRCRAFT = [
 # the chevrons all point north at the medium default size). Deterministic +
 # cosmetic — no real data. Light types (C1xx/C56X) → A2, widebodies → A5, else jet.
 _SHOT_TRACKS = [45, 120, 200, 310, 30, 260, 90, 175, 350, 140, 215, 60, 285]
+# v3.4.111: varied climb/descend rates so the display board's trend arrows
+# aren't uniformly level. Same spirit as _SHOT_TRACKS — deterministic cosmetics.
+_SHOT_VRATES = [800, -600, 0, 400, -900, 0, 300, -200, 0, 1100, 0, -400, 250]
 for _i, _ac in enumerate(LIVE_AIRCRAFT):
     _ac.setdefault("track", _SHOT_TRACKS[_i % len(_SHOT_TRACKS)])
-    _ac.setdefault("vertical_rate", 0)
+    _ac.setdefault("vertical_rate", _SHOT_VRATES[_i % len(_SHOT_VRATES)])
     _t = _ac.get("aircraft_type", "")
     _ac.setdefault("category",
                    "A2" if (_t.startswith("C1") or _t == "C56X")
                    else "A5" if _t in ("B777", "A332", "C17") else "A3")
+
+# v3.4.111: the display board shows WL pills straight off /api/live's
+# is_watchlist annotation (the server adds it; the harness must too). Matches
+# the two WATCHLIST_GROUPS fixtures below.
+for _ac in LIVE_AIRCRAFT:
+    if _ac["icao"] in ("AAAD47", "A67890"):
+        _ac["is_watchlist"] = True
+        _ac["watchlist_label"] = "WL"
+
+# --- v3.4.111: display-board enrichment fixtures ---------------------------
+# Fictional doc-safe routes for the board's route column + spotlight card.
+ROUTE_STUBS = {
+    "UAL1234": {"ok": True, "found": True, "callsign": "UAL1234",
+                "airline": "United Airlines",
+                "origin_icao": "KSFO", "origin_name": "San Francisco",
+                "dest_icao": "KDEN", "dest_name": "Denver",
+                "airports": [{"icao": "KSFO", "name": "San Francisco"},
+                             {"icao": "KDEN", "name": "Denver"}],
+                "current_leg": None},
+    "DAL512": {"ok": True, "found": True, "callsign": "DAL512",
+               "airline": "Delta Air Lines",
+               "origin_icao": "KATL", "origin_name": "Atlanta",
+               "dest_icao": "KSFO", "dest_name": "San Francisco",
+               "airports": [{"icao": "KATL", "name": "Atlanta"},
+                            {"icao": "KSFO", "name": "San Francisco"}],
+               "current_leg": None},
+    "UAL901": {"ok": True, "found": True, "callsign": "UAL901",
+               "airline": "United Airlines",
+               "origin_icao": "KSFO", "origin_name": "San Francisco",
+               "dest_icao": "RJTT", "dest_name": "Tokyo",
+               "airports": [{"icao": "KSFO", "name": "San Francisco"},
+                            {"icao": "RJTT", "name": "Tokyo"}],
+               "current_leg": None},
+    "SWA2024": {"ok": True, "found": True, "callsign": "SWA2024",
+                "airline": "Southwest Airlines",
+                "origin_icao": "KOAK", "origin_name": "Oakland",
+                "dest_icao": "KLAS", "dest_name": "Las Vegas",
+                "airports": [{"icao": "KOAK", "name": "Oakland"},
+                             {"icao": "KLAS", "name": "Las Vegas"}],
+                "current_leg": None},
+    "JBU934": {"ok": True, "found": True, "callsign": "JBU934",
+               "airline": "JetBlue Airways",
+               "origin_icao": "KJFK", "origin_name": "New York",
+               "dest_icao": "KSFO", "dest_name": "San Francisco",
+               "airports": [{"icao": "KJFK", "name": "New York"},
+                            {"icao": "KSFO", "name": "San Francisco"}],
+               "current_leg": None},
+}
+
+def _photo_placeholder_data_uri() -> str:
+    """A tiny generated 419x280 PNG (flat panel-blue) as a data: URI — the
+    spotlight card's photo slot in the docs shot, with no external fetch and
+    no real photograph (nothing to attribute, nothing to leak)."""
+    import base64
+    import struct
+    import zlib
+    w, h = 419, 280
+    row = b'\x00' + bytes([26, 34, 54, 255]) * w
+    raw = row * h
+    def chunk(tag, data):
+        c = struct.pack('>I', len(data)) + tag + data
+        return c + struct.pack('>I', zlib.crc32(tag + data) & 0xffffffff)
+    ihdr = struct.pack('>IIBBBBB', w, h, 8, 6, 0, 0, 0)
+    png = (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', ihdr)
+           + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b''))
+    return 'data:image/png;base64,' + base64.b64encode(png).decode()
+
+PHOTO_DATA_URI = _photo_placeholder_data_uri()
 
 # --- Watchlist tab (grouped {latest, sightings}) ---------------------------
 WATCHLIST_GROUPS = [
@@ -968,15 +1044,41 @@ window.fetch = async (url) => {{
     // --- Logs viewer ---
     if (url.includes('/api/logs/info'))             return j({json.dumps(LOG_INFO)});
     if (url.includes('/api/logs/tail'))             return t({json.dumps(LOG_SAMPLE)});
+    // --- v3.4.111: enrichment stubs for the display board (routes on the
+    // flight-board rows, photo/owner/route on the hybrid spotlight card).
+    if (url.includes('/api/callsign/')) {{
+        const cs = url.split('/api/callsign/')[1].split('/')[0];
+        const routes = {json.dumps(ROUTE_STUBS)};
+        return j(routes[cs] || {{ok: true, found: false, callsign: cs}});
+    }}
+    if (url.includes('/photo')) {{
+        const hex = url.split('/api/aircraft/')[1].split('/')[0];
+        if (hex === 'A00001' || hex === 'AE01CE')
+            return j({{ok: true, found: true, icao: hex,
+                       thumbnail_url: {json.dumps(PHOTO_DATA_URI)},
+                       photo_link: '#', photographer: 'Docs placeholder'}});
+        return j({{ok: true, found: false, icao: hex}});
+    }}
+    if (url.includes('/enrich')) {{
+        const hex = url.split('/api/aircraft/')[1].split('/')[0];
+        const owners = {{"A00001": "United Airlines Inc",
+                         "A12345": "Delta Air Lines Inc",
+                         "AAAD47": "Example Aviation LLC",
+                         "A134D2": "Example Aviation LLC"}};
+        return j({{ok: true, icao: hex, registered_owner: owners[hex] || null}});
+    }}
     return j({{}});
 }};
 </script>"""
 
 
 async def _render(browser, template_file: str, outfile: Path, *,
-                  viewport: dict = None, ready_fn=None, clip: dict = None):
+                  viewport: dict = None, ready_fn=None, clip: dict = None,
+                  url_query: str = ''):
     """Load a template with the stub injected, optionally run a prep function,
-    then screenshot. `ready_fn` gets the page object and can click tabs etc."""
+    then screenshot. `ready_fn` gets the page object and can click tabs etc.
+    `url_query` (e.g. '?mode=radar') rides on the file:// URL — for templates
+    like board.html that read location.search (v3.4.111)."""
     page = await browser.new_page(
         viewport=viewport or {'width': 1400, 'height': 900},
         # v2.50.24: force dark color scheme. The FOUC script in each
@@ -1077,7 +1179,7 @@ async def _render(browser, template_file: str, outfile: Path, *,
     tmp = TMP_DIR / f'__aerodrome_rendertmp_{outfile.name}.html'
     tmp.write_text(html)
 
-    await page.goto(f'file://{tmp}')
+    await page.goto(f'file://{tmp}{url_query}')
     await page.wait_for_timeout(1500)
     if ready_fn:
         await ready_fn(page)
@@ -1388,6 +1490,27 @@ async def screenshot_aircraft_details(browser):
                          ready_fn=ready)
 
 
+# --- v3.4.111: the display board (/board), one shot per layout. 1920x1080 —
+# the board's design target (a wall TV). The extra settle time lets the
+# enrichment fetches (routes on the rows, photo/owner on the spotlight)
+# resolve and re-render before capture.
+async def _screenshot_board(browser, mode: str, outfile: str):
+    async def ready(p):
+        await p.wait_for_timeout(3000)
+    return await _render(browser, 'board.html', OUT_DIR / outfile,
+                         viewport={'width': 1920, 'height': 1080},
+                         url_query=f'?mode={mode}', ready_fn=ready)
+
+async def screenshot_board_radar(browser):
+    return await _screenshot_board(browser, 'radar', 'screenshot-board-radar.png')
+
+async def screenshot_board_flight(browser):
+    return await _screenshot_board(browser, 'board', 'screenshot-board-flight.png')
+
+async def screenshot_board_hybrid(browser):
+    return await _screenshot_board(browser, 'hybrid', 'screenshot-board-hybrid.png')
+
+
 async def main():
     print(f"Rendering screenshots to {OUT_DIR}/ ...")
     renderers = [
@@ -1412,6 +1535,9 @@ async def main():
         screenshot_diagnostics_watchlist,
         screenshot_setup_guide,
         screenshot_aircraft_details,  # v3.4.33
+        screenshot_board_radar,       # v3.4.111 — display board layouts
+        screenshot_board_flight,
+        screenshot_board_hybrid,
     ]
     async with async_playwright() as p:
         flatpak_proc = None

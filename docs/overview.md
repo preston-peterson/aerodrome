@@ -87,6 +87,14 @@ Search: full-text search across every aircraft your receiver has ever seen, goin
 The Stats tab — long, because there's a lot to show.
 :::
 
+## The display board
+
+Open `/board` on a TV and Aerodrome becomes a full-screen wall display for an FBO lounge, office, or hangar — no menus, big type, a live clock, and automatic recovery for long unattended runs. Three layouts, chosen per screen: a full-screen radar wall, an airport-arrivals-style flight board, and a hybrid pairing the radar with a closest-traffic list and a rotating spotlight card (photo, owner, and route of an aircraft overhead right now). A 1080p TV on a Raspberry Pi is all it needs.
+
+:::image screenshot-board-hybrid.png max_h=4.6
+The display board's hybrid layout — radar, closest traffic, and the rotating spotlight.
+:::
+
 # How it works
 
 Architecturally, Aerodrome is three moving parts in one Python process.
