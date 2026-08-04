@@ -19,6 +19,43 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.110] — 2026-08-03
+
+### Added
+- **A display board for wall TVs.** Open `/board` on any screen you want to
+  leave running — an FBO lounge, an office, a hangar — and Aerodrome becomes a
+  full-screen flight display: no menus, no buttons, big type readable from
+  across the room, and a live clock. Three layouts are available, and each
+  screen picks its own: **Radar wall** (a full-screen radar scope with every
+  contact labeled — callsign, altitude, heading, with the familiar red MIL and
+  blue WL tags), **Flight board** (classic airport-arrivals rows — flight,
+  aircraft type, route, altitude, speed, distance, climbing/descending — that
+  page through everything overhead and cycle live facts along the bottom), and
+  **Hybrid** (radar beside a closest-traffic list, plus a spotlight card that
+  rotates through the aircraft overhead showing a real photo of that airframe,
+  its registered owner, and where it's flying). The first visit shows a
+  one-time layout picker and remembers the choice on that device;
+  `/board?mode=radar`, `?mode=board`, or `?mode=hybrid` skips the picker for
+  kiosk autostart setups, and `?mode=pick` brings the picker back. Designed
+  for 1080p TVs and long unattended runs: if the receiver goes quiet the board
+  says so and keeps the last picture, it recovers on its own when data
+  returns, and it quietly refreshes itself once a day. The radar layouts need
+  a configured receiver location (Configuration → Receiver); the flight board
+  works regardless.
+
+### Behind the scenes
+- The board is a single standalone template (`templates/board.html`) on a new
+  chrome-less `/board` route, reusing the existing surfaces wholesale:
+  `/api/live` for contacts, `/api/ui-config` for range-ring distances and the
+  distance unit, and the photo / registered-owner / route enrichment endpoints
+  (including the current-leg inference for multi-leg flights) for the
+  spotlight and route columns. The radar layouts draw a pure SVG/CSS scope —
+  contacts are placed by bearing and distance from the receiver, so there are
+  no map tiles to fetch and nothing external to break on a kiosk. Enrichment
+  lookups are memoized per aircraft, polling backs off exponentially while the
+  server is unreachable, and a browser left running reloads itself during the
+  quiet hours each morning.
+
 ## [3.4.109] — 2026-07-31
 
 ### Added

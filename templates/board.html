@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<!-- Version: 3.4.109 -->
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Display board — Aerodrome</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* =============================================================================
+   Display board (v3.4.110) — kiosk page for FBO/office wall TVs.
+   Three layouts (radar wall / flight board / hybrid+spotlight), chosen per
+   screen: /board shows a one-time picker that persists to localStorage;
+   /board?mode=radar|board|hybrid bypasses it (kiosk autostart URLs).
+   Design target 1920×1080; everything is rem off a viewport-scaled root so an
+   off-spec TV still lays out correctly. Dark only — a wall display doesn't
+   follow the app theme toggle. Zero interactive controls beyond the picker.
+   ========================================================================== */
+:root{
+  --bg0:#0a0e17; --bg1:#111827; --bg2:#1a2236; --bg3:#243049;
+  --bdr:#2a3a54;
+  --t1:#e2e8f0; --t2:#94a3b8; --t3:#64748b;
+  --red:#ef4444; --amber:#f59e0b; --cyan:#06b6d4; --green:#22c55e; --blue:#3b82f6;
+  --font:'Outfit',sans-serif; --mono:'JetBrains Mono',monospace;
+}
+/* 1rem == 16px at exactly 1920 wide; scales linearly elsewhere. */
+html{font-size:calc(100vw / 120)}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;overflow:hidden}
+body{background:var(--bg0);color:var(--t1);font-family:var(--font);cursor:none}
+body.picking{cursor:default}
+
+/* ---------- shared chrome ---------- */
+.hdr{height:4.6rem;display:flex;align-items:center;justify-content:space-between;
+     padding:0 1.8rem;background:var(--bg1);border-bottom:1px solid var(--bdr)}
+.brand{display:flex;align-items:center;gap:.9rem;min-width:0}
+.brand svg{width:2.5rem;height:2.5rem;flex:none}
+.brand h1{font-size:1.65rem;font-weight:600;letter-spacing:-.02em;white-space:nowrap}
+.brand h1 span{color:var(--cyan)}
+.sub{font-size:.85rem;color:var(--t3);font-family:var(--mono);margin-left:.4rem;white-space:nowrap}
+.dot{width:.6rem;height:.6rem;border-radius:50%;background:var(--green);display:inline-block;
+     vertical-align:.02rem;animation:pulse 2s infinite}
+.dot.lost{background:var(--amber);animation:none}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.stats{display:flex;gap:2.1rem}
+.stat{text-align:center}
+.stat .v{font-family:var(--mono);font-size:1.6rem;font-weight:600;color:var(--cyan);line-height:1.15}
+.stat .v small{font-size:.9rem}
+.stat .l{font-size:.68rem;color:var(--t3);text-transform:uppercase;letter-spacing:.1em}
+.clock{font-family:var(--mono);text-align:right}
+.clock .tm{font-size:2.1rem;font-weight:600;letter-spacing:.02em;line-height:1.15}
+.clock .dt{font-size:.8rem;color:var(--t2)}
+.pill{font-family:var(--mono);font-weight:700;padding:.1rem .45rem;border-radius:.3rem;font-size:.72rem}
+.pill.mil{background:var(--red);color:#fff}
+.pill.wl{background:var(--cyan);color:#06222b}
+.lost-banner{position:absolute;top:5.4rem;left:50%;transform:translateX(-50%);z-index:40;
+  background:rgba(245,158,11,.14);border:1px solid var(--amber);color:var(--amber);
+  font-family:var(--mono);font-size:.9rem;padding:.4rem 1rem;border-radius:.5rem;display:none}
+
+/* ---------- radar scope (modes A + C) ---------- */
+.scope-wrap{position:absolute;inset:0;overflow:hidden;
+  background:radial-gradient(circle at 50% 52%, #0d1522 0%, #0a0e17 72%)}
+.ring{position:absolute;border:1px solid rgba(42,58,84,.9);border-radius:50%}
+.ring-lab{position:absolute;font-family:var(--mono);font-size:.72rem;color:var(--t3);transform:translate(-50%,-50%)}
+.rx{position:absolute;width:.8rem;height:.8rem;border-radius:50%;background:var(--cyan);
+    transform:translate(-50%,-50%);
+    box-shadow:0 0 0 .4rem rgba(6,182,212,.15),0 0 0 .8rem rgba(6,182,212,.07)}
+.ac{position:absolute;display:flex;flex-direction:column;align-items:center;gap:.18rem;
+    transform:translate(-50%,-50%)}
+.ac svg{filter:drop-shadow(0 0 .2rem rgba(0,0,0,.8))}
+.ac .lab{font-family:var(--mono);font-size:.92rem;font-weight:600;
+  background:rgba(10,14,23,.78);padding:.1rem .45rem;border-radius:.32rem;
+  border:1px solid var(--bdr);white-space:nowrap}
+.ac .lab small{color:var(--t2);font-weight:400;font-size:.76rem}
+.ac.rim{opacity:.35}
+.legend{position:absolute;left:1.2rem;bottom:1.1rem;background:rgba(17,24,39,.85);
+  border:1px solid var(--bdr);border-radius:.5rem;padding:.55rem .9rem;
+  font-family:var(--mono);font-size:.72rem;color:var(--t2);display:flex;gap:.9rem;align-items:center}
+.sw{width:.68rem;height:.68rem;border-radius:.2rem;display:inline-block;margin-right:.3rem;vertical-align:-.06rem}
+
+/* ---------- mode layouts ---------- */
+.mode{position:absolute;inset:0;display:none}
+.mode.on{display:block}
+#modeA .scope-wrap{top:4.6rem}
+#modeB .tbl{padding:.5rem 1.8rem 0}
+
+/* mode B table */
+.tbl table{width:100%;border-collapse:collapse;font-family:var(--mono)}
+.tbl th{font-size:.8rem;color:var(--t3);text-transform:uppercase;letter-spacing:.12em;text-align:left;
+  padding:.6rem .9rem;border-bottom:1px solid var(--bdr);font-weight:500}
+.tbl td{font-size:1.35rem;padding:.68rem .9rem;border-bottom:1px solid #16203a;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.tbl tr:nth-child(even) td{background:rgba(26,34,54,.45)}
+.tbl .cs{font-weight:700;letter-spacing:.03em}
+.tbl .ty{color:var(--t2);font-size:1.15rem;max-width:22rem}
+.tbl .rt .arr{color:var(--cyan);padding:0 .35rem}
+.tbl .na{color:var(--t3)}
+.tbl .num{text-align:right}
+.tbl .dist{color:var(--cyan)}
+.trend{font-size:1.15rem}.up{color:var(--green)}.dn{color:var(--amber)}.lv{color:var(--t3)}
+.pgdots{position:absolute;right:1.8rem;bottom:4rem;font-family:var(--mono);font-size:.8rem;color:var(--t3)}
+.pgdots b{color:var(--cyan)}
+.ticker{position:absolute;bottom:0;left:0;right:0;height:3.2rem;background:var(--bg1);
+  border-top:1px solid var(--bdr);display:flex;align-items:center;padding:0 1.8rem;gap:1rem;
+  font-family:var(--mono);font-size:1.05rem;white-space:nowrap;overflow:hidden}
+.ticker .tag{color:var(--cyan);font-weight:700;font-size:.8rem;letter-spacing:.1em;flex:none}
+
+/* mode C split */
+.split{position:absolute;top:4.6rem;bottom:0;left:0;right:0;display:flex}
+.split .scope-wrap{position:relative;inset:auto;flex:1.35}
+.side{width:29.5rem;border-left:1px solid var(--bdr);background:var(--bg1);display:flex;flex-direction:column}
+.side h3{font-size:.72rem;color:var(--t3);text-transform:uppercase;letter-spacing:.14em;padding:.9rem 1.25rem .5rem}
+.mini{flex:1;overflow:hidden}
+.mini .row{display:flex;align-items:baseline;gap:.7rem;padding:.55rem 1.25rem;font-family:var(--mono);
+  border-bottom:1px solid #16203a}
+.mini .cs{font-size:1.15rem;font-weight:700}
+.mini .ty{flex:1;font-size:.9rem;color:var(--t2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mini .al{font-size:.9rem;color:var(--t2)}
+.mini .di{font-size:1rem;color:var(--cyan);width:4.6rem;text-align:right;flex:none}
+.spot{border-top:1px solid var(--bdr);background:var(--bg2);padding:1rem 1.25rem;display:flex;gap:1rem;min-height:9.6rem}
+.spot .ph{width:10.75rem;height:7.2rem;border-radius:.5rem;flex:none;border:1px solid var(--bdr);
+  background:linear-gradient(135deg,#243049,#16203a);display:flex;align-items:center;justify-content:center;
+  color:var(--t3);font-size:.75rem;font-family:var(--mono);text-align:center;overflow:hidden}
+.spot .ph img{width:100%;height:100%;object-fit:cover;border-radius:.45rem}
+.spot .inf{flex:1;min-width:0}
+.spot .c1{display:flex;align-items:center;gap:.6rem}
+.spot .cs{font-family:var(--mono);font-size:1.5rem;font-weight:700}
+.spot .rot{color:var(--t3);font-size:.72rem;font-family:var(--mono)}
+.spot .ty{color:var(--t2);font-size:.9rem;margin-top:.18rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.spot .own{color:var(--t2);font-size:.9rem;margin-top:.42rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.spot .own b{color:var(--t1);font-weight:600}
+.spot .rt2{font-family:var(--mono);font-size:1rem;margin-top:.42rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.spot .rt2 .arr{color:var(--cyan);padding:0 .3rem}
+.spot .rt2 small{color:var(--t2)}
+
+/* ---------- picker ---------- */
+#picker{position:absolute;inset:0;background:var(--bg0);display:none;z-index:60;
+  flex-direction:column;align-items:center;justify-content:center;gap:2rem}
+#picker.on{display:flex}
+#picker h2{font-size:1.6rem;font-weight:600}
+#picker h2 span{color:var(--cyan)}
+#picker p{color:var(--t2);font-size:.95rem;max-width:46rem;text-align:center;line-height:1.5}
+.cards{display:flex;gap:1.6rem}
+.card{width:19rem;background:var(--bg1);border:1px solid var(--bdr);border-radius:.8rem;overflow:hidden;
+  cursor:pointer;transition:border-color .15s,transform .15s}
+.card:hover{border-color:var(--cyan);transform:translateY(-.2rem)}
+.card .prev{height:10rem;position:relative;background:radial-gradient(circle at 50% 55%, #0d1522, #0a0e17)}
+.card .nm{padding:.8rem 1rem .2rem;font-weight:600;font-size:1.05rem}
+.card .ds{padding:0 1rem .9rem;color:var(--t2);font-size:.82rem;line-height:1.45}
+.pv-ring{position:absolute;border:1px solid #2a3a54;border-radius:50%;left:50%;top:55%;transform:translate(-50%,-50%)}
+.pv-dot{position:absolute;width:.45rem;height:.45rem;border-radius:50%}
+.pv-rows{position:absolute;inset:1rem;display:flex;flex-direction:column;gap:.5rem}
+.pv-rows i{display:block;height:.7rem;border-radius:.2rem;background:#1a2236}
+.pv-side{position:absolute;top:0;bottom:0;right:0;width:38%;background:#111827;border-left:1px solid #2a3a54}
+#pickNote{font-family:var(--mono);font-size:.75rem;color:var(--t3)}
+
+/* boot/empty states */
+#bootMsg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  color:var(--t3);font-family:var(--mono);font-size:1rem;z-index:5}
+</style>
+</head>
+<body>
+
+<div id="bootMsg">contacting receiver…</div>
+<div class="lost-banner" id="lostBanner">SIGNAL LOST — showing last data</div>
+
+<!-- ============ PICKER ============ -->
+<div id="picker">
+  <h2><span>Aerodrome</span> display board — choose a layout for this screen</h2>
+  <p>The choice is remembered on this device. To change it later, open <b>/board?mode=pick</b>.
+     Kiosk autostart can skip this screen with <b>/board?mode=radar</b>, <b>?mode=board</b> or <b>?mode=hybrid</b>.</p>
+  <div class="cards">
+    <div class="card" data-pick="radar">
+      <div class="prev">
+        <div class="pv-ring" style="width:4rem;height:4rem"></div>
+        <div class="pv-ring" style="width:7.5rem;height:7.5rem"></div>
+        <div class="pv-dot" style="left:50%;top:55%;background:#06b6d4"></div>
+        <div class="pv-dot" style="left:38%;top:34%;background:#60a5fa"></div>
+        <div class="pv-dot" style="left:62%;top:44%;background:#22d3ee"></div>
+        <div class="pv-dot" style="left:31%;top:62%;background:#4ade80"></div>
+      </div>
+      <div class="nm">Radar wall</div>
+      <div class="ds">Full-screen radar scope. Every contact labeled. Best where the room cares <i>where</i> things are.</div>
+    </div>
+    <div class="card" data-pick="board">
+      <div class="prev"><div class="pv-rows"><i style="width:92%"></i><i style="width:85%"></i><i style="width:95%"></i><i style="width:80%"></i><i style="width:88%"></i><i style="width:74%"></i></div></div>
+      <div class="nm">Flight board</div>
+      <div class="ds">FBO arrivals-style rows: flight, aircraft, route, altitude, speed, distance. Reads from across a room.</div>
+    </div>
+    <div class="card" data-pick="hybrid">
+      <div class="prev">
+        <div class="pv-side"></div>
+        <div class="pv-ring" style="width:4.5rem;height:4.5rem;left:31%"></div>
+        <div class="pv-dot" style="left:31%;top:55%;background:#06b6d4"></div>
+        <div class="pv-dot" style="left:22%;top:36%;background:#60a5fa"></div>
+        <div class="pv-dot" style="left:40%;top:66%;background:#facc15"></div>
+      </div>
+      <div class="nm">Hybrid + spotlight</div>
+      <div class="ds">Radar plus a closest-traffic list and a rotating photo spotlight of one aircraft overhead right now.</div>
+    </div>
+  </div>
+  <div id="pickNote">no receiver contact yet — any layout will show live data once the receiver responds</div>
+</div>
+
+<!-- ============ MODE A — RADAR WALL ============ -->
+<div class="mode" id="modeA">
+  <div class="hdr">
+    <div class="brand">
+      <svg viewBox="0 0 64 64"><circle cx="32" cy="32" r="28" fill="none" stroke="#06b6d4" stroke-width="3" opacity=".3"/><circle cx="32" cy="32" r="20" fill="none" stroke="#06b6d4" stroke-width="3" opacity=".55"/><circle cx="32" cy="32" r="12" fill="none" stroke="#06b6d4" stroke-width="3" opacity=".8"/><circle cx="32" cy="32" r="4" fill="#06b6d4"/><line x1="32" y1="32" x2="52" y2="12" stroke="#06b6d4" stroke-width="3" stroke-linecap="round"/></svg>
+      <h1><span>Aerodrome</span></h1>
+      <span class="sub">LIVE TRAFFIC · <span class="dot" data-dot></span> <span data-rxword>RECEIVING</span></span>
+    </div>
+    <div class="stats">
+      <div class="stat"><div class="v" id="aCount">—</div><div class="l">Overhead</div></div>
+      <div class="stat"><div class="v" id="aMil">—</div><div class="l">Military</div></div>
+      <div class="stat"><div class="v" id="aFar">—</div><div class="l">Furthest</div></div>
+      <div class="stat"><div class="v" id="aHigh">—</div><div class="l">Highest</div></div>
+    </div>
+    <div class="clock"><div class="tm" data-tm>—</div><div class="dt" data-dt>—</div></div>
+  </div>
+  <div class="scope-wrap" id="scopeA"></div>
+</div>
+
+<!-- ============ MODE B — FLIGHT BOARD ============ -->
+<div class="mode" id="modeB">
+  <div class="hdr">
+    <div class="brand">
+      <svg viewBox="0 0 64 64"><circle cx="32" cy="32" r="28" fill="none" stroke="#06b6d4" stroke-width="3" opacity=".3"/><circle cx="32" cy="32" r="20" fill="none" stroke="#06b6d4" stroke-width="3" opacity=".55"/><circle cx="32" cy="32" r="12" fill="none" stroke="#06b6d4" stroke-width="3" opacity=".8"/><circle cx="32" cy="32" r="4" fill="#06b6d4"/><line x1="32" y1="32" x2="52" y2="12" stroke="#06b6d4" stroke-width="3" stroke-linecap="round"/></svg>
+      <h1><span>Aerodrome</span></h1>
+      <span class="sub">OVERHEAD TRAFFIC · <span class="dot" data-dot></span> <span data-rxword>LIVE</span></span>
+    </div>
+    <div class="clock"><div class="tm" data-tm>—</div><div class="dt" data-dt>—</div></div>
+  </div>
+  <div class="tbl">
+    <table>
+      <thead>
+        <tr><th>Flight</th><th>Aircraft</th><th>Route</th><th style="text-align:right">Altitude</th>
+            <th style="text-align:right">Speed</th><th style="text-align:right">Distance</th><th></th></tr>
+      </thead>
+      <tbody id="bRows"></tbody>
+    </table>
+  </div>
+  <div class="pgdots" id="bPage"></div>
+  <div class="ticker"><span class="tag">NOW</span><span id="bTicker">—</span></div>
+</div>
+
+<!-- ============ MODE C — HYBRID ============ -->
+<div class="mode" id="modeC">
+  <div class="hdr">
+    <div class="brand">
+      <svg viewBox="0 0 64 64"><circle cx="32" cy="32" r="28" fill="none" stroke="#06b6d4" stroke-width="3" opacity=".3"/><circle cx="32" cy="32" r="20" fill="none" stroke="#06b6d4" stroke-width="3" opacity=".55"/><circle cx="32" cy="32" r="12" fill="none" stroke="#06b6d4" stroke-width="3" opacity=".8"/><circle cx="32" cy="32" r="4" fill="#06b6d4"/><line x1="32" y1="32" x2="52" y2="12" stroke="#06b6d4" stroke-width="3" stroke-linecap="round"/></svg>
+      <h1><span>Aerodrome</span></h1>
+      <span class="sub"><span class="dot" data-dot></span> <span data-rxword>LIVE</span> · <span id="cCount">—</span> OVERHEAD</span>
+    </div>
+    <div class="clock"><div class="tm" data-tm>—</div><div class="dt" data-dt>—</div></div>
+  </div>
+  <div class="split">
+    <div class="scope-wrap" id="scopeC"></div>
+    <div class="side">
+      <h3>Closest traffic</h3>
+      <div class="mini" id="cMini"></div>
+      <div class="spot" id="cSpot" style="display:none">
+        <div class="ph" id="spotPh"></div>
+        <div class="inf">
+          <div class="c1"><span class="cs" id="spotCs">—</span><span class="rot">SPOTLIGHT</span></div>
+          <div class="ty" id="spotTy"></div>
+          <div class="own" id="spotOwn"></div>
+          <div class="rt2" id="spotRt"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+/* ============================ shared state ============================ */
+const VALID_MODES = ['radar', 'board', 'hybrid'];
+const LS_KEY = 'aerodrome-board-mode';
+let MODE = null;
+let LIVE = [];            // last good /api/live aircraft list
+let RX = {lat: null, lon: null};
+let UNIT = 'mi';
+let RINGS = [50, 100, 150, 200, 250];
+let LAST_OK = 0;          // epoch ms of last successful poll
+let FAILURES = 0;
+let BOOT_DAY = new Date().getDate();
+
+const $ = (id) => document.getElementById(id);
+function escapeHtml(s){
+  return String(s == null ? '' : s).replace(/[&<>"']/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+/* ============================ mode selection ============================ */
+function chooseMode(){
+  const qp = new URLSearchParams(location.search).get('mode');
+  if (qp === 'pick') { localStorage.removeItem(LS_KEY); showPicker(); return; }
+  if (VALID_MODES.includes(qp)) { startMode(qp); return; }
+  const saved = localStorage.getItem(LS_KEY);
+  if (VALID_MODES.includes(saved)) { startMode(saved); return; }
+  showPicker();
+}
+function showPicker(){
+  document.body.classList.add('picking');
+  $('picker').classList.add('on');
+  $('bootMsg').style.display = 'none';
+  document.querySelectorAll('.card').forEach(c => {
+    c.addEventListener('click', () => {
+      localStorage.setItem(LS_KEY, c.dataset.pick);
+      document.body.classList.remove('picking');
+      $('picker').classList.remove('on');
+      startMode(c.dataset.pick);
+    });
+  });
+}
+function startMode(m){
+  MODE = m;
+  const el = {radar: 'modeA', board: 'modeB', hybrid: 'modeC'}[m];
+  document.querySelectorAll('.mode').forEach(x => x.classList.remove('on'));
+  $(el).classList.add('on');
+  renderAll();
+}
+
+/* ============================ clock + daily reload ============================ */
+function tickClock(){
+  const n = new Date();
+  const tm = n.toLocaleTimeString([], {hour12: false});
+  const dt = n.toLocaleDateString([], {weekday: 'long', month: 'short', day: 'numeric', year: 'numeric'});
+  document.querySelectorAll('[data-tm]').forEach(e => e.textContent = tm);
+  document.querySelectorAll('[data-dt]').forEach(e => e.textContent = dt);
+  // Long-running-browser hygiene: one clean reload per day, in the quiet hours.
+  if (n.getHours() === 4 && n.getDate() !== BOOT_DAY) location.reload();
+}
+setInterval(tickClock, 1000); tickClock();
+
+/* ============================ polling + recovery ============================ */
+const POLL_MS = 5000;
+function pollDelay(){ return Math.min(60000, POLL_MS * Math.pow(2, Math.max(0, FAILURES - 2))); }
+async function poll(){
+  try {
+    const r = await fetch('/api/live', {cache: 'no-store'});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    LIVE = (j.aircraft || []).filter(a => a && a.icao);
+    if (j.receiver) { RX = j.receiver; UNIT = (j.receiver.distance_unit || 'mi'); }
+    LAST_OK = Date.now();
+    FAILURES = 0;
+    $('bootMsg').style.display = 'none';
+    $('pickNote').textContent = `receiver live — ${LIVE.length} aircraft right now`;
+    renderAll();
+  } catch (e) {
+    FAILURES++;
+    if (FAILURES >= 20) location.reload();   // ~15+ min dark → hard reset
+  }
+  updateSignal();
+  setTimeout(poll, pollDelay());
+}
+function updateSignal(){
+  const stale = LAST_OK && (Date.now() - LAST_OK) > 30000;
+  $('lostBanner').style.display = stale ? 'block' : 'none';
+  document.querySelectorAll('[data-dot]').forEach(d => d.classList.toggle('lost', stale || !LAST_OK));
+  document.querySelectorAll('[data-rxword]').forEach(w => w.textContent = (stale || !LAST_OK) ? 'NO SIGNAL' : (MODE === 'radar' ? 'RECEIVING' : 'LIVE'));
+}
+
+/* ============================ helpers ============================ */
+const UNIT_PER_DEG_LAT = {mi: 69.055, km: 111.132, nmi: 59.999};
+function distUnit(lat1, lon1, lat2, lon2){
+  const R = {mi: 3958.8, km: 6371.0, nmi: 3440.1}[UNIT] || 3958.8;
+  const p1 = lat1 * Math.PI / 180, p2 = lat2 * Math.PI / 180;
+  const dp = (lat2 - lat1) * Math.PI / 180, dl = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dp/2)**2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dl/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+function bearing(lat1, lon1, lat2, lon2){
+  const p1 = lat1 * Math.PI/180, p2 = lat2 * Math.PI/180, dl = (lon2 - lon1) * Math.PI/180;
+  const y = Math.sin(dl) * Math.cos(p2);
+  const x = Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dl);
+  return Math.atan2(y, x);
+}
+function altColor(alt){
+  if (alt == null || isNaN(alt)) return '#9ca3af';
+  const a = Number(alt);
+  if (a < 1000)  return '#f97316';
+  if (a < 10000) return '#facc15';
+  if (a < 20000) return '#4ade80';
+  if (a < 30000) return '#22d3ee';
+  if (a < 40000) return '#60a5fa';
+  return '#a78bfa';
+}
+function fmtAltShort(alt){
+  if (alt == null || isNaN(alt)) return '—';
+  const a = Number(alt);
+  return a >= 18000 ? 'FL' + Math.round(a / 100) : a.toLocaleString();
+}
+function fmtDist(d){ return d == null ? '—' : Math.round(d) + ' ' + UNIT; }
+function withDistance(list){
+  const ok = RX.lat != null && RX.lon != null;
+  return list.map(a => ({...a,
+    _dist: (ok && a.lat != null && a.lon != null) ? distUnit(RX.lat, RX.lon, a.lat, a.lon)
+           : (a.distance != null ? a.distance : null)}));
+}
+function chevronSvg(a, sizeRem){
+  const rot = (a.track == null) ? 0 : Math.round(a.track);
+  const col = altColor(a.altitude);
+  const heli = (a.category || '').toUpperCase() === 'A7';
+  const s = `width:${sizeRem}rem;height:${sizeRem}rem`;
+  if (heli) {
+    return `<svg viewBox="0 0 24 24" style="${s}"><circle cx="12" cy="12" r="8" fill="none" stroke="${col}" stroke-width="3"/><line x1="1" y1="12" x2="23" y2="12" stroke="${col}" stroke-width="2"/></svg>`;
+  }
+  const ring = a.is_military
+    ? `<circle cx="12" cy="12" r="11" fill="none" stroke="${escapeHtml(a.mil_color || '#ef4444')}" stroke-width="1.6"/>` : '';
+  return `<svg viewBox="0 0 24 24" style="${s};transform:rotate(${rot}deg)">${ring}<path d="M12 2 L19 20 L12 15 L5 20 Z" fill="${col}"/></svg>`;
+}
+
+/* ============================ scope renderer (A + C) ============================ */
+function renderScope(el, opts){
+  if (!el) return;
+  const W = el.clientWidth, H = el.clientHeight;
+  if (!W || !H) return;
+  const cx = W * 0.5, cy = H * 0.52;
+  const remPx = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+  if (RX.lat == null || RX.lon == null) {
+    el.innerHTML = `<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--t3);font-family:var(--mono);font-size:1rem;text-align:center">receiver location not configured —<br>radar layouts need it (Configuration → Receiver)</div>`;
+    return;
+  }
+  const maxRing = Math.max(...RINGS);
+  const pxPer = (Math.min(W, H) / 2 - 3.4 * remPx) / maxRing;
+  let html = '';
+  RINGS.forEach(rg => {
+    const d = rg * pxPer * 2;
+    html += `<div class="ring" style="width:${d}px;height:${d}px;left:${cx - d/2}px;top:${cy - d/2}px"></div>`;
+    html += `<div class="ring-lab" style="left:${cx}px;top:${cy - rg * pxPer - 0.9 * remPx}px">${rg} ${UNIT}</div>`;
+  });
+  html += `<div class="rx" style="left:${cx}px;top:${cy}px"></div>`;
+  const contacts = withDistance(LIVE).filter(a => a.lat != null && a.lon != null);
+  contacts.forEach(a => {
+    if (a._dist == null) return;
+    const brg = bearing(RX.lat, RX.lon, a.lat, a.lon);
+    const rim = a._dist > maxRing;
+    const r = Math.min(a._dist, maxRing) * pxPer;
+    const x = cx + r * Math.sin(brg), y = cy - r * Math.cos(brg);
+    const size = opts.big ? 1.6 : 1.35;
+    let lab = '';
+    if (!rim) {
+      const pill = a.is_military ? `<span class="pill mil">${escapeHtml(a.mil_label || 'MIL')}</span> `
+                 : (a.is_watchlist ? `<span class="pill wl">${escapeHtml(a.watchlist_label || 'WL')}</span> ` : '');
+      const tail = opts.telemetry ? ` <small>· ${fmtAltShort(a.altitude)}</small>` : '';
+      lab = `<div class="lab">${pill}${escapeHtml(a.callsign || a.icao)}${tail}</div>`;
+    }
+    html += `<div class="ac${rim ? ' rim' : ''}" style="left:${x}px;top:${y}px">${chevronSvg(a, size)}${lab}</div>`;
+  });
+  if (opts.legend) {
+    html += `<div class="legend">
+      <span><span class="sw" style="background:#f97316"></span>&lt;1k</span>
+      <span><span class="sw" style="background:#facc15"></span>&lt;10k</span>
+      <span><span class="sw" style="background:#4ade80"></span>&lt;20k</span>
+      <span><span class="sw" style="background:#22d3ee"></span>&lt;30k</span>
+      <span><span class="sw" style="background:#60a5fa"></span>&lt;40k</span>
+      <span><span class="sw" style="background:#a78bfa"></span>40k+</span></div>`;
+  }
+  el.innerHTML = html;
+}
+
+/* ============================ route/photo/owner memos ============================ */
+const routeMemo = new Map();   // callsign → {stops, airline} | null(=none) | 'pending'
+const photoMemo = new Map();   // icao → {url} | null | 'pending'
+const ownerMemo = new Map();   // icao → string | null | 'pending'
+function capMemo(m){ if (m.size > 500) m.clear(); }
+
+function routeFor(a){
+  const cs = (a.callsign || '').trim().toUpperCase();
+  if (!cs) return null;
+  if (routeMemo.has(cs)) { const v = routeMemo.get(cs); return v === 'pending' ? null : v; }
+  capMemo(routeMemo);
+  routeMemo.set(cs, 'pending');
+  let q = '';
+  if (a.lat != null && a.lon != null) {
+    q = `?lat=${encodeURIComponent(a.lat)}&lon=${encodeURIComponent(a.lon)}`
+      + (a.track != null ? `&track=${encodeURIComponent(a.track)}` : '');
+  }
+  fetch(`/api/callsign/${encodeURIComponent(cs)}/route${q}`)
+    .then(r => r.ok ? r.json() : null)
+    .then(j => {
+      let v = null;
+      if (j && j.found) {
+        let stops = null;
+        if (j.current_leg && j.current_leg.origin_icao) {
+          stops = [{icao: j.current_leg.origin_icao, name: j.current_leg.origin_name},
+                   {icao: j.current_leg.dest_icao,   name: j.current_leg.dest_name}];
+        } else if (Array.isArray(j.airports) && j.airports.length >= 2) {
+          stops = j.airports;
+        } else if (j.origin_icao && j.dest_icao) {
+          stops = [{icao: j.origin_icao, name: j.origin_name},
+                   {icao: j.dest_icao,   name: j.dest_name}];
+        }
+        if (stops) v = {stops, airline: j.airline || ''};
+      }
+      routeMemo.set(cs, v);
+      renderAll();
+    })
+    .catch(() => routeMemo.set(cs, null));
+  return null;
+}
+function photoFor(icao){
+  if (photoMemo.has(icao)) { const v = photoMemo.get(icao); return v === 'pending' ? null : v; }
+  capMemo(photoMemo);
+  photoMemo.set(icao, 'pending');
+  fetch(`/api/aircraft/${encodeURIComponent(icao)}/photo`)
+    .then(r => r.ok ? r.json() : null)
+    .then(j => { photoMemo.set(icao, (j && j.found && j.thumbnail_url) ? {url: j.thumbnail_url} : null); renderAll(); })
+    .catch(() => photoMemo.set(icao, null));
+  return null;
+}
+function ownerFor(icao){
+  if (ownerMemo.has(icao)) { const v = ownerMemo.get(icao); return v === 'pending' ? null : v; }
+  capMemo(ownerMemo);
+  ownerMemo.set(icao, 'pending');
+  fetch(`/api/aircraft/${encodeURIComponent(icao)}/enrich`)
+    .then(r => r.ok ? r.json() : null)
+    .then(j => { ownerMemo.set(icao, (j && j.registered_owner) ? j.registered_owner : null); renderAll(); })
+    .catch(() => ownerMemo.set(icao, null));
+  return null;
+}
+
+/* ============================ mode A ============================ */
+function renderA(){
+  const list = withDistance(LIVE);
+  $('aCount').textContent = list.length;
+  $('aMil').textContent = list.filter(a => a.is_military).length;
+  const far = list.reduce((m, a) => (a._dist != null && a._dist > m) ? a._dist : m, 0);
+  $('aFar').innerHTML = far ? Math.round(far) + `<small>${UNIT}</small>` : '—';
+  const hi = list.reduce((m, a) => (a.altitude != null && a.altitude > m) ? a.altitude : m, 0);
+  $('aHigh').textContent = hi ? fmtAltShort(hi) : '—';
+  renderScope($('scopeA'), {big: true, telemetry: true, legend: true});
+}
+
+/* ============================ mode B ============================ */
+const B_PAGE_SIZE = 12, B_PAGE_MS = 12000;
+let bPage = 0, bTick = 0;
+setInterval(() => { bPage++; bTick++; if (MODE === 'board') renderB(); }, B_PAGE_MS);
+function renderB(){
+  const list = withDistance(LIVE).filter(a => a._dist != null || a.callsign)
+    .sort((x, y) => (x._dist ?? 1e9) - (y._dist ?? 1e9));
+  const pages = Math.max(1, Math.ceil(list.length / B_PAGE_SIZE));
+  const pg = bPage % pages;
+  const rows = list.slice(pg * B_PAGE_SIZE, (pg + 1) * B_PAGE_SIZE);
+  $('bRows').innerHTML = rows.map(a => {
+    const rt = routeFor(a);
+    const rtHtml = rt
+      ? rt.stops.map(s => escapeHtml(s.icao)).join('<span class="arr">→</span>')
+      : '<span class="na">—</span>';
+    const vr = a.vertical_rate;
+    const trend = (vr != null && vr > 150) ? '<span class="trend up">▲</span>'
+                : (vr != null && vr < -150) ? '<span class="trend dn">▼</span>'
+                : '<span class="trend lv">·</span>';
+    const pill = a.is_military ? ` <span class="pill mil">${escapeHtml(a.mil_label || 'MIL')}</span>`
+               : (a.is_watchlist ? ` <span class="pill wl">${escapeHtml(a.watchlist_label || 'WL')}</span>` : '');
+    return `<tr>
+      <td class="cs">${escapeHtml(a.callsign || a.icao)}${pill}</td>
+      <td class="ty">${escapeHtml(a.type_desc || a.aircraft_type || '—')}</td>
+      <td class="rt">${rtHtml}</td>
+      <td class="num">${a.altitude != null ? Number(a.altitude).toLocaleString() : '—'}</td>
+      <td class="num">${a.speed != null ? Math.round(a.speed) : '—'}</td>
+      <td class="num dist">${fmtDist(a._dist)}</td>
+      <td>${trend}</td></tr>`;
+  }).join('') || `<tr><td colspan="7" style="color:var(--t3)">listening — no aircraft in range right now</td></tr>`;
+  $('bPage').innerHTML = list.length > B_PAGE_SIZE
+    ? `showing ${pg * B_PAGE_SIZE + 1}–${Math.min((pg + 1) * B_PAGE_SIZE, list.length)} of ${list.length} · page <b>${pg + 1}</b>/${pages} · rotates every ${B_PAGE_MS / 1000}s`
+    : '';
+  // Ticker: live-derived facts, rotating.
+  const mil = list.filter(a => a.is_military).length;
+  const far = list.reduce((m, a) => (a._dist != null && a._dist > m._d) ? {_d: a._dist, a} : m, {_d: 0, a: null});
+  const hi = list.reduce((m, a) => (a.altitude != null && a.altitude > m._v) ? {_v: a.altitude, a} : m, {_v: 0, a: null});
+  const fast = list.reduce((m, a) => (a.speed != null && a.speed > m._v) ? {_v: a.speed, a} : m, {_v: 0, a: null});
+  const facts = [
+    `${list.length} aircraft overhead · ${mil} military`,
+    far.a ? `furthest: ${escapeHtml(far.a.callsign || far.a.icao)} at ${Math.round(far._d)} ${UNIT}` : null,
+    hi.a ? `highest: ${escapeHtml(hi.a.callsign || hi.a.icao)} at ${fmtAltShort(hi._v)}` : null,
+    fast.a ? `fastest: ${escapeHtml(fast.a.callsign || fast.a.icao)} at ${Math.round(fast._v)} kt` : null,
+  ].filter(Boolean);
+  $('bTicker').innerHTML = facts.length ? facts[bTick % facts.length] : '—';
+}
+
+/* ============================ mode C ============================ */
+const SPOT_MS = 8000;
+let spotIdx = 0;
+setInterval(() => { spotIdx++; if (MODE === 'hybrid') renderC(); }, SPOT_MS);
+function renderC(){
+  $('cCount').textContent = LIVE.length;
+  renderScope($('scopeC'), {big: false, telemetry: false, legend: false});
+  const list = withDistance(LIVE).filter(a => a._dist != null)
+    .sort((x, y) => x._dist - y._dist);
+  $('cMini').innerHTML = list.slice(0, 8).map(a => {
+    const pill = a.is_military ? ` <span class="pill mil">${escapeHtml(a.mil_label || 'MIL')}</span>`
+               : (a.is_watchlist ? ` <span class="pill wl">${escapeHtml(a.watchlist_label || 'WL')}</span>` : '');
+    return `<div class="row"><span class="cs">${escapeHtml(a.callsign || a.icao)}</span>
+      <span class="ty">${escapeHtml(a.aircraft_type || a.type_desc || '')}${pill}</span>
+      <span class="al">${fmtAltShort(a.altitude)}</span>
+      <span class="di">${fmtDist(a._dist)}</span></div>`;
+  }).join('') || `<div class="row"><span class="ty" style="color:var(--t3)">listening — no aircraft in range</span></div>`;
+  // Spotlight — rotate through the closest 12 so it stays relevant.
+  const pool = list.slice(0, 12);
+  if (!pool.length) { $('cSpot').style.display = 'none'; return; }
+  const a = pool[spotIdx % pool.length];
+  $('cSpot').style.display = 'flex';
+  $('spotCs').textContent = a.callsign || a.icao;
+  $('spotTy').textContent = [a.type_desc || a.aircraft_type, a.icao].filter(Boolean).join(' · ');
+  const own = ownerFor(a.icao);
+  $('spotOwn').innerHTML = own ? `<b>${escapeHtml(own)}</b>` : '';
+  const rt = routeFor(a);
+  $('spotRt').innerHTML = rt
+    ? rt.stops.map(s => escapeHtml(s.icao)).join('<span class="arr">→</span>')
+      + (rt.stops[0].name && rt.stops[rt.stops.length - 1].name
+         ? ` <small>· ${escapeHtml(rt.stops[0].name)} to ${escapeHtml(rt.stops[rt.stops.length - 1].name)}</small>` : '')
+    : `<small>overhead at ${fmtAltShort(a.altitude)} · ${fmtDist(a._dist)} out</small>`;
+  const ph = photoFor(a.icao);
+  $('spotPh').innerHTML = ph
+    ? `<img src="${escapeHtml(ph.url)}" alt="">`
+    : escapeHtml(a.type_desc || a.aircraft_type || 'no photo');
+}
+
+/* ============================ render dispatch + boot ============================ */
+function renderAll(){
+  if (MODE === 'radar') renderA();
+  else if (MODE === 'board') renderB();
+  else if (MODE === 'hybrid') renderC();
+  updateSignal();
+}
+window.addEventListener('resize', renderAll);
+(async function boot(){
+  try {
+    const r = await fetch('/api/ui-config');
+    if (r.ok) {
+      const j = await r.json();
+      if (j.distance_unit) UNIT = j.distance_unit;
+      const rg = j.map && j.map.ring_distances;
+      if (Array.isArray(rg) && rg.length) RINGS = rg;
+    }
+  } catch (e) { /* defaults are fine */ }
+  chooseMode();
+  poll();
+})();
+</script>
+</body>
+</html>

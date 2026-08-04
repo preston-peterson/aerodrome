@@ -1,4 +1,4 @@
-# Version: 3.4.109
+# Version: 3.4.110
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -10692,6 +10692,17 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     @app.get("/about", response_class=HTMLResponse)
     def about_page():
         return _serve_template("about.html")
+
+    @app.get("/board", response_class=HTMLResponse)
+    def board_page():
+        """v3.4.110: kiosk display board for FBO/office wall TVs. Three
+        layouts (radar wall / flight board / hybrid+spotlight) chosen per
+        screen — /board with no mode shows a one-time picker persisted in
+        that browser's localStorage; ?mode=radar|board|hybrid bypasses it
+        (kiosk autostart URLs); ?mode=pick re-opens the picker. Chrome-less,
+        read-only, dark-only; reuses /api/live, /api/ui-config, and the
+        photo/owner/route enrichment endpoints."""
+        return _serve_template("board.html")
 
     @app.get("/logs", response_class=HTMLResponse)
     def logs_page():

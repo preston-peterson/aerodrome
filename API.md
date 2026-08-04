@@ -22,6 +22,7 @@ Plain HTML responses served by Jinja templates. The frontend-heavy logic lives i
 | GET | `/config` | Configuration editor |
 | GET | `/updates` | Release upload + apply + rollback |
 | GET | `/documentation` | In-app documentation viewer |
+| GET | `/board` | Kiosk display board for wall TVs — layout per screen via `?mode=radar\|board\|hybrid` (no mode: one-time picker; `?mode=pick` re-picks) |
 | GET | `/logs` | Service log tail with search + severity filter |
 | GET | `/performance` | Performance diagnostic page |
 | GET | `/diagnostics` | Subsystem diagnostics index |
