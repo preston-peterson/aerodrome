@@ -19,7 +19,10 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
-## [3.4.110] — 2026-08-03
+## [3.4.111] — 2026-08-03
+
+*(3.4.110 was an unpublished release candidate of this feature; 3.4.111 is the
+complete version.)*
 
 ### Added
 - **A display board for wall TVs.** Open `/board` on any screen you want to
