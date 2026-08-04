@@ -3803,6 +3803,10 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             "display": {
                 "date_format": display_cfg.get("date_format", "MDY"),
                 "time_format": display_cfg.get("time_format", "auto"),
+                # v3.4.110: default /board layout for screens that haven't
+                # picked one ("ask" = show the picker); a per-screen choice
+                # (localStorage or ?mode=) always wins over this.
+                "wallboard_layout": display_cfg.get("wallboard_layout", "ask"),
             },
             "map": {
                 "show_range_rings": bool(mp.get("show_range_rings", True)),

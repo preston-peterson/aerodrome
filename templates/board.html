@@ -161,6 +161,22 @@ body.picking{cursor:default}
 /* boot/empty states */
 #bootMsg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
   color:var(--t3);font-family:var(--mono);font-size:1rem;z-index:5}
+
+/* On-board layout gear — invisible until the mouse moves or the screen is
+   touched, so the kiosk stays clean but anyone at the TV can switch layouts
+   without Configuration access. */
+#gearBtn{position:absolute;right:1.1rem;bottom:1.1rem;z-index:55;width:2.6rem;height:2.6rem;
+  border-radius:50%;background:rgba(17,24,39,.9);border:1px solid var(--bdr);
+  display:flex;align-items:center;justify-content:center;cursor:pointer;
+  opacity:0;pointer-events:none;transition:opacity .25s}
+#gearBtn svg{width:1.3rem;height:1.3rem;stroke:var(--t2)}
+#gearBtn:hover{border-color:var(--cyan)}
+#gearBtn:hover svg{stroke:var(--cyan)}
+body.mouse{cursor:default}
+body.mouse #gearBtn{opacity:1;pointer-events:auto}
+#pickClose{font-family:var(--mono);font-size:.85rem;color:var(--t2);cursor:pointer;
+  border:1px solid var(--bdr);border-radius:.4rem;padding:.4rem 1rem;display:none}
+#pickClose:hover{color:var(--t1);border-color:var(--t2)}
 </style>
 </head>
 <body>
@@ -203,7 +219,12 @@ body.picking{cursor:default}
       <div class="ds">Radar plus a closest-traffic list and a rotating photo spotlight of one aircraft overhead right now.</div>
     </div>
   </div>
+  <div id="pickClose">✕ keep current layout</div>
   <div id="pickNote">no receiver contact yet — any layout will show live data once the receiver responds</div>
+</div>
+
+<div id="gearBtn" title="Change layout">
+  <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
 </div>
 
 <!-- ============ MODE A — RADAR WALL ============ -->
@@ -289,6 +310,7 @@ let RINGS = [50, 100, 150, 200, 250];
 let LAST_OK = 0;          // epoch ms of last successful poll
 let FAILURES = 0;
 let BOOT_DAY = new Date().getDate();
+let WB_DEFAULT = 'ask';   // display.wallboard_layout from /api/ui-config
 
 const $ = (id) => document.getElementById(id);
 function escapeHtml(s){
@@ -298,26 +320,51 @@ function escapeHtml(s){
 
 /* ============================ mode selection ============================ */
 function chooseMode(){
+  // Precedence: ?mode= URL → this screen's saved pick → the server-wide
+  // default (Configuration → Display → Wallboard) → the picker.
   const qp = new URLSearchParams(location.search).get('mode');
   if (qp === 'pick') { localStorage.removeItem(LS_KEY); showPicker(); return; }
   if (VALID_MODES.includes(qp)) { startMode(qp); return; }
   const saved = localStorage.getItem(LS_KEY);
   if (VALID_MODES.includes(saved)) { startMode(saved); return; }
+  if (VALID_MODES.includes(WB_DEFAULT)) { startMode(WB_DEFAULT); return; }
   showPicker();
 }
 function showPicker(){
   document.body.classList.add('picking');
   $('picker').classList.add('on');
   $('bootMsg').style.display = 'none';
-  document.querySelectorAll('.card').forEach(c => {
-    c.addEventListener('click', () => {
-      localStorage.setItem(LS_KEY, c.dataset.pick);
-      document.body.classList.remove('picking');
-      $('picker').classList.remove('on');
-      startMode(c.dataset.pick);
-    });
-  });
+  // "keep current layout" escape — only meaningful when a mode is running
+  // behind the picker (i.e. it was opened from the on-board gear).
+  $('pickClose').style.display = MODE ? 'block' : 'none';
 }
+function hidePicker(){
+  document.body.classList.remove('picking');
+  $('picker').classList.remove('on');
+}
+// Wired ONCE at load (showPicker can be reopened via the gear; re-wiring
+// there would stack handlers).
+document.querySelectorAll('.card').forEach(c => {
+  c.addEventListener('click', () => {
+    localStorage.setItem(LS_KEY, c.dataset.pick);
+    hidePicker();
+    startMode(c.dataset.pick);
+  });
+});
+$('pickClose').addEventListener('click', () => { if (MODE) hidePicker(); });
+
+// On-board layout gear: reveal the cursor + gear on mouse/touch activity,
+// fade both after a few idle seconds. Clicking reopens the picker over the
+// running layout — the easy path for someone standing at the TV.
+let _mouseTimer = null;
+function _wake(){
+  document.body.classList.add('mouse');
+  clearTimeout(_mouseTimer);
+  _mouseTimer = setTimeout(() => document.body.classList.remove('mouse'), 6000);
+}
+['mousemove', 'mousedown', 'touchstart'].forEach(ev =>
+  document.addEventListener(ev, _wake, {passive: true}));
+$('gearBtn').addEventListener('click', showPicker);
 function startMode(m){
   MODE = m;
   const el = {radar: 'modeA', board: 'modeB', hybrid: 'modeC'}[m];
@@ -640,6 +687,7 @@ window.addEventListener('resize', renderAll);
       if (j.distance_unit) UNIT = j.distance_unit;
       const rg = j.map && j.map.ring_distances;
       if (Array.isArray(rg) && rg.length) RINGS = rg;
+      if (j.display && j.display.wallboard_layout) WB_DEFAULT = j.display.wallboard_layout;
     }
   } catch (e) { /* defaults are fine */ }
   chooseMode();

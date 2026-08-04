@@ -36,8 +36,14 @@ archaeology rather than admin-facing release notes.)
   its registered owner, and where it's flying). The first visit shows a
   one-time layout picker and remembers the choice on that device;
   `/board?mode=radar`, `?mode=board`, or `?mode=hybrid` skips the picker for
-  kiosk autostart setups, and `?mode=pick` brings the picker back. Designed
-  for 1080p TVs and long unattended runs: if the receiver goes quiet the board
+  kiosk autostart setups, and `?mode=pick` brings the picker back. There are
+  two more ways to manage layouts: **Configuration → Display → Wallboard
+  layout** sets the server-wide default for screens that haven't picked yet
+  (with an "Open display board" link right there), and a **gear icon on the
+  board itself** — invisible until the mouse moves or the screen is touched —
+  reopens the layout picker, so anyone standing at the TV can switch layouts
+  without Configuration access. A choice made on the screen always wins over
+  the server default. Designed for 1080p TVs and long unattended runs: if the receiver goes quiet the board
   says so and keeps the last picture, it recovers on its own when data
   returns, and it quietly refreshes itself once a day. The radar layouts need
   a configured receiver location (Configuration → Receiver); the flight board
@@ -54,7 +60,10 @@ archaeology rather than admin-facing release notes.)
   no map tiles to fetch and nothing external to break on a kiosk. Enrichment
   lookups are memoized per aircraft, polling backs off exponentially while the
   server is unreachable, and a browser left running reloads itself during the
-  quiet hours each morning.
+  quiet hours each morning. The layout default is a new `display.wallboard_layout`
+  config key ("ask" | "radar" | "board" | "hybrid", validated, live-reloadable)
+  served through `/api/ui-config`; the board resolves its layout as URL
+  `?mode=` → this screen's saved pick → the config default → the picker.
 
 ## [3.4.109] — 2026-07-31
 

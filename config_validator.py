@@ -344,6 +344,14 @@ def validate_config(cfg: Any) -> Errors:
                         "display.time_format",
                         f"Must be one of {sorted(valid_time_formats)}; got {tf!r}"
                     ))
+            wb = disp.get("wallboard_layout")
+            if wb is not None:
+                valid_wallboard = {"ask", "radar", "board", "hybrid"}
+                if wb not in valid_wallboard:
+                    errs.append((
+                        "display.wallboard_layout",
+                        f"Must be one of {sorted(valid_wallboard)}; got {wb!r}"
+                    ))
 
     # --- retention ---
     ret = cfg.get("retention")
@@ -989,6 +997,10 @@ LIVE_KEYS = {
     # the Live tab and (future patches) other time displays. "auto"
     # respects the user's browser locale.
     "display.time_format",
+    # v3.4.110: default /board wall-display layout. Frontend-only, read
+    # per page load via /api/ui-config — a config change applies the next
+    # time a board screen loads (and its daily self-reload picks it up).
+    "display.wallboard_layout",
     # v3.5.0: radar map display prefs — read by the frontend via
     # /api/ui-config on each dashboard load; no service restart needed.
     "map",

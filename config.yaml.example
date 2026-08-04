@@ -76,6 +76,13 @@ display:
   #   "24h"  — always 24-hour, regardless of locale.
   # Live-reloadable (no restart needed).
   time_format: "auto"
+  # v3.4.110: default layout for the /board wall display (an FBO/office TV
+  # page). "ask" shows a one-time layout picker on each new screen; "radar",
+  # "board", or "hybrid" makes new screens open straight into that layout.
+  # Either way, each screen can still override for itself: a choice made in
+  # the on-screen picker (or a /board?mode=... URL) wins over this default.
+  # Live-reloadable (no restart needed).
+  wallboard_layout: "ask"
 
 # --- Live radar map ---
 # Settings for the "radar" view on the Live tab. All are live-reloadable
