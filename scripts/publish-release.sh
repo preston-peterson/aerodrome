@@ -106,8 +106,10 @@ trap 'rm -rf "$TMPD"' EXIT
     || fail "Downloaded assets failed sha256 verification"
 ok "Downloaded from GitHub; sha256 verifies"
 
+# (.pii-allowlist is NOT in this pattern: it's a tracked public repo file —
+# two path globs, no PII — shipped like .gitignore since v3.4.111.)
 LEAKS="$(unzip -l "${TMPD}/aerodrome-${TAG}.zip" | \
-    grep -icE 'audits/|graphify|HANDOFF|CLAUDE\.md|AGENT_GUARD|tech-debt-audit|\.claude/|logs/|\.pii-allowlist$|config\.yaml$|\.db$' || true)"
+    grep -icE 'audits/|graphify|HANDOFF|CLAUDE\.md|AGENT_GUARD|tech-debt-audit|\.claude/|logs/|config\.yaml$|\.db$' || true)"
 [ "$LEAKS" = "0" ] || fail "Zip contains maintainer-only/local files ($LEAKS matches) — pull the release NOW"
 ok "Zip content scan clean (no maintainer-only files)"
 
