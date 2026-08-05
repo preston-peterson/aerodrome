@@ -19,7 +19,10 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
-## [3.4.112] — 2026-08-04
+## [3.4.113] — 2026-08-04
+
+*(3.4.112 was an unpublished release candidate of this change; 3.4.113 is the
+complete version.)*
 
 ### Changed
 - **The display board's radar layouts now draw on a real map.** The radar-wall

@@ -59,7 +59,10 @@ body.picking{cursor:default}
 .pill{font-family:var(--mono);font-weight:700;padding:.1rem .45rem;border-radius:.3rem;font-size:.72rem}
 .pill.mil{background:var(--red);color:#fff}
 .pill.wl{background:var(--cyan);color:#06222b}
-.lost-banner{position:absolute;top:5.4rem;left:50%;transform:translateX(-50%);z-index:40;
+/* z-index note (v3.4.113): everything that must float above the radar map
+   sits ABOVE Leaflet's stacking range (panes 200-700, controls 800) — the
+   v3.4.112 tiles buried the gear + banner, which had pre-Leaflet z-indexes. */
+.lost-banner{position:absolute;top:5.4rem;left:50%;transform:translateX(-50%);z-index:1100;
   background:rgba(245,158,11,.14);border:1px solid var(--amber);color:var(--amber);
   font-family:var(--mono);font-size:.9rem;padding:.4rem 1rem;border-radius:.5rem;display:none}
 
@@ -145,7 +148,7 @@ body.picking{cursor:default}
 .spot .rt2 small{color:var(--t2)}
 
 /* ---------- picker ---------- */
-#picker{position:absolute;inset:0;background:var(--bg0);display:none;z-index:60;
+#picker{position:absolute;inset:0;background:var(--bg0);display:none;z-index:1200;
   flex-direction:column;align-items:center;justify-content:center;gap:2rem}
 #picker.on{display:flex}
 #picker h2{font-size:1.6rem;font-weight:600}
@@ -172,7 +175,7 @@ body.picking{cursor:default}
 /* On-board layout gear — invisible until the mouse moves or the screen is
    touched, so the kiosk stays clean but anyone at the TV can switch layouts
    without Configuration access. */
-#gearBtn{position:absolute;right:1.1rem;bottom:1.1rem;z-index:55;width:2.6rem;height:2.6rem;
+#gearBtn{position:absolute;right:1.1rem;bottom:1.1rem;z-index:1100;width:2.6rem;height:2.6rem;
   border-radius:50%;background:rgba(17,24,39,.9);border:1px solid var(--bdr);
   display:flex;align-items:center;justify-content:center;cursor:pointer;
   opacity:0;pointer-events:none;transition:opacity .25s}
@@ -544,6 +547,16 @@ function _drawRings(st){
 
 function renderScope(el, opts){
   if (!el || !el.clientWidth) return;
+  // Leaflet failed to load (offline kiosk, blocked static asset): degrade to
+  // a message instead of throwing — an exception here would kill the whole
+  // render loop and take the clock and header down with it.
+  if (typeof L === 'undefined') {
+    if (!el.dataset.mapFailed) {
+      el.dataset.mapFailed = '1';
+      el.innerHTML = '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--t3);font-family:var(--mono);font-size:1rem">map library failed to load — check /static/leaflet/</div>';
+    }
+    return;
+  }
   const st = _mapFor(el, opts);
   const contacts = withDistance(LIVE).filter(a => a.lat != null && a.lon != null);
   // Rings redraw only when absent (receiver/config don't move mid-session).
