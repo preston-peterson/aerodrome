@@ -10,6 +10,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/leaflet/leaflet.css">
+<script src="/static/leaflet/leaflet.js"></script>
 <style>
 /* =============================================================================
    Display board (v3.4.110) — kiosk page for FBO/office wall TVs.
@@ -61,11 +63,17 @@ body.picking{cursor:default}
   background:rgba(245,158,11,.14);border:1px solid var(--amber);color:var(--amber);
   font-family:var(--mono);font-size:.9rem;padding:.4rem 1rem;border-radius:.5rem;display:none}
 
-/* ---------- radar scope (modes A + C) ---------- */
+/* ---------- radar map (modes A + C) — a real Leaflet basemap, matching
+   the Live tab's radar (v3.4.112). The gradient shows only as a fallback
+   while tiles load / when no receiver location is configured. ---------- */
 .scope-wrap{position:absolute;inset:0;overflow:hidden;
   background:radial-gradient(circle at 50% 52%, #0d1522 0%, #0a0e17 72%)}
-.ring{position:absolute;border:1px solid rgba(42,58,84,.9);border-radius:50%}
-.ring-lab{position:absolute;font-family:var(--mono);font-size:.72rem;color:var(--t3);transform:translate(-50%,-50%)}
+.leaflet-container{background:#0a0e17;width:100%;height:100%}
+.scope-wrap .leaflet-control-attribution{background:rgba(17,24,39,.8);
+  color:var(--t3);font-size:.62rem;font-family:var(--mono)}
+.scope-wrap .leaflet-control-attribution a{color:var(--cyan)}
+.ring-lab{font-family:var(--mono);font-size:.72rem;color:var(--cyan);opacity:.75;
+  white-space:nowrap;text-shadow:0 0 .25rem rgba(10,14,23,.9)}
 .rx{position:absolute;width:.8rem;height:.8rem;border-radius:50%;background:var(--cyan);
     transform:translate(-50%,-50%);
     box-shadow:0 0 0 .4rem rgba(6,182,212,.15),0 0 0 .8rem rgba(6,182,212,.07)}
@@ -76,8 +84,7 @@ body.picking{cursor:default}
   background:rgba(10,14,23,.78);padding:.1rem .45rem;border-radius:.32rem;
   border:1px solid var(--bdr);white-space:nowrap}
 .ac .lab small{color:var(--t2);font-weight:400;font-size:.76rem}
-.ac.rim{opacity:.35}
-.legend{position:absolute;left:1.2rem;bottom:1.1rem;background:rgba(17,24,39,.85);
+.legend{position:absolute;left:1.2rem;bottom:1.1rem;z-index:1000;background:rgba(17,24,39,.85);
   border:1px solid var(--bdr);border-radius:.5rem;padding:.55rem .9rem;
   font-family:var(--mono);font-size:.72rem;color:var(--t2);display:flex;gap:.9rem;align-items:center}
 .sw{width:.68rem;height:.68rem;border-radius:.2rem;display:inline-block;margin-right:.3rem;vertical-align:-.06rem}
@@ -311,6 +318,10 @@ let LAST_OK = 0;          // epoch ms of last successful poll
 let FAILURES = 0;
 let BOOT_DAY = new Date().getDate();
 let WB_DEFAULT = 'ask';   // display.wallboard_layout from /api/ui-config
+// v3.4.112: the Map section's settings (Configuration → Map), same source the
+// Live radar reads — tiles theme, rings on/off, and the starting view.
+let MAPCFG = {show_range_rings: true, default_theme: 'auto',
+              starting_view: 'fit_all', fixed_zoom: 9};
 
 const $ = (id) => document.getElementById(id);
 function escapeHtml(s){
@@ -423,12 +434,6 @@ function distUnit(lat1, lon1, lat2, lon2){
   const a = Math.sin(dp/2)**2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dl/2)**2;
   return 2 * R * Math.asin(Math.sqrt(a));
 }
-function bearing(lat1, lon1, lat2, lon2){
-  const p1 = lat1 * Math.PI/180, p2 = lat2 * Math.PI/180, dl = (lon2 - lon1) * Math.PI/180;
-  const y = Math.sin(dl) * Math.cos(p2);
-  const x = Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dl);
-  return Math.atan2(y, x);
-}
 function altColor(alt){
   if (alt == null || isNaN(alt)) return '#9ca3af';
   const a = Number(alt);
@@ -464,53 +469,121 @@ function chevronSvg(a, sizeRem){
   return `<svg viewBox="0 0 24 24" style="${s};transform:rotate(${rot}deg)">${ring}<path d="M12 2 L19 20 L12 15 L5 20 Z" fill="${col}"/></svg>`;
 }
 
-/* ============================ scope renderer (A + C) ============================ */
-function renderScope(el, opts){
-  if (!el) return;
-  const W = el.clientWidth, H = el.clientHeight;
-  if (!W || !H) return;
-  const cx = W * 0.5, cy = H * 0.52;
-  const remPx = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
-  if (RX.lat == null || RX.lon == null) {
-    el.innerHTML = `<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--t3);font-family:var(--mono);font-size:1rem;text-align:center">receiver location not configured —<br>radar layouts need it (Configuration → Receiver)</div>`;
-    return;
-  }
-  const maxRing = Math.max(...RINGS);
-  const pxPer = (Math.min(W, H) / 2 - 3.4 * remPx) / maxRing;
-  let html = '';
-  RINGS.forEach(rg => {
-    const d = rg * pxPer * 2;
-    html += `<div class="ring" style="width:${d}px;height:${d}px;left:${cx - d/2}px;top:${cy - d/2}px"></div>`;
-    html += `<div class="ring-lab" style="left:${cx}px;top:${cy - rg * pxPer - 0.9 * remPx}px">${rg} ${UNIT}</div>`;
-  });
-  html += `<div class="rx" style="left:${cx}px;top:${cy}px"></div>`;
-  const contacts = withDistance(LIVE).filter(a => a.lat != null && a.lon != null);
-  contacts.forEach(a => {
-    if (a._dist == null) return;
-    const brg = bearing(RX.lat, RX.lon, a.lat, a.lon);
-    const rim = a._dist > maxRing;
-    const r = Math.min(a._dist, maxRing) * pxPer;
-    const x = cx + r * Math.sin(brg), y = cy - r * Math.cos(brg);
-    const size = opts.big ? 1.6 : 1.35;
-    let lab = '';
-    if (!rim) {
-      const pill = a.is_military ? `<span class="pill mil">${escapeHtml(a.mil_label || 'MIL')}</span> `
-                 : (a.is_watchlist ? `<span class="pill wl">${escapeHtml(a.watchlist_label || 'WL')}</span> ` : '');
-      const tail = opts.telemetry ? ` <small>· ${fmtAltShort(a.altitude)}</small>` : '';
-      lab = `<div class="lab">${pill}${escapeHtml(a.callsign || a.icao)}${tail}</div>`;
-    }
-    html += `<div class="ac${rim ? ' rim' : ''}" style="left:${x}px;top:${y}px">${chevronSvg(a, size)}${lab}</div>`;
-  });
+/* ============================ radar map (A + C) ============================
+   A real Leaflet basemap, mirroring the Live tab's radar (v3.4.112): the
+   same OSM-light / CARTO-dark tiles, the same cyan dashed range rings with
+   south-edge distance labels, the same receiver dot. Honors Configuration →
+   Map (default_theme, show_range_rings, ring_distances, starting_view /
+   fixed_zoom via /api/ui-config). Non-interactive — a wall display has no
+   user to pan it, and disabling all input means the view can never drift. */
+const _maps = {};   // element id → {map, markers:{icao→L.marker}, rings:[], fitted}
+
+function _mapFor(el, opts){
+  if (_maps[el.id]) return _maps[el.id];
+  const map = L.map(el, {
+    preferCanvas: true, zoomControl: false, attributionControl: true,
+    dragging: false, scrollWheelZoom: false, doubleClickZoom: false,
+    boxZoom: false, keyboard: false, touchZoom: false, worldCopyJump: true,
+  }).setView([0, 0], 2);
+  // Tile theme follows the Map section's default_theme; the board is a
+  // dark page, so "auto" resolves dark here (there's no on-board toggle).
+  const light = (MAPCFG.default_theme === 'light');
+  (light
+    ? L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 18,
+        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'})
+    : L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+        maxZoom: 19, subdomains: 'abcd',
+        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>'})
+  ).addTo(map);
+  const st = {map, markers: {}, rings: [], fitted: false, legendDone: false};
+  _maps[el.id] = st;
   if (opts.legend) {
-    html += `<div class="legend">
+    const lg = document.createElement('div');
+    lg.className = 'legend';
+    lg.innerHTML = `
       <span><span class="sw" style="background:#f97316"></span>&lt;1k</span>
       <span><span class="sw" style="background:#facc15"></span>&lt;10k</span>
       <span><span class="sw" style="background:#4ade80"></span>&lt;20k</span>
       <span><span class="sw" style="background:#22d3ee"></span>&lt;30k</span>
       <span><span class="sw" style="background:#60a5fa"></span>&lt;40k</span>
-      <span><span class="sw" style="background:#a78bfa"></span>40k+</span></div>`;
+      <span><span class="sw" style="background:#a78bfa"></span>40k+</span>`;
+    el.appendChild(lg);
   }
-  el.innerHTML = html;
+  return st;
+}
+
+function _drawRings(st){
+  st.rings.forEach(r => st.map.removeLayer(r));
+  st.rings = [];
+  if (RX.lat == null || RX.lon == null) return;
+  const ll = [RX.lat, RX.lon];
+  const rxm = L.marker(ll, {
+    icon: L.divIcon({className: '', html: '<span class="rx"></span>',
+                     iconSize: [0, 0]}),
+    interactive: false, zIndexOffset: 1000,
+  }).addTo(st.map);
+  st.rings.push(rxm);
+  if (!MAPCFG.show_range_rings) return;
+  const perUnitM = UNIT === 'km' ? 1000 : (UNIT === 'nmi' || UNIT === 'nm') ? 1852 : 1609.34;
+  RINGS.forEach(d => {
+    const ring = L.circle(ll, {
+      radius: d * perUnitM, weight: 1, opacity: 0.32, fill: false,
+      interactive: false, dashArray: '4 5', color: '#06b6d4',
+    }).addTo(st.map);
+    st.rings.push(ring);
+    const southLat = RX.lat - (d * perUnitM) / 111320;
+    const lbl = L.marker([southLat, RX.lon], {
+      icon: L.divIcon({className: 'ring-lab', html: `${d} ${escapeHtml(UNIT)}`,
+                       iconSize: [44, 14], iconAnchor: [22, 7]}),
+      interactive: false, keyboard: false,
+    }).addTo(st.map);
+    st.rings.push(lbl);
+  });
+}
+
+function renderScope(el, opts){
+  if (!el || !el.clientWidth) return;
+  const st = _mapFor(el, opts);
+  const contacts = withDistance(LIVE).filter(a => a.lat != null && a.lon != null);
+  // Rings redraw only when absent (receiver/config don't move mid-session).
+  if (!st.rings.length) _drawRings(st);
+  const seen = new Set();
+  contacts.forEach(a => {
+    seen.add(a.icao);
+    const size = opts.big ? 1.6 : 1.35;
+    const pill = a.is_military ? `<span class="pill mil">${escapeHtml(a.mil_label || 'MIL')}</span> `
+               : (a.is_watchlist ? `<span class="pill wl">${escapeHtml(a.watchlist_label || 'WL')}</span> ` : '');
+    const tail = opts.telemetry ? ` <small>· ${fmtAltShort(a.altitude)}</small>` : '';
+    const html = `<div class="ac">${chevronSvg(a, size)}<div class="lab">${pill}${escapeHtml(a.callsign || a.icao)}${tail}</div></div>`;
+    const icon = L.divIcon({className: '', html, iconSize: [0, 0]});
+    if (st.markers[a.icao]) {
+      st.markers[a.icao].setLatLng([a.lat, a.lon]).setIcon(icon);
+    } else {
+      st.markers[a.icao] = L.marker([a.lat, a.lon], {icon, interactive: false})
+        .addTo(st.map);
+    }
+  });
+  Object.keys(st.markers).forEach(ic => {
+    if (!seen.has(ic)) { st.map.removeLayer(st.markers[ic]); delete st.markers[ic]; }
+  });
+  // Frame the view ONCE, per the Map section's starting view. Never re-fit on
+  // poll — a wall display that keeps re-zooming is unwatchable.
+  if (!st.fitted && (contacts.length || RX.lat != null)) {
+    st.fitted = true;
+    const haveRx = RX.lat != null && RX.lon != null;
+    if (haveRx && MAPCFG.starting_view === 'fixed_zoom') {
+      st.map.setView([RX.lat, RX.lon], MAPCFG.fixed_zoom || 9);
+    } else if (haveRx && MAPCFG.starting_view === 'fit_rings' && RINGS.length) {
+      const perUnitM = UNIT === 'km' ? 1000 : (UNIT === 'nmi' || UNIT === 'nm') ? 1852 : 1609.34;
+      st.map.fitBounds(L.circle([RX.lat, RX.lon],
+        {radius: Math.max(...RINGS) * perUnitM}).getBounds(), {padding: [10, 10]});
+    } else {
+      const pts = contacts.map(a => [a.lat, a.lon]);
+      if (haveRx) pts.push([RX.lat, RX.lon]);
+      if (pts.length) st.map.fitBounds(L.latLngBounds(pts), {padding: [60, 60], maxZoom: 11});
+    }
+  }
 }
 
 /* ============================ route/photo/owner memos ============================ */
@@ -678,7 +751,10 @@ function renderAll(){
   else if (MODE === 'hybrid') renderC();
   updateSignal();
 }
-window.addEventListener('resize', renderAll);
+window.addEventListener('resize', () => {
+  Object.values(_maps).forEach(st => st.map.invalidateSize());
+  renderAll();
+});
 (async function boot(){
   try {
     const r = await fetch('/api/ui-config');
@@ -687,6 +763,12 @@ window.addEventListener('resize', renderAll);
       if (j.distance_unit) UNIT = j.distance_unit;
       const rg = j.map && j.map.ring_distances;
       if (Array.isArray(rg) && rg.length) RINGS = rg;
+      if (j.map) {
+        MAPCFG.show_range_rings = j.map.show_range_rings !== false;
+        MAPCFG.default_theme = j.map.default_theme || 'auto';
+        MAPCFG.starting_view = j.map.starting_view || 'fit_all';
+        MAPCFG.fixed_zoom = j.map.fixed_zoom || 9;
+      }
       if (j.display && j.display.wallboard_layout) WB_DEFAULT = j.display.wallboard_layout;
     }
   } catch (e) { /* defaults are fine */ }

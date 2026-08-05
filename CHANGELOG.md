@@ -19,6 +19,23 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.112] — 2026-08-04
+
+### Changed
+- **The display board's radar layouts now draw on a real map.** The radar-wall
+  and hybrid layouts introduced in the last release used a plain radar scope —
+  contacts on rings against a dark background, with no geography. They now
+  render on the same basemap as the Live tab's radar: actual map tiles with
+  cities, roads, and coastline under the traffic, the familiar dashed range
+  rings with distance labels, and the receiver dot at the center. The board
+  follows your existing **Configuration → Map** settings — ring distances (or
+  the range-rose match), rings on/off, the starting view (fit to traffic /
+  fixed zoom / fit to rings), and the default map theme (the board is a dark
+  page, so "auto" renders dark tiles; choosing "light" gives the light
+  basemap). The map on a board is deliberately non-interactive — no panning
+  or zooming to drift out of place on an unattended screen — and the flight
+  board layout is unchanged. Docs screenshots updated to match.
+
 ## [3.4.111] — 2026-08-03
 
 *(3.4.110 was an unpublished release candidate of this feature; 3.4.111 is the
