@@ -1,4 +1,4 @@
-<!-- Version: 3.4.113 -->
+<!-- Version: 3.4.114 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1313,6 +1313,7 @@ function sectionDisplay() {
                 {value:'12h',  label:'12-hour with AM/PM (9:54 AM)'},
                 {value:'24h',  label:'24-hour (09:54)'},
             ]})}
+            ${field({label:'Flight routes', hint:'Show each flight\'s route (origin → destination) on the radar overlay, the aircraft detail page, and the display board. Routes come from adsb.lol\'s community-maintained schedule data, matched by callsign — usually right, but not guaranteed: the same callsign can fly different routes on the same day, so the displayed route (especially the origin) may not match the flight actually overhead. Turning this off hides route lines everywhere and stops the outbound lookups. Applies on next page load.', path:'display.show_routes', type:'checkbox'})}
             ${field({label:'Wallboard layout', hint:'Default layout for the /board wall display (a full-screen page for an FBO or office TV). "Ask" shows a one-time layout picker on each new screen. Each screen can still override this for itself — via the on-screen picker, the board\'s corner gear icon, or a /board?mode=radar|board|hybrid URL — and that per-screen choice wins. Applies the next time a board loads.', path:'display.wallboard_layout', type:'select', options:[
                 {value:'ask',    label:'Ask — each screen picks on first visit'},
                 {value:'radar',  label:'Radar wall — full-screen radar scope'},

@@ -19,6 +19,21 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.114] — 2026-08-04
+
+### Added
+- **Flight-route display is now a setting — with an honest reliability note.**
+  Configuration → Display gains a "Flight routes" toggle controlling the
+  origin → destination lines on the radar overlay, the aircraft detail page,
+  and the display board. The setting's description says plainly what the
+  routes are: community-maintained schedule data from adsb.lol, matched by
+  callsign. That's usually right, but not guaranteed — the same callsign can
+  fly different routes on the same day, so the displayed route (especially
+  the origin) may occasionally disagree with the flight actually overhead.
+  If that trade isn't for you, switch it off: route lines disappear from
+  every surface and Aerodrome stops making route lookups entirely. On by
+  default; applies the next time a page loads.
+
 ## [3.4.113] — 2026-08-04
 
 *(3.4.112 was an unpublished release candidate of this change; 3.4.113 is the

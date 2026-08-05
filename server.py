@@ -1,4 +1,4 @@
-# Version: 3.4.113
+# Version: 3.4.114
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -3807,6 +3807,9 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 # picked one ("ask" = show the picker); a per-screen choice
                 # (localStorage or ?mode=) always wins over this.
                 "wallboard_layout": display_cfg.get("wallboard_layout", "ask"),
+                # v3.4.114: route-display toggle (radar overlay, detail page,
+                # display board). Off = frontends skip the lookup entirely.
+                "show_routes": display_cfg.get("show_routes", True) is not False,
             },
             "map": {
                 "show_range_rings": bool(mp.get("show_range_rings", True)),

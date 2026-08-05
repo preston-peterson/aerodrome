@@ -10,7 +10,7 @@ Usage:
         # each error: {"path": "receiver.port", "message": "Must be 1-65535"}
         return error_response(errors)
 """
-# Version: 3.4.113
+# Version: 3.4.114
 
 import re
 import socket
@@ -352,6 +352,9 @@ def validate_config(cfg: Any) -> Errors:
                         "display.wallboard_layout",
                         f"Must be one of {sorted(valid_wallboard)}; got {wb!r}"
                     ))
+            sr = disp.get("show_routes")
+            if sr is not None and not isinstance(sr, bool):
+                errs.append(("display.show_routes", "Must be true or false"))
 
     # --- retention ---
     ret = cfg.get("retention")
@@ -1001,6 +1004,9 @@ LIVE_KEYS = {
     # per page load via /api/ui-config — a config change applies the next
     # time a board screen loads (and its daily self-reload picks it up).
     "display.wallboard_layout",
+    # v3.4.114: flight-route display toggle. Frontend-only, read per page
+    # load via /api/ui-config; off = no route lines + no route lookups.
+    "display.show_routes",
     # v3.5.0: radar map display prefs — read by the frontend via
     # /api/ui-config on each dashboard load; no service restart needed.
     "map",

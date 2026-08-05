@@ -325,6 +325,7 @@ let WB_DEFAULT = 'ask';   // display.wallboard_layout from /api/ui-config
 // Live radar reads — tiles theme, rings on/off, and the starting view.
 let MAPCFG = {show_range_rings: true, default_theme: 'auto',
               starting_view: 'fit_all', fixed_zoom: 9};
+let SHOW_ROUTES = true;   // display.show_routes — off = no route lookups at all
 
 const $ = (id) => document.getElementById(id);
 function escapeHtml(s){
@@ -606,6 +607,7 @@ const ownerMemo = new Map();   // icao → string | null | 'pending'
 function capMemo(m){ if (m.size > 500) m.clear(); }
 
 function routeFor(a){
+  if (!SHOW_ROUTES) return null;
   const cs = (a.callsign || '').trim().toUpperCase();
   if (!cs) return null;
   if (routeMemo.has(cs)) { const v = routeMemo.get(cs); return v === 'pending' ? null : v; }
@@ -783,6 +785,7 @@ window.addEventListener('resize', () => {
         MAPCFG.fixed_zoom = j.map.fixed_zoom || 9;
       }
       if (j.display && j.display.wallboard_layout) WB_DEFAULT = j.display.wallboard_layout;
+      if (j.display) SHOW_ROUTES = j.display.show_routes !== false;
     }
   } catch (e) { /* defaults are fine */ }
   chooseMode();

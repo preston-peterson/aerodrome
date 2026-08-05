@@ -1,4 +1,4 @@
-<!-- Version: 3.4.113 -->
+<!-- Version: 3.4.114 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2649,6 +2649,10 @@ let statsCfg = { enabled: true, refresh_interval: 300, timezone: '', cards: {} }
 // server handles the follow-range-rose option).
 let mapCfg = { show_range_rings: true, ring_distances: [50,100,150,200,250],
                starting_view: 'fit_all', fixed_zoom: 9, default_theme: 'auto' };
+// v3.4.114: route-display toggle (Configuration → Display). Default true so
+// the overlay behaves normally before the first ui-config load; when off,
+// the radar overlay skips the route lookup entirely.
+let showRoutes = true;
 let statsTimer = null;        // setInterval id for auto-refresh
 let statsLastFetch = null;    // timestamp of last successful fetch
 let statsInflight = false;    // prevent overlapping fetches
@@ -3886,7 +3890,7 @@ function openRadarOverlay(icao){
     // confidently, the full chain renders instead. Callsign-less contacts
     // skip the lookup entirely — the row stays hidden.
     const roCs = (ac.callsign || '').trim();
-    if(roCs){
+    if(roCs && showRoutes){
         _radarSetRoute('loading');
         const roQ = (ac.lat != null && ac.lon != null)
             ? `?lat=${encodeURIComponent(ac.lat)}&lon=${encodeURIComponent(ac.lon)}`
@@ -7309,6 +7313,7 @@ async function loadUiConfig(){
         if (typeof initTimeFormat === 'function') {
             initTimeFormat(j.display && j.display.time_format);
         }
+        showRoutes = !(j.display && j.display.show_routes === false);
         document.body.classList.toggle('no-distance', !distEnabled);
         // v2.44.2: when distance is enabled and the user hasn't already
         // clicked a sort header on the Live tab, default to distance-

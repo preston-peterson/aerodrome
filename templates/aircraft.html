@@ -1,4 +1,4 @@
-<!-- Version: 3.4.113 -->
+<!-- Version: 3.4.114 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1021,7 +1021,7 @@ function maybeEnrichRoute(callsign, icao) {
     // flight number ("KMSP-KPHL-KMSP") shows only the leg it's actually
     // flying; without a confident leg the full chain renders.
     const cs = (callsign || '').trim();
-    if (!cs) return;
+    if (!cs || !_showRoutes) return;
     const up = (icao || '').toUpperCase();
     fetch('/api/live')
         .then(r => r.ok ? r.json() : null)
@@ -1134,6 +1134,10 @@ let _trackProviderState = {
     fallback: null,
     providers: {},
 };
+// v3.4.114: route-display toggle (Configuration → Display), set from the
+// same ui-config load below (which is awaited before the page renders, so
+// maybeEnrichRoute always sees the real value).
+let _showRoutes = true;
 
 async function loadTrackProviders() {
     try {
@@ -1143,6 +1147,7 @@ async function loadTrackProviders() {
         _trackProviderState.fallback = j.track_link_fallback;
         _trackProviderState.providers = j.track_link_providers || {};
         _trackProviderState.ready = true;
+        _showRoutes = !(j.display && j.display.show_routes === false);
     } catch (e) {
         // Stay not-ready — the Track button will render as disabled rather
         // than guessing wrong about which tracker to link to.
