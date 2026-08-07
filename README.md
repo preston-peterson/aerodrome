@@ -1,5 +1,5 @@
 # Aerodrome
-<!-- Version: 3.4.116 -->
+<!-- Version: 3.4.117 -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -87,9 +87,10 @@ screen: a full-screen **radar wall**, an airport-arrivals-style **flight
 board** with a photo of each aircraft (below), and a **hybrid** pairing the
 radar with a slow-scrolling photo rail of the closest aircraft (above). The
 radar layouts are fully interactive — drag, pinch, and zoom (touch screens
-work out of the box) with the Live map's control set, and the view snaps
-back to its home framing after a few idle minutes so a wandering zoom never
-strands the kiosk. The first visit shows a picker;
+work out of the box) with the Live map's control set, tap any plane for a
+slide-out card with its photo, operator, route, and live telemetry, and the
+view snaps back to its home framing after a few idle minutes so a wandering
+zoom never strands the kiosk. The first visit shows a picker;
 `/board?mode=radar|board|hybrid` skips it for kiosk autostart, and a 1080p
 TV on a Raspberry Pi is all the hardware it needs.
 
