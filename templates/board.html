@@ -92,6 +92,9 @@ body.picking{cursor:default}
   background:rgba(10,14,23,.78);padding:.1rem .45rem;border-radius:.32rem;
   border:1px solid var(--bdr);white-space:nowrap}
 .ac .lab small{color:var(--t2);font-weight:400;font-size:.76rem}
+/* Pills-only chip (labels "off"): the MIL/AF1/WL pill stands alone, no
+   callsign chip behind it. */
+.ac .labp{line-height:1}
 /* Legend sits right of the bottom-left tool stack (v3.4.115). */
 .legend{position:absolute;left:4.6rem;bottom:1.1rem;z-index:1000;background:rgba(17,24,39,.85);
   border:1px solid var(--bdr);border-radius:.5rem;padding:.55rem .9rem;
@@ -646,7 +649,7 @@ function _mapFor(el, opts){
       };
       mk('bt-legend', 'i', 'Toggle altitude legend', toggleLegend);
       mk('bt-cov', '&#x2B22;', 'Toggle max-range coverage outline', toggleCoverage);
-      mk('bt-lab', 'Aa', 'Cycle aircraft labels (full / callsign / off)', cycleLabels);
+      mk('bt-lab', 'Aa', 'Cycle aircraft labels (full / callsign / pills only)', cycleLabels);
       mk('bt-trail', '&#8605;', 'Toggle aircraft trails', toggleTrails);
       mk('bt-wx',
          '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" '
@@ -1072,12 +1075,16 @@ function renderScope(el, opts){
   contacts.forEach(a => {
     seen.add(a.icao);
     const size = opts.big ? 1.6 : 1.35;
+    const pill = a.is_military ? `<span class="pill mil">${escapeHtml(a.mil_label || 'MIL')}</span>`
+               : (a.is_watchlist ? `<span class="pill wl">${escapeHtml(a.watchlist_label || 'WL')}</span>` : '');
     let labHtml = '';
     if (lm !== 'off') {
-      const pill = a.is_military ? `<span class="pill mil">${escapeHtml(a.mil_label || 'MIL')}</span> `
-                 : (a.is_watchlist ? `<span class="pill wl">${escapeHtml(a.watchlist_label || 'WL')}</span> ` : '');
       const tail = lm === 'full' ? ` <small>· ${fmtAltShort(a.altitude)}</small>` : '';
-      labHtml = `<div class="lab">${pill}${escapeHtml(a.callsign || a.icao)}${tail}</div>`;
+      labHtml = `<div class="lab">${pill ? pill + ' ' : ''}${escapeHtml(a.callsign || a.icao)}${tail}</div>`;
+    } else if (pill) {
+      // Labels off: military/watchlist still show their pill (AF1 stays AF1)
+      // — mirrors the Live radar's always-visible MIL/WL pills.
+      labHtml = `<div class="labp">${pill}</div>`;
     }
     const html = `<div class="ac">${chevronSvg(a, size)}${labHtml}</div>`;
     const icon = L.divIcon({className: '', html, iconSize: [0, 0]});

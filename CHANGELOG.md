@@ -37,8 +37,10 @@ archaeology rather than admin-facing release notes.)
   mouse moves, fading away a few seconds later, so the wall display stays as
   clean as before. Labels also declutter: an on-map "Aa" button cycles
   between callsign + altitude, callsign only (the new default — the full
-  two-line label buried the planes on a busy sky), and no labels at all,
-  remembered per screen. The flight board gains a photo column — a cached
+  two-line label buried the planes on a busy sky), and pills-only — no
+  callsigns, but military and watchlist aircraft keep their pill (AF1 stays
+  AF1), matching the Live radar's always-visible badges. Remembered per
+  screen. The flight board gains a photo column — a cached
   thumbnail of each aircraft on its row — and the hybrid layout's right side
   is now a photo rail: cards of the closest aircraft, nearest first, each
   with photo, callsign, altitude trend, type, and route or registered owner.
