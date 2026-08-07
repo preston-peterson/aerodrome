@@ -80,7 +80,12 @@ body.picking{cursor:default}
    while tiles load / when no receiver location is configured. ---------- */
 .scope-wrap{position:absolute;inset:0;overflow:hidden;
   background:radial-gradient(circle at 50% 52%, #0d1522 0%, #0a0e17 72%)}
-.leaflet-container{background:#0a0e17;width:100%;height:100%}
+/* No width/height here (v3.4.117): the scope element IS the Leaflet
+   container, positioned with top+bottom insets — an explicit height:100%
+   overrides bottom:0 (over-constrained absolute box), sizing the map to the
+   full mode height and hanging the bottom controls one header-height below
+   the screen. That was the kiosk's clipped-tools bug. */
+.leaflet-container{background:#0a0e17}
 .scope-wrap .leaflet-control-attribution{background:rgba(17,24,39,.8);
   color:var(--t3);font-size:.62rem;font-family:var(--mono)}
 .scope-wrap .leaflet-control-attribution a{color:var(--cyan)}
@@ -497,8 +502,8 @@ function _wake(){
   document.addEventListener(ev, _wake, {passive: true}));
 $('gearBtn').addEventListener('click', showPicker);
 function startMode(m){
+  closeDetail();   // a details panel (and its trail) never survives a switch
   MODE = m;
-  SEL = null;    // a details panel never survives a layout switch
   const el = {radar: 'modeA', board: 'modeB', hybrid: 'modeC'}[m];
   document.querySelectorAll('.mode').forEach(x => x.classList.remove('on'));
   $(el).classList.add('on');
@@ -628,6 +633,7 @@ function _mapFor(el, opts){
   }).setView([0, 0], 2);
   const st = {map, el, markers: {}, rings: [], fitted: false, userMoved: false,
               _framing: false, trailBuf: {}, trailSeg: {}, coverage: null,
+              selSegs: [], selLast: null,
               canvas: L.canvas({padding: 0.5}),
               lightTiles: L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
                 maxZoom: 18,
@@ -1074,13 +1080,57 @@ let SEL = null;                    // icao shown in the details panel
 const DETAIL_IDLE_MS = 90 * 1000;
 function openDetail(icao){
   SEL = icao;
+  _drawSelTrail(icao);
   renderAll();
 }
 function closeDetail(){
   if (SEL == null) return;
   SEL = null;
+  _clearSelTrail();
   forEachSt(st => { if (st.detailEl) st.detailEl.classList.remove('on'); });
   renderAll();
+}
+/* Selected-aircraft trail — its recent track (current pass only, like the
+   Live radar's clicked-aircraft trail), altitude-coloured, extended live as
+   new fixes arrive via the poll (see renderScope). */
+function _clearSelTrail(){
+  forEachSt(st => {
+    (st.selSegs || []).forEach(s => st.map.removeLayer(s));
+    st.selSegs = [];
+    st.selLast = null;
+  });
+}
+function _selSeg(st, p1, p2, alt){
+  st.selSegs.push(L.polyline([p1, p2], {
+    renderer: st.canvas, color: altColor(alt),
+    weight: 2.5, opacity: 0.75, interactive: false,
+  }).addTo(st.map));
+}
+function _drawSelTrail(icao){
+  _clearSelTrail();
+  const st = activeSt();
+  if (!st) return;
+  fetch(`/api/aircraft/${encodeURIComponent(icao)}/positions?window=24h`)
+    .then(r => r.ok ? r.json() : null)
+    .then(j => {
+      if (!j || !j.positions || SEL !== icao) return;
+      // positions = [[seen_at, lat, lon, alt], ...]. Draw only the CURRENT
+      // PASS — walk back from the newest fix and stop at the first gap over
+      // 10 min, so re-entries don't draw straight "teleport" segments.
+      const TRAIL_GAP_SEC = 600;
+      const all = j.positions.filter(p => p[1] != null && p[2] != null)
+        .sort((a, b) => a[0] - b[0]);
+      if (!all.length) return;
+      let start = all.length - 1;
+      while (start > 0 && (all[start][0] - all[start - 1][0]) <= TRAIL_GAP_SEC) start--;
+      const seg = all.slice(start);
+      if (seg.length < 2) return;
+      for (let i = 0; i < seg.length - 1; i++) {
+        _selSeg(st, [seg[i][1], seg[i][2]], [seg[i + 1][1], seg[i + 1][2]], seg[i][3]);
+      }
+      st.selLast = [seg[seg.length - 1][1], seg[seg.length - 1][2]];
+    })
+    .catch(() => {});
 }
 function renderDetail(st){
   if (!st || !st.detailEl) return;
@@ -1221,6 +1271,12 @@ function renderScope(el, opts){
         {icon, interactive: true, keyboard: false})
         .on('click', () => openDetail(a.icao))
         .addTo(st.map);
+    }
+    // Grow the selected aircraft's trail forward as fixes arrive.
+    if (a.icao === SEL && st.selLast &&
+        (st.selLast[0] !== a.lat || st.selLast[1] !== a.lon)) {
+      _selSeg(st, st.selLast, [a.lat, a.lon], a.altitude);
+      st.selLast = [a.lat, a.lon];
     }
   });
   Object.keys(st.markers).forEach(ic => {

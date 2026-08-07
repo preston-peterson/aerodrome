@@ -19,23 +19,26 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
-## [3.4.117] — 2026-08-07
+## [3.4.118] — 2026-08-07
 
-*(3.4.115 and 3.4.116 were unpublished release candidates of this change;
-3.4.117 is the released version.)*
+*(3.4.115 through 3.4.117 were unpublished release candidates of this change;
+3.4.118 is the released version.)*
 
 ### Added
-- **Tap a plane on the display board for its details.** Touch (or click) any
-  aircraft on the board's radar layouts and a panel slides out from the
-  scope's right edge — the board's version of the Live map's overlay: photo,
-  callsign with its MIL/WL badge, aircraft type, registered operator, route
-  with the airport names spelled out, and a live telemetry grid (altitude
-  with climb/descend arrow, speed, heading, vertical rate, distance,
-  squawk). The tapped aircraft gets a dashed halo on the scope so it's easy
-  to find. Everything in the panel refreshes with each poll while it's open.
-  Close it with the ✕, a tap on the map background, or just walk away — it
-  dismisses itself after about ninety seconds without a touch, keeping the
-  kiosk self-tending.
+- **Tap a plane on the display board for its details — and its trail.**
+  Touch (or click) any aircraft on the board's radar layouts and a panel
+  slides out from the scope's right edge — the board's version of the Live
+  map's overlay: photo, callsign with its MIL/WL badge, aircraft type,
+  registered operator, route with the airport names spelled out, and a live
+  telemetry grid (altitude with climb/descend arrow, speed, heading,
+  vertical rate, distance, squawk). The tapped aircraft gets a dashed halo
+  on the scope, and its recent flight path draws on the map —
+  altitude-coloured like the Live radar's, showing the current pass and
+  growing at the nose as new fixes arrive. Everything in the panel
+  refreshes with each poll while it's open. Close it with the ✕, a tap on
+  the map background, or just walk away — trail and panel dismiss
+  themselves after about ninety seconds without a touch, keeping the kiosk
+  self-tending.
 
 - **The display board is now interactive — and it got photos.** The radar
   layouts (radar wall and hybrid) accept touch and mouse input: drag to pan,
@@ -84,11 +87,13 @@ archaeology rather than admin-facing release notes.)
 - **Board map controls on real kiosk hardware.** The zoom buttons rendered
   malformed on the wall screen — Leaflet's own zoom control styling (corner
   radii, touch-mode borders) fought the board's restyle — so the board now
-  draws its own zoom buttons, matching the rest of the control stack. And on
-  tablets whose browsers reserve space for collapsing toolbars, the page
-  sized itself to the full viewport instead of the visible one, pushing the
-  bottom-left tool stack partly off screen; the board now tracks the visible
-  viewport height, so every control stays on the panel.
+  draws its own zoom buttons, matching the rest of the control stack. And
+  the radar-wall layout sized its map one header-height too tall (a CSS
+  over-constraint: an explicit map height overriding the layout's bottom
+  edge), which hung the bottom-left tool stack, the altitude legend, and
+  the map attribution partly or fully below the screen on every display.
+  The flight-board and hybrid layouts were unaffected. The map now sizes to
+  the space the layout actually gives it, so every control sits on screen.
 
 ## [3.4.114] — 2026-08-04
 
