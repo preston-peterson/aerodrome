@@ -19,6 +19,50 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.115] — 2026-08-07
+
+### Added
+- **The display board is now interactive — and it got photos.** The radar
+  layouts (radar wall and hybrid) accept touch and mouse input: drag to pan,
+  pinch or scroll to zoom, double-tap to zoom in — a TV with a touchscreen
+  works out of the box. The Live map's control set comes along for the ride:
+  zoom buttons, a light/dark map theme toggle, the altitude legend, the
+  max-range coverage outline, aircraft trails, and the animated weather
+  overlay with its opacity slider. There's one addition the Live map doesn't
+  need: a recenter button under the zoom controls that snaps the view back
+  to its home framing — and if someone zooms in for a closer look and walks
+  away, the board recenters itself after three minutes of no interaction, so
+  a wandering zoom never strands the kiosk. Every control follows the same
+  reveal as the corner gear: invisible until the screen is touched or the
+  mouse moves, fading away a few seconds later, so the wall display stays as
+  clean as before. Labels also declutter: an on-map "Aa" button cycles
+  between callsign + altitude, callsign only (the new default — the full
+  two-line label buried the planes on a busy sky), and no labels at all,
+  remembered per screen. The flight board gains a photo column — a cached
+  thumbnail of each aircraft on its row — and the hybrid layout's right side
+  is now a photo rail: cards of the closest aircraft, nearest first, each
+  with photo, callsign, altitude trend, type, and route or registered owner.
+  When more aircraft are overhead than fit on screen, the rail scrolls
+  slowly and loops through the closest fifteen.
+
+  ### Behind the scenes
+
+  The board's Leaflet maps simply stop force-disabling input handlers, and
+  the controls are a direct port of the Live radar's — same `/api/coverage`
+  polygon, same `/api/live/trails` seed-then-grow trail model, same
+  RainViewer preloaded-frame animation — rebound to whichever layout's map
+  is active. Board-scoped localStorage keys keep a wall screen's setup
+  independent of any operator browser. Programmatic framing (fitBounds and
+  friends) is fenced off from the idle-recenter's "user moved" tracking so
+  the snap-back only ever answers a real hand on the screen. The hybrid
+  rail snapshots its card order once per scroll loop — data inside the
+  cards refreshes every poll, but nothing reshuffles mid-view — and the
+  flight board drops from 12 rows per page to 9 to make room for the taller
+  photo rows. The spotlight card the rail replaces is retired; docs
+  screenshots re-rendered with generated placeholder photos (nothing real
+  to attribute), the radar shot captured in the awake state so the new
+  control set is visible.
+
 ## [3.4.114] — 2026-08-04
 
 ### Added

@@ -89,10 +89,10 @@ The Stats tab — long, because there's a lot to show.
 
 ## The display board
 
-Open `/board` on a TV and Aerodrome becomes a full-screen wall display for an FBO lounge, office, or hangar — no menus, big type, a live clock, and automatic recovery for long unattended runs. Three layouts, chosen per screen: a full-screen radar wall, an airport-arrivals-style flight board, and a hybrid pairing the radar with a closest-traffic list and a rotating spotlight card (photo, owner, and route of an aircraft overhead right now). A 1080p TV on a Raspberry Pi is all it needs.
+Open `/board` on a TV and Aerodrome becomes a full-screen wall display for an FBO lounge, office, or hangar — no menus, big type, a live clock, and automatic recovery for long unattended runs. Three layouts, chosen per screen: a full-screen radar wall, an airport-arrivals-style flight board with a photo of each aircraft, and a hybrid pairing the radar with a slow-scrolling photo rail of the closest aircraft (photo, route, altitude, and distance for each). The radar layouts are fully interactive — drag, pinch, and zoom with the Live map's control set (touch screens work out of the box), with the view snapping back to its home framing after a few idle minutes. A 1080p TV on a Raspberry Pi is all it needs.
 
 :::image screenshot-board-hybrid.png max_h=4.6
-The display board's hybrid layout — radar, closest traffic, and the rotating spotlight.
+The display board's hybrid layout — radar beside a photo rail of the closest aircraft.
 :::
 
 # How it works

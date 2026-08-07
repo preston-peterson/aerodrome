@@ -201,16 +201,21 @@ ROUTE_STUBS = {
                "current_leg": None},
 }
 
-def _photo_placeholder_data_uri() -> str:
-    """A tiny generated 419x280 PNG (flat panel-blue) as a data: URI — the
-    spotlight card's photo slot in the docs shot, with no external fetch and
+def _photo_placeholder_data_uri(top=(26, 34, 54), bottom=None) -> str:
+    """A tiny generated 419x280 PNG (flat or vertical-gradient) as a data:
+    URI — the photo slots in the docs shots, with no external fetch and
     no real photograph (nothing to attribute, nothing to leak)."""
     import base64
     import struct
     import zlib
     w, h = 419, 280
-    row = b'\x00' + bytes([26, 34, 54, 255]) * w
-    raw = row * h
+    bottom = bottom or top
+    rows = []
+    for y in range(h):
+        f = y / (h - 1)
+        px = bytes([round(top[i] + (bottom[i] - top[i]) * f) for i in range(3)] + [255])
+        rows.append(b'\x00' + px * w)
+    raw = b''.join(rows)
     def chunk(tag, data):
         c = struct.pack('>I', len(data)) + tag + data
         return c + struct.pack('>I', zlib.crc32(tag + data) & 0xffffffff)
@@ -220,6 +225,15 @@ def _photo_placeholder_data_uri() -> str:
     return 'data:image/png;base64,' + base64.b64encode(png).decode()
 
 PHOTO_DATA_URI = _photo_placeholder_data_uri()
+# v3.4.115: photos appear on every flight-board row and hybrid rail card, so
+# the stub serves a few sky-toned gradient variants (deterministic per ICAO)
+# instead of one flat panel — still generated placeholders, no real photos.
+PHOTO_VARIANT_URIS = [
+    _photo_placeholder_data_uri((94, 138, 183), (183, 208, 230)),   # day sky
+    _photo_placeholder_data_uri((205, 137, 84), (238, 200, 148)),   # sunset
+    _photo_placeholder_data_uri((120, 132, 148), (188, 198, 210)),  # overcast
+    _photo_placeholder_data_uri((77, 106, 150), (160, 185, 214)),   # blue hour
+]
 
 # --- Watchlist tab (grouped {latest, sightings}) ---------------------------
 WATCHLIST_GROUPS = [
@@ -1053,11 +1067,15 @@ window.fetch = async (url) => {{
     }}
     if (url.includes('/photo')) {{
         const hex = url.split('/api/aircraft/')[1].split('/')[0];
-        if (hex === 'A00001' || hex === 'AE01CE')
-            return j({{ok: true, found: true, icao: hex,
-                       thumbnail_url: {json.dumps(PHOTO_DATA_URI)},
-                       photo_link: '#', photographer: 'Docs placeholder'}});
-        return j({{ok: true, found: false, icao: hex}});
+        // AAAD47 stays photo-less (shows the graceful no-photo state on the
+        // board); ABCDEF keeps the aircraft-detail shot's committed look.
+        if (hex === 'AAAD47' || hex === 'ABCDEF')
+            return j({{ok: true, found: false, icao: hex}});
+        const uris = {json.dumps(PHOTO_VARIANT_URIS)};
+        const pick = hex.split('').reduce((s, c) => s + c.charCodeAt(0), 0) % uris.length;
+        return j({{ok: true, found: true, icao: hex,
+                   thumbnail_url: uris[pick],
+                   photo_link: '#', photographer: 'Docs placeholder'}});
     }}
     if (url.includes('/enrich')) {{
         const hex = url.split('/api/aircraft/')[1].split('/')[0];
@@ -1492,17 +1510,23 @@ async def screenshot_aircraft_details(browser):
 
 # --- v3.4.111: the display board (/board), one shot per layout. 1920x1080 —
 # the board's design target (a wall TV). The extra settle time lets the
-# enrichment fetches (routes on the rows, photo/owner on the spotlight)
-# resolve and re-render before capture.
-async def _screenshot_board(browser, mode: str, outfile: str):
+# enrichment fetches (routes on the rows, photos on the rows/rail cards)
+# resolve and re-render before capture. The radar shot is captured "awake"
+# (body.mouse forced) so the docs show the on-map control set; the others
+# stay asleep — the clean kiosk look.
+async def _screenshot_board(browser, mode: str, outfile: str, awake: bool = False):
     async def ready(p):
         await p.wait_for_timeout(3000)
+        if awake:
+            await p.evaluate("document.body.classList.add('mouse')")
+            await p.wait_for_timeout(400)
     return await _render(browser, 'board.html', OUT_DIR / outfile,
                          viewport={'width': 1920, 'height': 1080},
                          url_query=f'?mode={mode}', ready_fn=ready)
 
 async def screenshot_board_radar(browser):
-    return await _screenshot_board(browser, 'radar', 'screenshot-board-radar.png')
+    return await _screenshot_board(browser, 'radar', 'screenshot-board-radar.png',
+                                   awake=True)
 
 async def screenshot_board_flight(browser):
     return await _screenshot_board(browser, 'board', 'screenshot-board-flight.png')
