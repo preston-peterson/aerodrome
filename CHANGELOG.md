@@ -19,7 +19,10 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
-## [3.4.115] — 2026-08-07
+## [3.4.116] — 2026-08-07
+
+*(3.4.115 was an unpublished release candidate of this change; 3.4.116 is the
+released version.)*
 
 ### Added
 - **The display board is now interactive — and it got photos.** The radar
