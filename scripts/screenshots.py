@@ -135,6 +135,9 @@ LIVE_AIRCRAFT = [
     {"icao":"C2B2DD","callsign":"CFC555","speed":305,"lat":37.49,"lon":-122.33,"altitude":27000,"aircraft_type":"DH8D","type_desc":"De Havilland Dash 8-400","distance":15.2,"is_military":True,"mil_color":"#ef4444","mil_label":"MIL","seen_at":NOW},
     {"icao":"480C41","callsign":"MMF50","speed":220,"lat":37.55,"lon":-122.19,"altitude":15000,"aircraft_type":"A332","type_desc":"Airbus A330-200","distance":24.0,"is_military":True,"mil_color":"#ef4444","mil_label":"MIL","seen_at":NOW},
     {"icao":"A67890","callsign":"ASQ567","speed":421,"lat":37.28,"lon":-122.42,"altitude":31000,"aircraft_type":"E175","type_desc":"Embraer E175","distance":16.9,"is_military":False,"seen_at":NOW},
+    # v3.4.119: a high-altitude balloon (category B2 → envelope glyph on the
+    # radar/board; FL5xx + very low speed, like the HBAL/NSL fleets).
+    {"icao":"A7F2C3","callsign":"HBAL617","speed":22,"lat":37.72,"lon":-122.02,"altitude":52000,"aircraft_type":"BALL","type_desc":"Balloon","distance":21.4,"is_military":False,"seen_at":NOW,"category":"B2"},
 ]
 
 # v3.4.108: give the synthetic contacts a heading (track) + emitter category so

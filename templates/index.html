@@ -1,4 +1,4 @@
-<!-- Version: 3.4.118 -->
+<!-- Version: 3.4.119 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2327,7 +2327,8 @@
                     <div class="rl-row"><span class="rl-chev md"></span> Jet</div>
                     <div class="rl-row"><span class="rl-chev lg"></span> Heavy</div>
                     <div class="rl-row"><span class="rl-heli"><svg width="18" height="18" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="none" stroke="#94a3b8" stroke-width="2"/><g stroke="#94a3b8" stroke-width="1.6" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/><line x1="12" y1="5" x2="12" y2="19"/></g><circle cx="12" cy="12" r="2.6" fill="#94a3b8"/></svg></span> Helicopter (rotor disc)</div>
-                    <div class="rl-note">Chevron points the way the aircraft is heading; helicopters show as a rotor disc (no heading).</div>
+                    <div class="rl-row"><span class="rl-heli"><svg width="18" height="18" viewBox="0 0 24 24"><circle cx="12" cy="9" r="7" fill="#94a3b8"/><rect x="10" y="18.5" width="4" height="3.4" rx="0.8" fill="none" stroke="#94a3b8" stroke-width="1.6"/></svg></span> Balloon (envelope + basket)</div>
+                    <div class="rl-note">Chevron points the way the aircraft is heading; helicopters and balloons show heading-agnostic glyphs.</div>
                 </div>
                 <div class="rl-section">
                     <div class="rl-row"><span class="rl-swatch rl-mil"></span> Military (red ring + MIL)</div>
@@ -3499,6 +3500,26 @@ function _radarHeliSvg(color, px){
         + `<circle cx="12" cy="12" r="2.6" fill="${color}" stroke="${dk}" stroke-width="1"/></svg>`;
 }
 
+// Balloon glyph (v3.4.119) — a filled envelope with a hanging basket, drawn
+// heading-agnostic like the helicopter (a balloon has no meaningful nose).
+function _radarBalloonSvg(color, px){
+    const dk = 'rgba(0,0,0,.45)';
+    return `<svg width="${px}" height="${px}" viewBox="0 0 24 24" aria-hidden="true">`
+        + `<circle cx="12" cy="9" r="7" fill="${color}" stroke="${dk}" stroke-width="1"/>`
+        + `<rect x="10" y="18.5" width="4" height="3.4" rx="0.8" fill="none" `
+        + `stroke="${color}" stroke-width="1.6"/></svg>`;
+}
+// Balloon detection: emitter category B2 (lighter-than-air) is the
+// spec-correct signal, but many balloons broadcast no category and a junk
+// type — so also accept the BALL/SHIP type designators and the known
+// balloon-fleet callsign prefixes (HBAL/NSL, Aerostar/HAPS).
+function _radarIsBalloon(ac){
+    if((ac.category || '').toUpperCase() === 'B2') return true;
+    const t = (ac.aircraft_type || '').toUpperCase();
+    if(t === 'BALL' || t === 'SHIP') return true;
+    return /^(HBAL|NSL)\d/.test((ac.callsign || '').trim().toUpperCase());
+}
+
 function _radarTheme(){
     return radarGetMapTheme();   // the map's own preference, not the app theme
 }
@@ -3717,9 +3738,12 @@ function _radarBuildIcon(ac){
     const isWl = !isMil && !!ac.is_watchlist;
     // Helicopters (category A7) get a distinct rotor-disc glyph, drawn
     // heading-agnostic (rotorcraft hover — no meaningful ground track).
+    // Balloons (category B2 / type BALL / balloon-fleet callsign) get an
+    // envelope-and-basket glyph, same heading-agnostic treatment.
     const isHeli = (ac.category || '').toUpperCase() === 'A7';
+    const isBalloon = !isHeli && _radarIsBalloon(ac);
     const track = (ac.track != null && !isNaN(ac.track)) ? Number(ac.track) : null;
-    const rot = (isHeli || track == null) ? 0 : track;
+    const rot = (isHeli || isBalloon || track == null) ? 0 : track;
     const cls = 'radar-marker' + (isMil ? ' mil' : '') + (isWl ? ' wl' : '')
         + (radarLabelsMode() === 'all' ? ' labeled' : '')
         + (ac.icao === _radar.selectedIcao ? ' selected' : '');
@@ -3734,7 +3758,9 @@ function _radarBuildIcon(ac){
     const html =
         `<span class="rm-ring" style="width:${ringPx}px;height:${ringPx}px"></span>`
         + `<span class="rm-glyph" style="width:${size}px;height:${size}px;transform:${glyphTransform}">`
-        + (isHeli ? _radarHeliSvg(color, size) : _radarChevronSvg(color, size)) + `</span>`
+        + (isHeli ? _radarHeliSvg(color, size)
+           : isBalloon ? _radarBalloonSvg(color, size)
+           : _radarChevronSvg(color, size)) + `</span>`
         + `<span class="rm-label">${escapeHtml(label)}</span>`;
     return L.divIcon({
         // The class carries radar-marker (+ mil/selected) — REQUIRED: the

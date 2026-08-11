@@ -19,6 +19,23 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.119] — 2026-08-11
+
+### Added
+- **Balloons get their own icon.** High-altitude balloons show up on ADS-B
+  more often than you'd think — a round envelope drifting at FL500 at 20
+  knots — and until now they wore the same chevron as a jet, pointing a
+  heading a balloon doesn't have. Lighter-than-air contacts now draw as an
+  envelope-with-basket glyph on the Live radar and both display-board radar
+  layouts, heading-agnostic like the helicopter's rotor disc and
+  altitude-colored like every other contact; the radar legend gained a
+  matching row. A contact counts as a balloon when it broadcasts emitter
+  category B2 (lighter-than-air), carries the BALL or SHIP type designator,
+  or flies a known balloon-fleet callsign (HBAL/NSL) — the fallbacks matter
+  because many balloons transmit no category and a junk type, and a
+  spec-only check would leave them drawn as jets. Suggested by a user who
+  watched one drift over at FL352.
+
 ## [3.4.118] — 2026-08-07
 
 *(3.4.115 through 3.4.117 were unpublished release candidates of this change;

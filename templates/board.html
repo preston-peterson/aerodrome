@@ -587,6 +587,15 @@ function withDistance(list){
     _dist: (ok && a.lat != null && a.lon != null) ? distUnit(RX.lat, RX.lon, a.lat, a.lon)
            : (a.distance != null ? a.distance : null)}));
 }
+// Balloon detection (v3.4.119, mirrors the Live radar): category B2 is the
+// spec signal; BALL/SHIP types and HBAL/NSL fleet callsigns catch balloons
+// that broadcast no category.
+function isBalloon(a){
+  if ((a.category || '').toUpperCase() === 'B2') return true;
+  const t = (a.aircraft_type || '').toUpperCase();
+  if (t === 'BALL' || t === 'SHIP') return true;
+  return /^(HBAL|NSL)\d/.test((a.callsign || '').trim().toUpperCase());
+}
 function chevronSvg(a, sizeRem){
   const rot = (a.track == null) ? 0 : Math.round(a.track);
   const col = altColor(a.altitude);
@@ -594,6 +603,10 @@ function chevronSvg(a, sizeRem){
   const s = `width:${sizeRem}rem;height:${sizeRem}rem`;
   if (heli) {
     return `<svg viewBox="0 0 24 24" style="${s}"><circle cx="12" cy="12" r="8" fill="none" stroke="${col}" stroke-width="3"/><line x1="1" y1="12" x2="23" y2="12" stroke="${col}" stroke-width="2"/></svg>`;
+  }
+  if (isBalloon(a)) {
+    // Envelope + basket, heading-agnostic — a balloon has no meaningful nose.
+    return `<svg viewBox="0 0 24 24" style="${s}"><circle cx="12" cy="9" r="7" fill="${col}"/><rect x="10" y="18.5" width="4" height="3.4" rx="0.8" fill="none" stroke="${col}" stroke-width="1.6"/></svg>`;
   }
   const ring = a.is_military
     ? `<circle cx="12" cy="12" r="11" fill="none" stroke="${escapeHtml(a.mil_color || '#ef4444')}" stroke-width="1.6"/>` : '';
