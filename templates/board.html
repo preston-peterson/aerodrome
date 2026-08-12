@@ -217,7 +217,7 @@ body.mouse .scope-wrap .board-tools .mapbtn{opacity:1;pointer-events:auto}
   font-family:var(--mono);font-size:1.05rem;white-space:nowrap;overflow:hidden}
 .ticker .tag{color:var(--cyan);font-weight:700;font-size:.8rem;letter-spacing:.1em;flex:none}
 
-/* mode C split (v3.4.115: the rail is photo cards, slow-scrolling) */
+/* mode C split (v3.4.115: the rail is photo cards; v3.4.121: stepped advance) */
 .split{position:absolute;top:4.6rem;bottom:0;left:0;right:0;display:flex}
 .split .scope-wrap{position:relative;inset:auto;flex:1.35}
 .side{width:29.5rem;border-left:1px solid var(--bdr);background:var(--bg1);display:flex;flex-direction:column}
@@ -323,7 +323,7 @@ body.mouse #gearBtn{opacity:1;pointer-events:auto}
         <div class="pv-dot" style="left:40%;top:66%;background:#facc15"></div>
       </div>
       <div class="nm">Hybrid + photo rail</div>
-      <div class="ds">Radar plus a slow-scrolling rail of the closest aircraft — photo, route, altitude and distance for each.</div>
+      <div class="ds">Radar plus an auto-rotating rail of the closest aircraft — photo, route, altitude and distance for each.</div>
     </div>
   </div>
   <div id="pickClose">✕ keep current layout</div>
@@ -1428,26 +1428,58 @@ function renderB(){
 /* ============================ mode C — photo rail ============================
    The whole side rail is photo cards of the closest aircraft, nearest first
    (replaces the v3.4.110 mini-list + rotating spotlight). When more cards
-   exist than fit, the column scrolls slowly and loops; the card set is
-   snapshotted per loop so nothing reshuffles mid-view (data inside the cards
-   still updates every poll). */
-/* v3.4.120: the scroll is ONE compositor-driven Web Animations transform,
-   not a per-frame JS loop. The 2026-08-12 kiosk investigation measured the
-   old requestAnimationFrame version rewriting the column's inline transform
-   60×/s (and running even on non-hybrid layouts), pinning a Pi 4 renderer
-   core continuously; a WAAPI transform animation runs off the main thread
-   and costs nothing per frame. One animation = one full loop; onfinish
-   (once per few minutes) re-snapshots the card order and restarts — card
-   heights are fixed (.pc .ph is a fixed-height box), so the loop height
-   only changes when the card COUNT changes. */
-const RAIL_N = 15, RAIL_PX_S = 12;
-let railOrder = [];        // icaos in card order, held stable for one loop
-let railLoopH = 0, railScrolling = false, railAnim = null;
+   exist than fit, the column advances one card at a time and holds between
+   steps; the card set is held stable for a full rotation so nothing
+   reshuffles mid-view (data inside the cards still updates every poll). */
+/* v3.4.120 replaced the rail's per-frame JS scroll with one compositor
+   animation — that fixed the Pi kiosk's renderer core (halved), but the
+   follow-up hardware measurement showed the GPU process still pinned:
+   CONTINUOUS motion means the compositor produces ~60 frames/s regardless
+   of who drives it, and recompositing a tall image column every frame is
+   real work on a VideoCore. v3.4.121: the rail now STEPS — it advances one
+   card every RAIL_STEP_MS with a short eased transition, then holds
+   completely still, so the compositor idles between steps (~5% motion duty
+   cycle). Stepping also ends the doubled-list trick: the column renders one
+   card set and rotates it after each step (cards are uniform height), which
+   halves the images in the DOM. Membership re-snapshots to the current
+   closest after each full rotation. */
+const RAIL_N = 15;
+const RAIL_STEP_MS = 8000, RAIL_STEP_ANIM_MS = 450;
+let railOrder = [];        // icaos in card order, rotated one card per step
+let railScrolling = false, railAnim = null, railSteps = 0;
 
 function _railStop(col){
   if (railAnim) { railAnim.cancel(); railAnim = null; }
   if (col) col.style.transform = '';
 }
+// One discrete advance: slide the column up by exactly the first card's
+// slot, then (at rest) rotate that card to the end and rebuild at offset 0
+// — same view, no motion between steps. fill:'forwards' holds the slid
+// position until the rebuilt content is in place; both happen in one task,
+// so the compositor only ever shows the final state.
+function _railStep(){
+  if (MODE !== 'hybrid' || !railScrolling || railAnim) return;
+  const col = $('cCol');
+  if (!col || col.children.length < 2) return;
+  const stepH = col.children[1].offsetTop - col.children[0].offsetTop;
+  if (stepH <= 0) return;
+  railAnim = col.animate(
+    [{transform: 'translateY(0)'}, {transform: `translateY(-${stepH}px)`}],
+    {duration: RAIL_STEP_ANIM_MS, easing: 'ease-in-out', fill: 'forwards'});
+  railAnim.onfinish = () => {
+    const a = railAnim;
+    railAnim = null;
+    railOrder.push(railOrder.shift());
+    railSteps++;
+    if (railSteps >= railOrder.length) {
+      railSteps = 0;
+      railOrder = [];          // full rotation → fresh closest-N snapshot
+    }
+    renderRail();
+    a.cancel();                // drop the forwards fill AFTER the rebuild
+  };
+}
+setInterval(_railStep, RAIL_STEP_MS);
 
 function _railCard(a){
   const ph = photoFor(a.icao);
@@ -1476,58 +1508,31 @@ function _railCard(a){
 function renderRail(){
   const wrap = $('cCards'), col = $('cCol');
   if (!wrap || !col) return;
+  // Never rebuild mid-step: the step's onfinish calls renderRail itself, so
+  // a poll landing inside the 450 ms slide just waits for that.
+  if (railAnim) return;
   const list = withDistance(LIVE).filter(a => a._dist != null)
     .sort((x, y) => x._dist - y._dist);
   if (!list.length) {
     col.innerHTML = '<div class="rail-empty">listening — no aircraft in range</div>';
     _railStop(col);
-    railOrder = []; railScrolling = false; railLoopH = 0;
+    railOrder = []; railScrolling = false; railSteps = 0;
     $('cRailNote').textContent = '';
     return;
   }
   const byIcao = new Map(list.map(a => [a.icao, a]));
-  // Loop membership stays fixed while scrolling (no mid-view reshuffle);
-  // a fresh snapshot is taken at each loop wrap or when not scrolling.
+  // Membership holds steady for one full rotation (no mid-view reshuffle);
+  // departed aircraft drop out, and a fresh closest-N snapshot is taken
+  // after each full rotation or whenever the rail isn't stepping.
   railOrder = railOrder.filter(ic => byIcao.has(ic));
   if (!railScrolling || !railOrder.length) {
     railOrder = list.slice(0, RAIL_N).map(a => a.icao);
+    railSteps = 0;
   }
-  const cards = railOrder.map(ic => _railCard(byIcao.get(ic))).join('');
-  // Render doubled, measure one set via the duplicate's offsetTop, then keep
-  // the duplicate only if the column actually overflows (seamless loop).
-  // The innerHTML rebuild does not disturb a running animation — the
-  // animation lives on the column element, not its children.
-  col.innerHTML = cards + cards;
-  const half = railOrder.length;
-  const loopH = col.children.length > half ? col.children[half].offsetTop : 0;
-  railScrolling = loopH > wrap.clientHeight + 4;
-  if (!railScrolling) {
-    col.innerHTML = cards;
-    _railStop(col);
-  } else if (!railAnim || Math.abs(loopH - railLoopH) > 2) {
-    // (Re)start only when the loop height actually changed (= the card count
-    // changed); an ordinary data refresh leaves the animation untouched.
-    // Carry the current progress fraction over so a restart doesn't jump.
-    const carry = (railAnim && railAnim.currentTime != null)
-      ? (railAnim.currentTime % railAnim._dur) / railAnim._dur : 0;
-    if (railAnim) railAnim.cancel();
-    const dur = loopH / RAIL_PX_S * 1000;
-    railAnim = col.animate(
-      [{transform: 'translateY(0)'}, {transform: `translateY(-${loopH}px)`}],
-      {duration: dur, iterations: 1, easing: 'linear'});
-    railAnim._dur = dur;
-    railAnim.currentTime = carry * dur;
-    railAnim.onfinish = () => {
-      // End of one full loop: -loopH lines up with 0 on the doubled list,
-      // so re-snapshotting + restarting here is visually seamless.
-      railAnim = null;
-      railOrder = [];
-      renderRail();
-    };
-  }
-  railLoopH = loopH;
+  col.innerHTML = railOrder.map(ic => _railCard(byIcao.get(ic))).join('');
+  railScrolling = col.offsetHeight > wrap.clientHeight + 4;
   $('cRailNote').textContent =
-    `${list.length} in range${railScrolling ? ' · scrolling' : ''}`;
+    `${list.length} in range${railScrolling ? ' · rotating' : ''}`;
 }
 
 function renderC(){

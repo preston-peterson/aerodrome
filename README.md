@@ -1,5 +1,5 @@
 # Aerodrome
-<!-- Version: 3.4.120 -->
+<!-- Version: 3.4.121 -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -85,7 +85,7 @@ menus, big type readable from across the room, a live clock, and automatic
 recovery if the receiver or browser hiccups. Three layouts, chosen per
 screen: a full-screen **radar wall**, an airport-arrivals-style **flight
 board** with a photo of each aircraft (below), and a **hybrid** pairing the
-radar with a slow-scrolling photo rail of the closest aircraft (above). The
+radar with an auto-rotating photo rail of the closest aircraft (above). The
 radar layouts are fully interactive — drag, pinch, and zoom (touch screens
 work out of the box) with the Live map's control set, tap any plane for a
 slide-out card with its photo, operator, route, and live telemetry, and the

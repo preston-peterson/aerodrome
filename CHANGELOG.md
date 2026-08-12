@@ -19,25 +19,34 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
-## [3.4.120] — 2026-08-12
+## [3.4.121] — 2026-08-12
+
+*(3.4.120 was an unpublished release candidate of this change; 3.4.121 is the
+released version.)*
 
 ### Fixed
-- **The display board no longer burns CPU to scroll the photo rail.** A
-  profiling pass on real kiosk hardware (a Raspberry Pi 4 driving a wall TV
-  24/7) found the hybrid layout pinning two CPU cores around the clock and
-  running the chip at 63–67 °C. The cause: the photo rail's slow scroll was
-  a JavaScript animation loop rewriting the column's position sixty times a
-  second — invisible on a desktop, saturating on a Pi. The scroll is now a
-  single browser-native animation the compositor runs off the main thread:
-  the page does no per-frame work at all, and the loop that used to run on
-  every layout (even the ones without a rail) is gone entirely. Measured
-  after the change: zero animation-frame callbacks and zero per-frame style
-  writes, with the rail scrolling exactly as before — the card order still
-  holds steady for a full loop and refreshes at the seamless wrap point.
-  Nothing else changed: the radar, polling cadence, and photos were all
+- **The display board no longer burns CPU (or GPU) to move the photo rail.**
+  A profiling pass on real kiosk hardware (a Raspberry Pi 4 driving a wall
+  TV 24/7) found the hybrid layout pinning two CPU cores around the clock
+  and running the chip at 63–67 °C. Two causes, fixed in two rounds. First,
+  the rail's slow scroll was a JavaScript animation loop rewriting the
+  column's position sixty times a second — invisible on a desktop,
+  saturating on a Pi; replacing it with a browser-native animation halved
+  the main-thread cost on the same hardware. But re-measuring showed the
+  GPU compositor still working continuously — anything in constant motion
+  costs a new frame sixty times a second no matter how the motion is
+  produced, and recompositing a tall column of photos every frame is real
+  work on a Pi's graphics core. So the rail no longer glides at all: it
+  **advances one card at a time** — a half-second slide every eight
+  seconds, then completely still — which also reads better from across a
+  room (the eye isn't tracking a crawling target). Between steps the page
+  is fully idle: zero animation-frame callbacks, zero per-frame style
+  writes, no motion for the compositor to composite. The rebuild also
+  halves the number of photos the rail keeps in memory. Card order still
+  holds steady for a full rotation before refreshing to the current
+  closest, and everything else — radar, polling cadence, photos — was
   measured healthy and left alone. If you run the board on a Pi, this
-  release is the difference between a hot, throttling-adjacent kiosk and a
-  mostly idle one.
+  release is the difference between a hot kiosk and a mostly idle one.
 
 ## [3.4.119] — 2026-08-11
 
