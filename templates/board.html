@@ -1277,14 +1277,29 @@ function renderScope(el, opts){
     const selRing = (a.icao === SEL)
       ? `<svg viewBox="0 0 24 24" style="position:absolute;width:${size * 1.9}rem;height:${size * 1.9}rem;top:50%;left:50%;transform:translate(-50%,-50%)"><circle cx="12" cy="12" r="10" fill="none" stroke="#06b6d4" stroke-width="1.4" stroke-dasharray="3 2"/></svg>` : '';
     const html = `<div class="ac">${selRing}${chevronSvg(a, size)}${labHtml}</div>`;
-    const icon = L.divIcon({className: '', html, iconSize: [0, 0]});
-    if (st.markers[a.icao]) {
-      st.markers[a.icao].setLatLng([a.lat, a.lon]).setIcon(icon);
+    const m = st.markers[a.icao];
+    if (m) {
+      // Diff before writing (v3.4.122): setIcon replaces the marker's DOM
+      // and setLatLng rewrites its transform — doing both for every marker
+      // on every render pass was the board's top remaining DOM mutator once
+      // the rail went quiet (~55 class + ~19 style mutations/s measured on
+      // the kiosk: each 5s poll re-iconed ALL markers, and every enrichment
+      // arrival re-rendered again). Most aircraft don't change between
+      // passes — only touch the ones that did.
+      const ll = m.getLatLng();
+      if (ll.lat !== a.lat || ll.lng !== a.lon) m.setLatLng([a.lat, a.lon]);
+      if (m._acHtml !== html) {
+        m.setIcon(L.divIcon({className: '', html, iconSize: [0, 0]}));
+        m._acHtml = html;
+      }
     } else {
-      st.markers[a.icao] = L.marker([a.lat, a.lon],
-        {icon, interactive: true, keyboard: false})
+      const nm = L.marker([a.lat, a.lon],
+        {icon: L.divIcon({className: '', html, iconSize: [0, 0]}),
+         interactive: true, keyboard: false})
         .on('click', () => openDetail(a.icao))
         .addTo(st.map);
+      nm._acHtml = html;
+      st.markers[a.icao] = nm;
     }
     // Grow the selected aircraft's trail forward as fixes arrive.
     if (a.icao === SEL && st.selLast &&

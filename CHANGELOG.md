@@ -19,6 +19,24 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.122] — 2026-08-12
+
+### Changed
+- **Display board markers only redraw when an aircraft actually changed.**
+  The follow-up to the last release's kiosk profiling: with the photo rail
+  quiet, the largest remaining cost on a Raspberry Pi wall display was the
+  radar markers — every data refresh rebuilt every marker's icon and
+  position, and every photo/route/owner lookup that resolved triggered
+  another full pass, whether or not anything on screen was different. The
+  board now diffs first: a marker's icon is rebuilt only when its rendered
+  content actually changed (position, altitude color, heading, label,
+  badge, selection halo), and its position is rewritten only when the
+  aircraft moved. Measured on identical back-to-back refreshes: marker DOM
+  writes went from roughly seventy-five per second to zero, and a change to
+  a single aircraft touches exactly that one marker. Visually nothing is
+  different — this is headroom for busy days, when the marker cost scales
+  with every extra aircraft overhead.
+
 ## [3.4.121] — 2026-08-12
 
 *(3.4.120 was an unpublished release candidate of this change; 3.4.121 is the
