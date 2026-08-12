@@ -503,6 +503,7 @@ function _wake(){
 $('gearBtn').addEventListener('click', showPicker);
 function startMode(m){
   closeDetail();   // a details panel (and its trail) never survives a switch
+  if (m !== 'hybrid') _railStop($('cCol'));   // no animation on hidden rails
   MODE = m;
   const el = {radar: 'modeA', board: 'modeB', hybrid: 'modeC'}[m];
   document.querySelectorAll('.mode').forEach(x => x.classList.remove('on'));
@@ -1430,9 +1431,23 @@ function renderB(){
    exist than fit, the column scrolls slowly and loops; the card set is
    snapshotted per loop so nothing reshuffles mid-view (data inside the cards
    still updates every poll). */
+/* v3.4.120: the scroll is ONE compositor-driven Web Animations transform,
+   not a per-frame JS loop. The 2026-08-12 kiosk investigation measured the
+   old requestAnimationFrame version rewriting the column's inline transform
+   60×/s (and running even on non-hybrid layouts), pinning a Pi 4 renderer
+   core continuously; a WAAPI transform animation runs off the main thread
+   and costs nothing per frame. One animation = one full loop; onfinish
+   (once per few minutes) re-snapshots the card order and restarts — card
+   heights are fixed (.pc .ph is a fixed-height box), so the loop height
+   only changes when the card COUNT changes. */
 const RAIL_N = 15, RAIL_PX_S = 12;
 let railOrder = [];        // icaos in card order, held stable for one loop
-let railY = 0, railLoopH = 0, railScrolling = false, _railTs = null;
+let railLoopH = 0, railScrolling = false, railAnim = null;
+
+function _railStop(col){
+  if (railAnim) { railAnim.cancel(); railAnim = null; }
+  if (col) col.style.transform = '';
+}
 
 function _railCard(a){
   const ph = photoFor(a.icao);
@@ -1465,8 +1480,8 @@ function renderRail(){
     .sort((x, y) => x._dist - y._dist);
   if (!list.length) {
     col.innerHTML = '<div class="rail-empty">listening — no aircraft in range</div>';
-    col.style.transform = 'translateY(0)';
-    railOrder = []; railY = 0; railScrolling = false;
+    _railStop(col);
+    railOrder = []; railScrolling = false; railLoopH = 0;
     $('cRailNote').textContent = '';
     return;
   }
@@ -1480,36 +1495,40 @@ function renderRail(){
   const cards = railOrder.map(ic => _railCard(byIcao.get(ic))).join('');
   // Render doubled, measure one set via the duplicate's offsetTop, then keep
   // the duplicate only if the column actually overflows (seamless loop).
+  // The innerHTML rebuild does not disturb a running animation — the
+  // animation lives on the column element, not its children.
   col.innerHTML = cards + cards;
   const half = railOrder.length;
-  railLoopH = col.children.length > half ? col.children[half].offsetTop : 0;
-  railScrolling = railLoopH > wrap.clientHeight + 4;
+  const loopH = col.children.length > half ? col.children[half].offsetTop : 0;
+  railScrolling = loopH > wrap.clientHeight + 4;
   if (!railScrolling) {
     col.innerHTML = cards;
-    railY = 0;
+    _railStop(col);
+  } else if (!railAnim || Math.abs(loopH - railLoopH) > 2) {
+    // (Re)start only when the loop height actually changed (= the card count
+    // changed); an ordinary data refresh leaves the animation untouched.
+    // Carry the current progress fraction over so a restart doesn't jump.
+    const carry = (railAnim && railAnim.currentTime != null)
+      ? (railAnim.currentTime % railAnim._dur) / railAnim._dur : 0;
+    if (railAnim) railAnim.cancel();
+    const dur = loopH / RAIL_PX_S * 1000;
+    railAnim = col.animate(
+      [{transform: 'translateY(0)'}, {transform: `translateY(-${loopH}px)`}],
+      {duration: dur, iterations: 1, easing: 'linear'});
+    railAnim._dur = dur;
+    railAnim.currentTime = carry * dur;
+    railAnim.onfinish = () => {
+      // End of one full loop: -loopH lines up with 0 on the doubled list,
+      // so re-snapshotting + restarting here is visually seamless.
+      railAnim = null;
+      railOrder = [];
+      renderRail();
+    };
   }
-  col.style.transform = `translateY(${-railY}px)`;
+  railLoopH = loopH;
   $('cRailNote').textContent =
     `${list.length} in range${railScrolling ? ' · scrolling' : ''}`;
 }
-function _railTick(ts){
-  if (MODE === 'hybrid' && railScrolling && railLoopH > 0) {
-    if (_railTs != null) {
-      railY += (ts - _railTs) / 1000 * RAIL_PX_S;
-      if (railY >= railLoopH) {
-        railY -= railLoopH;
-        railOrder = [];        // loop wrapped → next renderRail takes a fresh snapshot
-        renderRail();
-      } else {
-        const col = $('cCol');
-        if (col) col.style.transform = `translateY(${-railY}px)`;
-      }
-    }
-  }
-  _railTs = ts;
-  requestAnimationFrame(_railTick);
-}
-requestAnimationFrame(_railTick);
 
 function renderC(){
   $('cCount').textContent = LIVE.length;
