@@ -138,6 +138,9 @@ LIVE_AIRCRAFT = [
     # v3.4.119: a high-altitude balloon (category B2 → envelope glyph on the
     # radar/board; FL5xx + very low speed, like the HBAL/NSL fleets).
     {"icao":"A7F2C3","callsign":"HBAL617","speed":22,"lat":37.72,"lon":-122.02,"altitude":52000,"aircraft_type":"BALL","type_desc":"Balloon","distance":21.4,"is_military":False,"seen_at":NOW,"category":"B2"},
+    # v3.4.123: a low-level helicopter (category A7 → the rotor-disc glyph the
+    # Live radar and board scopes now share) so the glyph appears in the docs.
+    {"icao":"A9C2E1","callsign":"N911MD","speed":110,"lat":37.47,"lon":-122.12,"altitude":1200,"aircraft_type":"EC35","type_desc":"Airbus EC135","distance":9.7,"is_military":False,"seen_at":NOW,"category":"A7"},
 ]
 
 # v3.4.108: give the synthetic contacts a heading (track) + emitter category so

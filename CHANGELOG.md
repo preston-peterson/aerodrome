@@ -19,6 +19,43 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.123] — 2026-08-14
+
+### Fixed
+- **Display board aircraft symbols now match the Live radar.** The board's
+  scopes drew their own, simpler marker set: the helicopter was a plain
+  circle with a single line through it instead of the Live map's rotor disc
+  (crossed blades and a center hub), the plane chevrons were narrower and
+  missing the dark outline that keeps them readable over bright map tiles,
+  and the balloon envelope lacked its outline too. All three glyphs on the
+  Radar Wall and Hybrid scopes are now drawn from the same artwork as the
+  Live map, so an aircraft looks identical on every screen. The board also
+  picks up the Live radar's ring treatment: military aircraft carry a red
+  ring drawn just outside the symbol (previously it was squeezed inside the
+  symbol's box), and watchlist aircraft now get the same amber ring they
+  have on the Live map.
+- **The wall display hides the mouse cursor again when idle.** Since the
+  boards became fully interactive maps, the map layer set its own pointer
+  cursor — which overrode the board's idle cursor-hiding, leaving an arrow
+  (or grab hand) parked on the kiosk screen indefinitely. The cursor now
+  disappears everywhere on the board a few seconds after the mouse stops
+  moving, and returns the moment it moves again.
+
+### Behind the scenes
+
+The board's `chevronSvg()` is now a literal mirror of the Live radar's
+`_radarChevronSvg` / `_radarHeliSvg` / `_radarBalloonSvg` drawings — same
+paths, same `rgba(0,0,0,.45)` under-strokes. Rings mirror `rm-ring`
+semantics (military takes precedence over watchlist, never both): the SVG
+viewBox grows from `0 0 24 24` to `-5 -5 34 34` for ringed aircraft so the
+ring sits outside while the glyph itself stays the same on-screen size.
+The cursor fix is one CSS rule — `body:not(.mouse) *{cursor:none!important}`
+— because `body{cursor:none}` only inherits into elements that don't set
+their own cursor, and Leaflet's stylesheet sets `grab`/`pointer` on the
+container the pointer is always resting on. The screenshot fixture gains a
+low-level helicopter (`N911MD`, category A7) so the shared rotor-disc glyph
+actually appears in the documentation shots.
+
 ## [3.4.122] — 2026-08-12
 
 ### Changed

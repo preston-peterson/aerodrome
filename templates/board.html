@@ -44,6 +44,12 @@ html,body{height:100%;overflow:hidden}
 @supports (height: 100dvh){html,body{height:100dvh}}
 body{background:var(--bg0);color:var(--t1);font-family:var(--font);cursor:none}
 body.picking{cursor:default}
+/* Kiosk cursor-hide: body{cursor:none} stopped sufficing when the scopes
+   became real Leaflet maps (v3.4.115) — leaflet.css sets its own grab/pointer
+   cursor on the container the pointer rests on, which beats the inherited
+   none. While asleep (no body.mouse) force every element's cursor off; any
+   movement re-adds .mouse and the normal cursors return. */
+body:not(.mouse) *{cursor:none!important}
 
 /* ---------- shared chrome ---------- */
 .hdr{height:4.6rem;display:flex;align-items:center;justify-content:space-between;
@@ -597,21 +603,41 @@ function isBalloon(a){
   if (t === 'BALL' || t === 'SHIP') return true;
   return /^(HBAL|NSL)\d/.test((a.callsign || '').trim().toUpperCase());
 }
+// Aircraft glyphs — exact mirrors of the Live radar's drawings (index.html's
+// _radarChevronSvg / _radarHeliSvg / _radarBalloonSvg: same paths, same dark
+// outlines). The board used to draw its own simpler set and the two scopes
+// visibly disagreed. Rings mirror the Live rm-ring too: military red /
+// watchlist amber, drawn just OUTSIDE the glyph (the viewBox grows so the
+// glyph itself stays the same size; military takes precedence, never both).
 function chevronSvg(a, sizeRem){
   const rot = (a.track == null) ? 0 : Math.round(a.track);
   const col = altColor(a.altitude);
+  const dk = 'rgba(0,0,0,.45)';
   const heli = (a.category || '').toUpperCase() === 'A7';
-  const s = `width:${sizeRem}rem;height:${sizeRem}rem`;
+  const ringCol = a.is_military ? (a.mil_color || '#ef4444')
+                : a.is_watchlist ? '#f59e0b' : null;
+  const vb = ringCol ? '-5 -5 34 34' : '0 0 24 24';
+  const px = ringCol ? sizeRem * 34 / 24 : sizeRem;
+  const s = `width:${px}rem;height:${px}rem`;
+  const ring = ringCol
+    ? `<circle cx="12" cy="12" r="15" fill="none" stroke="${escapeHtml(ringCol)}" stroke-width="2"/>` : '';
   if (heli) {
-    return `<svg viewBox="0 0 24 24" style="${s}"><circle cx="12" cy="12" r="8" fill="none" stroke="${col}" stroke-width="3"/><line x1="1" y1="12" x2="23" y2="12" stroke="${col}" stroke-width="2"/></svg>`;
+    // Rotor disc: dark under-stroke, crossed blades, hub — heading-agnostic.
+    return `<svg viewBox="${vb}" style="${s}">${ring}`
+      + `<circle cx="12" cy="12" r="10" fill="none" stroke="${dk}" stroke-width="3"/>`
+      + `<circle cx="12" cy="12" r="10" fill="none" stroke="${col}" stroke-width="1.8"/>`
+      + `<g stroke="${col}" stroke-width="1.6" stroke-linecap="round" opacity=".85">`
+      + `<line x1="5" y1="12" x2="19" y2="12"/><line x1="12" y1="5" x2="12" y2="19"/></g>`
+      + `<circle cx="12" cy="12" r="2.6" fill="${col}" stroke="${dk}" stroke-width="1"/></svg>`;
   }
   if (isBalloon(a)) {
     // Envelope + basket, heading-agnostic — a balloon has no meaningful nose.
-    return `<svg viewBox="0 0 24 24" style="${s}"><circle cx="12" cy="9" r="7" fill="${col}"/><rect x="10" y="18.5" width="4" height="3.4" rx="0.8" fill="none" stroke="${col}" stroke-width="1.6"/></svg>`;
+    return `<svg viewBox="${vb}" style="${s}">${ring}`
+      + `<circle cx="12" cy="9" r="7" fill="${col}" stroke="${dk}" stroke-width="1"/>`
+      + `<rect x="10" y="18.5" width="4" height="3.4" rx="0.8" fill="none" stroke="${col}" stroke-width="1.6"/></svg>`;
   }
-  const ring = a.is_military
-    ? `<circle cx="12" cy="12" r="11" fill="none" stroke="${escapeHtml(a.mil_color || '#ef4444')}" stroke-width="1.6"/>` : '';
-  return `<svg viewBox="0 0 24 24" style="${s};transform:rotate(${rot}deg)">${ring}<path d="M12 2 L19 20 L12 15 L5 20 Z" fill="${col}"/></svg>`;
+  return `<svg viewBox="${vb}" style="${s};transform:rotate(${rot}deg)">${ring}`
+    + `<path d="M12 2 L21 22 L12 17 L3 22 Z" fill="${col}" stroke="${dk}" stroke-width="1" stroke-linejoin="round"/></svg>`;
 }
 
 /* ============================ radar map (A + C) ============================
