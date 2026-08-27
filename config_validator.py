@@ -10,7 +10,7 @@ Usage:
         # each error: {"path": "receiver.port", "message": "Must be 1-65535"}
         return error_response(errors)
 """
-# Version: 3.4.123
+# Version: 3.4.127
 
 import re
 import socket
@@ -963,6 +963,22 @@ def validate_config(cfg: Any) -> Errors:
             dt = mp.get("default_theme")
             if dt is not None and dt not in ("auto", "light", "dark"):
                 errs.append(("map.default_theme", "Must be auto, light, or dark"))
+            ck = mp.get("carto_api_key")
+            if ck is not None:
+                if not isinstance(ck, str):
+                    errs.append(("map.carto_api_key", "Must be a string"))
+                else:
+                    k = ck.strip()
+                    if k:
+                        if any(ch.isspace() for ch in k):
+                            errs.append(("map.carto_api_key",
+                                         "Must not contain spaces"))
+                        elif any(ch in k for ch in "?#&/\\"):
+                            errs.append(("map.carto_api_key",
+                                         "Doesn't look like a CARTO key"))
+                        elif len(k) > 256:
+                            errs.append(("map.carto_api_key",
+                                         "Must be 256 characters or fewer"))
             # (map.labels removed v3.4.78 — labels are now an on-map 3-state
             # control, not a config setting. A leftover key in an old config is
             # harmless: the validator ignores unknown keys and the radar reads

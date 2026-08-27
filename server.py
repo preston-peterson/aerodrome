@@ -1,4 +1,4 @@
-# Version: 3.4.123
+# Version: 3.4.127
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -3817,6 +3817,14 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 "starting_view": mp.get("starting_view", "fit_all"),
                 "fixed_zoom": int(mp.get("fixed_zoom", 9) or 9),
                 "default_theme": mp.get("default_theme", "auto"),
+                # CARTO dark-basemap key. Leaflet fetches tiles in the
+                # browser, so the key has to travel with this payload
+                # (same LAN-trust model as the rest of /api/config).
+                "carto_api_key": (
+                    mp.get("carto_api_key").strip()
+                    if isinstance(mp.get("carto_api_key"), str)
+                    else ""
+                ),
             },
         }
 

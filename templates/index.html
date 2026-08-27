@@ -1,4 +1,4 @@
-<!-- Version: 3.4.123 -->
+<!-- Version: 3.4.127 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2267,6 +2267,10 @@
              role="separator" aria-label="Resize aircraft list"></div>
         <div class="live-map-pane" id="liveMapPane">
             <div id="radarMap"></div>
+            <div class="carto-key-banner" id="cartoKeyBanner" hidden>
+                <p>Dark map tiles need a free CARTO key. About a minute — we’ll walk you through it.</p>
+                <a class="btn btn-primary" href="/config#map">Open Map settings</a>
+            </div>
             <div class="radar-no-receiver" id="radarNoReceiver" style="display:none">
                 <div><strong>Radar needs receiver coordinates.</strong></div>
                 <div style="margin-top:6px">Set <code>receiver.latitude</code> and <code>receiver.longitude</code> on the
@@ -2649,7 +2653,8 @@ let statsCfg = { enabled: true, refresh_interval: 300, timezone: '', cards: {} }
 // first ui-config load. ring_distances is a resolved list of numbers (the
 // server handles the follow-range-rose option).
 let mapCfg = { show_range_rings: true, ring_distances: [50,100,150,200,250],
-               starting_view: 'fit_all', fixed_zoom: 9, default_theme: 'auto' };
+               starting_view: 'fit_all', fixed_zoom: 9, default_theme: 'auto',
+               carto_api_key: '' };
 // v3.4.114: route-display toggle (Configuration → Display). Default true so
 // the overlay behaves normally before the first ui-config load; when off,
 // the radar overlay skips the route lookup entirely.
@@ -3396,7 +3401,7 @@ async function fetchLive(){
 // rotated by ground track, colored by altitude, sized by aircraft class;
 // military aircraft get a red ring + MIL pill. Receiver marker + range
 // rings anchor the view. Follows the global app theme (data-theme) by
-// swapping OSM-light / Carto-dark tiles.
+// swapping OSM-light / Carto-dark tiles (dark tiles need map.carto_api_key).
 //
 // Rendering note: at this fleet scale (~77 here, 100+ on the Pi target)
 // DOM divIcon markers stay smooth and let us draw the full design —
@@ -3547,6 +3552,36 @@ function _radarToggleMapTheme(){
     _radarApplyTheme();
 }
 
+function _cartoDarkLayer(key){
+    const k = String(key || '').trim();
+    const url = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
+        + (k ? ('?key=' + encodeURIComponent(k)) : '');
+    return L.tileLayer(url, {
+        maxZoom: 19, subdomains: 'abcd',
+        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>',
+    });
+}
+function _radarRebuildDarkTiles(){
+    const k = String((mapCfg && mapCfg.carto_api_key) || '').trim();
+    if(_radar.cartoKey === k && _radar.darkTiles){
+        _radarSyncCartoBanner();
+        return;
+    }
+    if(_radar.map && _radar.darkTiles){
+        _radar.map.removeLayer(_radar.darkTiles);
+        if(_radar.activeTiles === _radar.darkTiles) _radar.activeTiles = null;
+    }
+    _radar.cartoKey = k;
+    _radar.darkTiles = _cartoDarkLayer(k);
+    if(_radar.map) _radarApplyTheme();
+    _radarSyncCartoBanner();
+}
+function _radarSyncCartoBanner(){
+    const el = document.getElementById('cartoKeyBanner');
+    if(!el) return;
+    el.hidden = !!String((mapCfg && mapCfg.carto_api_key) || '').trim();
+}
+
 function initRadarMap(receiver){
     if(_radar.map || typeof L === 'undefined') return;  // not ready / already done
     const el = document.getElementById('radarMap');
@@ -3568,10 +3603,9 @@ function initRadarMap(receiver){
         maxZoom: 18,
         attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
     });
-    _radar.darkTiles = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-        maxZoom: 19, subdomains: 'abcd',
-        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>',
-    });
+    _radar.darkTiles = null;
+    _radar.cartoKey = null;
+    _radarRebuildDarkTiles();
     _radarApplyTheme();
 
     // The map carries its OWN light/dark toggle (matching the aircraft-detail
@@ -7421,16 +7455,22 @@ async function loadUiConfig(){
                 starting_view: j.map.starting_view || 'fit_all',
                 fixed_zoom: parseInt(j.map.fixed_zoom, 10) || 9,
                 default_theme: j.map.default_theme || 'auto',
+                carto_api_key: String(j.map.carto_api_key || '').trim(),
             };
             // Re-skin existing markers + redraw rings so a live config change
             // (no restart) takes effect on the next refresh without a reload.
             if(_radar.map){
                 if(_radar.receiver) _radarDrawReceiver(_radar.receiver);
                 _radarReskin();
-                _radarApplyTheme();
             }
+            _radarRebuildDarkTiles();
+        } else {
+            _radarSyncCartoBanner();
         }
-    }catch(e){ console.error('ui-config fetch failed', e); }
+    }catch(e){
+        console.error('ui-config fetch failed', e);
+        _radarSyncCartoBanner();
+    }
 }
 
 async function refresh(){

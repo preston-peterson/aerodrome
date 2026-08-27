@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
-<!-- Version: 3.4.109 -->
+<!-- Version: 3.4.127 -->
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Display board — Aerodrome</title>
@@ -80,6 +80,13 @@ body:not(.mouse) *{cursor:none!important}
 .lost-banner{position:absolute;top:5.4rem;left:50%;transform:translateX(-50%);z-index:1100;
   background:rgba(245,158,11,.14);border:1px solid var(--amber);color:var(--amber);
   font-family:var(--mono);font-size:.9rem;padding:.4rem 1rem;border-radius:.5rem;display:none}
+.carto-key-banner{position:absolute;left:1.2rem;right:1.2rem;top:5.4rem;z-index:1100;
+  display:flex;gap:.9rem;align-items:center;background:rgba(17,24,39,.92);
+  border:1px solid rgba(245,158,11,.45);border-radius:.6rem;padding:.7rem .9rem}
+.carto-key-banner[hidden]{display:none!important}
+.carto-key-banner p{flex:1;font-size:.95rem;line-height:1.35;margin:0;color:var(--t1)}
+.carto-key-banner a{flex:none;text-decoration:none;font-family:var(--font);font-size:.85rem;font-weight:600;
+  padding:.4rem .8rem;border-radius:.4rem;background:var(--cyan);color:#082f49;white-space:nowrap}
 
 /* ---------- radar map (modes A + C) — a real Leaflet basemap, matching
    the Live tab's radar (v3.4.112). The gradient shows only as a fallback
@@ -357,6 +364,10 @@ body.mouse #gearBtn{opacity:1;pointer-events:auto}
     <div class="clock"><div class="tm" data-tm>—</div><div class="dt" data-dt>—</div></div>
   </div>
   <div class="scope-wrap" id="scopeA"></div>
+  <div class="carto-key-banner" data-carto-banner hidden>
+    <p>Dark map tiles need a free CARTO key. About a minute — we’ll walk you through it.</p>
+    <a href="/config#map">Open Map settings</a>
+  </div>
 </div>
 
 <!-- ============ MODE B — FLIGHT BOARD ============ -->
@@ -399,6 +410,10 @@ body.mouse #gearBtn{opacity:1;pointer-events:auto}
       <div class="cards" id="cCards"><div class="cardcol" id="cCol"></div></div>
     </div>
   </div>
+  <div class="carto-key-banner" data-carto-banner hidden>
+    <p>Dark map tiles need a free CARTO key. About a minute — we’ll walk you through it.</p>
+    <a href="/config#map">Open Map settings</a>
+  </div>
 </div>
 
 <script>
@@ -418,7 +433,7 @@ let WB_DEFAULT = 'ask';   // display.wallboard_layout from /api/ui-config
 // v3.4.112: the Map section's settings (Configuration → Map), same source the
 // Live radar reads — tiles theme, rings on/off, and the starting view.
 let MAPCFG = {show_range_rings: true, default_theme: 'auto',
-              starting_view: 'fit_all', fixed_zoom: 9};
+              starting_view: 'fit_all', fixed_zoom: 9, carto_api_key: ''};
 let SHOW_ROUTES = true;   // display.show_routes — off = no route lookups at all
 
 const $ = (id) => document.getElementById(id);
@@ -642,7 +657,7 @@ function chevronSvg(a, sizeRem){
 
 /* ============================ radar map (A + C) ============================
    A real Leaflet basemap, mirroring the Live tab's radar (v3.4.112): the
-   same OSM-light / CARTO-dark tiles, the same cyan dashed range rings with
+   same OSM-light / CARTO-dark tiles (dark tiles use map.carto_api_key), the same cyan dashed range rings with
    south-edge distance labels, the same receiver dot. Honors Configuration →
    Map (default_theme, show_range_rings, ring_distances, starting_view /
    fixed_zoom via /api/ui-config).
@@ -678,9 +693,14 @@ function _mapFor(el, opts){
               lightTiles: L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
                 maxZoom: 18,
                 attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'}),
-              darkTiles: L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-                maxZoom: 19, subdomains: 'abcd',
-                attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>'}),
+              darkTiles: (function(){
+                const k = String(MAPCFG.carto_api_key || '').trim();
+                const url = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
+                  + (k ? ('?key=' + encodeURIComponent(k)) : '');
+                return L.tileLayer(url, {
+                  maxZoom: 19, subdomains: 'abcd',
+                  attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>'});
+              })(),
               activeTiles: null};
   _maps[el.id] = st;
   _applyTheme(st);
@@ -1607,11 +1627,14 @@ window.addEventListener('resize', () => {
         MAPCFG.default_theme = j.map.default_theme || 'auto';
         MAPCFG.starting_view = j.map.starting_view || 'fit_all';
         MAPCFG.fixed_zoom = j.map.fixed_zoom || 9;
+        MAPCFG.carto_api_key = String(j.map.carto_api_key || '').trim();
       }
       if (j.display && j.display.wallboard_layout) WB_DEFAULT = j.display.wallboard_layout;
       if (j.display) SHOW_ROUTES = j.display.show_routes !== false;
     }
   } catch (e) { /* defaults are fine */ }
+  const missing = !String(MAPCFG.carto_api_key || '').trim();
+  document.querySelectorAll('[data-carto-banner]').forEach(el => { el.hidden = !missing; });
   chooseMode();
   poll();
 })();

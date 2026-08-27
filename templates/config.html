@@ -1,4 +1,4 @@
-<!-- Version: 3.4.123 -->
+<!-- Version: 3.4.127 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -157,6 +157,34 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
 }
 .section-title { font-size:15px; font-weight:600; }
 .section-sub { font-size:11px; color:var(--t2); font-family:var(--mono); }
+
+/* CARTO dark-map key walkthrough (Configuration → Map) */
+.carto-why {
+    background:rgba(245,158,11,.08); border:1px solid rgba(245,158,11,.3);
+    border-radius:8px; padding:12px 14px; margin-bottom:16px;
+    font-size:13px; line-height:1.5; color:var(--t1);
+}
+.carto-why.ok { background:rgba(34,197,94,.08); border-color:rgba(34,197,94,.3); }
+.carto-why .k { color:var(--amber); font-weight:600; }
+.carto-why.ok .k { color:var(--green); }
+.carto-steps { display:flex; flex-direction:column; gap:10px; margin:0 0 16px; }
+.carto-step {
+    display:grid; grid-template-columns:28px 1fr; gap:10px; align-items:start;
+    background:var(--bg1); border:1px solid var(--bdr); border-radius:8px; padding:10px 12px;
+}
+.carto-n {
+    width:28px; height:28px; border-radius:50%; background:var(--bg3); color:var(--cyan);
+    font:700 13px/28px var(--mono); text-align:center;
+}
+.carto-step h3 { font-size:13px; font-weight:600; margin:4px 0 4px; color:var(--t1); }
+.carto-step p { font-size:12.5px; color:var(--t2); line-height:1.45; margin:0; }
+.carto-row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:8px; }
+.carto-pill {
+    font-family:var(--mono); font-size:11.5px; color:var(--t1);
+    background:var(--bg2); border:1px solid var(--bdr); border-radius:6px;
+    padding:6px 10px;
+}
+.carto-step .hint { font-size:11px; color:var(--t3); margin-top:6px; line-height:1.4; }
 
 /* Form grid */
 .form-grid { display:grid; grid-template-columns:200px 1fr; gap:14px 18px; align-items:start; }
@@ -1177,6 +1205,7 @@ function onFieldChange(el) {
     // history can't exceed All history), so re-check it live on any retention
     // edit rather than only on save.
     if (path && path.indexOf('retention.') === 0) validateRetentionLive();
+    if (path === 'map.carto_api_key') syncCartoKeyWhy();
     updateSaveBar();
 }
 
@@ -1335,13 +1364,83 @@ function sectionDisplay() {
 // Section: Map  (v3.5.0 — the live "radar" view on the Live tab)
 // =============================================================================
 function sectionMap() {
+    const origin = (location.protocol === 'http:' || location.protocol === 'https:')
+        ? location.origin : '';
+    const hasKey = !!(getAt(workingConfig, 'map.carto_api_key') || '').toString().trim();
+    const desc = 'Self-hosted ADS-B tracker (Aerodrome)';
     return `
     <div class="section">
         <div class="section-head">
             <div class="section-title">Map</div>
             <div class="section-sub">the radar view on the Live tab</div>
         </div>
+        <div class="carto-why" id="cartoWhyMissing" ${hasKey ? 'hidden' : ''}>
+            <span class="k">Dark maps need a free CARTO key.</span>
+            CARTO draws the dark basemap and now watermarks tiles without one
+            (“API KEY REQUIRED”). It is free, there is no account or approval queue,
+            and one key is enough for this install. Light maps are unchanged.
+        </div>
+        <div class="carto-why ok" id="cartoWhySaved" ${hasKey ? '' : 'hidden'}>
+            <span class="k">Dark map key saved.</span>
+            CARTO Dark Matter tiles will load without the watermark. If a map still
+            shows the stamp, force-refresh that tab — browsers cache tiles for a bit.
+        </div>
+        <div class="carto-steps">
+            <div class="carto-step">
+                <div class="carto-n">1</div>
+                <div>
+                    <h3>Open CARTO’s key form</h3>
+                    <p>Takes about a minute. You do not need a CARTO account.</p>
+                    <div class="carto-row">
+                        <a class="btn btn-primary" href="https://carto.com/basemaps/apikey" target="_blank" rel="noopener">Request a free key ↗</a>
+                    </div>
+                </div>
+            </div>
+            <div class="carto-step">
+                <div class="carto-n">2</div>
+                <div>
+                    <h3>Fill in their form with these answers</h3>
+                    <p><b style="color:var(--t1)">Email</b> — yours, so they can send the key.</p>
+                    <p style="margin-top:6px"><b style="color:var(--t1)">Domain</b> — this install’s address. Copy it:</p>
+                    <div class="carto-row">
+                        <span class="carto-pill" id="cartoOrigin">${escapeAttr(origin)}</span>
+                        <button type="button" class="btn" onclick="copyCartoFrom('cartoOrigin', this)">Copy address</button>
+                    </div>
+                    <p class="hint">LAN names and <code>localhost</code> are fine. If you reach Aerodrome more than one way, pick the address you actually type in the browser.</p>
+                    <p style="margin-top:8px"><b style="color:var(--t1)">What you’re building</b> — paste this:</p>
+                    <div class="carto-row">
+                        <span class="carto-pill" id="cartoDesc">${escapeAttr(desc)}</span>
+                        <button type="button" class="btn" onclick="copyCartoFrom('cartoDesc', this)">Copy description</button>
+                    </div>
+                    <p style="margin-top:8px"><b style="color:var(--t1)">How many map loads a month</b> — pick:</p>
+                    <div class="carto-row">
+                        <span class="carto-pill">Under 10,000</span>
+                    </div>
+                    <p class="hint">A guess is all they need. A home install with a Live tab and maybe a wall display is well under this.</p>
+                    <p style="margin-top:8px"><b style="color:var(--t1)">Which basemap tiles</b> — pick:</p>
+                    <div class="carto-row">
+                        <span class="carto-pill">Raster (PNG tiles)</span>
+                    </div>
+                    <p class="hint">That’s what Aerodrome uses. Not Vector, not Both.</p>
+                </div>
+            </div>
+            <div class="carto-step">
+                <div class="carto-n">3</div>
+                <div>
+                    <h3>They email you the key</h3>
+                    <p>No queue. Check the inbox (and spam) for the address you gave them.</p>
+                </div>
+            </div>
+            <div class="carto-step">
+                <div class="carto-n">4</div>
+                <div>
+                    <h3>Paste it here and Save</h3>
+                    <p>Dark maps on Live, the aircraft page, and the display board pick it up on the next load.</p>
+                </div>
+            </div>
+        </div>
         <div class="form-grid">
+            ${field({label:'CARTO API key', hint:'dark basemap only · live, no restart', path:'map.carto_api_key', placeholder:'Paste the key from the CARTO email', required:false})}
             ${field({label:'Range rings', hint:'show the concentric distance rings around your receiver', path:'map.show_range_rings', type:'checkbox'})}
             ${field({label:'Ring distances', hint:'comma-separated, in your distance unit. Ignored when "Match Stats range rose" is on.', path:'map.ring_distances', placeholder:'50, 100, 150, 200, 250'})}
             ${field({label:'Match Stats range rose', hint:'reuse the Stats range rose distance bands so the two views align (overrides Ring distances)', path:'map.follow_range_rose', type:'checkbox'})}
@@ -1359,8 +1458,23 @@ function sectionMap() {
         </div>
         <div style="margin-top:12px;font-size:12px;color:var(--t3)">
             Aircraft labels are controlled on the radar itself — the "Aa" button cycles All / Selected / Off.
+            The CARTO key is sent by the browser on each dark tile request, so bind it to this install when you request it. Attribution to CARTO and OpenStreetMap stays on the map.
         </div>
     </div>`;
+}
+
+function copyCartoFrom(id, btn){
+    // Read the visible pill — do not put the string in the onclick
+    // attribute (JSON.stringify + double-quoted HTML cancelled the handler).
+    const el = document.getElementById(id);
+    copyToClipboard(el ? (el.textContent || '').trim() : '', btn);
+}
+function syncCartoKeyWhy(){
+    const has = !!(getAt(workingConfig, 'map.carto_api_key') || '').toString().trim();
+    const miss = document.getElementById('cartoWhyMissing');
+    const ok = document.getElementById('cartoWhySaved');
+    if(miss) miss.hidden = has;
+    if(ok) ok.hidden = !has;
 }
 
 // =============================================================================
@@ -1947,6 +2061,9 @@ async function saveChanges() {
     document.getElementById('saveStatus').textContent = 'Saving...';
 
     try {
+        if (workingConfig.map && typeof workingConfig.map.carto_api_key === 'string') {
+            workingConfig.map.carto_api_key = workingConfig.map.carto_api_key.trim();
+        }
         const r = await fetch('/api/config', {
             method: 'PUT',
             headers: {'Content-Type': 'application/json'},

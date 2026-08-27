@@ -86,7 +86,8 @@ UI_CFG = {
     # v3.4.111: ring distances sized to the synthetic fleet (all within
     # ~23 mi of the receiver) so the display board's scope fills the frame
     # instead of huddling every contact inside the innermost default ring.
-    "map": {"ring_distances": [8, 16, 24], "show_range_rings": True},
+    "map": {"ring_distances": [8, 16, 24], "show_range_rings": True,
+            "carto_api_key": "screenshot-fixture-key"},
     "display": {"wallboard_layout": "ask"},
     "track_link_provider": "airplanes_live",
     # v2.50.24: the harness was missing these — without them the UI's

@@ -1,4 +1,4 @@
-<!-- Version: 3.4.123 -->
+<!-- Version: 3.4.127 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -545,6 +545,7 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
    tall fits roughly two thirds of a desktop viewport, lets the user
    see surrounding context (sightings table) without scrolling. */
 .position-map-block { margin-bottom:24px; }
+.map-stage { position:relative; }
 .map-controls {
     display:flex; gap:6px; align-items:center;
     margin-bottom:8px; font-size:12px;
@@ -1138,6 +1139,7 @@ let _trackProviderState = {
 // same ui-config load below (which is awaited before the page renders, so
 // maybeEnrichRoute always sees the real value).
 let _showRoutes = true;
+let _cartoApiKey = '';
 
 async function loadTrackProviders() {
     try {
@@ -1148,6 +1150,7 @@ async function loadTrackProviders() {
         _trackProviderState.providers = j.track_link_providers || {};
         _trackProviderState.ready = true;
         _showRoutes = !(j.display && j.display.show_routes === false);
+        _cartoApiKey = String((j.map && j.map.carto_api_key) || '').trim();
     } catch (e) {
         // Stay not-ready — the Track button will render as disabled rather
         // than guessing wrong about which tracker to link to.
@@ -1972,7 +1975,7 @@ let _posMapState = {
     // already in cache. (2) keeping the layer references lets us
     // call removeLayer cleanly without identity-tracking.
     lightTiles: null,    // L.tileLayer pointing at OSM standard
-    darkTiles: null,     // L.tileLayer pointing at Carto Dark Matter
+    darkTiles: null,     // L.tileLayer pointing at Carto Dark Matter (keyed)
     currentTheme: 'dark',
 };
 
@@ -2001,7 +2004,13 @@ function initPositionMap(icao) {
             <button type="button" class="win-btn" data-win="all">All</button>
             <span class="meta" id="mapMeta">loading…</span>
         </div>
-        <div id="positionMap"></div>
+        <div class="map-stage">
+            <div id="positionMap"></div>
+            <div class="carto-key-banner" id="cartoKeyBanner" hidden>
+                <p>Dark map tiles need a free CARTO key. About a minute — we’ll walk you through it.</p>
+                <a class="btn btn-primary" href="/config#map">Open Map settings</a>
+            </div>
+        </div>
         <div class="map-altitude-legend">
             <span>Altitude:</span>
             <span>0 ft</span>
@@ -2084,12 +2093,9 @@ async function loadPositions(window) {
         }).setView([data.receiver.lat, data.receiver.lon], 9);
 
         // v2.86.3: pre-create both tile layers and pick which to add
-        // based on the persisted theme preference. Carto Dark Matter
-        // is a free, no-API-key tile set with cartography that fits
-        // Aerodrome's dark theme; OSM standard is the original light
-        // tiles from v2.86.0. Default theme is 'dark' (chosen because
-        // the rest of the app is dark-themed and the light tiles
-        // looked jarring in context).
+        // based on the persisted theme preference. Dark tiles are CARTO
+        // Dark Matter (free key via Configuration → Map); OSM standard
+        // is the light theme. Default theme is 'dark'.
         _posMapState.lightTiles = L.tileLayer(
             'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
             {
@@ -2097,14 +2103,19 @@ async function loadPositions(window) {
                 attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
             }
         );
+        const _ck = String(_cartoApiKey || '').trim();
+        const _darkUrl = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
+            + (_ck ? ('?key=' + encodeURIComponent(_ck)) : '');
         _posMapState.darkTiles = L.tileLayer(
-            'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+            _darkUrl,
             {
                 maxZoom: 19,
                 subdomains: 'abcd',
                 attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>',
             }
         );
+        const _banner = document.getElementById('cartoKeyBanner');
+        if (_banner) _banner.hidden = !!_ck;
         _posMapState.currentTheme = getStoredMapTheme();
         const initialTiles = (_posMapState.currentTheme === 'light')
             ? _posMapState.lightTiles

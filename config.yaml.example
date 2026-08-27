@@ -1,5 +1,5 @@
 # =============================================================================
-# Version: 3.4.123
+# Version: 3.4.127
 # Aerodrome — Example/Reference Configuration
 # =============================================================================
 # This is the canonical default config shipped with each Aerodrome release.
@@ -119,6 +119,11 @@ map:
   #   "light" — OSM light tiles
   #   "dark"  — Carto dark tiles
   default_theme: "auto"
+  # CARTO now requires a free API key for the dark basemap. Configuration →
+  # Map walks you through getting one (no account, emailed immediately).
+  # Leave blank until you paste it; light maps still work. The key is used
+  # by the browser to fetch tiles.
+  carto_api_key: ""
   # (Aircraft labels are controlled by the on-map "Aa" button on the radar,
   # which cycles All / Selected / Off — there's no config key for it.)
 

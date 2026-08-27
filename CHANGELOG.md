@@ -19,6 +19,38 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.127] — 2026-08-27
+
+*(3.4.124–.126 were unpublished previews of the CARTO key walkthrough.)*
+
+### Fixed
+- **Copy address and Copy description now put the text on the clipboard.** The previous attempt still didn’t fire: the click handler was built with nested quotes, so the browser never ran it. The buttons now copy from the on-screen text instead.
+
+## [3.4.126] — 2026-08-27
+
+## [3.4.126] — 2026-08-27
+
+*(3.4.124–.125 were unpublished previews of the CARTO key walkthrough; 3.4.126 adds answers for two more questions on CARTO’s form.)*
+
+### Changed
+- **Configuration → Map now tells you what to pick for CARTO’s two extra questions.** Their key form also asks roughly how many map loads a month you expect, and whether you use raster or vector tiles. Step 2 now recommends **Under 10,000** (a home install is well under that) and **Raster (PNG tiles)** (that’s what Aerodrome uses).
+
+## [3.4.125] — 2026-08-27
+
+*(3.4.124 was an unpublished preview of the CARTO key walkthrough; 3.4.125 is the copy-button fix on top of that.)*
+
+### Fixed
+- **Copy address and Copy description on Configuration → Map now actually copy.** The buttons reported success without putting anything on the clipboard when Aerodrome is opened over plain HTTP (the usual LAN install). They now use the same copy path as the rest of Configuration, which works without HTTPS. The button still says “copied” only when the copy succeeded.
+
+## [3.4.124] — 2026-08-26
+
+### Fixed
+- **Dark maps need a free CARTO key, and Configuration → Map walks you through getting one.** CARTO, who draws the dark basemap, started stamping every tile with “API KEY REQUIRED” unless you send a key. Light maps (OpenStreetMap) are unchanged. Open Configuration → Map: four steps copy this install’s address, send you to CARTO’s free key form (no account — they email the key straight back), and let you paste it. Save — no restart. The Live radar, the aircraft detail map, and the display board pick it up on the next load (force-refresh if a watermarked tile is still cached). Until a key is saved, those maps show a banner that links to the same settings page.
+
+### Behind the scenes
+
+`map.carto_api_key` is live-reloadable (no restart) and included in `/api/ui-config` because Leaflet fetches tiles in the browser — the same LAN-trust model as the rest of config. Dark tile URLs append `?key=` when a key is set and stay on the existing CARTO Dark Matter endpoint otherwise. The validator accepts a blank key and rejects spaces or URL punctuation. A shared project-wide key isn’t viable: CARTO keys are per-customer and every install is a different origin.
+
 ## [3.4.123] — 2026-08-14
 
 ### Fixed

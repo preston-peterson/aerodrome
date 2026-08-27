@@ -1,5 +1,5 @@
 # Aerodrome
-<!-- Version: 3.4.123 -->
+<!-- Version: 3.4.127 -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -354,4 +354,5 @@ Built on top of the work of many others:
 - [CARTO](https://carto.com) — the dark-theme "Dark Matter" base map
   tiles, used under their
   [attribution terms](https://carto.com/attributions). Built on top of
-  OpenStreetMap data.
+  OpenStreetMap data. CARTO now requires a free API key for these tiles;
+  Configuration → Map walks you through getting one.

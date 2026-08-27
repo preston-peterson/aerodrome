@@ -90,7 +90,7 @@ The `?icaos=` query string is comma-separated. The response is `{hex: registrati
 |---|---|---|
 | GET | `/api/config` | Current config as JSON |
 | PUT | `/api/config` | Replace config (full document) |
-| GET | `/api/ui-config` | UI-only subset of config (track link provider, distance unit, etc.) |
+| GET | `/api/ui-config` | UI-only subset of config (track link provider, distance unit, map prefs including `map.carto_api_key`, etc.) |
 | GET | `/api/config/backups` | List automatic config backups (made on every save) |
 | GET | `/api/config/backup/{name}` | Fetch a specific backup as YAML text |
 | GET | `/api/config/export` | Current config as a downloadable YAML file |
