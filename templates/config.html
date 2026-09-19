@@ -1,4 +1,4 @@
-<!-- Version: 3.4.127 -->
+<!-- Version: 3.4.128 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1133,9 +1133,12 @@ function setAt(obj, path, value) {
 // =============================================================================
 // Section builder — render a labeled field
 // =============================================================================
-function field({label, hint, path, type='text', options=null, min=null, max=null, step=null, placeholder='', required=true, nullable=false}) {
+function field({label, hint, path, type='text', options=null, min=null, max=null, step=null, placeholder='', required=true, nullable=false, defaultOn=false}) {
     if (path) fieldLabels[path] = label;   // for friendly save-bar error names
-    const val = getAt(workingConfig, path);
+    let val = getAt(workingConfig, path);
+    // defaultOn: an absent key means ON (server-side default true), so the
+    // checkbox must render checked even before the key exists in the config.
+    if (type === 'checkbox' && defaultOn && val === undefined) val = true;
     const restartTag = RESTART_FIELDS.has(path)
         ? '<span class="field-tag" title="Requires service restart">restart</span>'
         : '';
@@ -1455,6 +1458,7 @@ function sectionMap() {
                 {value:'light', label:'Light'},
                 {value:'dark',  label:'Dark'},
             ]})}
+            ${field({label:'Aircraft type shapes', hint:'Live radar and display board markers draw a per-type silhouette (A320, B737, …) instead of the chevron. Unrecognised types keep the chevron. On unless explicitly turned off.', path:'map.type_shapes', type:'checkbox', defaultOn:true})}
         </div>
         <div style="margin-top:12px;font-size:12px;color:var(--t3)">
             Aircraft labels are controlled on the radar itself — the "Aa" button cycles All / Selected / Off.

@@ -1,5 +1,5 @@
 # =============================================================================
-# Version: 3.4.127
+# Version: 3.4.128
 # Aerodrome — Example/Reference Configuration
 # =============================================================================
 # This is the canonical default config shipped with each Aerodrome release.
@@ -124,6 +124,10 @@ map:
   # Leave blank until you paste it; light maps still work. The key is used
   # by the browser to fetch tiles.
   carto_api_key: ""
+  # Live radar + display board markers draw a per-aircraft-type silhouette
+  # (A320, B737, C172, ...) instead of the generic chevron. Types not in
+  # the shipped table keep the chevron. Set false for the old look.
+  type_shapes: true
   # (Aircraft labels are controlled by the on-map "Aa" button on the radar,
   # which cycles All / Selected / Off — there's no config key for it.)
 

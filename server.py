@@ -1,4 +1,4 @@
-# Version: 3.4.127
+# Version: 3.4.128
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -1409,6 +1409,11 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         html = html.replace(
             'src="/static/add-watchlist.js"',
             f'src="/static/add-watchlist.js?v={_aerodrome_version}"'
+        )
+        # v3.5.x: aircraft type silhouettes data (shared Live + Board).
+        html = html.replace(
+            'src="/static/shapes-data.js"',
+            f'src="/static/shapes-data.js?v={_aerodrome_version}"'
         )
         # v2.85.12: inject the configured time_format and load the shared
         # timefmt.js helper. The injection sets window._aerodromeTimeFormat
@@ -3817,6 +3822,9 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 "starting_view": mp.get("starting_view", "fit_all"),
                 "fixed_zoom": int(mp.get("fixed_zoom", 9) or 9),
                 "default_theme": mp.get("default_theme", "auto"),
+                # v3.5.x: aircraft type silhouettes (Live + Board markers
+                # draw a per-typecode shape instead of the chevron).
+                "type_shapes": mp.get("type_shapes", True) is not False,
                 # CARTO dark-basemap key. Leaflet fetches tiles in the
                 # browser, so the key has to travel with this payload
                 # (same LAN-trust model as the rest of /api/config).

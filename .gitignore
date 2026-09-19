@@ -25,6 +25,9 @@ venv/
 .venv/
 
 # --- Runtime data ---
+# Local preview/demo configs for a second instance on a spare port (see
+# HANDOFF: shapes preview) — machine-specific, never ship.
+config-80*.yaml
 # The SQLite database (and its WAL/SHM sidecars) is the user's flight history
 # and should never appear in the source tree. The wildcard catches any *.db
 # file, not just the canonical aircraft_history.db, in case a developer

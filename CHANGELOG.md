@@ -19,6 +19,14 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.128] — 2026-09-19
+
+### Added
+- **Aircraft on the Live radar and the display board now draw as silhouettes of their actual type.** An A320 looks like an A320, a C172 like a C172, a 777 like a widebody — nose pointed along the ground track, same altitude colouring, same military/watchlist rings, same helicopter-rotor and balloon glyphs as before. The shapes come from a built-in table of 63 common ICAO type codes (airliners, regionals, bizjets, turboprops and light GA); any type the table doesn't know still draws the old familiar chevron, so nothing is ever blank or wrong-looking. Configuration → Map has a new **"Aircraft type shapes"** switch — turn it off for the all-chevron look everywhere.
+
+### Behind the scenes
+The silhouettes are original parametric drawings, not taken from any third-party icon set: `scripts/gen_type_shapes.py` composes each airframe from a per-type parameter table (span, length, sweep, engine pods, tail), rasterizes, traces a single outline, and emits both the SVG tree and `static/shapes-data.js` (one 21KB cached JS file shared by Live and the board — no per-marker fetches). Each file carries a `aerodrome-scale` wingspan comment for future real-proportion sizing. The marker change is draw-time only: `_radarBuildIcon` / board `chevronSvg` consult `SHAPES_DATA[typecode]` before the chevron, and the existing diff-before-write path means Pi repaint behaviour is unchanged.
+
 ## [3.4.127] — 2026-08-27
 
 *(3.4.124–.126 were unpublished previews of this change.)*

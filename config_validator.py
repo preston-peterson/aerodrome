@@ -10,7 +10,7 @@ Usage:
         # each error: {"path": "receiver.port", "message": "Must be 1-65535"}
         return error_response(errors)
 """
-# Version: 3.4.127
+# Version: 3.4.128
 
 import re
 import socket
@@ -927,7 +927,7 @@ def validate_config(cfg: Any) -> Errors:
         if not isinstance(mp, dict):
             errs.append(("map", "Must be a mapping"))
         else:
-            for bkey in ("show_range_rings", "follow_range_rose"):
+            for bkey in ("show_range_rings", "follow_range_rose", "type_shapes"):
                 bv = mp.get(bkey)
                 if bv is not None and not isinstance(bv, bool):
                     errs.append((f"map.{bkey}", "Must be true or false"))

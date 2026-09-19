@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
-<!-- Version: 3.4.127 -->
+<!-- Version: 3.4.128 -->
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Display board — Aerodrome</title>
@@ -433,7 +433,8 @@ let WB_DEFAULT = 'ask';   // display.wallboard_layout from /api/ui-config
 // v3.4.112: the Map section's settings (Configuration → Map), same source the
 // Live radar reads — tiles theme, rings on/off, and the starting view.
 let MAPCFG = {show_range_rings: true, default_theme: 'auto',
-              starting_view: 'fit_all', fixed_zoom: 9, carto_api_key: ''};
+              starting_view: 'fit_all', fixed_zoom: 9, carto_api_key: '',
+              type_shapes: true};
 let SHOW_ROUTES = true;   // display.show_routes — off = no route lookups at all
 
 const $ = (id) => document.getElementById(id);
@@ -650,6 +651,13 @@ function chevronSvg(a, sizeRem){
     return `<svg viewBox="${vb}" style="${s}">${ring}`
       + `<circle cx="12" cy="9" r="7" fill="${col}" stroke="${dk}" stroke-width="1"/>`
       + `<rect x="10" y="18.5" width="4" height="3.4" rx="0.8" fill="none" stroke="${col}" stroke-width="1.6"/></svg>`;
+  }
+  // Type silhouette (mirrors the Live radar's _radarTypeSvg): map.type_shapes
+  // on + known typecode -> the generated path; otherwise the chevron below.
+  if (MAPCFG.type_shapes && typeof SHAPES_DATA !== 'undefined') {
+    const p = SHAPES_DATA[(a.aircraft_type || '').toUpperCase()];
+    if (p) return `<svg viewBox="${vb}" style="${s};transform:rotate(${rot}deg)">${ring}`
+      + `<g fill="${col}" stroke="${dk}" stroke-width="1" stroke-linejoin="round" fill-rule="evenodd">${p}</g></svg>`;
   }
   return `<svg viewBox="${vb}" style="${s};transform:rotate(${rot}deg)">${ring}`
     + `<path d="M12 2 L21 22 L12 17 L3 22 Z" fill="${col}" stroke="${dk}" stroke-width="1" stroke-linejoin="round"/></svg>`;
@@ -1628,6 +1636,7 @@ window.addEventListener('resize', () => {
         MAPCFG.starting_view = j.map.starting_view || 'fit_all';
         MAPCFG.fixed_zoom = j.map.fixed_zoom || 9;
         MAPCFG.carto_api_key = String(j.map.carto_api_key || '').trim();
+        MAPCFG.type_shapes = j.map.type_shapes !== false;
       }
       if (j.display && j.display.wallboard_layout) WB_DEFAULT = j.display.wallboard_layout;
       if (j.display) SHOW_ROUTES = j.display.show_routes !== false;
@@ -1639,5 +1648,6 @@ window.addEventListener('resize', () => {
   poll();
 })();
 </script>
+<script src="/static/shapes-data.js"></script>
 </body>
 </html>
