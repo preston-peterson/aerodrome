@@ -59,7 +59,7 @@ SOURCES = {
     "C56X": (17.4, 16.9, 2, 5.8, 3.8, 2.8, 1.2, False),   # Citation Mustang
     "SR22": (11.6, 8.8, 1, 0.0, 0.0, 2.4, 1.0, "taper"),    # Cirrus (tapered wing, near-straight LE)
     "E55P": (19.6, 16.9, 2, 6.2, 4.2, 3.0, 1.3, False),   # Phenom 100
-    # --- v3.4.130b: live-traffic coverage gap (Wisconsin scope, 2026-09-19) ---
+    # --- v3.4.131b: live-traffic coverage gap (Wisconsin scope, 2026-09-19) ---
     "A35K": (64.8, 68.8, 2, 16.8, 10.6, 7.9, 2.8, False),   # A350-1000
     "B39M": (37.3, 43.8, 2, 9.6, 6.4, 4.7, 1.7, False),     # 737 MAX 9
     "B748": (68.4, 76.3, 4, 15.0, 9.6, 8.2, 2.8, True),     # 747-8 (freighter box)
@@ -328,8 +328,6 @@ def build_source(code, p):
     # large types do — a C172 reads as a C172, not a speck.
     extent = max(span, length + tail_w)
     s = min(0.55, 22.0 / extent)
-    # (legacy per-type fit; small types intentionally stay small on-canvas —
-    # wingspan metadata drives real sizing at draw time)
     half = span * s / 2.0
     L = length * s
     y_nose, y_tail = (24.0 - L) / 2.0, (24.0 + L) / 2.0

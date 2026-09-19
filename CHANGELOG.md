@@ -19,6 +19,11 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.131] — 2026-09-19
+
+### Fixed
+- **Small aircraft are no longer reduced to a dot when type shapes are on.** Light-category types (GA, turboprops, pistons) drew their silhouette inside the old 13px light-bucket box, which is fine for a solid chevron but far too small for a winged outline. Known-shape markers now get the jet-size box (19px), so a C172 or Mooney reads as itself at a glance. Unknown types keep the size buckets exactly as before.
+
 ## [3.4.130] — 2026-09-19
 
 ### Added

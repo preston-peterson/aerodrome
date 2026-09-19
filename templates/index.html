@@ -1,4 +1,4 @@
-<!-- Version: 3.4.130 -->
+<!-- Version: 3.4.131 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -3474,14 +3474,34 @@ function _radarAltColor(alt){
     return '#a78bfa';                 // violet  — 40k+
 }
 
+// v3.5.x: known-shape lookup — true when this aircraft's typecode has a
+// silhouette in SHAPES_DATA and the toggle is on. Used by _radarSize (size
+// floor) and _radarTypeSvg (draw). Data loads last on the page, so callers
+// guard on typeof; markers built before it loads simply re-skin on poll.
+function _radarShapeKnown(ac){
+    if(!mapCfg || mapCfg.type_shapes === false) return false;
+    if(typeof SHAPES_DATA === 'undefined') return false;
+    return !!SHAPES_DATA[(ac.aircraft_type || '').toUpperCase()];
+}
+
 // ADS-B emitter category (or type fallback) → one of 3 discrete sizes.
 // A1/A2 = light/small, A3/A4 = jet, A5+/B/C heavies & specials = large.
+// LEGIBILITY FLOOR: a chevron reads at 13px because it's a solid blob, but
+// a GA silhouette (C172, Mooney, Baron) inside a 13px box is a literal dot
+// — those types draw ~1/5 the on-canvas airspace of an A320. So when the
+// shape is actually going to be drawn (map.type_shapes on + the typecode is
+// in the table), light buckets get bumped to the jet size. Real physical
+// size stays encoded in each file's aerodrome-scale comment; marker pixel
+// size buys readability, not scale fidelity.
 function _radarSize(ac){
     const c = (ac.category || '').toUpperCase();
-    if(c === 'A1' || c === 'A2' || c === 'B1' || c === 'B2') return 13;  // light
-    if(c === 'A5' || c === 'A6' || c === 'A7' || c.startsWith('B') || c.startsWith('C')) return 24; // heavy/special
-    if(c === 'A3' || c === 'A4') return 19;  // jet
-    return 17;  // unknown — medium default
+    let px;
+    if(c === 'A1' || c === 'A2' || c === 'B1' || c === 'B2') px = 13;        // light
+    else if(c === 'A5' || c === 'A6' || c === 'A7' || c.startsWith('B') || c.startsWith('C')) px = 24; // heavy/special
+    else if(c === 'A3' || c === 'A4') px = 19;                              // jet
+    else px = 17;                                                           // unknown — medium
+    if(px < 19 && _radarShapeKnown(ac)) px = 19;
+    return px;
 }
 
 // Chevron SVG pointing "up" (north); the wrapper rotates it by track.
@@ -3533,10 +3553,8 @@ function _radarIsBalloon(ac){
 // isn't in the table — callers fall back to the chevron in that case.
 // Helicopters and balloons never consult it (heading-agnostic glyphs win).
 function _radarTypeSvg(ac, color, px){
-    if(!mapCfg || mapCfg.type_shapes === false) return '';
-    if(typeof SHAPES_DATA === 'undefined') return '';
+    if(!_radarShapeKnown(ac)) return '';
     const path = SHAPES_DATA[(ac.aircraft_type || '').toUpperCase()];
-    if(!path) return '';
     return `<svg width="${px}" height="${px}" viewBox="0 0 24 24" aria-hidden="true">`
         + `<g fill="${color}" stroke="rgba(0,0,0,.45)" stroke-width="1" `
         + `stroke-linejoin="round" fill-rule="evenodd">${path}</g></svg>`;
