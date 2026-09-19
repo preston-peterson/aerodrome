@@ -321,13 +321,16 @@ def _poly(points):
 
 def build_source(code, p):
     (span, length, n_eng, eng_span, eng_len, tail_w, tail_sweep, cargo) = p
-    # UNIFORM scale (same for x and y); the wingspan metadata drives real
-    # size differences at draw time. Per-type: the whole airframe (wing
-    # trailing edge + tailplane, or nose-to-tail when longer) is fit into
-    # the 24-box with a 1-unit margin, so small types fill the box the way
-    # large types do — a C172 reads as a C172, not a speck.
+    # UNIFORM scale (same for x and y). Every silhouette is fit to the SAME
+    # 22-unit box by its own max extent (span, or length+tail when longer):
+    # the shape is a legibility-scaled TYPE SIGN, not a scale drawing. A
+    # 13-19px marker renders a real-proportioned C172 (5 units of a 22-unit
+    # A320's width) as a dot, so physical proportions live in the
+    # aerodrome-scale wingspan comment instead, for any future real-size
+    # sizing mode. Within-shape ratios stay honest; cross-type size
+    # comparison comes from the data, not the outline.
     extent = max(span, length + tail_w)
-    s = min(0.55, 22.0 / extent)
+    s = 22.0 / extent
     half = span * s / 2.0
     L = length * s
     y_nose, y_tail = (24.0 - L) / 2.0, (24.0 + L) / 2.0
@@ -441,7 +444,7 @@ def build_source(code, p):
 
 def build_flying_wing():
     # B-2: cranked-arrow planform, sawtooth trailing edge, no tails.
-    # Same scale rule as build_source: extent 53.6m -> s = 22/53.6 = 0.410.
+    # Same scale rule as build_source: fit own max extent (53.6m span) to 22.
     s = 22.0 / 53.6
     cx = 12.0
     half = 53.6 * s / 2

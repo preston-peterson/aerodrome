@@ -19,6 +19,14 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.132] — 2026-09-19
+
+### Fixed
+- **Every silhouette now fills its marker, so a Cessna is as easy to read as a 737.** The previous release sized shapes by real wingspan, which is physically honest but visually unfair: a 36 ft Cessna 172 drew a third of the wingspan of a 118 ft 737 and came out as a speck beside it. Type shapes are now drawn as type *signs* — every airframe is fit to the same size inside its marker, so each one reads at a glance. Physical wingspan still lives in the shape data for anyone who wants true scale, and the small chevron marker for lights stays 13px when the feature is off, exactly as before.
+
+### Behind the scenes
+- `gen_type_shapes.py`'s per-type scale no longer caps at the airliner scale (`s = min(0.55, 22/extent)`); it is a uniform `22 / own-extent` fit, so the max extent (span, or length+tail when longer) of every type touches the same 22-unit box. All 90 shapes and `shapes-data.js` regenerated; the `_radarSize` legibility floor from the previous release is unchanged (known shapes ≥19px, heavies still 24px).
+
 ## [3.4.131] — 2026-09-19
 
 ### Fixed

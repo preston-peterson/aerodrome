@@ -1,4 +1,4 @@
-<!-- Version: 3.4.131 -->
+<!-- Version: 3.4.132 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -3490,9 +3490,11 @@ function _radarShapeKnown(ac){
 // a GA silhouette (C172, Mooney, Baron) inside a 13px box is a literal dot
 // — those types draw ~1/5 the on-canvas airspace of an A320. So when the
 // shape is actually going to be drawn (map.type_shapes on + the typecode is
-// in the table), light buckets get bumped to the jet size. Real physical
-// size stays encoded in each file's aerodrome-scale comment; marker pixel
-// size buys readability, not scale fidelity.
+// in the table), ALL buckets get at least the jet size (19px): a silhouette
+// needs ~5 filled pixels across the outline to read, and 19px is where the
+// smallest shapes clear that. The old "medium" 17px was still marginal.
+// Real physical size stays encoded in each file's aerodrome-scale comment;
+// marker pixel size buys readability, not scale fidelity.
 function _radarSize(ac){
     const c = (ac.category || '').toUpperCase();
     let px;
