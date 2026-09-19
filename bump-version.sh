@@ -28,6 +28,11 @@
 #                                         v3.1.0/3.1.1 NameError bug — only
 #                                         skip if you have verified that the
 #                                         flagged name is a false positive)
+#   --skip-shapes                        (skip the type-shape coverage
+#                                         audit. Advisory gate — the fetch
+#                                         of ICAO DOC 8643 is network-
+#                                         best-effort, so skipping only
+#                                         silences the report)
 #
 # Examples:
 #   ./bump-version.sh patch "Fixed sorting bug on Live tab"
@@ -57,6 +62,7 @@ ENTRY_TYPE="Changed"
 SKIP_DOCS_CHECK=0
 SKIP_PDF=0
 SKIP_DOCS_DRIFT=0
+SKIP_SHAPES=0
 ARGS=()
 for arg in "$@"; do
     case "$arg" in
@@ -68,6 +74,7 @@ for arg in "$@"; do
         --yes|-y)            SKIP_DOCS_CHECK=1 ;;
         --skip-pdf)          SKIP_PDF=1 ;;
         --skip-docs-drift)   SKIP_DOCS_DRIFT=1 ;;
+        --skip-shapes)       SKIP_SHAPES=1 ;;
         --skip-name-check)   SKIP_NAME_CHECK=1 ;;
         *) ARGS+=("$arg") ;;
     esac
@@ -566,6 +573,34 @@ print('  ✓ Inline JS parse OK across all templates')
 PYEOF
 )
     python3 -c "$JS_PARSE_PY"
+    echo ""
+fi
+
+# =============================================================================
+# Type-shape coverage audit — REQUIRED (v3.4.133+).
+# =============================================================================
+# Which types does the radar still draw a chevron for, and how much of
+# YOUR sky is that? Reports local fixed-wing traffic coverage (the
+# seen_aircraft table) plus ICAO DOC 8643 designator gaps; helicopters
+# and tiltrotors are excluded — the rotor disc covers them. The gap
+# count itself NEVER blocks a bump (most of DOC 8643 SHOULD stay
+# chevrons — rarities aren't worth a SOURCES line). What is release-
+# blocking is the script failing to run at all: that means the shipped
+# shapes data can't be parsed, i.e. the file the radar depends on is
+# corrupt. Set AERODROME_SHAPE_GATE=strict to additionally block on a
+# local-traffic gap of >=5% on a single type (you're staring at generic
+# markers for a meaningful slice of your own sky).
+#
+# Pass --skip-shapes to suppress the section entirely.
+SHAPE_AUDIT="${SCRIPT_DIR}/scripts/shape_coverage.py"
+if [ "$SKIP_SHAPES" = "0" ] && [ -f "$SHAPE_AUDIT" ]; then
+    echo "Type-shape coverage audit..."
+    if ! python3 "$SHAPE_AUDIT" | sed 's/^/  /'; then
+        echo "✗ Type-shape coverage audit could not run. If static/shapes-"
+        echo "  data.js is corrupt nothing will render silhouettes. Fix or"
+        echo "  regenerate before releasing (or --skip-shapes to pass)."
+        exit 1
+    fi
     echo ""
 fi
 

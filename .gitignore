@@ -37,6 +37,12 @@ config-80*.yaml
 *.db-shm
 .tracker.pid
 
+# --- Type-shape audit cache ---
+# scripts/shape_coverage.py downloads the ICAO DOC 8643 designator CSV
+# (370KB third-party data, refreshed on --update-cache). Regenerable at
+# any time; no reason to ship it in releases.
+scripts/doc8643.csv
+
 # --- Logs ---
 # install.sh creates the logs/ directory at runtime; tracker.log etc. live
 # inside. Nothing in there should be committed.
