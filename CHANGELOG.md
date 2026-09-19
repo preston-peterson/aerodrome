@@ -19,6 +19,11 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.130] — 2026-09-19
+
+### Added
+- **The type-shape table grew from 63 to 90 type codes**, filling the gaps that real traffic exposed on day one: the 747-8, 777-9, 787-10, A350-1000, A220s, 737 MAX 9, and the bizjet/GA fleet most home stations actually see (Challenger/Citation families, PC-24, Vision SF50, Mooney, Baron…). Anything still unmapped keeps the chevron.
+
 ## [3.4.129] — 2026-09-19
 
 ### Added
