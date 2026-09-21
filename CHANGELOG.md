@@ -19,6 +19,11 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.133] — 2026-09-21
+
+### Added
+- **Seventeen more common types now draw a real silhouette instead of the generic chevron.** The general-aviation bench got deeper: Cessna 152, 210 and 172RG, the Bonanza A36, Piper Lance and Super Cub, the Cirrus SR20 and SR22T, Citation II and CJ2, the King Air 300, the TBM 930 turboprop, the Aero Commander 600, the Learjet 45, the Gulfstream G280/G600/G700, and the tri-jet Falcon 900. These were spotted drawing chevrons on today's live radar — the new coverage check caught them, and the shape table went from 90 codes to 107. Anything still unlisted (true rarities) keeps the chevron, which is the honest generic.
+
 ## [3.4.132] — 2026-09-19
 
 ### Fixed

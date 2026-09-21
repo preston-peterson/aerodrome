@@ -59,6 +59,23 @@ SOURCES = {
     "B38M": (35.9, 39.5, 2, 9.4, 6.2, 4.5, 1.7, False),   # 737 MAX 8
     "C56X": (17.4, 16.9, 2, 5.8, 3.8, 2.8, 1.2, False),   # Citation Mustang
     "SR22": (11.6, 8.8, 1, 0.0, 0.0, 2.4, 1.0, "taper"),    # Cirrus (tapered wing, near-straight LE)
+    # --- v3.4.133: live-traffic coverage gap (Wisconsin scope, 2026-09-20) ---
+    "AEST": (11.9, 9.1, 2, 3.6, 2.6, 2.2, 0.9, False),     # Aero Commander 600
+    "BE36": (10.2, 8.3, 1, 0.0, 0.0, 2.2, 1.0, False),     # Bonanza A36 (V-tail drawn as conventional tail)
+    "C152": (10.2, 7.4, 1, 0.0, 0.0, 2.0, 0.8, False),     # Cessna 152
+    "C210": (10.1, 9.0, 1, 0.0, 0.0, 2.2, 0.9, False),     # Cessna 210
+    "C550": (16.9, 15.5, 2, 5.6, 3.6, 2.7, 1.2, False),    # Citation II
+    "C72R": (11.0, 8.6, 1, 0.0, 0.0, 2.2, 0.8, False),     # Cutlass 172RG
+    "F900": (19.9, 20.2, 3, 7.0, 4.4, 3.4, 1.6, False),    # Falcon 900 (tail engine)
+    "GA6C": (28.7, 28.7, 2, 8.0, 5.0, 4.0, 1.7, False),    # Gulfstream G600
+    "GA7C": (33.8, 33.8, 2, 9.0, 5.8, 4.6, 1.9, False),    # Gulfstream G700
+    "G280": (27.5, 20.4, 2, 7.6, 4.8, 3.8, 1.6, False),    # Gulfstream G280
+    "LJ45": (19.1, 16.8, 2, 6.0, 4.0, 3.0, 1.3, False),    # Learjet 45
+    "PA18": (10.7, 6.8, 1, 0.0, 0.0, 2.0, 0.7, False),     # Piper Super Cub
+    "P32R": (11.5, 8.6, 1, 0.0, 0.0, 2.3, 0.9, False),     # Piper Lance
+    "SR20": (11.7, 8.0, 1, 0.0, 0.0, 2.4, 1.0, "taper"),   # Cirrus SR20
+    "S22T": (11.6, 8.8, 1, 0.0, 0.0, 2.4, 1.0, "taper"),   # Cirrus SR22T
+    "TBM9": (11.4, 11.3, 1, 0.0, 0.0, 2.6, 1.2, False),    # TBM 930
     "E55P": (19.6, 16.9, 2, 6.2, 4.2, 3.0, 1.3, False),   # Phenom 100
     # --- v3.4.131b: live-traffic coverage gap (Wisconsin scope, 2026-09-19) ---
     "A35K": (64.8, 68.8, 2, 16.8, 10.6, 7.9, 2.8, False),   # A350-1000
@@ -71,6 +88,7 @@ SOURCES = {
     "BE58": (13.8, 11.5, 2, 4.6, 3.2, 2.6, 1.0, False),     # Baron
     "C25B": (18.3, 15.0, 2, 6.0, 4.0, 3.0, 1.3, False),     # Citation Citation X
     "C25M": (14.3, 12.5, 2, 4.8, 3.4, 2.5, 1.1, False),     # M2/CJ1+2
+    "C25A": (15.2, 13.3, 2, 5.0, 3.4, 2.6, 1.1, False),    # CJ2
     "C340": (16.6, 14.3, 2, 5.4, 3.6, 2.6, 1.1, False),     # 208 Caravan sibling (single turboprop)
     "C68A": (19.2, 15.5, 2, 6.2, 4.0, 3.0, 1.3, False),     # Citation Latitude
     "C700": (22.1, 16.9, 2, 6.8, 4.4, 3.3, 1.4, False),     # Citation Longitude
