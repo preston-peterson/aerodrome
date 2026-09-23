@@ -19,6 +19,11 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.135] — 2026-09-23
+
+### Added
+- **Nine more regulars join the silhouette table, now at 128 typecodes.** This afternoon's radar caught them still wearing generic chevrons: the 747-400, 757-300 and 767-400, the Bombardier Global 7000/7500, the Citation III, the turbo Bonanza (A36TC), the Cessna 175, the Piper Cherokee, and the Champ/Legend Scout. The table grows toward the nationwide top-N seeding pass now queued — the goal is chevrons only for genuine rarities, no-typecode contacts, and the rotor disc / balloon glyphs for helicopters and balloons, which is where they belong.
+
 ## [3.4.134] — 2026-09-23
 
 ### Added
