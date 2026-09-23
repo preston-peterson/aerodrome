@@ -19,6 +19,11 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.134] — 2026-09-23
+
+### Added
+- **The silhouette table crosses 120 typecodes with fourteen more common types drawn properly.** This morning's radar had them sitting as generic chevrons: the Bombardier Global 5500 and 6500, the HondaJet with its distinctive over-wing engines, the original Bonanza 35, the Piper Malibu, Cessna's 182 Skylane and T210, Citation CJ1 and CJ4, the Falcon 10, the taildragger Maule M-5, the Epic LT turboprop, the C-130J Super Hercules, and the Aero Commander 500. The radar now draws a real outline for 120 ICAO typecodes; everything rarer than these keeps the chevron, which stays the honest generic.
+
 ## [3.4.133] — 2026-09-21
 
 ### Added

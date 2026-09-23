@@ -76,6 +76,21 @@ SOURCES = {
     "SR20": (11.7, 8.0, 1, 0.0, 0.0, 2.4, 1.0, "taper"),   # Cirrus SR20
     "S22T": (11.6, 8.8, 1, 0.0, 0.0, 2.4, 1.0, "taper"),   # Cirrus SR22T
     "TBM9": (11.4, 11.3, 1, 0.0, 0.0, 2.6, 1.2, False),    # TBM 930
+    # --- v3.4.134: live-traffic coverage gap (Wisconsin scope, 2026-09-22) ---
+    "AC50": (12.0, 9.4, 2, 3.8, 2.6, 2.2, 0.9, False),    # Aero Commander 500
+    "BE35": (10.2, 7.6, 1, 0.0, 0.0, 2.2, 1.0, False),    # Bonanza 35 (V-tail -> conventional tail)
+    "C182": (11.0, 8.8, 1, 0.0, 0.0, 2.2, 0.8, False),    # Cessna Skylane
+    "C25C": (16.5, 14.3, 2, 5.4, 3.6, 2.7, 1.2, False),   # CJ4
+    "C30J": (40.0, 34.7, 4, 10.6, 5.8, 5.6, 1.9, True),   # C-130J Super Hercules
+    "C525": (15.2, 13.1, 2, 5.0, 3.4, 2.6, 1.1, False),   # CJ1
+    "EPIC": (11.6, 8.1, 1, 0.0, 0.0, 2.4, 1.0, "taper"),  # Epic LT (tapered wing)
+    "FA10": (18.9, 18.1, 2, 6.2, 4.2, 3.2, 1.5, False),   # Falcon 10
+    "GLEX": (35.4, 33.4, 2, 9.2, 6.0, 4.8, 2.0, False),   # Global 6500/7000
+    "GL5T": (34.4, 33.0, 2, 9.0, 5.8, 4.6, 1.9, False),   # Global 5500/6000
+    "HDJT": (12.2, 12.7, 2, 4.4, 3.6, 2.4, 1.1, False),   # HondaJet (overwing engines)
+    "M5": (10.7, 7.0, 1, 0.0, 0.0, 2.1, 0.8, False),      # Maule M-5 (taildragger)
+    "PA46": (13.7, 8.6, 1, 0.0, 0.0, 2.4, 0.9, False),    # Malibu/Meridian
+    "T210": (10.1, 9.0, 1, 0.0, 0.0, 2.2, 0.9, False),    # Turbo Centurion
     "E55P": (19.6, 16.9, 2, 6.2, 4.2, 3.0, 1.3, False),   # Phenom 100
     # --- v3.4.131b: live-traffic coverage gap (Wisconsin scope, 2026-09-19) ---
     "A35K": (64.8, 68.8, 2, 16.8, 10.6, 7.9, 2.8, False),   # A350-1000
