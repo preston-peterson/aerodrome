@@ -19,6 +19,11 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.136] — 2026-09-25
+
+### Added
+- **Eight more types draw a real silhouette, and one long-standing chevron turns out to have been a naming problem, not a missing drawing.** Tonight's radar was showing chevrons for the Boeing 737 MAX 7, Legacy 450, Eclipse 500, Conquest, President, Oscar B, and the RV-12 light sport plane — all now drawn from the same parametric pipeline as the rest. The Gulfstream G150 was the interesting one: some fleets broadcast a marketing typecode that isn't the ICAO designator the drawings are filed under, so the same airframe kept arriving under two different codes and drawing a chevron under one of them. The shape table now carries alias entries for exactly that case, so an aircraft that shares an airframe with an existing drawing renders the real shape no matter which of the two codes it squawks. The table is at 136 drawn codes (plus aliases). The only remaining correct chevrons are contacts broadcasting no typecode, true rarities, and the rotor disc / balloon glyphs where those belong.
+
 ## [3.4.135] — 2026-09-23
 
 ### Added
