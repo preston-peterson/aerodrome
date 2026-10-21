@@ -19,6 +19,15 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.139] — 2026-10-21
+
+### Added
+- **The hybrid display board's photo rail is now browsable — and every card shows the tail number.** Spot something interesting on the rail and look again a moment later, and it has usually rotated away. Now you can get it back: swipe the rail, scroll it with a mouse wheel, or tap the ▲ / ▼ buttons that appear in the rail header when someone is at the screen, and it steps one card at a time in either direction. The plane that just slid off the top is always one step back. While you're browsing, auto-rotation pauses (the header shows a countdown) and resumes about 30 seconds after the last touch. Tap any card to open the same details panel you get by tapping a plane on the radar — photo, owner, route, live telemetry, and its trail — with the card highlighted; the rail holds still while the panel is open, and tapping the card again closes it. Cards and the details panel now also show the aircraft's registration beside its callsign (left off when the callsign already is the registration, as with most private aircraft).
+
+### Behind the scenes
+- The rail still moves in discrete steps, never continuous scrolling: continuous motion keeps the browser's compositor busy every frame, which is what pinned a Raspberry Pi kiosk's GPU before the rail switched to stepping. Manual steps reuse the same 450 ms slide; stepping back puts the last card on top and slides the column down into place. The set of cards never re-snapshots to the current closest aircraft mid-browse — only after a full rotation with nobody at the screen.
+- The tail number comes from the `/api/aircraft/{icao}/enrich` response the board already requests for each card's owner line, so there are no new requests. All rail input uses one set of delegated listeners attached once, and the ▲ / ▼ buttons only appear when the rail has more cards than fit.
+
 ## [3.4.138] — 2026-10-21
 
 *(3.4.137 was an unpublished preview of this change.)*

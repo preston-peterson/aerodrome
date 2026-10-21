@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
-<!-- Version: 3.4.138 -->
+<!-- Version: 3.4.139 -->
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Display board — Aerodrome</title>
@@ -256,6 +256,21 @@ body.mouse .scope-wrap .board-tools .mapbtn{opacity:1;pointer-events:auto}
 .pc .rt .arr{color:var(--cyan);padding:0 .3rem}
 .pc .rt small{color:var(--t3)}
 .rail-empty{padding:1rem 1.25rem;color:var(--t3);font-family:var(--mono);font-size:.9rem}
+/* v3.4.139: browsable rail — tap a card for its details panel; swipe, wheel
+   or ▲/▼ steps one card; rotation holds while someone is browsing or a panel
+   is open. The tail number rides beside the callsign on cards + the panel. */
+.cards{touch-action:none}
+.pc{cursor:pointer}
+.pc.sel{border-color:var(--cyan);box-shadow:0 0 0 2px var(--cyan),0 0 22px rgba(6,182,212,.35)}
+.tail{font-family:var(--mono);font-size:.8rem;font-weight:600;color:var(--t1);background:var(--bg3);
+  border:1px solid var(--bdr);border-radius:.3rem;padding:.05rem .4rem;white-space:nowrap}
+.side h3{align-items:center}
+#cRailNote.held{color:var(--amber);font-weight:600;font-size:.74rem;letter-spacing:.02em;
+  background:rgba(245,158,11,.14);border:1px solid rgba(245,158,11,.45);border-radius:999px;padding:.15rem .6rem}
+.rail-ctl{display:flex;gap:.4rem;opacity:0;pointer-events:none;transition:opacity .3s}
+body.mouse .side.rail-scroll .rail-ctl{opacity:1;pointer-events:auto}
+.rail-ctl button{width:2.4rem;height:2.1rem;border-radius:.45rem;border:1px solid var(--bdr);
+  background:var(--bg2);color:var(--t1);font-size:.95rem;font-weight:600;cursor:pointer}
 
 /* ---------- picker ---------- */
 #picker{position:absolute;inset:0;background:var(--bg0);display:none;z-index:1200;
@@ -405,8 +420,8 @@ body.mouse #gearBtn{opacity:1;pointer-events:auto}
   </div>
   <div class="split">
     <div class="scope-wrap" id="scopeC"></div>
-    <div class="side">
-      <h3>Closest traffic <small id="cRailNote"></small></h3>
+    <div class="side" id="cSide">
+      <h3>Closest traffic <small id="cRailNote"></small><span class="rail-ctl"><button type="button" id="cRailPrev" title="Previous" aria-label="Previous aircraft">▲</button><button type="button" id="cRailNext" title="Next" aria-label="Next aircraft">▼</button></span></h3>
       <div class="cards" id="cCards"><div class="cardcol" id="cCol"></div></div>
     </div>
   </div>
@@ -1213,6 +1228,7 @@ function renderDetail(st){
   const phHtml = ph
     ? `<img src="${escapeHtml(ph.url)}" alt="">`
     : `<div class="phfall">${escapeHtml(a.type_desc || a.aircraft_type || 'no photo')}</div>`;
+  const tail = tailBadge(a);
   const rtHtml = rt
     ? rt.stops.map(s => escapeHtml(s.icao)).join('<span class="arr">→</span>')
       + ((rt.stops[0].name && rt.stops[rt.stops.length - 1].name)
@@ -1224,7 +1240,7 @@ function renderDetail(st){
   st.detailEl.innerHTML = `
     <div class="dp-ph">${phHtml}<div class="dp-x" role="button" aria-label="Close">✕</div></div>
     <div class="dp-body">
-      <div class="dp-r1"><span class="dp-cs">${escapeHtml(a.callsign || a.icao)}</span>${pill}</div>
+      <div class="dp-r1"><span class="dp-cs">${escapeHtml(a.callsign || a.icao)}</span>${tail}${pill}</div>
       <div class="dp-ty">${escapeHtml([a.type_desc || a.aircraft_type, a.icao].filter(Boolean).join(' · '))}</div>
       ${own ? `<div class="dp-own">Operated by <b>${escapeHtml(own)}</b></div>` : ''}
       ${rtHtml ? `<div class="dp-rt">${rtHtml}</div>` : ''}
@@ -1375,7 +1391,7 @@ function renderScope(el, opts){
 /* ============================ route/photo/owner memos ============================ */
 const routeMemo = new Map();   // callsign → {stops, airline} | null(=none) | 'pending'
 const photoMemo = new Map();   // icao → {url} | null | 'pending'
-const ownerMemo = new Map();   // icao → string | null | 'pending'
+const ownerMemo = new Map();   // icao → {owner, reg} | null | 'pending'
 function capMemo(m){ if (m.size > 500) m.clear(); }
 
 function routeFor(a){
@@ -1423,15 +1439,28 @@ function photoFor(icao){
     .catch(() => photoMemo.set(icao, null));
   return null;
 }
-function ownerFor(icao){
+// One /enrich call per airframe feeds both the owner line and (v3.4.139) the
+// tail number — the registration rides in the same response.
+function _enrichFor(icao){
   if (ownerMemo.has(icao)) { const v = ownerMemo.get(icao); return v === 'pending' ? null : v; }
   capMemo(ownerMemo);
   ownerMemo.set(icao, 'pending');
   fetch(`/api/aircraft/${encodeURIComponent(icao)}/enrich`)
     .then(r => r.ok ? r.json() : null)
-    .then(j => { ownerMemo.set(icao, (j && j.registered_owner) ? j.registered_owner : null); renderAll(); })
+    .then(j => {
+      ownerMemo.set(icao, j ? {owner: j.registered_owner || null, reg: j.registration || null} : null);
+      renderAll();
+    })
     .catch(() => ownerMemo.set(icao, null));
   return null;
+}
+function ownerFor(icao){ const v = _enrichFor(icao); return v ? v.owner : null; }
+function tailFor(icao){ const v = _enrichFor(icao); return v ? v.reg : null; }
+// Tail-number badge — skipped when the callsign already IS the tail (most GA).
+function tailBadge(a){
+  const reg = tailFor(a.icao);
+  if (!reg || reg.toUpperCase() === (a.callsign || '').trim().toUpperCase()) return '';
+  return `<span class="tail">${escapeHtml(reg)}</span>`;
 }
 
 /* ============================ mode A ============================ */
@@ -1512,26 +1541,47 @@ function renderB(){
    card set and rotates it after each step (cards are uniform height), which
    halves the images in the DOM. Membership re-snapshots to the current
    closest after each full rotation. */
+/* v3.4.139 (issue #1): the rail is browsable. Tap a card → its details panel
+   (tap it again to close); swipe, mouse wheel or the header's ▲/▼ steps one
+   card either way with the same short slide. Auto-advance HOLDS while a
+   details panel is open and for RAIL_HOLD_MS after the last touch, and the
+   card set never re-snapshots mid-browse — so a plane that just slid off the
+   top is always one ▲ away. Still discrete steps, never continuous motion
+   (the v3.4.121 Pi GPU finding above). */
 const RAIL_N = 15;
-const RAIL_STEP_MS = 8000, RAIL_STEP_ANIM_MS = 450;
+const RAIL_STEP_MS = 8000, RAIL_STEP_ANIM_MS = 450, RAIL_HOLD_MS = 30000;
 let railOrder = [];        // icaos in card order, rotated one card per step
 let railScrolling = false, railAnim = null, railSteps = 0;
+let railHoldUntil = 0, railCount = 0, _railNoteTimer = null;
 
 function _railStop(col){
   if (railAnim) { railAnim.cancel(); railAnim = null; }
   if (col) col.style.transform = '';
 }
-// One discrete advance: slide the column up by exactly the first card's
-// slot, then (at rest) rotate that card to the end and rebuild at offset 0
-// — same view, no motion between steps. fill:'forwards' holds the slid
-// position until the rebuilt content is in place; both happen in one task,
-// so the compositor only ever shows the final state.
-function _railStep(){
+function _railHeld(){ return SEL != null || Date.now() < railHoldUntil; }
+function _railHold(){ railHoldUntil = Date.now() + RAIL_HOLD_MS; _railSyncNote(); }
+// One discrete step. Forward: slide the column up by exactly the first
+// card's slot, then (at rest) rotate that card to the end and rebuild at
+// offset 0 — same view, no motion between steps. fill:'forwards' holds the
+// slid position until the rebuilt content is in place; both happen in one
+// task, so the compositor only ever shows the final state. Back: the mirror
+// — put the last card back on top, rebuild, and slide down into place.
+function _railAdvance(dir){
   if (MODE !== 'hybrid' || !railScrolling || railAnim) return;
   const col = $('cCol');
   if (!col || col.children.length < 2) return;
   const stepH = col.children[1].offsetTop - col.children[0].offsetTop;
   if (stepH <= 0) return;
+  if (dir < 0) {
+    railOrder.unshift(railOrder.pop());
+    railSteps = Math.max(0, railSteps - 1);
+    renderRail();
+    railAnim = col.animate(
+      [{transform: `translateY(-${stepH}px)`}, {transform: 'translateY(0)'}],
+      {duration: RAIL_STEP_ANIM_MS, easing: 'ease-in-out'});
+    railAnim.onfinish = () => { railAnim = null; };
+    return;
+  }
   railAnim = col.animate(
     [{transform: 'translateY(0)'}, {transform: `translateY(-${stepH}px)`}],
     {duration: RAIL_STEP_ANIM_MS, easing: 'ease-in-out', fill: 'forwards'});
@@ -1540,7 +1590,7 @@ function _railStep(){
     railAnim = null;
     railOrder.push(railOrder.shift());
     railSteps++;
-    if (railSteps >= railOrder.length) {
+    if (railSteps >= railOrder.length && !_railHeld()) {
       railSteps = 0;
       railOrder = [];          // full rotation → fresh closest-N snapshot
     }
@@ -1548,7 +1598,25 @@ function _railStep(){
     a.cancel();                // drop the forwards fill AFTER the rebuild
   };
 }
+function _railStep(){ if (!_railHeld()) _railAdvance(1); }
 setInterval(_railStep, RAIL_STEP_MS);
+
+// Header note: the count while rotating, an amber hold pill while browsing
+// (re-ticks itself each second only during the countdown).
+function _railSyncNote(){
+  const n = $('cRailNote');
+  if (!n) return;
+  clearTimeout(_railNoteTimer);
+  const left = Math.ceil((railHoldUntil - Date.now()) / 1000);
+  let txt;
+  if (railScrolling && SEL != null) txt = '⏸ held while details are open';
+  else if (railScrolling && left > 0) {
+    txt = `⏸ paused · resumes in ${left} s`;
+    _railNoteTimer = setTimeout(_railSyncNote, 1000);
+  } else txt = railCount ? `${railCount} in range${railScrolling ? ' · rotating' : ''}` : '';
+  n.classList.toggle('held', txt.startsWith('⏸'));
+  if (n.textContent !== txt) n.textContent = txt;
+}
 
 function _railCard(a){
   const ph = photoFor(a.icao);
@@ -1564,10 +1632,10 @@ function _railCard(a){
       + (rt.airline ? ` <small>· ${escapeHtml(rt.airline)}</small>` : '')
     : (own ? `<small>${escapeHtml(own)}</small>`
            : `<small>overhead at ${fmtAltShort(a.altitude)}</small>`);
-  return `<div class="pc">
+  return `<div class="pc${SEL === a.icao ? ' sel' : ''}" data-icao="${escapeHtml(a.icao)}">
     <div class="ph">${phHtml}<span class="dist">${fmtDist(a._dist)}</span></div>
     <div class="meta">
-      <div class="r1"><span class="cs">${escapeHtml(a.callsign || a.icao)}</span>${pill}
+      <div class="r1"><span class="cs">${escapeHtml(a.callsign || a.icao)}</span>${tailBadge(a)}${pill}
         <span class="al">${fmtAltShort(a.altitude)} ${trendArrow(a.vertical_rate)}</span></div>
       <div class="ty">${escapeHtml([a.type_desc || a.aircraft_type, a.icao].filter(Boolean).join(' · '))}</div>
       <div class="rt">${rtHtml}</div>
@@ -1585,8 +1653,9 @@ function renderRail(){
   if (!list.length) {
     col.innerHTML = '<div class="rail-empty">listening — no aircraft in range</div>';
     _railStop(col);
-    railOrder = []; railScrolling = false; railSteps = 0;
-    $('cRailNote').textContent = '';
+    railOrder = []; railScrolling = false; railSteps = 0; railCount = 0;
+    $('cSide').classList.remove('rail-scroll');
+    _railSyncNote();
     return;
   }
   const byIcao = new Map(list.map(a => [a.icao, a]));
@@ -1600,9 +1669,42 @@ function renderRail(){
   }
   col.innerHTML = railOrder.map(ic => _railCard(byIcao.get(ic))).join('');
   railScrolling = col.offsetHeight > wrap.clientHeight + 4;
-  $('cRailNote').textContent =
-    `${list.length} in range${railScrolling ? ' · rotating' : ''}`;
+  railCount = list.length;
+  $('cSide').classList.toggle('rail-scroll', railScrolling);   // ▲/▼ only when it can step
+  _railSyncNote();
 }
+
+// Rail input — one set of listeners, attached once (cards are rebuilt each
+// render, so everything is delegated from the column / card well).
+let _railSwipeY = null, _railSwipeAt = 0, _railWheel = 0;
+$('cCol').addEventListener('click', e => {
+  if (Date.now() - _railSwipeAt < 400) return;   // the tail of a swipe, not a tap
+  const card = e.target.closest('.pc[data-icao]');
+  if (!card) return;
+  _railHold();
+  if (SEL === card.dataset.icao) closeDetail(); else openDetail(card.dataset.icao);
+});
+$('cCards').addEventListener('pointerdown', e => { _railSwipeY = e.clientY; _railHold(); });
+$('cCards').addEventListener('pointerup', e => {
+  if (_railSwipeY == null) return;
+  const dy = e.clientY - _railSwipeY;
+  _railSwipeY = null;
+  if (Math.abs(dy) < 40) return;                 // a tap — the click handler has it
+  _railSwipeAt = Date.now();
+  _railAdvance(dy < 0 ? 1 : -1);                 // swipe up = next, like scrolling
+});
+$('cCards').addEventListener('pointercancel', () => { _railSwipeY = null; });
+$('cCards').addEventListener('wheel', e => {
+  e.preventDefault();
+  _wake();
+  _railHold();
+  _railWheel += e.deltaY;
+  if (Math.abs(_railWheel) < 60 || railAnim) return;
+  _railAdvance(_railWheel > 0 ? 1 : -1);
+  _railWheel = 0;
+}, {passive: false});
+$('cRailPrev').addEventListener('click', () => { _railHold(); _railAdvance(-1); });
+$('cRailNext').addEventListener('click', () => { _railHold(); _railAdvance(1); });
 
 function renderC(){
   $('cCount').textContent = LIVE.length;
