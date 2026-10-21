@@ -19,6 +19,18 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.143] — 2026-10-21
+
+### Fixed
+- **Stats detail panels open in a blink instead of taking up to a minute.** Opening Fastest, Slowest, Highest or Lowest altitude or Unique aircraft today, a Top types or Top operators row, or the full category or country breakdown could take 10–60 seconds on an install with a few weeks of history, because the database read every sighting it had kept to answer a question about today. These panels now read only today's sightings and typically open in well under a tenth of a second. They show the same results as before.
+- **The "All categories" breakdown matches the Category mix card.** The full breakdown still sorted aircraft with an old copy of the category rules, so its numbers could disagree with the card it opens from, particularly for helicopters and regional airliners. It now uses the card's own categories, so the counts agree. Clicking its General Aviation row also opens the right Search now.
+
+### Behind the scenes
+- Every drill query that reads today's slice of `all_sightings` pins `INDEXED BY idx_all_seen_icao`, and so does the per-row lookup of each record-setting sighting. With no `sqlite_stat4`, SQLite guesses that `seen_at >= midnight` keeps about a quarter of the table and walks all of `idx_all_icao` to avoid a GROUP BY sort. A fresh ANALYZE doesn't change that guess.
+- The four extremes drills find each aircraft's peak with a window `MAX`/`MIN … OVER (PARTITION BY icao)` in one pass, instead of a CTE joined back to the table. A join let other planner statistics choose other slow plans: a skip-scan on busy installs, and a nested scan after a fresh install's one-aircraft first poll.
+- `all_category_mix` takes its counts from the card face's own query and today's totals from a pinned slice that probes `seen_aircraft` by primary key. The category labels live in one shared map.
+- New `test_stats_drills.py` EXPLAINs every statement the drills run under five planner-statistics profiles and allows only index seeks. It also covers the record-setting sightings and card/drill agreement. Checked against SQLite 3.34 through 3.50.
+
 ## [3.4.142] — 2026-10-21
 
 ### Changed

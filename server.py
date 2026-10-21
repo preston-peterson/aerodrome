@@ -1,4 +1,4 @@
-# Version: 3.4.142
+# Version: 3.4.143
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -4125,6 +4125,19 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     # Flat lookup: card_name → group_name
     _CARD_TO_GROUP = {c: g for g, _, cs in CARD_GROUPS for c in cs}
 
+    # Display label for each seen_aircraft.category token (the column stores
+    # the lowercase token; categorize.py owns the rules). v3.4.143: one map
+    # for the category_mix card face and both of its drills — the
+    # all_category_mix drill had drifted onto its own stale copy of the
+    # old rules, so its counts disagreed with the card.
+    _CATEGORY_LABELS = {
+        "commercial":       "Commercial",
+        "general_aviation": "General Aviation",
+        "military":         "Military",
+        "helicopter":       "Helicopter",
+        "unknown":          "Unknown",
+    }
+
     def _group_enabled(groups, group_name):
         """A group is enabled if config says so or if unspecified (default on)."""
         return bool(groups.get(group_name, True))
@@ -4855,13 +4868,6 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 # "Military", "Helicopter", "Unknown" (the column
                 # stores lowercase tokens). Order: descending by count,
                 # same as before. Empty buckets are dropped.
-                _CAT_LABELS = {
-                    "commercial":       "Commercial",
-                    "general_aviation": "General Aviation",
-                    "military":         "Military",
-                    "helicopter":       "Helicopter",
-                    "unknown":          "Unknown",
-                }
                 rows = q("""
                     SELECT category, COUNT(*) AS n
                     FROM seen_aircraft
@@ -4869,7 +4875,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                     GROUP BY category
                 """, (start_ts,))
                 cl = [
-                    {"category": _CAT_LABELS.get(r["category"], r["category"]),
+                    {"category": _CATEGORY_LABELS.get(r["category"], r["category"]),
                      "n": r["n"]}
                     for r in rows if r["n"] > 0
                 ]
@@ -5461,28 +5467,43 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 # for the rare case where an aircraft hit the same peak
                 # speed twice — preferring the earlier occurrence feels
                 # more honest (this is when it first got there).
+                #
+                # v3.4.143: one pass over today's slice, pinned to
+                # idx_all_seen_icao — as is every other read here that takes
+                # today's slice with no upper bound and groups by icao
+                # (slowest, highest/lowest_altitude, unique_today, top_types,
+                # top_operators, all_category_mix, all_countries). Only that
+                # shape tempts the planner: with no stat4 it guesses that
+                # `seen_at >= midnight` keeps ~25% of the table, so it walked
+                # all of idx_all_icao (every row ever kept) to skip a GROUP BY
+                # sort, then joined back through each aircraft's whole
+                # history — 12-15 s per drill on a busy install for a slice
+                # under 1% of the table. A fresh ANALYZE keeps that guess.
+                # The per-aircraft peak is a window MAX over the same slice
+                # rather than a CTE joined back: with a join left in, other
+                # planner statistics picked other slow plans (a 52-58 s
+                # skip-scan on a busy install, a scan of the peaks per row
+                # after a one-aircraft first poll). init_db creates the
+                # index on every start.
                 raw = q("""
-                    WITH peaks AS (
-                        SELECT icao,
-                               MAX(speed) AS peak_speed
-                        FROM all_sightings
+                    WITH r AS (
+                        SELECT icao, callsign, aircraft_type, speed AS v, seen_at,
+                               MAX(speed) OVER (PARTITION BY icao) AS peak
+                        FROM all_sightings INDEXED BY idx_all_seen_icao
                         WHERE seen_at >= ? AND speed IS NOT NULL
                           AND typeof(speed) IN ('integer', 'real')
                           AND icao NOT LIKE '~%'
-                        GROUP BY icao
                     )
-                    SELECT s.icao,
-                           MAX(s.callsign) AS callsign,
-                           MAX(s.aircraft_type) AS aircraft_type,
-                           p.peak_speed AS metric,
-                           MIN(s.seen_at) AS seen_at
-                    FROM all_sightings s
-                    JOIN peaks p ON p.icao = s.icao
-                    WHERE s.seen_at >= ?
-                      AND s.speed = p.peak_speed
-                    GROUP BY s.icao, p.peak_speed
-                    ORDER BY metric DESC
-                """, (start_ts, start_ts))
+                    SELECT icao,
+                           MAX(callsign) AS callsign,
+                           MAX(aircraft_type) AS aircraft_type,
+                           peak AS metric,
+                           MIN(seen_at) AS seen_at
+                    FROM r
+                    WHERE v = peak
+                    GROUP BY icao, peak
+                    ORDER BY metric DESC, icao
+                """, (start_ts,))
                 rows = []
                 for r in raw:
                     m = _to_number(r["metric"]) or 0
@@ -5504,29 +5525,27 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 # seen_at is the timestamp of the slowest-speed sighting
                 # for each ICAO (not MAX(seen_at)), so the frontend can
                 # highlight the exact moment on the aircraft detail page.
+                # v3.4.143: one pinned pass with a window MIN/MAX (see fastest).
                 raw = q("""
-                    WITH lows AS (
-                        SELECT icao,
-                               MIN(speed) AS low_speed
-                        FROM all_sightings
+                    WITH r AS (
+                        SELECT icao, callsign, aircraft_type, speed AS v, seen_at,
+                               MIN(speed) OVER (PARTITION BY icao) AS low
+                        FROM all_sightings INDEXED BY idx_all_seen_icao
                         WHERE seen_at >= ? AND speed IS NOT NULL
                           AND typeof(speed) IN ('integer', 'real')
                           AND speed >= 40
                           AND icao NOT LIKE '~%'
-                        GROUP BY icao
                     )
-                    SELECT s.icao,
-                           MAX(s.callsign) AS callsign,
-                           MAX(s.aircraft_type) AS aircraft_type,
-                           l.low_speed AS metric,
-                           MIN(s.seen_at) AS seen_at
-                    FROM all_sightings s
-                    JOIN lows l ON l.icao = s.icao
-                    WHERE s.seen_at >= ?
-                      AND s.speed = l.low_speed
-                    GROUP BY s.icao, l.low_speed
-                    ORDER BY metric ASC
-                """, (start_ts, start_ts))
+                    SELECT icao,
+                           MAX(callsign) AS callsign,
+                           MAX(aircraft_type) AS aircraft_type,
+                           low AS metric,
+                           MIN(seen_at) AS seen_at
+                    FROM r
+                    WHERE v = low
+                    GROUP BY icao, low
+                    ORDER BY metric ASC, icao
+                """, (start_ts,))
                 rows = [{
                     "icao": r["icao"],
                     "callsign": (r["callsign"] or "").strip(),
@@ -5543,27 +5562,26 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 # seen_at is the timestamp of the peak-altitude sighting
                 # so the frontend can highlight the exact moment on the
                 # aircraft detail page.
+                # v3.4.143: one pinned pass with a window MIN/MAX (see fastest).
                 raw = q("""
-                    WITH peaks AS (
-                        SELECT icao, MAX(altitude) AS peak_alt
-                        FROM all_sightings
+                    WITH r AS (
+                        SELECT icao, callsign, aircraft_type, altitude AS v, seen_at,
+                               MAX(altitude) OVER (PARTITION BY icao) AS peak
+                        FROM all_sightings INDEXED BY idx_all_seen_icao
                         WHERE seen_at >= ? AND altitude IS NOT NULL
                           AND typeof(altitude) IN ('integer', 'real')
                           AND icao NOT LIKE '~%'
-                        GROUP BY icao
                     )
-                    SELECT s.icao,
-                           MAX(s.callsign) AS callsign,
-                           MAX(s.aircraft_type) AS aircraft_type,
-                           p.peak_alt AS metric,
-                           MIN(s.seen_at) AS seen_at
-                    FROM all_sightings s
-                    JOIN peaks p ON p.icao = s.icao
-                    WHERE s.seen_at >= ?
-                      AND s.altitude = p.peak_alt
-                    GROUP BY s.icao, p.peak_alt
-                    ORDER BY metric DESC
-                """, (start_ts, start_ts))
+                    SELECT icao,
+                           MAX(callsign) AS callsign,
+                           MAX(aircraft_type) AS aircraft_type,
+                           peak AS metric,
+                           MIN(seen_at) AS seen_at
+                    FROM r
+                    WHERE v = peak
+                    GROUP BY icao, peak
+                    ORDER BY metric DESC, icao
+                """, (start_ts,))
                 rows = [{
                     "icao": r["icao"],
                     "callsign": (r["callsign"] or "").strip(),
@@ -5577,28 +5595,27 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 # Exclude ground (altitude 0 / null / "ground"). typeof filter
                 # guards against stringy values in the REAL column. seen_at
                 # is the timestamp of the lowest-altitude sighting.
+                # v3.4.143: one pinned pass with a window MIN/MAX (see fastest).
                 raw = q("""
-                    WITH lows AS (
-                        SELECT icao, MIN(altitude) AS low_alt
-                        FROM all_sightings
+                    WITH r AS (
+                        SELECT icao, callsign, aircraft_type, altitude AS v, seen_at,
+                               MIN(altitude) OVER (PARTITION BY icao) AS low
+                        FROM all_sightings INDEXED BY idx_all_seen_icao
                         WHERE seen_at >= ? AND altitude IS NOT NULL
                           AND typeof(altitude) IN ('integer', 'real')
                           AND altitude > 0
                           AND icao NOT LIKE '~%'
-                        GROUP BY icao
                     )
-                    SELECT s.icao,
-                           MAX(s.callsign) AS callsign,
-                           MAX(s.aircraft_type) AS aircraft_type,
-                           l.low_alt AS metric,
-                           MIN(s.seen_at) AS seen_at
-                    FROM all_sightings s
-                    JOIN lows l ON l.icao = s.icao
-                    WHERE s.seen_at >= ?
-                      AND s.altitude = l.low_alt
-                    GROUP BY s.icao, l.low_alt
-                    ORDER BY metric ASC
-                """, (start_ts, start_ts))
+                    SELECT icao,
+                           MAX(callsign) AS callsign,
+                           MAX(aircraft_type) AS aircraft_type,
+                           low AS metric,
+                           MIN(seen_at) AS seen_at
+                    FROM r
+                    WHERE v = low
+                    GROUP BY icao, low
+                    ORDER BY metric ASC, icao
+                """, (start_ts,))
                 rows = [{
                     "icao": r["icao"],
                     "callsign": (r["callsign"] or "").strip(),
@@ -5659,6 +5676,9 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 # All unique aircraft seen today, sorted by first contact.
                 # The metric column shows duration (first..last), matching the
                 # overall stat's notion of "today's traffic".
+                # v3.4.143: index pinned (see fastest); the icao tiebreak
+                # spells out the order aircraft sharing a first poll have
+                # always come back in.
                 raw = q("""
                     SELECT icao,
                            MAX(callsign) AS callsign,
@@ -5666,10 +5686,10 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                            MIN(seen_at) AS first_seen,
                            MAX(seen_at) AS last_seen,
                            COUNT(*) AS hits
-                    FROM all_sightings
+                    FROM all_sightings INDEXED BY idx_all_seen_icao
                     WHERE seen_at >= ?
                     GROUP BY icao
-                    ORDER BY first_seen ASC
+                    ORDER BY first_seen ASC, icao
                 """, (start_ts,))
                 for r in raw:
                     hits = int(r["hits"] or 0)
@@ -5792,16 +5812,18 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                     conn.close()
                     return JSONResponse(status_code=400,
                                         content={"error": "value parameter required for top_types drill"})
+                # v3.4.143: index pinned (see fastest), icao tiebreak as
+                # in unique_today.
                 raw = q("""
                     SELECT icao,
                            MAX(callsign) AS callsign,
                            MAX(aircraft_type) AS aircraft_type,
                            MIN(seen_at) AS first_seen,
                            COUNT(*) AS hits
-                    FROM all_sightings
+                    FROM all_sightings INDEXED BY idx_all_seen_icao
                     WHERE seen_at >= ? AND UPPER(aircraft_type) = ?
                     GROUP BY icao
-                    ORDER BY first_seen ASC
+                    ORDER BY first_seen ASC, icao
                 """, (start_ts, value.upper()))
                 for r in raw:
                     hits = int(r["hits"] or 0)
@@ -5823,16 +5845,18 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                     return JSONResponse(status_code=400,
                                         content={"error": "value parameter required for top_operators drill"})
                 target_prefix = value.strip().upper()
+                # v3.4.143: index pinned (see fastest), icao tiebreak as
+                # in unique_today.
                 raw = q("""
                     SELECT icao,
                            MAX(callsign) AS callsign,
                            MAX(aircraft_type) AS aircraft_type,
                            MIN(seen_at) AS first_seen,
                            COUNT(*) AS hits
-                    FROM all_sightings
+                    FROM all_sightings INDEXED BY idx_all_seen_icao
                     WHERE seen_at >= ? AND callsign IS NOT NULL AND callsign != ''
                     GROUP BY icao
-                    ORDER BY first_seen ASC
+                    ORDER BY first_seen ASC, icao
                 """, (start_ts,))
                 for r in raw:
                     prefix = _operator_prefix(r["callsign"] or "")
@@ -5910,14 +5934,8 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 # "General Aviation", etc.); the column stores the
                 # lowercase token. Map back to the token before the
                 # WHERE filter.
-                _CAT_LABEL_TO_TOKEN = {
-                    "Commercial":       "commercial",
-                    "General Aviation": "general_aviation",
-                    "Military":         "military",
-                    "Helicopter":       "helicopter",
-                    "Unknown":          "unknown",
-                }
-                target_token = _CAT_LABEL_TO_TOKEN.get(value.strip())
+                target_token = {label: token for token, label
+                                in _CATEGORY_LABELS.items()}.get(value.strip())
                 if target_token is None:
                     # Unknown label — return empty result rather than
                     # 400, since the frontend may have a stale label
@@ -6463,86 +6481,83 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 rows.sort(key=lambda x: -x["aircraft_count"])
 
             elif card == "all_category_mix":
-                # v2.41.22: full category distribution. Categories are computed
-                # at query time from aircraft_type / type_desc / military lookup,
-                # NOT stored in a column. This reuses the exact classification
-                # logic from the top-5 card face (see _card_enabled("category_mix")
-                # in get_stats_today) so the numbers agree.
-                cat_raw = q("""
-                    SELECT icao, aircraft_type, type_desc,
-                           MIN(seen_at) AS first_seen, MAX(seen_at) AS last_seen,
-                           COUNT(*) AS sightings
-                    FROM all_sightings
-                    WHERE seen_at >= ?
-                    GROUP BY icao
+                # v2.41.22: full category distribution.
+                #
+                # v3.4.143: the category comes from seen_aircraft.category
+                # with the card face's own WHERE, so each aircraft_count
+                # equals the category_mix card. This drill used to classify
+                # today's sightings itself with an inline copy of the pre-v2.89
+                # heuristics (military from today's military_sightings, type
+                # from today's rows rather than the stored sticky column), so
+                # it could already differ from the card, and the gap widened
+                # when categorize.py moved on (v3.4.141). sightings /
+                # first_seen / last_seen are still today's per-aircraft
+                # all_sightings aggregates, summed per category (index
+                # pinned — see fastest). Labels come from the shared
+                # _CATEGORY_LABELS.
+                counts = q("""
+                    SELECT category, COUNT(*) AS n
+                    FROM seen_aircraft
+                    WHERE last_seen_at >= ? AND category IS NOT NULL
+                    GROUP BY category
                 """, (start_ts,))
-                mil_icaos = set(r["icao"] for r in q(
-                    "SELECT DISTINCT icao FROM military_sightings WHERE seen_at >= ?",
-                    (start_ts,)
-                ))
-                heli_types = {"H60", "H47", "EC35", "EC45", "EC55", "AS50", "AS55",
-                              "R22", "R44", "B06", "B206", "B407", "B412", "B429",
-                              "B430", "A109", "A119", "A139"}
-                by_cat = {}
-                for r in cat_raw:
-                    icao = (r["icao"] or "").upper()
-                    t = (r["aircraft_type"] or "").upper()
-                    desc = (r["type_desc"] or "").lower()
-                    if icao in mil_icaos:
-                        cat = "Military"
-                    elif t in heli_types or "helicopter" in desc:
-                        cat = "Helicopter"
-                    elif t and (t.startswith("A3") or t.startswith("A2") or
-                                t.startswith("B7") or t.startswith("B3") or
-                                t.startswith("CRJ") or t.startswith("E1") or
-                                t.startswith("E7") or t in {
-                                    "MD80","MD82","MD83","MD88","MD90",
-                                    "A220","A319","A320","A321","A330",
-                                    "A340","A350","A380",
-                                }):
-                        cat = "Commercial"
-                    elif t:
-                        cat = "General Aviation"
-                    else:
-                        cat = "Unknown"
-                    slot = by_cat.setdefault(cat, {
-                        "icaos": set(), "sightings": 0,
-                        "first": r["first_seen"], "last": r["last_seen"],
-                    })
-                    slot["icaos"].add(r["icao"])
-                    slot["sightings"] += int(r["sightings"] or 0)
-                    if r["first_seen"] < slot["first"]:
-                        slot["first"] = r["first_seen"]
-                    if r["last_seen"] > slot["last"]:
-                        slot["last"] = r["last_seen"]
-                for cat, slot in by_cat.items():
+                # Today's slice drives a primary-key probe of seen_aircraft
+                # (CROSS JOIN fixes that loop order), so no planner
+                # statistics can turn it into a scan per aircraft.
+                totals = {r["category"]: r for r in q("""
+                    SELECT a.category,
+                           SUM(t.sightings) AS sightings,
+                           MIN(t.first_seen) AS first_seen,
+                           MAX(t.last_seen) AS last_seen
+                    FROM (
+                        SELECT icao, COUNT(*) AS sightings,
+                               MIN(seen_at) AS first_seen,
+                               MAX(seen_at) AS last_seen
+                        FROM all_sightings INDEXED BY idx_all_seen_icao
+                        WHERE seen_at >= ?
+                        GROUP BY icao
+                    ) t
+                    CROSS JOIN seen_aircraft a ON a.icao = t.icao
+                    WHERE a.last_seen_at >= ? AND a.category IS NOT NULL
+                    GROUP BY a.category
+                """, (start_ts, start_ts))}
+                for c in counts:
+                    n, t = c["n"], totals.get(c["category"])
+                    first = t["first_seen"] if t else None
                     rows.append({
-                        "category": cat,
-                        "aircraft_count": len(slot["icaos"]),
-                        "sightings": slot["sightings"],
-                        "first_seen": slot["first"],
-                        "last_seen": slot["last"],
-                        "metric": len(slot["icaos"]),
-                        "metric_label": f"{len(slot['icaos']):,}",
-                        "seen_at": slot["first"],
+                        "category": _CATEGORY_LABELS.get(c["category"], c["category"]),
+                        "aircraft_count": n,
+                        "sightings": t["sightings"] if t else 0,
+                        "first_seen": first,
+                        "last_seen": t["last_seen"] if t else None,
+                        "metric": n,
+                        "metric_label": f"{n:,}",
+                        "seen_at": first,
                     })
                 rows.sort(key=lambda x: -x["aircraft_count"])
 
             elif card == "all_countries":
-                # v2.50.27: full country distribution. Country is computed
-                # at query time from the ICAO 24-bit address via
-                # countries.country_for_icao — same logic the top_countries
-                # card face uses, so the numbers agree. Returns the full
-                # distribution not capped at top 5. Row clicks route back
-                # through the top_countries drill (handled above).
+                # v2.50.27: full country distribution, not capped at top 5.
+                # Row clicks route back through the top_countries drill
+                # (handled above). Country is recomputed here from each ICAO
+                # with countries.country_for_icao; the top_countries card face
+                # (v2.85.2) and its row drill read the stored
+                # seen_aircraft.country instead, which the collector writes
+                # from the same function on every sighting.
                 from countries import country_for_icao
+                # v3.4.143: index pinned (see fastest). Reading only
+                # (icao, seen_at) lets idx_all_seen_icao cover the scan —
+                # the bare callsign / aircraft_type columns were never
+                # used. ORDER BY icao keeps countries tied on
+                # aircraft_count in the order they have always come back.
                 country_raw = q("""
-                    SELECT icao, callsign, aircraft_type,
+                    SELECT icao,
                            MIN(seen_at) AS first_seen, MAX(seen_at) AS last_seen,
                            COUNT(*) AS sightings
-                    FROM all_sightings
+                    FROM all_sightings INDEXED BY idx_all_seen_icao
                     WHERE seen_at >= ?
                     GROUP BY icao
+                    ORDER BY icao
                 """, (start_ts,))
                 by_country = {}
                 for r in country_raw:
@@ -6625,10 +6640,13 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                     continue
                 # The sighting that set this aircraft's record. Pick the first
                 # row at that exact timestamp (most aircraft only have one).
+                # v3.4.143: pinned — (seen_at, icao) is an exact seek, where
+                # icao alone walks the aircraft's whole history, and some
+                # planner statistics chose a full scan here for every row.
                 enrich_row = q(
                     """
                     SELECT altitude, speed, lat, lon
-                    FROM all_sightings
+                    FROM all_sightings INDEXED BY idx_all_seen_icao
                     WHERE icao = ? AND seen_at = ?
                     LIMIT 1
                     """,

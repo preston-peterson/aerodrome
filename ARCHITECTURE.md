@@ -109,7 +109,7 @@ Thirteen SQLite tables, defined across `collector.py::init_db()` and the version
 - **`_aerodrome_meta`** — pre-v2.50.x migration markers. Legacy; kept for backward compatibility.
 - **`schema_version`** — v2.50.x+ migration framework state. Every migration step bumps the version and records its name and timestamp.
 
-Indexes are built in `init_db()` and the relevant migration files. The most-used is `idx_all_seen` on `all_sightings(seen_at)` — almost every Stats-tab query filters by a time window.
+Indexes are built in `init_db()` (which runs `CREATE INDEX IF NOT EXISTS` on every start) and the relevant migration files. The workhorse is `idx_all_seen_icao` on `all_sightings(seen_at, icao)`: Stats card and drill reads of a time window — usually today's slice — seek it and can serve `COUNT(DISTINCT icao)` / `GROUP BY icao` from the index alone. Without `sqlite_stat4`, SQLite guesses that a one-sided `seen_at >= ?` keeps about a quarter of the table, and for a `GROUP BY icao` it may walk all of `idx_all_icao` instead — seconds to minutes on a busy install. Reads of that shape therefore pin the index with `INDEXED BY idx_all_seen_icao` (v2.42.7 for the card faces, v3.4.143 for the drill panels); `test_stats_drills.py` checks the drills' plans under several planner-statistics profiles.
 
 **Retention** is configurable per table (`retention.all_days`, `.military_days`, `.watchlist_days` in config.yaml) and is enforced by `cleanup_old_data()` which the collector calls on each poll. There is no background garbage collector; old rows are deleted inline with the next write.
 

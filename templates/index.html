@@ -1,4 +1,4 @@
-<!-- Version: 3.4.142 -->
+<!-- Version: 3.4.143 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -9039,9 +9039,9 @@ function _searchQueryForStatsCard(cardId, value){
             return `military ${v}`;
         case 'category_mix':
         case 'all_category_mix':
-            // Aircraft category (Commercial, General Aviation, etc.).
-            // Free-text search matches against type description.
-            return v;
+            // Rows carry the display label ("General Aviation"); Search's
+            // category tokens are the snake_case forms (general_aviation).
+            return String(v).trim().toLowerCase().replace(/\s+/g, '_');
         case 'watchlist_frequency':
             return 'watchlist';
         default:
