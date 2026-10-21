@@ -927,7 +927,7 @@ class TestRouteCacheMigration(unittest.TestCase):
             self.assertTrue(result["ok"], result.get("error"))
             self.assertEqual(result["starting_version"], 11)
             self.assertEqual(result["ending_version"], CURRENT_SCHEMA_VERSION)
-            self.assertEqual(len(result["applied"]), 3)  # v12 (route_cache) + v13 (photo_cache) + v14 (airports_json, v3.4.109)
+            self.assertEqual(len(result["applied"]), 5)  # v12 (route_cache) + v13 (photo_cache) + v14 (airports_json, v3.4.109) + v15 (hexdb type_code) + v16 (source-type cleanup, v3.4.138)
             self.assertIn("route_cache", self._tables(conn))
         finally:
             conn.close()
@@ -1034,7 +1034,7 @@ class TestPhotoCacheMigration(unittest.TestCase):
             self.assertTrue(result["ok"], result.get("error"))
             self.assertEqual(result["starting_version"], 12)
             self.assertEqual(result["ending_version"], CURRENT_SCHEMA_VERSION)
-            self.assertEqual(len(result["applied"]), 2)  # v13 (photo_cache) + v14 (route airports_json)
+            self.assertEqual(len(result["applied"]), 4)  # v13 (photo_cache) + v14 (route airports_json) + v15 (hexdb type_code) + v16 (source-type cleanup)
             self.assertIn("photo_cache", self._tables(conn))
         finally:
             conn.close()
@@ -1155,7 +1155,7 @@ class TestRouteAirportsMigration(unittest.TestCase):
             self.assertTrue(result["ok"], result.get("error"))
             self.assertEqual(result["starting_version"], 13)
             self.assertEqual(result["ending_version"], CURRENT_SCHEMA_VERSION)
-            self.assertEqual(len(result["applied"]), 1)  # only v14 ran
+            self.assertEqual(len(result["applied"]), 3)  # v14 + v15 (hexdb type_code) + v16 (source-type cleanup)
             self.assertEqual(self._cols(conn), self.EXPECTED_COLS)
             self.assertEqual(
                 conn.execute("SELECT COUNT(*) FROM route_cache").fetchone()[0], 0)
@@ -1192,6 +1192,195 @@ class TestRouteAirportsMigration(unittest.TestCase):
             self.assertEqual(_json.loads(row[2]), chain)
         finally:
             conn.close()
+
+
+class TestHexdbTypeCodeMigration(unittest.TestCase):
+    """v15 (v3.4.138): hexdb_cache.type_code — hexdb's ICAOTypeCode, the
+    type-code source for feeds without `t` (stock readsb, dump1090-fa).
+    NULL = pre-v15 row (re-resolved once); '' = hexdb has no type code."""
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.db')
+        self.tmp.close()
+
+    def tearDown(self):
+        os.unlink(self.tmp.name)
+
+    def _cols(self, conn):
+        return {r[1] for r in conn.execute(
+            "PRAGMA table_info(hexdb_cache)").fetchall()}
+
+    def _stamp(self, conn, version):
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL,
+                description TEXT NOT NULL, app_version TEXT NOT NULL)""")
+        conn.execute(
+            "INSERT INTO schema_version (version, applied_at, description, app_version) "
+            "VALUES (?, 1700000000, 'test-stamp', 'test')", (version,))
+        conn.commit()
+
+    def test_fresh_install_has_type_code(self):
+        # Fresh install: the full chain (0 → CURRENT) lands the column.
+        conn = _make_v2_50_db(self.tmp.name)
+        try:
+            result = apply_schema_migrations(conn, "test")
+            self.assertTrue(result["ok"], result.get("error"))
+            self.assertEqual(result["ending_version"], CURRENT_SCHEMA_VERSION)
+            self.assertIn("type_code", self._cols(conn))
+        finally:
+            conn.close()
+
+    def test_init_db_then_migrations_is_clean(self):
+        # The real fresh-install order: init_db already creates the column,
+        # so v15's ALTER must take the duplicate-column no-op path.
+        from collector import init_db
+        init_db(self.tmp.name)
+        conn = sqlite3.connect(self.tmp.name)
+        try:
+            self.assertIn("type_code", self._cols(conn))
+            result = apply_schema_migrations(conn, "test")
+            self.assertTrue(result["ok"], result.get("error"))
+            self.assertEqual(result["ending_version"], CURRENT_SCHEMA_VERSION)
+        finally:
+            conn.close()
+
+    def test_upgrade_from_v14_runs_v15_and_keeps_rows(self):
+        # Simulated prior-version upgrade: a v14 DB with a cached positive
+        # entry. v15 (+ v16) run; the existing row survives with a NULL
+        # type_code (the "never captured" marker the resolver re-fetches).
+        conn = _make_v2_50_db(self.tmp.name)
+        try:
+            self.assertNotIn("type_code", self._cols(conn))
+            conn.execute(
+                "INSERT INTO hexdb_cache (icao, registration, resolved_at, "
+                "last_outcome, hit_count) VALUES ('A1B2C3','N100EX',1700000000,'positive',2)")
+            self._stamp(conn, 14)
+            result = apply_schema_migrations(conn, "test")
+            self.assertTrue(result["ok"], result.get("error"))
+            self.assertEqual(result["starting_version"], 14)
+            self.assertEqual(len(result["applied"]), 2)  # v15 + v16 (source-type cleanup)
+            self.assertEqual(
+                conn.execute("SELECT registration, hit_count, type_code "
+                             "FROM hexdb_cache WHERE icao='A1B2C3'").fetchone(),
+                ('N100EX', 2, None))
+        finally:
+            conn.close()
+
+    def test_v15_idempotent_rerun(self):
+        from schema_migrations import _migration_v15_hexdb_type_code
+        conn = _make_v2_50_db(self.tmp.name)
+        try:
+            _migration_v15_hexdb_type_code(conn)
+            conn.execute(
+                "INSERT INTO hexdb_cache (icao, registration, resolved_at, "
+                "last_outcome, hit_count, type_code) "
+                "VALUES ('A1B2C3','N100EX',1700000000,'positive',0,'A321')")
+            _migration_v15_hexdb_type_code(conn)  # duplicate column → no-op
+            self.assertEqual(
+                conn.execute("SELECT type_code FROM hexdb_cache "
+                             "WHERE icao='A1B2C3'").fetchone(), ('A321',))
+        finally:
+            conn.close()
+
+
+class TestFeedSourceTypeCleanupMigration(unittest.TestCase):
+    """v16 (v3.4.138): blank the feed message-source values ("adsb_icao",
+    "mlat", …) that pre-v3.4.138 ingest stored as aircraft types, in the
+    lifetime tables. Built on the real init_db schema, upgraded from v15."""
+
+    T = 1700000000
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.db')
+        self.tmp.close()
+        from collector import init_db
+        init_db(self.tmp.name)
+        self.conn = sqlite3.connect(self.tmp.name)
+        self.assertTrue(apply_schema_migrations(self.conn, "test")["ok"])
+        # Back to v15, then plant the pre-fix data shape.
+        self.conn.execute("DELETE FROM schema_version WHERE version = 16")
+        T = self.T
+        self.conn.executemany(
+            "INSERT INTO seen_aircraft (icao, first_seen_at, first_aircraft_type, "
+            "aircraft_type, aircraft_type_desc, category, fts_dirty) "
+            "VALUES (?, ?, ?, ?, ?, ?, 0)", [
+                ("A1B2C3", T, "mlat", "adsb_icao", "", "general_aviation"),
+                ("A1B2C4", T, "tisb_other", "tisb_other", "", "military"),
+                ("A1B2C5", T, "B738", "B738", "Boeing 737-800", "commercial"),
+                ("A1B2C6", T, "mode_s", "C172", "Cessna 172", "general_aviation"),
+            ])
+        self.conn.executemany(
+            "INSERT INTO sightings_hourly (icao, hour_bucket, aircraft_type, "
+            "sighting_count, first_seen_at, last_seen_at) VALUES (?, ?, ?, 1, ?, ?)",
+            [("A1B2C3", T, "mlat", T, T), ("A1B2C5", T, "B738", T, T)])
+        self.conn.execute(
+            "INSERT INTO military_hourly (icao, hour_bucket, aircraft_type, "
+            "sighting_count, first_seen_at, last_seen_at) "
+            "VALUES ('A1B2C4', ?, 'tisb_other', 1, ?, ?)", (T, T, T))
+        self.conn.execute(
+            "INSERT INTO watchlist_hourly (icao, hour_bucket, watchlist_label, "
+            "aircraft_type, sighting_count, first_seen_at, last_seen_at) "
+            "VALUES ('A1B2C3', ?, 'demo', 'adsb_icao', 1, ?, ?)", (T, T, T))
+        self.conn.executemany(
+            "INSERT INTO stats_records (record_type, value, icao, aircraft_type, set_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [("fastest_ever", 600, "A1B2C3", "mode_s", T),
+             ("highest_ever", 45000, "A1B2C5", "B738", T)])
+        self.conn.commit()
+
+    def tearDown(self):
+        self.conn.close()
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.unlink(self.tmp.name + suffix)
+            except FileNotFoundError:
+                pass
+
+    def _seen(self, icao):
+        return self.conn.execute(
+            "SELECT aircraft_type, first_aircraft_type, category, fts_dirty "
+            "FROM seen_aircraft WHERE icao = ?", (icao,)).fetchone()
+
+    def test_upgrade_from_v15_runs_only_v16(self):
+        result = apply_schema_migrations(self.conn, "test")
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertEqual(result["starting_version"], 15)
+        self.assertEqual(len(result["applied"]), 1)
+
+    def test_seen_aircraft_cleaned_and_recategorized(self):
+        from categorize import classify
+        apply_schema_migrations(self.conn, "test")
+        self.assertEqual(self._seen("A1B2C3"), ("", "", "unknown", 1))
+        # Military stays military even with its type blanked.
+        self.assertEqual(self._seen("A1B2C4"), ("", "", "military", 1))
+        # Legit values untouched — row not even marked dirty.
+        self.assertEqual(self._seen("A1B2C5"), ("B738", "B738", "commercial", 0))
+        # Only the bad first type is blanked; the real current type stays.
+        self.assertEqual(self._seen("A1B2C6"),
+                         ("C172", "", classify("C172", "Cessna 172", False), 1))
+
+    def test_rollups_and_records_cleaned(self):
+        apply_schema_migrations(self.conn, "test")
+        q = self.conn.execute
+        self.assertEqual(
+            q("SELECT icao, aircraft_type FROM sightings_hourly ORDER BY icao").fetchall(),
+            [("A1B2C3", ""), ("A1B2C5", "B738")])
+        self.assertEqual(q("SELECT aircraft_type FROM military_hourly").fetchone(), ("",))
+        self.assertEqual(q("SELECT aircraft_type FROM watchlist_hourly").fetchone(), ("",))
+        self.assertEqual(
+            q("SELECT record_type, aircraft_type FROM stats_records "
+              "ORDER BY record_type").fetchall(),
+            [("fastest_ever", ""), ("highest_ever", "B738")])
+
+    def test_v16_idempotent_rerun(self):
+        from schema_migrations import _migration_v16_feed_source_type_cleanup
+        apply_schema_migrations(self.conn, "test")
+        self.conn.execute("UPDATE seen_aircraft SET fts_dirty = 0")
+        _migration_v16_feed_source_type_cleanup(self.conn)
+        self.assertEqual(
+            self.conn.execute("SELECT SUM(fts_dirty) FROM seen_aircraft").fetchone(), (0,))
+        self.assertEqual(self._seen("A1B2C3"), ("", "", "unknown", 0))
 
 
 if __name__ == "__main__":

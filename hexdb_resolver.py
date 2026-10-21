@@ -16,8 +16,10 @@ unresolved forever.
 This module fixes that by hoisting the queue/worker into a shared
 module that both the collector and server.py can import and use:
 
-  - The collector enqueues every newly-seen ICAO at fetch-and-store
-    time (see collector.fetch_and_store).
+  - The collector enqueues every aircraft whose feed carries no type
+    code, so hexdb's ICAOTypeCode can stand in (see
+    collector._warm_type_codes; v3.4.138 — this module had been left
+    unwired, so until then only the server endpoints fed the resolver).
   - The server still uses /api/resolve-tail's inline + queued path
     for tabs that need urgent resolution (Live, Watchlist, etc).
   - Both producers feed the same single worker, which calls
@@ -165,7 +167,7 @@ def _worker_loop() -> None:
     # collector at module load. The worker only ever runs after
     # everything has imported, so a deferred import is safe.
     try:
-        from collector import resolve_icao_to_tail
+        from collector import resolve_icao_to_tail, _ICAO_CACHE
     except ImportError as e:
         logger.error(f"hexdb resolver worker: cannot import collector: {e}")
         return
@@ -180,6 +182,12 @@ def _worker_loop() -> None:
             resolve_icao_to_tail(icao)
         except Exception as e:
             logger.warning(f"hexdb resolver worker: error resolving {icao}: {e}")
+        # A transient failure (network error) leaves no answer cached —
+        # forget the ICAO so its next sighting can re-enqueue it, rather
+        # than leaving it unresolved for the rest of the process life.
+        if icao not in _ICAO_CACHE:
+            with _seen_lock:
+                _seen.discard(icao)
         time.sleep(_WORKER_SLEEP_SEC)
 
 

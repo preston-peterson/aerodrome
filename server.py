@@ -1,4 +1,4 @@
-# Version: 3.4.136
+# Version: 3.4.138
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -35,7 +35,7 @@ from urllib.parse import urlsplit
 # Local — ICAO code → friendly display name lookups for the Stats cards.
 from designators import airline_name, aircraft_type_name
 # v2.50.13: central DB-connection helper that applies tuning pragmas
-from collector import _open_db_conn
+from collector import _open_db_conn, aircraft_type_for
 # v2.79.0 (Phase 3 polish): centralized distance + bearing helpers.
 # Pre-v2.79.0 the haversine math was duplicated across four sites
 # (this file's _haversine, the stats endpoint local def, the records
@@ -1496,7 +1496,9 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                     "lat": lat,
                     "lon": lon,
                     "altitude": ac.get("alt_baro") or ac.get("altitude") or ac.get("alt"),
-                    "aircraft_type": ac.get("t") or ac.get("type") or "",
+                    # v3.4.138: feed `t`, else hexdb's type code — never
+                    # the feed's `type` (that's the message source).
+                    "aircraft_type": aircraft_type_for(ac, icao_up),
                     "type_desc": ac.get("desc") or ac.get("description") or "",
                     "seen_at": int(time.time()),
                     "distance": _distance_from_receiver(lat, lon),
@@ -2318,55 +2320,20 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     #
     # Design: never block the HTTP request on external calls. The endpoint
     # reads from a cache maintained by collector._ICAO_CACHE, and pushes
-    # any unresolved ICAOs into _tail_resolve_queue. A background thread
-    # drains the queue at ~2 req/sec (respectful to hexdb's free API) and
+    # any unresolved ICAOs into the shared hexdb_resolver queue. Its single
+    # worker drains at ~2 req/sec (respectful to hexdb's free API) and
     # populates the cache. Consequence: the first time a new ICAO appears,
     # its Track link gracefully falls back to airplanes.live (whatever the
     # frontend configured as fallback); within a few seconds the cache
     # fills and subsequent renders use the provider-specific reg URL.
+    # v3.4.138: this used to be a private queue + worker; the collector now
+    # feeds the same queue (type codes for feeds without `t`), and one
+    # worker keeps the combined hexdb rate at ~2 req/sec.
     import collector as _collector_mod
-    import queue as _queue
+    import hexdb_resolver as _hexdb_resolver
     import threading as _threading
 
-    _tail_resolve_queue: _queue.Queue = _queue.Queue(maxsize=5000)
-    _tail_resolve_seen: set = set()          # what we've queued this process life
-    _tail_resolve_seen_lock = _threading.Lock()
-
-    def _tail_resolve_worker():
-        """Background thread that drains the queue and resolves ICAOs via
-        hexdb.io at a ~2 req/sec pace. Populates collector._ICAO_CACHE.
-        Runs for the lifetime of the process; deliberately non-daemon so
-        systemctl's graceful shutdown can still flush in-flight work."""
-        import time as _t
-        while True:
-            try:
-                icao = _tail_resolve_queue.get(timeout=1.0)
-            except _queue.Empty:
-                continue
-            if not icao:
-                continue
-            # resolve_icao_to_tail handles its own caching + errors. We just
-            # call it — side effect is that _ICAO_CACHE[icao] now has an
-            # answer (the tail or None sentinel).
-            try:
-                _collector_mod.resolve_icao_to_tail(icao)
-            except Exception as e:
-                logger.warning(f"tail resolve worker: unexpected error for {icao}: {e}")
-            # Rate limit: ~2 req/sec to be polite to hexdb.io. Free API,
-            # no published rate limit, but respect is cheaper than apology.
-            _t.sleep(0.5)
-
-    _worker_thread = _threading.Thread(
-        target=_tail_resolve_worker,
-        name="tail-resolve-worker",
-        daemon=True,  # daemon=True → process exit doesn't hang waiting for it
-    )
-    _worker_thread.start()
-    logger.info(
-        f"Tail-resolver background worker started "
-        f"(rate ~2 req/sec, queue cap 5000; "
-        f"curl /api/resolve-tail/debug for status)"
-    )
+    _hexdb_resolver.start_worker()
 
     # =========================================================================
     # Daily summary scheduler (v2.41.35)
@@ -2984,22 +2951,11 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 remaining.append(icao)
 
         # Anything we couldn't resolve inline goes to the background worker.
-        # Dedupe against what we've already queued this process lifetime so
-        # we don't pile the same ICAO up repeatedly when the frontend retries.
-        if remaining:
-            with _tail_resolve_seen_lock:
-                for icao in remaining:
-                    if icao in _tail_resolve_seen:
-                        continue
-                    try:
-                        _tail_resolve_queue.put_nowait(icao)
-                        _tail_resolve_seen.add(icao)
-                    except _queue.Full:
-                        # Very unusual — 5000 queued is ~40 minutes of work
-                        # at 2/sec. If we get here, just drop. Next cycle
-                        # will try again.
-                        logger.warning(f"tail resolve queue full; dropping {icao}")
-                        break
+        # enqueue() dedupes against what's already queued this process
+        # lifetime (and logs + drops when the queue is full), so frontend
+        # retries don't pile the same ICAO up.
+        for icao in remaining:
+            _hexdb_resolver.enqueue(icao)
 
         return {"tails": result}
 
@@ -3024,14 +2980,16 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         sample_negative = [
             k for k, v in list(cache.items())[:100] if not v
         ][:5]
+        qs = _hexdb_resolver.queue_stats()
+        worker = _hexdb_resolver._worker_thread
         return {
             "cache_size": len(cache),
             "cache_positive": positive,
             "cache_negative": negative,
-            "queue_depth": _tail_resolve_queue.qsize(),
-            "queue_seen_lifetime": len(_tail_resolve_seen),
-            "worker_alive": _worker_thread.is_alive(),
-            "worker_name": _worker_thread.name,
+            "queue_depth": qs["primary_depth"] + qs["backfill_depth"],
+            "queue_seen_lifetime": qs["seen_lifetime"],
+            "worker_alive": bool(worker and worker.is_alive()),
+            "worker_name": worker.name if worker else None,
             # Resolver-side stats — exposes whether hexdb.io is actually
             # reachable. If 'attempts' > 0 but 'successes_*' == 0 and
             # 'network_errors' == attempts, hexdb is unreachable from this

@@ -1,4 +1,4 @@
-# Version: 3.4.136
+# Version: 3.4.138
 """
 collector.py — ADS-B data fetcher and classifier.
 
@@ -22,6 +22,9 @@ from typing import Any, Dict, List, Optional, Tuple
 # math lived inline at line ~2012; now it's in distance.py with the
 # server-side haversine sites it shared semantics with.
 from distance import haversine as _dist_haversine
+# v3.4.138: the shared hex→tail resolver queue. Imports nothing from this
+# module at load time (its worker imports collector lazily), so no cycle.
+import hexdb_resolver
 
 logger = logging.getLogger("adsb.collector")
 
@@ -1095,6 +1098,12 @@ HEXDB_EVENTS_RETENTION_DAYS = 7
 # None value means "looked up, none found" so we don't retry dead ICAOs.
 _ICAO_CACHE: Dict[str, Optional[str]] = {}
 
+# v3.4.138: ICAO hex → hexdb ICAOTypeCode ('' = hexdb has none), filled
+# alongside _ICAO_CACHE by resolve_icao_to_tail and by _warm_type_codes.
+# Read with no I/O on the hot path (normalize, /api/live) — see
+# aircraft_type_for. In-memory only, like _ICAO_CACHE.
+_TYPE_CODE_CACHE: Dict[str, str] = {}
+
 # Counters for ICAO→tail resolver observability. Reset on process start.
 # Exposed via /api/resolve-tail/debug so operators can see at a glance
 # whether the resolver is actually working, or whether hexdb.io is
@@ -1142,27 +1151,29 @@ def resolve_tail_to_icao(tail: str) -> Optional[str]:
 # ICAO Hex → Tail Number Lookup (reverse direction)
 # =============================================================================
 
-def _hexdb_cache_check(conn, key: str, now_ts: int) -> Tuple[str, Optional[str]]:
-    """Look up `key` in hexdb_cache. Returns ("fresh_positive", reg) or
-    ("fresh_negative", None) if the cached entry is still within TTL,
-    otherwise ("stale", None) meaning the caller should refresh from hexdb.
+def _hexdb_cache_check(conn, key: str,
+                       now_ts: int) -> Tuple[str, Optional[str], Optional[str]]:
+    """Look up `key` in hexdb_cache. Returns ("fresh_positive", reg, type_code)
+    or ("fresh_negative", None, type_code) if the cached entry is still within
+    TTL, otherwise ("stale", None, None) meaning the caller should refresh
+    from hexdb.
 
     Updates hit_count / last_hit_at on fresh hits so we can see per-entry
     reuse activity in diagnostics."""
     row = conn.execute(
-        "SELECT registration, resolved_at, last_outcome, registered_owner "
+        "SELECT registration, resolved_at, last_outcome, registered_owner, type_code "
         "FROM hexdb_cache WHERE icao = ?",
         (key,),
     ).fetchone()
     if not row:
-        return ("miss_never_cached", None)
-    reg, resolved_at, last_outcome, registered_owner = row
+        return ("miss_never_cached", None, None)
+    reg, resolved_at, last_outcome, registered_owner, type_code = row
     # Pick the TTL based on what the cache recorded
     ttl_days = (HEXDB_POSITIVE_TTL_DAYS if last_outcome == "positive"
                 else HEXDB_NEGATIVE_TTL_DAYS)
     age_days = (now_ts - resolved_at) / 86400.0
     if age_days > ttl_days:
-        return ("stale", None)
+        return ("stale", None, None)
     # v3.4.58: registry-enrichment self-heal. A positive entry written
     # before the registered_owner column existed (or before this feature
     # shipped) has a registration but a NULL owner. Treat it as stale so
@@ -1171,31 +1182,41 @@ def _hexdb_cache_check(conn, key: str, now_ts: int) -> Tuple[str, Optional[str]]
     # as their aircraft are looked at, without a bulk re-fetch. Only the
     # positive case qualifies: a negative entry legitimately has no owner.
     if last_outcome == "positive" and registered_owner is None:
-        return ("stale", None)
+        return ("stale", None, None)
+    # v3.4.138: same self-heal for the type code. NULL means "written before
+    # type_code existed" ('' is the looked-up-and-none answer), for either
+    # outcome — hexdb can know a type for an airframe it has no reg for.
+    if type_code is None:
+        return ("stale", None, None)
     # Fresh hit — bump counters
     conn.execute(
         "UPDATE hexdb_cache SET hit_count = hit_count + 1, last_hit_at = ? WHERE icao = ?",
         (now_ts, key),
     )
     if last_outcome == "positive":
-        return ("fresh_positive", reg)
-    return ("fresh_negative", None)
+        return ("fresh_positive", reg, type_code)
+    return ("fresh_negative", None, type_code)
 
 
 def _hexdb_cache_write(conn, key: str, reg: Optional[str],
                        outcome: str, now_ts: int,
                        registered_owner: Optional[str] = None,
-                       manufacturer: Optional[str] = None) -> None:
+                       manufacturer: Optional[str] = None,
+                       type_code: str = "") -> None:
     """Upsert into hexdb_cache. Resets hit_count to 0 on refresh because the
     entry is effectively new.
 
     v3.4.58: also persists registered_owner / manufacturer (parsed from the
     same hexdb forward response as the registration) and mirrors them onto
-    seen_aircraft so the detail page can read them without a hexdb call."""
+    seen_aircraft so the detail page can read them without a hexdb call.
+
+    v3.4.138: also persists type_code. Stored as '' (never NULL) when hexdb
+    has none, so _hexdb_cache_check can tell it from a pre-v15 row."""
     conn.execute("""
         INSERT INTO hexdb_cache (icao, registration, resolved_at, last_outcome,
-                                 hit_count, last_hit_at, registered_owner, manufacturer)
-        VALUES (?, ?, ?, ?, 0, NULL, ?, ?)
+                                 hit_count, last_hit_at, registered_owner, manufacturer,
+                                 type_code)
+        VALUES (?, ?, ?, ?, 0, NULL, ?, ?, ?)
         ON CONFLICT(icao) DO UPDATE SET
             registration = excluded.registration,
             resolved_at = excluded.resolved_at,
@@ -1203,8 +1224,10 @@ def _hexdb_cache_write(conn, key: str, reg: Optional[str],
             hit_count = 0,
             last_hit_at = NULL,
             registered_owner = excluded.registered_owner,
-            manufacturer = excluded.manufacturer
-    """, (key, reg, now_ts, outcome, registered_owner or None, manufacturer or None))
+            manufacturer = excluded.manufacturer,
+            type_code = excluded.type_code
+    """, (key, reg, now_ts, outcome, registered_owner or None, manufacturer or None,
+          type_code or ""))
     # v2.51.0: when hexdb resolves a registration, mirror it into
     # seen_aircraft so search results carry tail registration without
     # needing a JOIN at query time. Only write if reg is non-empty —
@@ -1235,6 +1258,27 @@ def _hexdb_cache_write(conn, key: str, reg: Optional[str],
             "WHERE icao = ? AND (manufacturer IS NULL OR manufacturer != ?)",
             (manufacturer, key, manufacturer),
         )
+    # v3.4.138: fill a BLANK seen_aircraft type from hexdb's type code, so
+    # aircraft from a typeless feed (and rows migration v16 blanked) get a
+    # real type when looked up — detail page, Track links — not only when
+    # re-sighted. Never overwrites a type the feed supplied. Category follows
+    # the type (military stays military); type is FTS-indexed → fts_dirty.
+    if type_code:
+        row = conn.execute(
+            "SELECT aircraft_type_desc, category FROM seen_aircraft "
+            "WHERE icao = ? AND (aircraft_type IS NULL OR aircraft_type = '')",
+            (key,),
+        ).fetchone()
+        if row:
+            from categorize import classify
+            desc, category = row
+            new_cat = (category if category == "military"
+                       else classify(type_code, desc, False))
+            conn.execute(
+                "UPDATE seen_aircraft SET aircraft_type = ?, category = ?, "
+                "fts_dirty = 1 WHERE icao = ?",
+                (type_code, new_cat, key),
+            )
 
 
 def _hexdb_event_log(conn, kind: str, icao: Optional[str], now_ts: int) -> None:
@@ -1373,9 +1417,10 @@ def resolve_icao_to_tail(icao: str) -> Optional[str]:
     if _db_path:
         try:
             conn = _open_db_conn(_db_path)
-            outcome, cached_reg = _hexdb_cache_check(conn, key, now_ts)
+            outcome, cached_reg, cached_type = _hexdb_cache_check(conn, key, now_ts)
             if outcome in ("fresh_positive", "fresh_negative"):
                 _ICAO_CACHE[key] = cached_reg  # warm the in-memory layer
+                _TYPE_CODE_CACHE[key] = cached_type or ""
                 _hexdb_event_log(conn, "hit", key, now_ts)
                 conn.commit()
                 conn.close()
@@ -1388,6 +1433,7 @@ def resolve_icao_to_tail(icao: str) -> Optional[str]:
 
     # Cache miss (or no DB wired up yet) — go to hexdb
     _icao_resolver_stats["attempts"] += 1
+    type_code = ""
     try:
         # hexdb.io's aircraft endpoint is /api/v1/aircraft/{hex} — note the
         # hex goes directly after /aircraft/. Earlier versions used an
@@ -1404,6 +1450,11 @@ def resolve_icao_to_tail(icao: str) -> Optional[str]:
             # show "owned by …" without a second lookup or an external site.
             owner = (data.get("RegisteredOwners") or "").strip()
             manuf = (data.get("Manufacturer") or "").strip()
+            # v3.4.138: and the ICAO type designator, for feeds without `t`
+            # (see feed_type_code). Validated like a feed value.
+            tc = str(data.get("ICAOTypeCode") or "").strip().upper()
+            type_code = tc if _TYPE_DESIGNATOR_RE.match(tc) else ""
+            _TYPE_CODE_CACHE[key] = type_code
             if reg:
                 _ICAO_CACHE[key] = reg
                 if _db_path:
@@ -1411,7 +1462,8 @@ def resolve_icao_to_tail(icao: str) -> Optional[str]:
                         conn = _open_db_conn(_db_path)
                         _hexdb_cache_write(conn, key, reg, "positive", now_ts,
                                            registered_owner=owner or None,
-                                           manufacturer=manuf or None)
+                                           manufacturer=manuf or None,
+                                           type_code=type_code)
                         _hexdb_event_log(conn, "miss_positive", key, now_ts)
                         conn.commit()
                         conn.close()
@@ -1431,10 +1483,12 @@ def resolve_icao_to_tail(icao: str) -> Optional[str]:
                 return reg
         # 404 or empty Registration field → negative-cache so we don't retry
         _ICAO_CACHE[key] = None
+        _TYPE_CODE_CACHE[key] = type_code
         if _db_path:
             try:
                 conn = _open_db_conn(_db_path)
-                _hexdb_cache_write(conn, key, None, "negative", now_ts)
+                _hexdb_cache_write(conn, key, None, "negative", now_ts,
+                                   type_code=type_code)
                 _hexdb_event_log(conn, "miss_negative", key, now_ts)
                 conn.commit()
                 conn.close()
@@ -2174,7 +2228,8 @@ def init_db(db_path: str):
             hit_count INTEGER DEFAULT 0,
             last_hit_at INTEGER,
             registered_owner TEXT,
-            manufacturer TEXT
+            manufacturer TEXT,
+            type_code TEXT
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_hexdb_resolved_at ON hexdb_cache(resolved_at)")
@@ -2907,7 +2962,7 @@ def match_watchlist(aircraft: Dict, lookup: Dict) -> Optional[str]:
 
     # Model match — case-insensitive substring against type code and description
     if lookup.get("model_substrings"):
-        ac_type = (aircraft.get("t") or aircraft.get("type") or "").lower()
+        ac_type = aircraft_type_for(aircraft).lower()
         ac_desc = (aircraft.get("desc") or aircraft.get("description") or "").lower()
         for needle, label in lookup["model_substrings"]:
             if needle in ac_type or needle in ac_desc:
@@ -2933,6 +2988,75 @@ def _to_number(v):
         return None
 
 
+# v3.4.138: aircraft type code. The feed's `t` is the ICAO type designator,
+# but only readsb run with --db-file sends it (stock readsb installs don't;
+# dump1090-fa/PiAware never does). Both use `type` for the MESSAGE SOURCE
+# ("adsb_icao", "mlat", …), so the old `t or type` fallback stored
+# "adsb_icao" as the aircraft type on those installs — no silhouettes, a
+# junk Type column, junk top-types stats. Only designator-shaped values are
+# accepted; when the feed has none, hexdb's ICAOTypeCode fills in.
+_TYPE_DESIGNATOR_RE = re.compile(r"^[A-Z0-9]{2,4}$")
+
+
+def feed_type_code(raw: Dict) -> str:
+    """The feed's ICAO type designator, or '' when it carries none. `t` is
+    trusted once upper-cased; `type` only when it is already an upper-case
+    designator — readsb/dump1090 send their message-source values there in
+    lower case, so those never pass."""
+    t = raw.get("t")
+    if isinstance(t, str) and _TYPE_DESIGNATOR_RE.match(t.strip().upper()):
+        return t.strip().upper()
+    ty = raw.get("type")
+    if isinstance(ty, str) and _TYPE_DESIGNATOR_RE.match(ty.strip()):
+        return ty.strip()
+    return ""
+
+
+def aircraft_type_for(raw: Dict, icao: str = "") -> str:
+    """Type designator for a feed record: the feed's own, else the hexdb
+    type code already in memory. Never does I/O — _warm_type_codes and the
+    resolver worker fill the cache off the hot path."""
+    code = feed_type_code(raw)
+    if code:
+        return code
+    key = icao or clean_icao_hex(raw.get("hex"))
+    return _TYPE_CODE_CACHE.get(key, "") if key else ""
+
+
+def _warm_type_codes(conn, raw_list: List) -> None:
+    """For this poll's aircraft whose feed carries no type code: load the
+    hexdb type codes already cached in hexdb_cache (one batched lookup, so a
+    restart doesn't wait on the resolver), and queue the rest for the hexdb
+    resolver so their codes land within seconds. Non-ICAO (~) hexes are
+    skipped — hexdb can't know them."""
+    want = []
+    for raw in raw_list:
+        if not isinstance(raw, dict) or feed_type_code(raw):
+            continue
+        hx = clean_icao_hex(raw.get("hex"))
+        if hx and not hx.startswith("~") and hx not in _TYPE_CODE_CACHE:
+            want.append(hx)
+    if not want:
+        return
+    try:
+        for i in range(0, len(want), 500):     # stay under SQLite's variable cap
+            chunk = want[i:i + 500]
+            rows = conn.execute(
+                "SELECT icao, type_code FROM hexdb_cache "
+                f"WHERE icao IN ({','.join('?' * len(chunk))}) "
+                "AND type_code IS NOT NULL", chunk).fetchall()
+            for icao, code in rows:
+                _TYPE_CODE_CACHE[icao] = code
+    except sqlite3.Error as e:
+        logger.debug(f"type-code warm read failed: {e}")
+    queued = False
+    for hx in want:
+        if hx not in _TYPE_CODE_CACHE:
+            queued = hexdb_resolver.enqueue(hx) or queued
+    if queued:
+        hexdb_resolver.start_worker()
+
+
 def normalize(raw: Dict) -> Dict:
     """Convert raw receiver data into clean format."""
     return {
@@ -2944,7 +3068,7 @@ def normalize(raw: Dict) -> Dict:
         "lat": _to_number(raw.get("lat")),
         "lon": _to_number(raw.get("lon")),
         "altitude": _to_number(raw.get("alt_baro") or raw.get("altitude") or raw.get("alt")),
-        "aircraft_type": raw.get("t") or raw.get("type") or "",
+        "aircraft_type": aircraft_type_for(raw),
         "type_desc": raw.get("desc") or raw.get("description") or "",
         # Squawk is a 4-digit octal transponder code as a string, e.g. "1200".
         # Normalized to uppercase zero-padded 4 chars. Invalid/missing → "".
@@ -3241,6 +3365,10 @@ def fetch_and_store(config: Dict, watchlist_lookup: Dict):
     all_count = 0
     mil_count = 0
     watch_count = 0
+
+    # v3.4.138: before normalize() reads it, fill the hexdb type-code cache
+    # for aircraft the feed gives no type code (stock readsb, dump1090-fa).
+    _warm_type_codes(conn, raw_list)
 
     for raw in raw_list:
         if not isinstance(raw, dict):

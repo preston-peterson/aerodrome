@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 # Current schema version. Bump whenever a new migration is added.
 # v2.51.0 introduces schema version 1 (the search-feature schema).
 # Any DB without a schema_version table is implicitly at version 0.
-CURRENT_SCHEMA_VERSION = 14
+CURRENT_SCHEMA_VERSION = 16
 
 
 # A migration is a (target_version, description, callable) tuple.
@@ -1450,6 +1450,112 @@ def _migration_v14_route_airports(conn: sqlite3.Connection) -> None:
     logger.info(f"Migration v14: cleared {cleared} adsbdb-era route_cache rows")
 
 
+def _migration_v15_hexdb_type_code(conn: sqlite3.Connection) -> None:
+    """v3.4.138: add `type_code` to hexdb_cache — the ICAO type designator
+    (e.g. "A321") from hexdb.io's forward response.
+
+    Why: the feed only carries a type code in `t`, which readsb sends only
+    when run with --db-file (stock installs don't) and dump1090-fa never
+    sends. Without it every Live marker falls back to a chevron. hexdb's
+    `ICAOTypeCode` arrives in the same response the hex→tail resolver
+    already fetches, so caching it adds no new external traffic per lookup.
+
+    Semantics: NULL = never captured (rows written before this column);
+    '' = looked up, hexdb has no type code. No backfill — like v10, a row
+    with a NULL type_code is treated as stale once, so existing installs
+    self-heal as their aircraft are re-resolved.
+
+    Idempotent: the ALTER tolerates "duplicate column name" (a re-run, or a
+    fresh install whose init_db already created the column).
+    """
+    try:
+        conn.execute("ALTER TABLE hexdb_cache ADD COLUMN type_code TEXT")
+        logger.info("Migration v15: added hexdb_cache.type_code column")
+    except sqlite3.OperationalError as e:
+        if "duplicate column" in str(e).lower():
+            logger.info("Migration v15: hexdb_cache.type_code already exists "
+                        "(re-run no-op)")
+        else:
+            raise
+
+
+def _migration_v16_feed_source_type_cleanup(conn: sqlite3.Connection) -> None:
+    """v3.4.138: blank the feed message-source values that were stored as
+    aircraft types.
+
+    Through v3.4.136, a feed record without `t` fell back to the feed's
+    `type` field — which readsb/dump1090-fa use for the MESSAGE SOURCE
+    ("adsb_icao", "mlat", "tisb_other", …). Ingest no longer does that (see
+    collector.feed_type_code), but the stored values remain. The raw
+    sighting tables age out under retention; the lifetime tables never
+    rewrite a past value, so they are cleaned here:
+
+      - seen_aircraft: aircraft_type and first_aircraft_type → '' (the
+        upsert's COALESCE(NULLIF(new, ''), old) then lets the next real type
+        in); category re-derived via categorize.classify, since
+        classify('adsb_icao') said general_aviation (military stays
+        military); fts_dirty = 1 so the FTS index re-syncs the type.
+      - sightings_hourly, military_hourly, watchlist_hourly, stats_records:
+        aircraft_type → ''.
+
+    NOT cleaned: all_sightings / military_sightings / watchlist_sightings.
+    They are retention-pruned (30 days by default), and on large installs
+    all_sightings is tens of millions of rows — a full-scan rewrite inside
+    the startup migration transaction would hold the write lock and bloat
+    the WAL.
+
+    The value list is frozen here (not imported) so this migration's
+    behavior never changes after it ships. Matching is exact and
+    case-sensitive: real ICAO designators are upper case, so none collide.
+
+    Idempotent: a re-run finds no remaining values and updates nothing.
+    Tables or columns absent on an older/partial schema are skipped.
+    """
+    source_values = (
+        "adsb_icao", "adsb_icao_nt", "adsb_other", "adsr_icao", "adsr_other",
+        "tisb_icao", "tisb_other", "tisb_trackfile", "adsc", "mlat",
+        "mode_s", "mode_ac", "other", "unknown",
+    )
+    ph = ",".join("?" * len(source_values))
+    tables = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+
+    def _cols(table):
+        if table not in tables:
+            return set()
+        return {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+
+    if {"aircraft_type", "first_aircraft_type", "aircraft_type_desc",
+            "category", "fts_dirty"} <= _cols("seen_aircraft"):
+        from categorize import classify
+        rows = conn.execute(f"""
+            SELECT icao, aircraft_type, first_aircraft_type,
+                   aircraft_type_desc, category
+            FROM seen_aircraft
+            WHERE aircraft_type IN ({ph}) OR first_aircraft_type IN ({ph})
+        """, source_values + source_values).fetchall()
+        updates = []
+        for icao, atype, first_type, desc, category in rows:
+            new_type = "" if atype in source_values else atype
+            new_first = "" if first_type in source_values else first_type
+            new_cat = (category if category == "military"
+                       else classify(new_type, desc, False))
+            updates.append((new_type, new_first, new_cat, icao))
+        conn.executemany(
+            "UPDATE seen_aircraft SET aircraft_type = ?, first_aircraft_type = ?, "
+            "category = ?, fts_dirty = 1 WHERE icao = ?", updates)
+        logger.info(f"Migration v16: cleaned {len(updates)} seen_aircraft rows")
+
+    for table in ("sightings_hourly", "military_hourly", "watchlist_hourly",
+                  "stats_records"):
+        if "aircraft_type" not in _cols(table):
+            continue
+        n = conn.execute(
+            f"UPDATE {table} SET aircraft_type = '' WHERE aircraft_type IN ({ph})",
+            source_values).rowcount
+        logger.info(f"Migration v16: cleaned {n} {table} rows")
+
+
 # Ordered list of all migrations. NEVER edit a shipped migration —
 # always add a new one. The list is the source of truth for what
 # CURRENT_SCHEMA_VERSION should be.
@@ -1482,6 +1588,10 @@ MIGRATIONS: List[Migration] = [
      _migration_v13_photo_cache),
     (14, "route_cache airports_json column + adsbdb-era cache clear: route enrichment re-sourced to adsb.lol (v3.4.109)",
      _migration_v14_route_airports),
+    (15, "hexdb_cache type_code column: ICAO type designator for feeds without `t` (v3.4.138)",
+     _migration_v15_hexdb_type_code),
+    (16, "blank feed message-source values (adsb_icao, mlat, …) stored as aircraft types (v3.4.138)",
+     _migration_v16_feed_source_type_cleanup),
 ]
 
 

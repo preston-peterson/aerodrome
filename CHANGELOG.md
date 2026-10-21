@@ -19,6 +19,24 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.138] — 2026-10-21
+
+*(3.4.137 was an unpublished preview of this change.)*
+
+### Fixed
+- **Aircraft type shapes — and the Type column — now work on stock readsb and dump1090-fa / PiAware receivers.** If your radar showed only chevrons with Configuration → Map → "Aircraft type shapes" turned on, and the Live list's Type column read `adsb_icao` or `mlat`, this is the fix. Those receivers only include an aircraft's type code when readsb runs with its optional aircraft database (`--db-file`). Without it, Aerodrome was reading a different field — one that names how the position was received (ADS-B, MLAT, TIS-B) — and treating that as the aircraft type. Aerodrome now ignores that field, and when the feed carries no type it looks the aircraft up on hexdb.io (the same free service that already supplies registrations and owners) and caches the answer. New aircraft pick up their silhouette within seconds of appearing; aircraft hexdb doesn't know show a dash and keep the chevron. Receivers that already send type codes behave exactly as before — though even those had some of these values stored for aircraft missing from readsb's database.
+- **History is cleaned up too: no more `adsb_icao`, `mlat` or `mode_s` posing as aircraft types in Search, Stats, or the category mix.** On upgrade, Aerodrome blanks those stored values in its long-term tables, so Search's Type column shows a dash instead, the "first time seen" card stops listing them, and aircraft that were wrongly counted as general aviation (the old value was read as a light-aircraft type) move to "unknown" in the category mix until a real type is known. An aircraft gets its real type back the next time it's seen, or as soon as you open it and hexdb knows it. The per-sighting tables aren't rewritten — those older rows simply age out under your retention settings (30 days by default).
+
+### Behind the scenes
+- `collector.feed_type_code()` accepts the feed's `t` (upper-cased) or an upper-case designator in `type`, both matching `^[A-Z0-9]{2,4}$`; the lower-case message-source values (`adsb_icao`, `mlat`, `mode_s`, `tisb_*`, …) never pass. `aircraft_type_for()` then falls back to hexdb's `ICAOTypeCode`, held in memory and persisted in the new `hexdb_cache.type_code` column (schema migration v15 — NULL means cached before this release and is re-resolved once; '' means hexdb has none). Used by ingest, watchlist model matching, and `/api/live`.
+- Each poll batch-loads cached type codes for typeless aircraft and queues the rest on the shared hexdb resolver queue. `/api/resolve-tail` now feeds that same queue instead of a private one, so a single worker keeps the combined hexdb rate at about two requests per second. An aircraft whose lookup hit a network error is retried on its next sighting instead of being skipped until restart.
+- Schema migration v16 blanks the message-source values (a frozen, exact-match list) in `seen_aircraft.aircraft_type` / `first_aircraft_type`, `sightings_hourly`, `military_hourly`, `watchlist_hourly` and `stats_records`; re-derives `seen_aircraft.category` via `categorize.classify` (military stays military) and sets `fts_dirty` so the search index re-syncs. `all_sightings` and the other raw sighting tables are deliberately left to retention — rewriting tens of millions of rows inside the startup migration would hold the write lock and balloon the WAL.
+- `_hexdb_cache_write` now fills a blank `seen_aircraft.aircraft_type` (and its category) from the hexdb type code, the same way registration and owner are mirrored. It never overwrites a type the feed supplied.
+
+### Operational notes
+- On receivers without type codes, Aerodrome now looks up each new aircraft on hexdb.io as it appears (previously only aircraft you opened, or that needed a registration-based Track link). Lookups are rate-limited to about two per second and cached for 30 days, so steady-state traffic is small.
+- The one-time cleanup runs during the first start after upgrading and takes seconds on a typical install. hexdb.io knows most but not all aircraft; for complete type coverage on readsb, run it with its aircraft database (`--db-file`).
+
 ## [3.4.136] — 2026-09-25
 
 ### Added
