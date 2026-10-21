@@ -81,14 +81,21 @@ def _fetch(hexid: str) -> Optional[dict]:
         return None                               # 200 + no photos = a real miss
     p = photos[0]
     thumb = p.get("thumbnail_large") or p.get("thumbnail") or {}
-    src = (thumb.get("src") or "").strip()
+    # v3.4.140: third-party URLs land in <img src> / <a href> — https only
+    # (an escaped `javascript:` link is still a live link).
+    src = _https_only(thumb.get("src"))
     if not src:
         return None
     return {
         "thumbnail_url": src,
-        "photo_link": (p.get("link") or "").strip(),
+        "photo_link": _https_only(p.get("link")),
         "photographer": (p.get("photographer") or "").strip(),
     }
+
+
+def _https_only(url) -> str:
+    u = str(url or "").strip()
+    return u if u.lower().startswith("https://") else ""
 
 
 def resolve_photo(conn, icao: str) -> dict:

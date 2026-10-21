@@ -10,7 +10,7 @@ Usage:
         # each error: {"path": "receiver.port", "message": "Must be 1-65535"}
         return error_response(errors)
 """
-# Version: 3.4.139
+# Version: 3.4.140
 
 import re
 import socket
@@ -316,6 +316,19 @@ def validate_config(cfg: Any) -> Errors:
     else:
         errs += _validate_host(w.get("host"), "web.host")
         errs += _validate_port(w.get("port"), "web.port")
+        # v3.4.140: extra hostnames the DNS-rebinding guard answers to
+        # (comma-separated; IPs / localhost / private names need no entry).
+        ah = w.get("allowed_hosts")
+        if ah is not None:
+            if not isinstance(ah, str):
+                errs.append(("web.allowed_hosts", "Must be a comma-separated list of hostnames"))
+            else:
+                for name in (p.strip().rstrip(".") for p in ah.split(",")):
+                    if name and not HOSTNAME_RE.match(name):
+                        errs.append(("web.allowed_hosts",
+                                     f"'{name}' isn't a hostname — enter just the name, "
+                                     "e.g. aerodrome.example.com (no http:// or :port)"))
+                        break
 
     # --- display (v2.52.0; v2.85.11 added time_format) ---
     # Optional section. If present, validates date_format and time_format.
@@ -1026,6 +1039,8 @@ LIVE_KEYS = {
     # v3.5.0: radar map display prefs — read by the frontend via
     # /api/ui-config on each dashboard load; no service restart needed.
     "map",
+    # v3.4.140: the Host-allowlist middleware reads it per request.
+    "web.allowed_hosts",
 }
 
 # Everything else requires a restart. The frontend uses this list to show

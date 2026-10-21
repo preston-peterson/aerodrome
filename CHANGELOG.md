@@ -19,6 +19,18 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.140] — 2026-10-21
+
+### Changed
+- **Aerodrome now only answers to addresses it knows, which protects it from malicious web pages.** A website you visit can try to point its own domain name at your Aerodrome and control it through your browser. From this release Aerodrome refuses requests made by any hostname it hasn't been told about. IP addresses (`http://192.168.1.50:8000`), `localhost`, the machine's own name, single-word names, and private names such as `raspberrypi.local`, `*.lan`, `*.home.arpa` and `*.internal` keep working with no setup, as does the host of your notifications Public URL. **If you open Aerodrome by any other name** — a DNS name under a domain you own, or a reverse proxy's name — add it once under **Configuration → Web server → Allowed hostnames** (or `web.allowed_hosts` in `config.yaml`). If you update and see "This address isn't on Aerodrome's allowed list", that page links to your Aerodrome by IP address so you can add the name; it works immediately, with no restart. Remember any other screens or bookmarks that use the name, such as a display-board kiosk.
+- **Text from your receiver and from outside services is now escaped everywhere Aerodrome shows it.** Callsigns, type codes, squawks, watchlist entries and error messages are always displayed as plain text, and photo links only ever open `https://` pages. A side effect: watchlist entries containing quotes or backslashes can now be removed with their ✕ button.
+- **The "Sudoers update required" command works again.** When a future release needs updated system permissions, the Updates page now shows a command that runs the new release's recovery script. The command it showed before always failed. The install guide's "Applying sudoers updates" section shows the same command.
+
+### Behind the scenes
+- Host allowlist: a module-level `_host_allowed()` check runs first in the HTTP middleware on every method, path and static file, before the same-origin check. IP literals, `localhost`, single-label and private-suffix names, `socket.gethostname()`, `web.allowed_hosts` (a new live key, validated as plain hostnames) and the host of `notifications.public_url` are allowed. Refusals get JSON for API calls and an explanatory HTML page for browser navigations, with the requested host escaped and a link built from the address the connection actually reached.
+- Escaping: index.html's `escHtml` now delegates to the quote-safe `escapeHtml`, and the textContent-based or quote-blind helpers in updates.html, diagnostics-watchlist.html, docs.html and status.html are now quote-safe. Inline `onclick` handlers carry their arguments as JSON, HTML-escaped inside double-quoted attributes. Squawks containing non-digits are dropped at ingest (they used to pass through truncated). planespotters URLs are kept only when they're `https`, and `mil_color` must be `#RRGGBB` before it reaches a `style` attribute.
+- `/api/resolve-tail` accepts only 6-character ICAO hex values. The sudoers recovery command points at the staged release's `scripts/recover-sudoers.sh` with `AERODROME_INSTALL_DIR` set; since v3.4.61, `install.sh` refuses to run from an `update/` staging folder, which is why the old command failed.
+
 ## [3.4.139] — 2026-10-21
 
 ### Added

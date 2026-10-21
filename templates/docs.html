@@ -19,7 +19,7 @@
 })();
 </script>
     <!-- theme:inline-fouc-end -->
-<!-- Version: 3.4.139 -->
+<!-- Version: 3.4.140 -->
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Aerodrome Documentation</title>
@@ -244,8 +244,9 @@ body { background:var(--bg0); color:var(--t1); font-family:var(--font);
 // If we ever need full CommonMark, swap this out for a real library rather
 // than incrementally hardening this file.
 
-function escapeHtml(s) {
-    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+function escapeHtml(s) {   // v3.4.140: + quotes (attribute-safe)
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 // Inline formatting: applied to a single line of text after block parsing.

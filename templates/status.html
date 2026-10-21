@@ -1,4 +1,4 @@
-<!-- Version: 3.4.139 -->
+<!-- Version: 3.4.140 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -195,6 +195,13 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
 
 <script>
 let autoTimer = null;
+
+// v3.4.140: page-level escaper for error strings (they can echo receiver /
+// network text) — the component cards used to insert them raw.
+function escText(s){
+    return String(s == null ? '' : s).replace(/[&<>"']/g,
+        c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
 
 function fmtTime(s) {
     if (!s) return '—';
@@ -501,7 +508,7 @@ function render(s) {
                     <div class="row"><span class="row-lbl">Military</span><span class="row-val">${c.database.stats.military.total.toLocaleString()} (${c.database.stats.military.unique} unique)</span></div>
                     <div class="row"><span class="row-lbl">Watchlist</span><span class="row-val">${c.database.stats.watchlist.total.toLocaleString()} (${c.database.stats.watchlist.unique} unique)</span></div>
                 ` : ''}
-                ${c.database.error ? `<div class="error-box">${c.database.error}</div>` : ''}
+                ${c.database.error ? `<div class="error-box">${escText(c.database.error)}</div>` : ''}
             </div>
 
             <!-- v2.50.30: Capacity planning card. Renders three states:
@@ -620,7 +627,7 @@ function render(s) {
                 <div class="row"><span class="row-lbl">Status</span><span class="row-val ${statusClass(c.receiver.ok)}">${c.receiver.ok ? 'Reachable' : 'Unreachable'}</span></div>
                 <div class="row"><span class="row-lbl">URL</span><span class="row-val" style="font-size:10px;max-width:60%;text-align:right;word-break:break-all">${c.receiver.url}</span></div>
                 ${c.receiver.response_ms != null ? `<div class="row"><span class="row-lbl">Response time</span><span class="row-val">${c.receiver.response_ms} ms</span></div>` : ''}
-                ${c.receiver.error ? `<div class="error-box">${c.receiver.error}</div>` : ''}
+                ${c.receiver.error ? `<div class="error-box">${escText(c.receiver.error)}</div>` : ''}
             </div>
 
             <!-- Hexdb.io Resolver -->
@@ -644,7 +651,7 @@ function render(s) {
                     `<div class="row"><span class="row-lbl">Status</span><span class="row-val ${c.hexdb_resolver.ok ? 'ok' : 'warn'}">${c.hexdb_resolver.ok ? 'Reachable' : 'Unreachable'}</span></div>`
                 }
                 ${c.hexdb_resolver.response_ms != null ? `<div class="row"><span class="row-lbl">Response time</span><span class="row-val">${c.hexdb_resolver.response_ms} ms</span></div>` : ''}
-                ${c.hexdb_resolver.error ? `<div class="warn-box">${c.hexdb_resolver.error}</div>` : ''}
+                ${c.hexdb_resolver.error ? `<div class="warn-box">${escText(c.hexdb_resolver.error)}</div>` : ''}
                 <!-- v2.49.6: this card uses .warn (amber) instead of .bad (red)
                      when not OK. The resolver is advisory at the system level —
                      hexdb being unreachable doesn't break anything core, only
@@ -762,7 +769,7 @@ function render(s) {
             ` : `
             <div class="card">
                 <div class="card-head"><div class="light unknown"></div><div class="card-title">System</div></div>
-                <div class="error-box">System info unavailable: ${sys.error || 'psutil not installed'}</div>
+                <div class="error-box">System info unavailable: ${escText(sys.error || 'psutil not installed')}</div>
             </div>
             `}
         </div>

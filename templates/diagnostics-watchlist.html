@@ -1,4 +1,4 @@
-<!-- Version: 3.4.139 -->
+<!-- Version: 3.4.140 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -618,9 +618,10 @@ function renderInterpretation(findings){
     box.style.display = 'block';
 }
 
-function escHtml(s){
+function escHtml(s){   // v3.4.140: + quotes, so attribute values are safe too
     return String(s == null ? '' : s)
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 async function runDiagnostic(){

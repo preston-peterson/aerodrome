@@ -1,4 +1,4 @@
-# Version: 3.4.139
+# Version: 3.4.140
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -558,7 +558,9 @@ def _normalize_squawk_str(raw) -> str:
     if not s:
         return ""
     try:
-        return s.zfill(4)[-4:] if s.isdigit() else s[:4]
+        # v3.4.140: non-digits are malformed (as the docstring says) — they
+        # used to pass through as s[:4] and reach the UI as raw HTML.
+        return s.zfill(4)[-4:] if s.isdigit() else ""
     except Exception:
         return ""
 
@@ -1141,6 +1143,105 @@ class _BodySizeLimitMiddleware:
         await self.app(scope, replay, send)
 
 
+# v3.4.140: DNS-rebinding guard. The same-origin check below compares Origin
+# with the Host the request was addressed to — but a rebinding page (an
+# attacker's domain re-pointed at this box's LAN IP) controls BOTH, so it
+# passes, and gets the full same-origin API (config read, update upload +
+# apply). The only defence without auth is refusing Host names we weren't
+# told to answer to. Rebinding always arrives with a public DNS name, so IP
+# literals, localhost, this machine's own name, and names that can't exist
+# in public DNS (single-label, .local/.lan/.home.arpa/.internal) are always
+# allowed; anything else must be listed in web.allowed_hosts (live key).
+_PRIVATE_NAME_SUFFIXES = (".local", ".lan", ".home.arpa", ".internal",
+                          ".localdomain", ".localhost")
+
+
+def _host_name(host_header: str) -> str:
+    """Host header → bare lower-case name or IP (port + IPv6 brackets stripped)."""
+    h = (host_header or "").strip().lower()
+    if h.startswith("["):                      # [v6] or [v6]:port
+        return h[1:h.index("]")] if "]" in h else h[1:]
+    if h.count(":") == 1:                      # name:port / v4:port
+        h = h.split(":", 1)[0]
+    return h.rstrip(".")
+
+
+def _host_allowed(host_header: str, allowed_hosts: str, own_hostname: str) -> bool:
+    """True if a request addressed to `host_header` may be served."""
+    import ipaddress
+    name = _host_name(host_header)
+    if not name:
+        return True       # no Host header → not a browser; rebinding needs one
+    try:
+        ipaddress.ip_address(name)
+        return True
+    except ValueError:
+        pass
+    if name == "localhost" or "." not in name or name.endswith(_PRIVATE_NAME_SUFFIXES):
+        return True
+    if name == (own_hostname or "").strip().lower().rstrip("."):
+        return True
+    extra = {p.strip().lower().rstrip(".") for p in str(allowed_hosts or "").split(",")}
+    return name in extra
+
+
+def _configured_hosts(cfg: dict) -> str:
+    """web.allowed_hosts plus the host of notifications.public_url — that URL
+    is already the operator's declared address for Aerodrome (ntfy tap
+    actions open it), so it shouldn't need listing twice."""
+    hosts = str((cfg.get("web") or {}).get("allowed_hosts") or "")
+    pub = str((cfg.get("notifications") or {}).get("public_url") or "")
+    if pub:
+        try:
+            hosts += "," + (urlsplit(pub).hostname or "")
+        except ValueError:
+            pass
+    return hosts
+
+
+def _host_rejected_response(request: Request) -> Response:
+    """403 for a Host we don't answer to — an explanatory page for a browser
+    navigation (with a link via the address the request actually reached),
+    JSON for API calls. The Host value is attacker-controlled: escape it."""
+    import html
+    name = _host_name(request.headers.get("host", ""))
+    if "text/html" not in request.headers.get("accept", ""):
+        return JSONResponse(status_code=403, content={
+            "error": "host_not_allowed", "host": name,
+            "message": f"'{name}' isn't in Aerodrome's allowed hostnames "
+                       "(Configuration → Web server → Allowed hostnames)."})
+    server = request.scope.get("server") or ("", None)
+    addr, port = server[0], server[1]
+    if addr and ":" in addr:
+        addr = f"[{addr}]"
+    link = (f'<a href="http://{html.escape(addr)}:{port}/config#web">'
+            f'http://{html.escape(addr)}:{port}/config#web</a>'
+            if addr and port and addr not in ("0.0.0.0", "[::]") else
+            "this machine's IP address, then Configuration → Web server")
+    page = f"""<!doctype html><meta charset="utf-8"><title>Aerodrome — hostname not allowed</title>
+<style>body{{font:16px/1.5 system-ui,sans-serif;max-width:40rem;margin:4rem auto;padding:0 1rem;color:#1e293b}}
+code{{background:#f1f5f9;padding:.1rem .35rem;border-radius:.25rem}}</style>
+<h1>This address isn't on Aerodrome's allowed list</h1>
+<p>Aerodrome was opened as <code>{html.escape(name)}</code>. To protect against
+malicious web pages ("DNS rebinding"), it only answers to IP addresses, local
+names like <code>raspberrypi.local</code>, and hostnames you've allowed.</p>
+<p>To use this name, open {link}, add <code>{html.escape(name)}</code> under
+<b>Allowed hostnames</b>, and save — it takes effect immediately.</p>"""
+    return HTMLResponse(status_code=403, content=page)
+
+
+def _sudoers_recovery_command(update_root: Path,
+                              install_dir: Optional[Path] = None) -> str:
+    """The command the "Sudoers update required" prompt shows: the STAGED
+    release's recover-sudoers.sh (install.sh refuses to run from update/),
+    told where the live install is. Paths are shell-quoted."""
+    import shlex
+    inst = install_dir or Path(__file__).resolve().parent
+    script = update_root / "scripts" / "recover-sudoers.sh"
+    return (f"sudo AERODROME_INSTALL_DIR={shlex.quote(str(inst))} "
+            f"bash {shlex.quote(str(script))}")
+
+
 def get_app(config: dict, config_path: str) -> FastAPI:
     global CONFIG, CONFIG_PATH, _RESOLVED_WATCHLIST_TAILS
     CONFIG = config
@@ -1177,9 +1278,16 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     # browsers do send Origin on cross-origin mutations. Same-origin UI fetches
     # send a matching Origin, so the dashboard is unaffected.
     _UNSAFE_METHODS = {"POST", "PUT", "DELETE", "PATCH"}
+    import socket as _socket
+    _own_hostname = _socket.gethostname()
 
     @app.middleware("http")
     async def _same_origin_and_headers(request: Request, call_next):
+        # v3.4.140: Host allowlist first, on EVERY method — a rebinding page
+        # is same-origin, so it could otherwise read as well as write.
+        if not _host_allowed(request.headers.get("host", ""),
+                             _configured_hosts(CONFIG), _own_hostname):
+            return _host_rejected_response(request)
         if request.method in _UNSAFE_METHODS:
             source = request.headers.get("origin") or request.headers.get("referer")
             if source and urlsplit(source).netloc != request.url.netloc:
@@ -2891,7 +2999,9 @@ def get_app(config: dict, config_path: str) -> FastAPI:
           - absent → not cached yet; try again after a refresh cycle
         """
         raw = [s.strip().upper() for s in (icaos or "").split(",")]
-        wanted = list({s for s in raw if s})[:500]  # bound per-request
+        # v3.4.140: hex only — anything else used to reach the caches, the DB
+        # cache tables and hexdb.io (any web page can fire this GET).
+        wanted = list({s for s in raw if re.fullmatch(r"[0-9A-F]{6}", s)})[:500]
         if not wanted:
             return {"tails": {}}
 
@@ -9670,15 +9780,15 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             }
 
         if live_ver < staged_ver:
-            # v3.4.44: recovery_command points at the STAGED install.sh,
-            # not the live one. The bug v3.4.44 fixes: the in-UI prompt
-            # used to read `sudo bash /opt/aerodrome/install.sh`, but
-            # /opt/aerodrome/install.sh is the LIVE (currently-installed)
-            # install.sh — which writes the OLD SUDOERS_VERSION. Running
-            # it can never produce the version the gate requires. The
-            # staged release's install.sh, which DOES write the new
-            # version, lives at update/<release>/install.sh; that's
-            # what we surface here.
+            # v3.4.44: recovery_command points at the STAGED release, not
+            # the live one — /opt/aerodrome/install.sh is the LIVE install.sh,
+            # which writes the OLD SUDOERS_VERSION and can never lift the gate.
+            # v3.4.140: but not at the staged install.sh either: since v3.4.61
+            # install.sh refuses to run from inside an update/ staging dir
+            # (exit 2), so that command always failed. The staged
+            # scripts/recover-sudoers.sh is built for exactly this — it writes
+            # only the sudoers file, from wherever it sits — and takes the
+            # install dir explicitly (it can't infer it from a staging path).
             return {
                 "can_verify": True,
                 "needs_refresh": True,
@@ -9689,7 +9799,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 ),
                 "staged_version": staged_ver,
                 "live_version": live_ver,
-                "recovery_command": f"sudo bash {staged_installer}",
+                "recovery_command": _sudoers_recovery_command(update_root),
             }
 
         # live_ver >= staged_ver — we're fine. The >= case handles downgrade,

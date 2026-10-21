@@ -1,4 +1,4 @@
-<!-- Version: 3.4.139 -->
+<!-- Version: 3.4.140 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -861,7 +861,9 @@ function renderDetail(d) {
     // they read as part of the aircraft's identity row.
     let pills = '';
     if (d.is_military){
-        const milColor = d.mil_color || '#ef4444';
+        // v3.4.140: only a #RRGGBB value reaches the style attribute (the
+        // config validator enforces it on save; a hand-edited YAML doesn't).
+        const milColor = /^#[0-9a-fA-F]{6}$/.test(d.mil_color || '') ? d.mil_color : '#ef4444';
         const milLabel = d.mil_label || 'MIL';
         pills += `<span class="mil-pill" style="background:${milColor}25;color:${milColor}">${escapeHtml(milLabel)}</span>`;
     }
@@ -1076,7 +1078,8 @@ function maybeEnrichPhoto(icao, typeName) {
         .then(j => {
             if (j && j.found && j.thumbnail_url) {
                 const photog = j.photographer ? escapeHtml(j.photographer) : 'planespotters.net';
-                const link = j.photo_link || 'https://www.planespotters.net/';
+                // v3.4.140: https only — an escaped javascript: URL is still a live link.
+                const link = /^https:\/\//i.test(j.photo_link || '') ? j.photo_link : 'https://www.planespotters.net/';
                 slot.innerHTML =
                     `<a class="detail-photo-link" href="${escapeHtml(link)}" target="_blank" rel="noopener" title="View on planespotters.net">`
                     + `<img src="${escapeHtml(j.thumbnail_url)}" alt="Aircraft photo" loading="lazy">`

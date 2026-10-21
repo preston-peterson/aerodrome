@@ -1,4 +1,4 @@
-<!-- Version: 3.4.139 -->
+<!-- Version: 3.4.140 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1295,6 +1295,7 @@ function sectionWeb() {
         <div class="form-grid">
             ${field({label:'Bind host', hint:'0.0.0.0 for LAN access, 127.0.0.1 for localhost only', path:'web.host', placeholder:'0.0.0.0'})}
             ${field({label:'Bind port', path:'web.port', type:'number', min:1, max:65535, placeholder:'8000'})}
+            ${field({label:'Allowed hostnames', hint:'comma-separated names you open Aerodrome by. IP addresses, localhost, this machine\'s name, private names (*.local, *.lan, *.home.arpa) and your notifications Public URL\'s host always work — add any other, e.g. a public DNS or reverse-proxy name. Other names are refused (blocks DNS-rebinding attacks).', path:'web.allowed_hosts', placeholder:'aerodrome.example.com'})}
         </div>
     </div>`;
 }

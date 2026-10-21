@@ -1,4 +1,4 @@
-# Version: 3.4.139
+# Version: 3.4.140
 """
 collector.py — ADS-B data fetcher and classifier.
 
@@ -3090,7 +3090,9 @@ def _normalize_squawk(raw) -> str:
     # Strip leading zeros that some formatters add beyond 4 chars, then
     # zero-pad back up to 4. e.g. "7700" stays "7700", "200" → "0200".
     try:
-        return s.zfill(4)[-4:] if s.isdigit() else s[:4]
+        # v3.4.140: non-digits are malformed (as the docstring says) — they
+        # used to pass through as s[:4] and reach the UI as raw HTML.
+        return s.zfill(4)[-4:] if s.isdigit() else ""
     except Exception:
         return ""
 

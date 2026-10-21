@@ -1,4 +1,4 @@
-<!-- Version: 3.4.139 -->
+<!-- Version: 3.4.140 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1463,10 +1463,10 @@ function renderChangelog(){
     body.innerHTML = html + expander;
 }
 
+// v3.4.140: quote-safe so it is also correct inside attribute values.
 function escapeHtml(s){
-    const div = document.createElement('div');
-    div.textContent = s == null ? '' : String(s);
-    return div.innerHTML;
+    return String(s == null ? '' : s).replace(/[&<>"']/g,
+        c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
 // v3.4.90: parse a JSON response defensively. Reads the body as text first,

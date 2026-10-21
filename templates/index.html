@@ -1,4 +1,4 @@
-<!-- Version: 3.4.139 -->
+<!-- Version: 3.4.140 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2843,7 +2843,7 @@ const EMERGENCY_SQUAWKS = {
 };
 function fmtSquawk(sq){
     if(sq == null || sq === '') return '—';
-    const s = String(sq);
+    const s = escapeHtml(String(sq));   // v3.4.140: callers insert this as HTML
     const label = EMERGENCY_SQUAWKS[s];
     if(label){
         return `<span class="sq-value sq-emergency">${s}</span>`
@@ -4101,7 +4101,8 @@ function _radarSetPhoto(info, ac){
     if(info === 'loading'){ el.innerHTML = ''; return; }
     if(info && info.found && info.thumbnail_url){
         const photog = info.photographer ? escapeHtml(info.photographer) : 'planespotters.net';
-        const link = info.photo_link || 'https://www.planespotters.net/';
+        // v3.4.140: https only — an escaped javascript: URL is still a live link.
+        const link = /^https:\/\//i.test(info.photo_link || '') ? info.photo_link : 'https://www.planespotters.net/';
         el.innerHTML =
             `<a class="ro-photo-link" href="${escapeHtml(link)}" target="_blank" rel="noopener" title="View on planespotters.net">`
             + `<img src="${escapeHtml(info.thumbnail_url)}" alt="Aircraft photo" loading="lazy">`
@@ -6944,8 +6945,10 @@ async function loadWLChips(){
         c.innerHTML=entries.map(e=>{
             let id = e.icao || e.tail || e.callsign || e.model || '?';
             let tp = e.icao ? 'icao' : e.tail ? 'tail' : e.callsign ? 'callsign' : e.model ? 'model' : 'callsign';
-            // Escape the id for safe embedding in the onclick attribute (model values can contain spaces/quotes)
-            let idAttr = String(id).replace(/'/g, "\\'");
+            // v3.4.140: JSON for the JS string, then HTML-escape for the
+            // attribute — the old `'`→`\'` swap broke on " or \ (chip could
+            // never be removed) and let an entity-encoded quote inject script.
+            const rmArgs = escapeHtml(`${JSON.stringify(String(id))}, ${JSON.stringify(tp)}`);
             // v2.75.0: defense-in-depth escape on the visible label and
             // id text. Watchlist entries come from user config — the
             // admin who edits them is the same user viewing the chips,
@@ -6955,7 +6958,7 @@ async function loadWLChips(){
             const safeLabel = escHtml(String(e.label || id));
             const safeId = escHtml(String(id));
             const safeTp = escHtml(String(tp));
-            return`<div class="chip"><span>${safeLabel}</span><span style="color:var(--t3);font-size:10px">(${safeTp}: ${safeId})</span><span class="chip-x" onclick="rmWL('${idAttr}','${tp}')" title="Remove">✕</span></div>`;
+            return`<div class="chip"><span>${safeLabel}</span><span style="color:var(--t3);font-size:10px">(${safeTp}: ${safeId})</span><span class="chip-x" onclick="rmWL(${rmArgs})" title="Remove">✕</span></div>`;
         }).join('');
     }catch(e){console.error(e);}
 }
@@ -8665,14 +8668,18 @@ function _drillRowHtml(r, cache){
         const displayJson = JSON.stringify(display);
         const labelJson   = JSON.stringify(ar.contextLabel);
         const targetJson  = JSON.stringify(ar.targetCardId);
+        // v3.4.140: the JSON args are HTML-escaped into a double-quoted
+        // attribute — raw JSON in a single-quoted one let a feed value with a
+        // ' (or an entity-encoded one) break out and inject script.
+        const args = escapeHtml(`${targetJson}, ${rawValueJson}, ${displayJson}, ${labelJson}`);
         return `<div class="row-card drill-grid drill-row-clickable" ${styleAttr}
-                     onclick='chainDrillAggregate(${targetJson}, ${rawValueJson}, ${displayJson}, ${labelJson})'
+                     onclick="chainDrillAggregate(${args})"
                      title="Search for aircraft matching ${escHtml(String(rawValue))}">${cells}</div>`;
     }
-    const icaoArg = JSON.stringify(r.icao || '');
-    const seenArg = (r.seen_at != null) ? r.seen_at : 'null';
+    const icaoArg = escapeHtml(JSON.stringify(r.icao || ''));
+    const seenArg = (r.seen_at != null) ? Number(r.seen_at) : 'null';
     const clickAttrs = r.icao
-        ? ` class="row-card drill-grid drill-row-clickable" onclick='viewAircraftDetails(${icaoArg}, ${seenArg})' title="View aircraft details"`
+        ? ` class="row-card drill-grid drill-row-clickable" onclick="viewAircraftDetails(${icaoArg}, ${seenArg})" title="View aircraft details"`
         : ' class="row-card drill-grid"';
     return `<div${clickAttrs} ${styleAttr}>${cells}</div>`;
 }
@@ -9637,7 +9644,7 @@ function extremeCard(label, data, formatter, cardId){
     }
     const val = formatter(data);
     const cs = (data.callsign || '').trim();
-    const who = cs ? `${cs} <span class="stat-icao">(${escHtml(data.icao)})</span>`
+    const who = cs ? `${escHtml(cs)} <span class="stat-icao">(${escHtml(data.icao)})</span>`
                    : `<span class="stat-icao">${escHtml(data.icao)}</span>`;
     const type = data.aircraft_type ? ` · ${escHtml(data.aircraft_type)}` : '';
     return `<div class="stat-card${drillClass}"${drillAttrs}>
@@ -9665,7 +9672,7 @@ function furthestCard(data){
     const idx = Math.round(((data.bearing || 0) / 22.5)) % 16;
     const compass = dirs[idx];
     const cs = (data.callsign || '').trim();
-    const who = cs ? `${cs} <span class="stat-icao">(${escHtml(data.icao)})</span>`
+    const who = cs ? `${escHtml(cs)} <span class="stat-icao">(${escHtml(data.icao)})</span>`
                    : `<span class="stat-icao">${escHtml(data.icao)}</span>`;
     const type = data.aircraft_type ? ` · ${escHtml(data.aircraft_type)}` : '';
     const arrow = `<svg width="16" height="16" viewBox="0 0 24 24"
@@ -9696,7 +9703,7 @@ function firstLastCard(data){
     const line = (row, label) => {
         if(!row) return '';
         const cs = (row.callsign || '').trim();
-        const who = cs ? `${cs} <span class="stat-icao">(${escHtml(row.icao)})</span>`
+        const who = cs ? `${escHtml(cs)} <span class="stat-icao">(${escHtml(row.icao)})</span>`
                        : `<span class="stat-icao">${escHtml(row.icao)}</span>`;
         return `<div style="display:flex; justify-content:space-between; font-size:12px; font-family:var(--mono); padding:2px 0;">
             <span style="color:var(--t3)">${label}</span>
@@ -9725,7 +9732,7 @@ function longestTrackCard(data){
     const rem = mins % 60;
     const dur = hrs > 0 ? `${hrs}h ${rem}m` : `${mins}m`;
     const cs = (data.callsign || '').trim();
-    const who = cs ? `${cs} <span class="stat-icao">(${escHtml(data.icao)})</span>`
+    const who = cs ? `${escHtml(cs)} <span class="stat-icao">(${escHtml(data.icao)})</span>`
                    : `<span class="stat-icao">${escHtml(data.icao)}</span>`;
     return `<div class="stat-card drillable" data-drill-card="longest_track" onclick="toggleDrill(this, 'longest_track')">
         <span class="drill-chev">▼</span>
@@ -10046,8 +10053,8 @@ function allTimeRecordsCard(records){
         const valStr = m.fmt(r.value, r);
         const cs = (r.callsign || '').trim();
         const who = r.icao
-            ? (cs ? `${cs} <span class="stat-icao">(${escHtml(r.icao)})</span>` : `<span class="stat-icao">${escHtml(r.icao)}</span>`)
-            : (cs || '—');
+            ? (cs ? `${escHtml(cs)} <span class="stat-icao">(${escHtml(r.icao)})</span>` : `<span class="stat-icao">${escHtml(r.icao)}</span>`)
+            : (escHtml(cs) || '—');
         const dateStr = r.set_at ? new Date(r.set_at * 1000).toLocaleDateString(undefined, {
             year:'numeric', month:'short', day:'numeric'
         }) : '';
@@ -10256,11 +10263,10 @@ function distanceHistogramCard(data){
     </div>`;
 }
 
-function escHtml(s){
-    const div = document.createElement('div');
-    div.textContent = s == null ? '' : String(s);
-    return div.innerHTML;
-}
+// v3.4.140: attribute-safe — delegates to escapeHtml, which also escapes
+// quotes. The old textContent→innerHTML version escaped only & < >, so an
+// escHtml'd value inside title="…" / value="…" could break out of it.
+function escHtml(s){ return escapeHtml(s); }
 
 // =========================================================================
 // Settings menu

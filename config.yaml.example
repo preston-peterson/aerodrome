@@ -1,5 +1,5 @@
 # =============================================================================
-# Version: 3.4.139
+# Version: 3.4.140
 # Aerodrome — Example/Reference Configuration
 # =============================================================================
 # This is the canonical default config shipped with each Aerodrome release.
@@ -50,6 +50,15 @@ receiver:
 web:
   host: "0.0.0.0"
   port: 8000
+  # Extra hostnames you open Aerodrome by (comma-separated). IP addresses,
+  # localhost, this machine's own hostname, single-word names and private
+  # names (*.local, *.lan, *.home.arpa, *.internal) always work. Add any
+  # other name here — a public DNS name, a reverse proxy's name — or requests
+  # using it are refused. This blocks "DNS rebinding": a malicious web page
+  # pointing its own domain at your Aerodrome to control it. The host of
+  # notifications.public_url is trusted automatically. Takes effect
+  # without a restart. Example: "aerodrome.example.com, tracker.example.net"
+  allowed_hosts: ""
 
 # --- Display preferences ---
 # v2.52.0: how dates are formatted in the UI and which date formats the

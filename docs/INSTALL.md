@@ -809,21 +809,23 @@ for itself, any compromise of the service would let an attacker grant
 themselves arbitrary root privileges. Keeping the refresh a manual
 step means you explicitly consent to each permission change.
 
-**What do I do when I see the banner?** SSH to your server and re-run
-the install script:
+**What do I do when I see the banner?** SSH to your server and run the
+command the banner shows — copy it with the button next to it. It runs
+the *staged* release's sudoers recovery script, which looks like:
 
 ```bash
 ssh user@your-server
-cd /opt/aerodrome
-sudo bash install.sh
+sudo AERODROME_INSTALL_DIR=/opt/aerodrome bash /opt/aerodrome/update/aerodrome/scripts/recover-sudoers.sh
 ```
 
-Re-running `install.sh` is idempotent and safe — it updates the
-sudoers file to match the new version and leaves everything else
-(your config, database, logs, venv) untouched. You don't need to stop
-the service first. After running, click **Re-check** in the modal;
-once the version matches, the Apply button enables and you can
-proceed with the update normally.
+(Re-running the *installed* `install.sh` doesn't help here: it writes the
+sudoers version of the release you already have, not the one you're
+updating to.) The recovery script only rewrites `/etc/sudoers.d/aerodrome`
+— it validates the new rules with `visudo` before installing them and
+leaves everything else (your config, database, logs, venv) untouched. You
+don't need to stop the service first. After running, click **Re-check**
+in the modal; once the version matches, the Apply button enables and you
+can proceed with the update normally.
 
 **Which releases need this?** Most don't. The banner only appears
 when a release genuinely changed the sudoers file — you'll see it in
