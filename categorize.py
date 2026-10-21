@@ -87,6 +87,15 @@ COMMERCIAL_EXACT = frozenset({
     "E290", "E295",
     # McDonnell Douglas
     "DC10", "MD11", "MD80", "MD81", "MD82", "MD83", "MD87", "MD88", "MD90",
+    # Regional airliners (v3.4.142) — types built as airliners, whatever
+    # their size. Utility types (Caravan C208, Twin Otter DHC6) stay GA.
+    "AT43", "AT44", "AT45", "AT46", "AT72", "AT73", "AT75", "AT76",  # ATR
+    "DH8A", "DH8B", "DH8C", "DH8D", "DHC7",                          # Dash 8/7
+    "SF34", "SB20", "D328", "J328",                                  # Saab, Dornier
+    "B461", "B462", "B463", "RJ70", "RJ85", "RJ1H",                  # BAe 146 / Avro RJ
+    "F27", "F28", "F50", "F70", "F100",                              # Fokker
+    "JS31", "JS32", "JS41", "B190", "L410",                          # commuters
+    "AJ27", "C919", "SU95", "MA60",
 })
 
 

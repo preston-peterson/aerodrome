@@ -927,7 +927,7 @@ class TestRouteCacheMigration(unittest.TestCase):
             self.assertTrue(result["ok"], result.get("error"))
             self.assertEqual(result["starting_version"], 11)
             self.assertEqual(result["ending_version"], CURRENT_SCHEMA_VERSION)
-            self.assertEqual(len(result["applied"]), 6)  # v12 (route_cache) + v13 (photo_cache) + v14 (airports_json, v3.4.109) + v15 (hexdb type_code) + v16 (source-type cleanup, v3.4.138) + v17 (category re-derive, v3.4.141)
+            self.assertEqual(len(result["applied"]), 7)  # v12 (route_cache) + v13 (photo_cache) + v14 (airports_json, v3.4.109) + v15 (hexdb type_code) + v16 (source-type cleanup, v3.4.138) + v17 (category re-derive, v3.4.141) + v18 (regionals, v3.4.142)
             self.assertIn("route_cache", self._tables(conn))
         finally:
             conn.close()
@@ -1034,7 +1034,7 @@ class TestPhotoCacheMigration(unittest.TestCase):
             self.assertTrue(result["ok"], result.get("error"))
             self.assertEqual(result["starting_version"], 12)
             self.assertEqual(result["ending_version"], CURRENT_SCHEMA_VERSION)
-            self.assertEqual(len(result["applied"]), 5)  # v13 (photo_cache) + v14 (route airports_json) + v15 (hexdb type_code) + v16 (source-type cleanup) + v17 (category re-derive)
+            self.assertEqual(len(result["applied"]), 6)  # v13 (photo_cache) + v14 (route airports_json) + v15 (hexdb type_code) + v16 (source-type cleanup) + v17 (category re-derive) + v18 (regionals)
             self.assertIn("photo_cache", self._tables(conn))
         finally:
             conn.close()
@@ -1155,7 +1155,7 @@ class TestRouteAirportsMigration(unittest.TestCase):
             self.assertTrue(result["ok"], result.get("error"))
             self.assertEqual(result["starting_version"], 13)
             self.assertEqual(result["ending_version"], CURRENT_SCHEMA_VERSION)
-            self.assertEqual(len(result["applied"]), 4)  # v14 + v15 (hexdb type_code) + v16 (source-type cleanup) + v17 (category re-derive)
+            self.assertEqual(len(result["applied"]), 5)  # v14 + v15 (hexdb type_code) + v16 (source-type cleanup) + v17 (category re-derive) + v18 (regionals)
             self.assertEqual(self._cols(conn), self.EXPECTED_COLS)
             self.assertEqual(
                 conn.execute("SELECT COUNT(*) FROM route_cache").fetchone()[0], 0)
@@ -1259,7 +1259,7 @@ class TestHexdbTypeCodeMigration(unittest.TestCase):
             result = apply_schema_migrations(conn, "test")
             self.assertTrue(result["ok"], result.get("error"))
             self.assertEqual(result["starting_version"], 14)
-            self.assertEqual(len(result["applied"]), 3)  # v15 + v16 (source-type cleanup) + v17 (category re-derive)
+            self.assertEqual(len(result["applied"]), 4)  # v15 + v16 (source-type cleanup) + v17 (category re-derive) + v18 (regionals)
             self.assertEqual(
                 conn.execute("SELECT registration, hit_count, type_code "
                              "FROM hexdb_cache WHERE icao='A1B2C3'").fetchone(),
@@ -1342,11 +1342,11 @@ class TestFeedSourceTypeCleanupMigration(unittest.TestCase):
             "SELECT aircraft_type, first_aircraft_type, category, fts_dirty "
             "FROM seen_aircraft WHERE icao = ?", (icao,)).fetchone()
 
-    def test_upgrade_from_v15_runs_v16_and_v17(self):
+    def test_upgrade_from_v15_runs_v16_onward(self):
         result = apply_schema_migrations(self.conn, "test")
         self.assertTrue(result["ok"], result.get("error"))
         self.assertEqual(result["starting_version"], 15)
-        self.assertEqual(len(result["applied"]), 2)  # v16 + v17 (category re-derive)
+        self.assertEqual(len(result["applied"]), 3)  # v16 + v17 (category re-derive) + v18 (regionals)
 
     def test_seen_aircraft_cleaned_and_recategorized(self):
         from categorize import classify
@@ -1428,11 +1428,11 @@ class TestCategoryRederiveMigration(unittest.TestCase):
         return dict(self.conn.execute(
             "SELECT icao, category FROM seen_aircraft").fetchall())
 
-    def test_upgrade_from_v16_runs_only_v17(self):
+    def test_upgrade_from_v16_runs_v17_and_v18(self):
         result = apply_schema_migrations(self.conn, "test")
         self.assertTrue(result["ok"], result.get("error"))
         self.assertEqual(result["starting_version"], 16)
-        self.assertEqual(len(result["applied"]), 1)
+        self.assertEqual(len(result["applied"]), 2)  # v17 + v18 (regionals)
 
     def test_categories_rederived_military_kept(self):
         apply_schema_migrations(self.conn, "test")
@@ -1462,6 +1462,87 @@ class TestCategoryRederiveMigration(unittest.TestCase):
         ga = execute_search(self.conn, parse_query("ga"))
         self.assertEqual({r["icao"] for r in ga["rows"]},
                          {"A00001", "A00002", "A00007"})
+
+
+class TestRegionalAirlinersMigration(unittest.TestCase):
+    """v3.4.142 (migration v18): stored general_aviation rows of regional
+    airliner types move to commercial. Real init_db schema, upgraded from v17."""
+
+    T = 1700000000
+    ROWS = [
+        # icao, type, stored category, expected after v18
+        ("A00011", "DH8D", "general_aviation", "commercial"),
+        ("A00012", "AT76", "general_aviation", "commercial"),
+        ("A00013", "B190", "general_aviation", "commercial"),
+        ("A00014", "D328", "military", "military"),
+        ("A00015", "C208", "general_aviation", "general_aviation"),
+        ("A00016", "B738", "commercial", "commercial"),
+    ]
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.db')
+        self.tmp.close()
+        from collector import init_db
+        init_db(self.tmp.name)
+        self.conn = sqlite3.connect(self.tmp.name)
+        self.assertTrue(apply_schema_migrations(self.conn, "test")["ok"])
+        self.conn.execute("DELETE FROM schema_version WHERE version >= 18")
+        self.conn.executemany(
+            "INSERT INTO seen_aircraft (icao, first_seen_at, aircraft_type, "
+            "category, last_seen_at, sighting_count, fts_dirty) "
+            "VALUES (?, ?, ?, ?, ?, 1, 1)",
+            [(i, self.T, t, c, self.T) for i, t, c, _ in self.ROWS])
+        self.conn.commit()
+
+    def tearDown(self):
+        self.conn.close()
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.unlink(self.tmp.name + suffix)
+            except FileNotFoundError:
+                pass
+
+    def _categories(self):
+        return dict(self.conn.execute(
+            "SELECT icao, category FROM seen_aircraft").fetchall())
+
+    def test_upgrade_from_v17_runs_only_v18(self):
+        result = apply_schema_migrations(self.conn, "test")
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertEqual(result["starting_version"], 17)
+        self.assertEqual(len(result["applied"]), 1)
+
+    def test_regionals_move_military_and_utility_kept(self):
+        apply_schema_migrations(self.conn, "test")
+        self.assertEqual(self._categories(), {i: want for i, _, _, want in self.ROWS})
+
+    def test_v18_idempotent_rerun(self):
+        from schema_migrations import _migration_v18_regional_airliners_commercial
+        apply_schema_migrations(self.conn, "test")
+        changes = self.conn.total_changes
+        _migration_v18_regional_airliners_commercial(self.conn)
+        self.assertEqual(self.conn.total_changes, changes)
+
+    def test_frozen_list_matches_classify(self):
+        # The migration's frozen list and the live rules must agree, or the
+        # collector would flip these rows back on the next sighting.
+        from categorize import classify
+        from schema_migrations import _V18_REGIONAL_DESIGNATORS
+        for t in _V18_REGIONAL_DESIGNATORS:
+            with self.subTest(type=t):
+                self.assertEqual(classify(t, "", False), "commercial")
+
+    def test_search_commercial_token_reads_the_moved_rows(self):
+        from search import parse_query, execute_search
+        apply_schema_migrations(self.conn, "test")
+        self.conn.execute(
+            "INSERT INTO seen_aircraft_fts (rowid, icao, registration, "
+            "last_callsign, aircraft_type, aircraft_type_desc, operator, country) "
+            "SELECT rowid, icao, registration, last_callsign, aircraft_type, "
+            "aircraft_type_desc, operator, country FROM seen_aircraft")
+        r = execute_search(self.conn, parse_query("commercial"))
+        self.assertEqual({row["icao"] for row in r["rows"]},
+                         {"A00011", "A00012", "A00013", "A00016"})
 
 
 if __name__ == "__main__":

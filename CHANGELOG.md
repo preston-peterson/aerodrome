@@ -19,6 +19,14 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.142] — 2026-10-21
+
+### Changed
+- **Regional airliners count as commercial.** ATR, Dash 8, Saab 340 and 2000, Dornier 328, BAe 146 / Avro RJ, Fokker, Jetstream, Beech 1900 and Let 410 aircraft — along with newer types such as the ARJ21, C919 and Superjet — now count as commercial in the Stats category mix and the `commercial` search filter, alongside the Embraer and Bombardier regional jets that already did. Utility types such as the Cessna Caravan and the Twin Otter stay under general aviation. Aircraft already in your history are moved once when you update.
+
+### Behind the scenes
+- The regional designators join `categorize.COMMERCIAL_EXACT`. Schema migration v18 moves stored `general_aviation` rows of those types to `commercial` from a frozen copy of the list (military rows are untouched); a test keeps the frozen list and the live rules in agreement.
+
 ## [3.4.141] — 2026-10-21
 
 ### Fixed

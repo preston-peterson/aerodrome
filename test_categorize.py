@@ -79,6 +79,18 @@ class TestClassify(unittest.TestCase):
             with self.subTest(type=t):
                 self.assertEqual(classify(t, "", False), "commercial")
 
+    def test_regional_airliners_are_commercial(self):
+        """v3.4.142: types built as airliners, whatever their size."""
+        for t in ["AT76", "DH8D", "SF34", "SB20", "D328", "B462", "RJ85",
+                  "F100", "JS41", "B190", "L410"]:
+            with self.subTest(type=t):
+                self.assertEqual(classify(t, "", False), "commercial")
+
+    def test_utility_types_stay_general_aviation(self):
+        for t in ["C208", "DHC6"]:
+            with self.subTest(type=t):
+                self.assertEqual(classify(t, "", False), "general_aviation")
+
     def test_prefix_false_positives_are_general_aviation(self):
         """v3.4.141: the dropped A2/A3/B3 prefixes also matched the King
         Air 350, the turbine Bonanza and light aircraft."""

@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 # Current schema version. Bump whenever a new migration is added.
 # v2.51.0 introduces schema version 1 (the search-feature schema).
 # Any DB without a schema_version table is implicitly at version 0.
-CURRENT_SCHEMA_VERSION = 17
+CURRENT_SCHEMA_VERSION = 18
 
 
 # A migration is a (target_version, description, callable) tuple.
@@ -1598,6 +1598,46 @@ def _migration_v17_category_rederive(conn: sqlite3.Connection) -> None:
                 f"of {len(rows)} seen_aircraft rows")
 
 
+# v3.4.142: frozen copy of the regional-airliner designators added to
+# categorize.COMMERCIAL_EXACT, so migration v18 never changes after it ships.
+_V18_REGIONAL_DESIGNATORS = (
+    "AT43", "AT44", "AT45", "AT46", "AT72", "AT73", "AT75", "AT76",
+    "DH8A", "DH8B", "DH8C", "DH8D", "DHC7",
+    "SF34", "SB20", "D328", "J328",
+    "B461", "B462", "B463", "RJ70", "RJ85", "RJ1H",
+    "F27", "F28", "F50", "F70", "F100",
+    "JS31", "JS32", "JS41", "B190", "L410",
+    "AJ27", "C919", "SU95", "MA60",
+)
+
+
+def _migration_v18_regional_airliners_commercial(conn: sqlite3.Connection) -> None:
+    """v3.4.142: regional airliners (ATR, Dash 8, Saab 340/2000, Dornier 328,
+    BAe 146 / Avro RJ, Fokker, Jetstream, Beech 1900, …) classify as
+    commercial instead of general aviation. The collector re-derives category
+    on every sighting; this moves the stored general_aviation rows of those
+    types so all-time category stats agree.
+
+    Only general_aviation rows change: military stays military, and the
+    designators are exact upper-case ICAO codes (none is a helicopter or
+    empty). Idempotent: a re-run matches no rows. Skipped when the table or
+    columns are absent.
+    """
+    tables = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    if "seen_aircraft" not in tables:
+        return
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(seen_aircraft)")}
+    if not {"aircraft_type", "category"} <= cols:
+        return
+    ph = ",".join("?" * len(_V18_REGIONAL_DESIGNATORS))
+    n = conn.execute(
+        "UPDATE seen_aircraft SET category = 'commercial' "
+        f"WHERE category = 'general_aviation' AND aircraft_type IN ({ph})",
+        _V18_REGIONAL_DESIGNATORS).rowcount
+    logger.info(f"Migration v18: {n} regional-airliner rows → commercial")
+
+
 # Ordered list of all migrations. NEVER edit a shipped migration —
 # always add a new one. The list is the source of truth for what
 # CURRENT_SCHEMA_VERSION should be.
@@ -1636,6 +1676,8 @@ MIGRATIONS: List[Migration] = [
      _migration_v16_feed_source_type_cleanup),
     (17, "re-derive seen_aircraft.category under corrected airliner/helicopter rules (v3.4.141)",
      _migration_v17_category_rederive),
+    (18, "regional airliners (ATR, Dash 8, Saab, Dornier 328, …) categorized commercial (v3.4.142)",
+     _migration_v18_regional_airliners_commercial),
 ]
 
 
