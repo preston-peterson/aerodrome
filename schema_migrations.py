@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 # Current schema version. Bump whenever a new migration is added.
 # v2.51.0 introduces schema version 1 (the search-feature schema).
 # Any DB without a schema_version table is implicitly at version 0.
-CURRENT_SCHEMA_VERSION = 16
+CURRENT_SCHEMA_VERSION = 17
 
 
 # A migration is a (target_version, description, callable) tuple.
@@ -1556,6 +1556,48 @@ def _migration_v16_feed_source_type_cleanup(conn: sqlite3.Connection) -> None:
         logger.info(f"Migration v16: cleaned {n} {table} rows")
 
 
+def _migration_v17_category_rederive(conn: sqlite3.Connection) -> None:
+    """v3.4.141: re-derive seen_aircraft.category under the corrected
+    categorize rules.
+
+    The commercial prefixes "A2", "A3" and "B3" also matched non-airliners
+    (King Air 350 = B350, turbine Bonanza = B36T, light aircraft such as the
+    A210); the A220 was listed as "A220" though it flies as BCS1/BCS3; and
+    the helicopter list had 18 codes (no R66, S76, B505, Enstrom 480 …).
+    categorize.classify now has corrected rules. The collector re-derives
+    category on every sighting, so aircraft seen again fix themselves —
+    this pass fixes the rest, so all-time category stats are right too.
+
+    Military rows are left alone (military is sticky and isn't derived
+    from the type). Uses the live classify(), as v7 and v16 do: an install
+    upgrading across several releases should land on the current rules.
+
+    Idempotent: a re-run finds every row already matching and updates
+    nothing. Skipped when the table or columns are absent.
+    """
+    tables = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    if "seen_aircraft" not in tables:
+        return
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(seen_aircraft)")}
+    if not {"aircraft_type", "aircraft_type_desc", "category"} <= cols:
+        return
+    from categorize import classify
+    rows = conn.execute(
+        "SELECT icao, aircraft_type, aircraft_type_desc, category "
+        "FROM seen_aircraft "
+        "WHERE category IS NULL OR category != 'military'").fetchall()
+    updates = []
+    for icao, atype, desc, category in rows:
+        new_cat = classify(atype, desc, False)
+        if new_cat != category:
+            updates.append((new_cat, icao))
+    conn.executemany(
+        "UPDATE seen_aircraft SET category = ? WHERE icao = ?", updates)
+    logger.info(f"Migration v17: re-derived category on {len(updates)} "
+                f"of {len(rows)} seen_aircraft rows")
+
+
 # Ordered list of all migrations. NEVER edit a shipped migration —
 # always add a new one. The list is the source of truth for what
 # CURRENT_SCHEMA_VERSION should be.
@@ -1592,6 +1634,8 @@ MIGRATIONS: List[Migration] = [
      _migration_v15_hexdb_type_code),
     (16, "blank feed message-source values (adsb_icao, mlat, …) stored as aircraft types (v3.4.138)",
      _migration_v16_feed_source_type_cleanup),
+    (17, "re-derive seen_aircraft.category under corrected airliner/helicopter rules (v3.4.141)",
+     _migration_v17_category_rederive),
 ]
 
 

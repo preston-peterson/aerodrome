@@ -63,20 +63,34 @@ class TestClassify(unittest.TestCase):
 
     def test_commercial_prefix_match(self):
         """Each prefix should classify as commercial when applied."""
-        cases = ["A320", "A321", "A330", "A380",  # A3*
-                 "A220",                            # A2* via exact
-                 "B737", "B738", "B739", "B777",   # B7*
-                 "B36X",                            # B3* (Beech Bonanza? -- actually GA, but matches prefix)
+        cases = ["B737", "B738", "B739", "B777",   # B7*
                  "CRJ7", "CRJ9",                   # CRJ
                  "E170", "E175", "E190",           # E1*
                  "E75L", "E75S"]                   # E7*
-        # B36X is a known false-positive — Beech 36 is GA but matches B3*.
-        # Documenting that here for transparency. The heuristic was lifted
-        # verbatim from v2.85.9; if the false-positive ever matters, both
-        # this test and the categorize module update together.
         for t in cases:
             with self.subTest(type=t):
                 self.assertEqual(classify(t, "", False), "commercial")
+
+    def test_airliner_designators(self):
+        """Airliner families matched by exact designator (v3.4.141): the
+        A220 is BCS1/BCS3, the 737 MAX is B3xM, the E2 jets are E29x."""
+        for t in ["A320", "A20N", "A21N", "A359", "A35K", "A388", "BCS1",
+                  "BCS3", "B37M", "B38M", "B39M", "E295", "MD11"]:
+            with self.subTest(type=t):
+                self.assertEqual(classify(t, "", False), "commercial")
+
+    def test_prefix_false_positives_are_general_aviation(self):
+        """v3.4.141: the dropped A2/A3/B3 prefixes also matched the King
+        Air 350, the turbine Bonanza and light aircraft."""
+        for t in ["B350", "B36T", "B360", "A210", "A33", "A35"]:
+            with self.subTest(type=t):
+                self.assertEqual(classify(t, "", False), "general_aviation")
+
+    def test_common_helicopters_from_doc8643(self):
+        """Helicopters the original 18-code list missed."""
+        for t in ["R66", "S76", "B505", "EN48", "EC30", "AS65", "UH60"]:
+            with self.subTest(type=t):
+                self.assertEqual(classify(t, "", False), "helicopter")
 
     def test_commercial_exact_set(self):
         """Each entry in COMMERCIAL_EXACT classifies as commercial."""

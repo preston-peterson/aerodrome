@@ -1,4 +1,4 @@
-# Version: 3.4.140
+# Version: 3.4.141
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -1555,7 +1555,8 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     # --- Live (direct from receiver, no DB) ---
     @app.get("/api/live")
     def get_live():
-        from collector import is_military, clean_icao_hex
+        from collector import (is_military, clean_icao_hex, _to_number,
+                               _sanitize_feed_record)
         receiver = CONFIG["receiver"]
         mil_cfg = CONFIG.get("military", {})
         specials = mil_cfg.get("special_aircraft", {})
@@ -1574,8 +1575,12 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             for ac in aircraft:
                 if not isinstance(ac, dict):
                     continue
-                lat = ac.get("lat")
-                lon = ac.get("lon")
+                # v3.4.141: the collector's feed-record hygiene — a
+                # `flight: null` used to empty the whole live list, and
+                # alt_baro "ground" reached the UI as "NaN ft".
+                ac = _sanitize_feed_record(ac)
+                lat = _to_number(ac.get("lat"))
+                lon = _to_number(ac.get("lon"))
                 # v3.4.84: validate the hex at this ingest point too (get_live
                 # parses the feed independently of collector.normalize and
                 # reflects `icao` straight to the UI). Drop contacts whose hex
@@ -1600,10 +1605,10 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 result.append({
                     "icao": icao_up,
                     "callsign": (ac.get("flight") or "").strip(),
-                    "speed": ac.get("gs"),
+                    "speed": _to_number(ac.get("gs")),
                     "lat": lat,
                     "lon": lon,
-                    "altitude": ac.get("alt_baro") or ac.get("altitude") or ac.get("alt"),
+                    "altitude": _to_number(ac.get("alt_baro") or ac.get("altitude") or ac.get("alt")),
                     # v3.4.138: feed `t`, else hexdb's type code — never
                     # the feed's `type` (that's the message source).
                     "aircraft_type": aircraft_type_for(ac, icao_up),
@@ -2341,6 +2346,12 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                     (matched_label,),
                 )
                 deleted = cur.rowcount or 0
+                # v3.4.141: the hourly rollup behind the Stats watchlist
+                # cards goes too, or they kept counting the deleted hits.
+                cur.execute(
+                    "DELETE FROM watchlist_hourly WHERE watchlist_label = ?",
+                    (matched_label,),
+                )
                 conn.commit()
                 conn.close()
             except Exception as e:
@@ -2365,13 +2376,15 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
     @app.post("/api/watchlist/history/clear")
     def watchlist_history_clear():
-        """Delete ALL rows from watchlist_sightings. Irreversible. The UI
-        gates this behind an explicit confirm showing the row count."""
+        """Delete ALL rows from watchlist_sightings (and the watchlist_hourly
+        rollup the Stats cards read). Irreversible. The UI gates this behind
+        an explicit confirm showing the row count."""
         try:
             conn = _db_conn()
             cur = conn.cursor()
             cur.execute("DELETE FROM watchlist_sightings")
             deleted = cur.rowcount or 0
+            cur.execute("DELETE FROM watchlist_hourly")   # v3.4.141: Stats cards' rollup
             conn.commit()
             conn.close()
             logger.info(f"Cleared all watchlist history ({deleted} rows)")
@@ -10824,7 +10837,8 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
         Step 0 — reachability test on the new receiver. If unreachable,
             abort without touching anything (defends against typo'd IPs
-            taking the install offline).
+            taking the install offline). The new config is then built and
+            validated — also before anything is touched.
         Step 1 — stop + disable + remove the synthetic-feeder service.
         Step 2 — nuke aircraft_history.db (+ -wal, -shm) to clear demo
             sightings from stats forever.
@@ -10909,6 +10923,43 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                     "error": f"Reachability test failed: {e}",
                     "steps": steps}
 
+        # v3.4.141: build and validate the new config BEFORE anything
+        # destructive, from the file the server actually loaded (it used to
+        # write a cwd-relative config.yaml, unvalidated, after the demo DB
+        # was already gone).
+        from config_validator import validate_config
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                cfg = _yaml.safe_load(f) or {}
+            cfg["watchlist"] = []
+            cfg.setdefault("receiver", {})["ip"] = new_ip
+            cfg["receiver"]["port"] = new_port
+            cfg["receiver"]["path"] = new_path
+            if new_lat is not None:
+                try:
+                    cfg["receiver"]["latitude"] = float(new_lat)
+                except (TypeError, ValueError):
+                    pass
+            if new_lon is not None:
+                try:
+                    cfg["receiver"]["longitude"] = float(new_lon)
+                except (TypeError, ValueError):
+                    pass
+            cfg.setdefault("demo", {})["enabled"] = False
+            cfg.setdefault("hexdb", {})["enabled"] = True
+        except Exception as e:
+            _step("update_config", False, str(e))
+            return {"ok": False, "error": "Failed to read config.yaml.",
+                    "steps": steps}
+        errors = validate_config(cfg)
+        if errors:
+            _step("update_config", False,
+                  "; ".join(f"{p}: {m}" for p, m in errors))
+            return {"ok": False,
+                    "error": ("These settings aren't valid: "
+                              + "; ".join(f"{p}: {m}" for p, m in errors[:3])),
+                    "steps": steps}
+
         # ----- Step 1: stop + disable + remove the feeder service -----
         feeder_unit = "aerodrome-synthetic-feeder"
         try:
@@ -10935,8 +10986,13 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         # all-time stats forever. Delete the DB and its WAL/SHM siblings;
         # the collector will recreate on first poll.
         try:
-            db_path = (CONFIG.get("database") or {}).get(
-                "path", "aircraft_history.db")
+            # v3.4.141: data.db_file, resolved like _db_conn — the old
+            # CONFIG["database"]["path"] lookup never existed, so this
+            # deleted a cwd-relative aircraft_history.db instead.
+            db_path = (CONFIG.get("data") or {}).get(
+                "db_file", "aircraft_history.db")
+            if not Path(db_path).is_absolute():
+                db_path = str(Path(__file__).parent / db_path)
             removed = []
             for suffix in ["", "-wal", "-shm"]:
                 p = db_path + suffix
@@ -10953,26 +11009,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
         # ----- Step 3: clear watchlist + update config -----
         try:
-            config_path = "config.yaml"
-            with open(config_path, "r", encoding="utf-8") as f:
-                cfg = _yaml.safe_load(f) or {}
-            cfg["watchlist"] = []
-            cfg.setdefault("receiver", {})["ip"] = new_ip
-            cfg["receiver"]["port"] = new_port
-            cfg["receiver"]["path"] = new_path
-            if new_lat is not None:
-                try:
-                    cfg["receiver"]["latitude"] = float(new_lat)
-                except (TypeError, ValueError):
-                    pass
-            if new_lon is not None:
-                try:
-                    cfg["receiver"]["longitude"] = float(new_lon)
-                except (TypeError, ValueError):
-                    pass
-            cfg.setdefault("demo", {})["enabled"] = False
-            cfg.setdefault("hexdb", {})["enabled"] = True
-            with open(config_path, "w", encoding="utf-8") as f:
+            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                 _yaml.safe_dump(cfg, f, default_flow_style=False, sort_keys=False)
             _step("update_config", True,
                   "Receiver pointed at real address, demo flag off, watchlist cleared.")

@@ -1,4 +1,4 @@
-<!-- Version: 3.4.140 -->
+<!-- Version: 3.4.141 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2144,7 +2144,7 @@ async function loadPositions(window) {
         // show_range_rings, centered on the receiver.
         if (data.show_range_rings && (data.ring_distances || []).length) {
             const unit = (data.distance_unit || 'mi').toLowerCase();
-            const perUnitM = unit === 'km' ? 1000 : (unit === 'nm' ? 1852 : 1609.34);
+            const perUnitM = unit === 'km' ? 1000 : (unit === 'nmi' || unit === 'nm') ? 1852 : 1609.34;
             const cyan = getComputedStyle(document.documentElement)
                 .getPropertyValue('--cyan').trim() || '#06b6d4';
             data.ring_distances.forEach(dist => {

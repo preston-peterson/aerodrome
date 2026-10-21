@@ -1,4 +1,4 @@
-<!-- Version: 3.4.140 -->
+<!-- Version: 3.4.141 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -166,7 +166,7 @@
             75%       { box-shadow: inset 0 0 0 2px #06b6d4; background: color-mix(in srgb, #06b6d4 14%, transparent); }
             100%      { box-shadow: inset 0 0 0 2px transparent; }
         }
-        tr.deep-link-flash {
+        .row-card.deep-link-flash {
             animation: deep-link-flash 2.4s ease-in-out 1;
         }
         /* Notification dot on the tab */
@@ -3744,7 +3744,9 @@ function initRadarMap(receiver){
 // Receiver pin + concentric range rings. Ring radii are round numbers in
 // the user's distance unit, converted to meters for L.circle.
 function _radarDrawReceiver(receiver){
-    if(!_radar.map) return;
+    // v3.4.141: no location configured → no pin. The 60 s ui-config refresh
+    // used to call this with null lat/lon, which Leaflet places at 0,0.
+    if(!_radar.map || !receiver || receiver.lat == null || receiver.lon == null) return;
     const ll = [receiver.lat, receiver.lon];
     // v3.5.0 (radar C): a distinct receiver marker — a center dot with a
     // static ring (a "signal origin" look) instead of the generic Leaflet
@@ -3768,7 +3770,7 @@ function _radarDrawReceiver(receiver){
     // shows; only the rings are gated.
     if(!mapCfg.show_range_rings) return;
     const unit = (receiver.distance_unit || 'mi').toLowerCase();
-    const perUnitM = unit === 'km' ? 1000 : (unit === 'nm' ? 1852 : 1609.34);
+    const perUnitM = unit === 'km' ? 1000 : (unit === 'nmi' || unit === 'nm') ? 1852 : 1609.34;
     (mapCfg.ring_distances && mapCfg.ring_distances.length ? mapCfg.ring_distances
         : [50, 100, 150, 200, 250]).forEach(d => {
         const ring = L.circle(ll, {
@@ -3907,7 +3909,7 @@ function radarSync(liveJ){
             _radar._fitOnce = true;
         } else if(sv === 'fit_rings' && haveRx && (mapCfg.ring_distances || []).length){
             const u = (receiver.distance_unit || 'mi').toLowerCase();
-            const pm = u === 'km' ? 1000 : (u === 'nm' ? 1852 : 1609.34);
+            const pm = u === 'km' ? 1000 : (u === 'nmi' || u === 'nm') ? 1852 : 1609.34;
             const maxM = Math.max.apply(null, mapCfg.ring_distances) * pm;
             const dLat = maxM / 111320;
             const dLon = maxM / ((111320 * Math.cos(receiver.lat * Math.PI / 180)) || 111320);
@@ -3926,7 +3928,10 @@ function radarSync(liveJ){
     // fresh data, and extend the selected aircraft's trail with the new fix.
     if(_radar.selectedIcao){
         const sel = live.find(a => a.icao === _radar.selectedIcao);
+        const note = document.getElementById('roNote');
         if(sel){
+            // Back in range (a one-poll dropout is common): clear the note.
+            if(note) note.style.display = 'none';
             _radarRenderOverlay(sel);
             if(_radar.trailLast && sel.lat != null && sel.lon != null &&
                (_radar.trailLast[0] !== sel.lat || _radar.trailLast[1] !== sel.lon)){
@@ -3935,7 +3940,6 @@ function radarSync(liveJ){
             }
         } else {
             // Selected aircraft dropped out of range — note it, keep panel open.
-            const note = document.getElementById('roNote');
             if(note){ note.style.display = ''; note.textContent = 'No longer being received — last known data shown.'; }
         }
     }
@@ -7703,19 +7707,22 @@ document.addEventListener('DOMContentLoaded', () => {
         const params = new URLSearchParams(window.location.search);
         const tab = params.get('tab');
         const icao = (params.get('icao') || '').toUpperCase();
+        const icaoOk = /^~?[0-9A-F]{6}$/.test(icao);   // it goes into a selector
         const highlight = params.get('highlight') === '1';
         const validTabs = new Set(['live', 'watchlist', 'military', 'stats', 'search']);
         if (tab && validTabs.has(tab) && tab !== 'live') {
             // 'live' is already the default, so we only switch for non-live
             go(tab);
         }
-        if (icao && highlight) {
+        if (icaoOk && highlight) {
             // Let initial render settle, then try to find + highlight the
             // row. Retry briefly in case the data hasn't landed yet — the
             // first fetch is async and our deep-link might race it.
             const tryHighlight = (attemptsLeft) => {
+                // v3.4.141: rows are div.row-card (were <tr> until v2.72.0,
+                // which silently killed this highlight).
                 const row = document.querySelector(
-                    `#p-${activeTab} tr[data-icao="${icao}"]`
+                    `#p-${activeTab} .row-card[data-icao="${icao}"]`
                 );
                 if (row) {
                     row.scrollIntoView({behavior: 'smooth', block: 'center'});

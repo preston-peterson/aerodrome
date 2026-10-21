@@ -33,29 +33,60 @@ Tests in test_categorize.py.
 from typing import Optional
 
 
-# Helicopter ICAO type designators. Lifted from the v2.85.9 category_mix
-# implementation. Adding new entries here automatically picks them up
-# in both the Stats card and the search filter.
+# Helicopter ICAO type designators: every designator ICAO DOC 8643 lists
+# as a helicopter (v3.4.141 — refresh from scripts/doc8643.csv), plus the
+# military/legacy codes some feeds send (CH47, UH60, …) and B206. The old
+# 18-code list missed common types (R66, S76, B505, EN48) and drifted from
+# the collector's TYPE_CEILINGS. Adding entries here picks them up in both
+# the Stats card and the search filter.
 HELICOPTER_TYPES = frozenset({
-    "H60", "H47", "EC35", "EC45", "EC55", "AS50", "AS55", "R22", "R44",
-    "B06", "B206", "B407", "B412", "B429", "B430", "A109", "A119", "A139",
+    "A109", "A119", "A129", "A139", "A149", "A169", "A189", "A2RT", "A600",
+    "AC31", "AC33", "ALH", "ALO2", "ALO3", "ANST", "AS32", "AS3B", "AS50",
+    "AS55", "AS65", "B06", "B06T", "B105", "B150", "B212", "B214", "B222",
+    "B230", "B305", "B407", "B412", "B427", "B429", "B430", "B47G", "B47J",
+    "B47T", "B505", "B525", "BABY", "BK17", "BRB2", "BSTP", "CH12", "CH14",
+    "CH7", "CHIF", "COMU", "DJIN", "DRAG", "DYH2", "DYH3", "EC20", "EC25",
+    "EC30", "EC35", "EC45", "EC55", "EC75", "EGL3", "EH10", "ELTO", "EN28",
+    "EN48", "ES11", "EXEC", "EXEJ", "EXPL", "FH11", "FREL", "G2CA", "GAZL",
+    "H12T", "H160", "H2", "H21", "H269", "H43A", "H43B", "H46", "H47",
+    "H500", "H53", "H53S", "H60", "H64", "HSMT", "HUCO", "HX2", "IS2",
+    "JAG2", "K126", "K209", "K226", "KA25", "KA26", "KA27", "KA50", "KA52",
+    "KA62", "KH4", "KMAX", "LAMA", "LCH", "LR2T", "LYNX", "M74", "MD52",
+    "MD60", "MH20", "MI10", "MI14", "MI2", "MI24", "MI26", "MI28", "MI34",
+    "MI38", "MI4", "MI6", "MI8", "NA40", "NH90", "OH1", "PHIL", "PSW4",
+    "PUMA", "R22", "R4", "R44", "R66", "RMOU", "RP1", "RVAL", "S274",
+    "S278", "S285", "S330", "S360", "S434", "S51", "S52", "S55P", "S55T",
+    "S58P", "S58T", "S61", "S61R", "S62", "S64", "S65C", "S76", "S92",
+    "S97", "SB1", "SCOR", "SCOU", "SH09", "SH4", "SUCO", "SURN", "SYCA",
+    "TIGR", "UH1", "UH12", "UH1Y", "ULTS", "V500", "W3", "WASP", "WESX",
+    "WZ10", "X2", "X3", "X49", "YNHL", "ZA6", "ZEFR",
+    "B206", "CH47", "EC20T", "H6", "H65", "UH60", "UH72",
 })
 
 
 # Commercial aircraft type-code prefixes. A type that begins with any of
-# these strings (after upper-casing) classifies as commercial. Same list
-# as the v2.85.9 inline test, just hoisted to module scope.
+# these strings (after upper-casing) classifies as commercial. v3.4.141:
+# "A2", "A3" and "B3" were dropped — they also matched the King Air 350
+# (B350), the turbine Bonanza (B36T) and light aircraft such as the A210;
+# those airliner families are listed exactly below instead.
 COMMERCIAL_PREFIXES = (
-    "A3", "A2", "B7", "B3", "CRJ", "E1", "E7",
+    "B7", "CRJ", "E1", "E7",
 )
 
 
-# Exact-match commercial type codes. The MD8x and Airbus codes can't
-# be captured by prefix alone (some overlap with general aviation
-# patterns); kept as an explicit set.
+# Exact-match commercial type codes.
 COMMERCIAL_EXACT = frozenset({
-    "MD80", "MD82", "MD83", "MD88", "MD90",
-    "A220", "A319", "A320", "A321", "A330", "A340", "A350", "A380",
+    # Airbus — the A220 flies as BCS1/BCS3 (the A220 entry never matched)
+    "A306", "A30B", "A310", "A318", "A319", "A320", "A321", "A19N", "A20N",
+    "A21N", "A332", "A333", "A337", "A338", "A339", "A342", "A343", "A345",
+    "A346", "A359", "A35K", "A388", "A3ST", "BCS1", "BCS3",
+    "A220", "A330", "A340", "A350", "A380",
+    # Boeing 737 MAX
+    "B37M", "B38M", "B39M", "B3XM",
+    # Embraer E2 jets (E1/E7 cover the first-generation E-Jets)
+    "E290", "E295",
+    # McDonnell Douglas
+    "DC10", "MD11", "MD80", "MD81", "MD82", "MD83", "MD87", "MD88", "MD90",
 })
 
 

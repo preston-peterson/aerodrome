@@ -1,4 +1,4 @@
-# Version: 3.4.140
+# Version: 3.4.141
 """
 collector.py — ADS-B data fetcher and classifier.
 
@@ -406,11 +406,14 @@ CAPACITY_CHECK_INTERVAL_SEC = 60
 # practice on a 45-day-old install: plans built from first-week row counts
 # mis-ordered a join in the Stats "top_aircraft" query, making a one-day
 # windowed lookup run ~5s (slower than a 365-day count over the same
-# table — the signature of a wrong plan). PRAGMA optimize re-analyzes only
-# the tables whose size has drifted enough to matter, and analysis_limit
-# bounds it to a sample rather than a full index scan, so the per-run cost
-# stays small (sub-second) even on a multi-gigabyte database. Run once per
-# poll cycle, rate-limited like the capacity check.
+# table — the signature of a wrong plan). v3.4.141: a sampled ANALYZE
+# (analysis_limit bounds each index to a sample rather than a full scan,
+# ~0.3 s on a 2 GB / 11M-sighting database). Through v3.4.140 this ran
+# PRAGMA optimize, which only considers tables queried on the SAME
+# connection — on this fresh connection it was a no-op, so the stats never
+# moved (the 0x10000 "check all tables" flag needs SQLite 3.46; Ubuntu
+# 24.04 ships 3.45). Run once per poll cycle, rate-limited like the
+# capacity check.
 _last_stats_optimize_ts = 0.0
 STATS_OPTIMIZE_INTERVAL_SEC = 6 * 3600   # every 6 hours
 STATS_OPTIMIZE_ANALYSIS_LIMIT = 1000
@@ -844,10 +847,8 @@ def refresh_query_planner_stats(config: Dict[str, Any]) -> None:
 
     Called once per poll cycle, rate-limited to STATS_OPTIMIZE_INTERVAL_SEC
     (6 hours) so a sub-60s poll cadence doesn't multiply the work. Runs
-    PRAGMA optimize with a bounded analysis_limit: optimize re-analyzes
-    only the tables whose size has drifted enough since the last ANALYZE
-    to risk a bad plan, and analysis_limit caps each ANALYZE to a sample
-    rather than a full index scan — so the cost is small even on a
+    ANALYZE under a bounded analysis_limit, which caps each index to a
+    sample rather than a full scan — so the cost is small even on a
     multi-gigabyte database. This is the durable fix for stats going stale
     on long-running installs (the marker-gated ANALYZE in init_db only
     runs once). Never raises — a stats-refresh failure must not break the
@@ -864,10 +865,10 @@ def refresh_query_planner_stats(config: Dict[str, Any]) -> None:
         try:
             conn.execute(f"PRAGMA analysis_limit={STATS_OPTIMIZE_ANALYSIS_LIMIT}")
             t0 = time.time()
-            conn.execute("PRAGMA optimize")
+            conn.execute("ANALYZE")
             conn.commit()
             logger.info(
-                "Query-planner stats refreshed (PRAGMA optimize, %.2fs)",
+                "Query-planner stats refreshed (sampled ANALYZE, %.2fs)",
                 time.time() - t0,
             )
         finally:
@@ -2976,16 +2977,46 @@ def match_watchlist(aircraft: Dict, lookup: Dict) -> Optional[str]:
 # =============================================================================
 
 def _to_number(v):
-    """Coerce v to a float if possible, else None. Handles strings like
-    'ground' (which some ADS-B feeds send for altitude) by returning None."""
+    """Coerce v to a finite float if possible, else None. Handles strings
+    like 'ground' (which some ADS-B feeds send for altitude) by returning
+    None. Non-finite values are None too: JSON's 1e999 parses as inf, and
+    one inf altitude stored as a record used to break /api/stats."""
     if v is None:
         return None
-    if isinstance(v, (int, float)):
-        return float(v)
     try:
-        return float(v)
+        f = float(v)
     except (TypeError, ValueError):
         return None
+    return f if math.isfinite(f) else None
+
+
+# v3.4.141: string fields the poll reads from each feed record. A record
+# carrying any other type in one of these (`flight: null`, a numeric `desc`)
+# used to raise inside the per-aircraft loop and abort the whole poll — every
+# poll, for as long as that aircraft stayed in range.
+_FEED_STR_FIELDS = ("hex", "flight", "callsign", "t", "type", "desc",
+                    "description")
+
+
+_skipped_record_logged_at = 0.0
+
+
+def _log_skipped_record(raw: Dict, err: Exception) -> None:
+    """Warn about a feed record the poll had to skip — at most every 10
+    minutes, since the same aircraft repeats it on every poll."""
+    global _skipped_record_logged_at
+    if time.time() - _skipped_record_logged_at >= 600:
+        _skipped_record_logged_at = time.time()
+        logger.warning(f"Skipped a malformed aircraft record (hex "
+                       f"{str(raw.get('hex'))[:12]!r}): {type(err).__name__}: {err}")
+
+
+def _sanitize_feed_record(raw: Dict) -> Dict:
+    """A copy of one feed record without wrongly-typed string fields or
+    non-finite numbers, so every reader downstream sees well-formed data."""
+    return {k: v for k, v in raw.items()
+            if not (k in _FEED_STR_FIELDS and not isinstance(v, str))
+            and not (isinstance(v, float) and not math.isfinite(v))}
 
 
 # v3.4.138: aircraft type code. The feed's `t` is the ICAO type designator,
@@ -3372,461 +3403,478 @@ def fetch_and_store(config: Dict, watchlist_lookup: Dict):
     # for aircraft the feed gives no type code (stock readsb, dump1090-fa).
     _warm_type_codes(conn, raw_list)
 
+    # v3.4.141: one transaction for the whole poll (as before), and a
+    # savepoint per aircraft so a record that still manages to raise is
+    # rolled back and skipped instead of aborting every aircraft's writes.
+    if not conn.in_transaction:
+        conn.execute("BEGIN")
     for raw in raw_list:
         if not isinstance(raw, dict):
             continue
-        ac = normalize(raw)
-        if not ac["hex"]:
-            continue
-
-        # Store in all_sightings
-        conn.execute("""
-            INSERT INTO all_sightings
-            (icao, callsign, speed, lat, lon, altitude, aircraft_type, type_desc, seen_at, squawk)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (ac["hex"], ac["callsign"], ac["speed"], ac["lat"], ac["lon"],
-              ac["altitude"], ac["aircraft_type"], ac["type_desc"], now, ac["squawk"]))
-        all_count += 1
-
-        # v2.50.0: also upsert into the hourly rollup. Per-aircraft-per-hour
-        # row that aggregates count + first/last + extremes + last-state
-        # for the queries that originally backed the All tab page render
-        # (since Phase 1D, the same aggregates back Search and Stats).
-        # See design doc section 5 (Option A — online populate) for the
-        # rationale; tl;dr is that the write amplification is small (one
-        # extra UPSERT per poll per aircraft) and avoids the UNION-with-
-        # current-hour complexity a batch-rollup approach would force on
-        # read paths.
-        #
-        # Conflict resolution per column:
-        #   callsign / aircraft_type / type_desc / last_squawk:
-        #       COALESCE(NULLIF(excluded.x, ''), table.x)
-        #       — keep the new value if non-empty, else preserve existing
-        #   sighting_count: incremented
-        #   first_seen_at: MIN — first sighting in hour wins
-        #   last_seen_at, last_lat/lon/altitude/speed:
-        #       always overwritten — most recent observation
-        #   min_altitude, max_altitude, max_speed:
-        #       MIN/MAX — extremes preserved across the hour
-        hour_bucket = (now // 3600) * 3600
-        # v2.87.1: also compute min_nonzero_altitude — the per-bucket
-        # minimum altitude across non-zero observations only. None when
-        # this poll's altitude is null or zero (taxi/ground/no data);
-        # the conflict resolution below skips nulls so existing
-        # bucket values survive. Source for the Stats lowest_altitude
-        # card; see migration v5 docstring for the why-not-min_altitude
-        # rationale.
-        _alt = ac["altitude"]
-        _alt_nonzero = _alt if (_alt is not None and _alt > 0) else None
-        conn.execute("""
-            INSERT INTO sightings_hourly (
-                icao, hour_bucket, callsign, aircraft_type, type_desc,
-                sighting_count, first_seen_at, last_seen_at,
-                last_lat, last_lon, last_altitude, last_speed,
-                min_altitude, max_altitude, max_speed, last_squawk,
-                min_nonzero_altitude
-            ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (icao, hour_bucket) DO UPDATE SET
-                callsign       = COALESCE(NULLIF(excluded.callsign, ''),       sightings_hourly.callsign),
-                aircraft_type  = COALESCE(NULLIF(excluded.aircraft_type, ''),  sightings_hourly.aircraft_type),
-                type_desc      = COALESCE(NULLIF(excluded.type_desc, ''),      sightings_hourly.type_desc),
-                sighting_count = sightings_hourly.sighting_count + 1,
-                last_seen_at   = excluded.last_seen_at,
-                last_lat       = excluded.last_lat,
-                last_lon       = excluded.last_lon,
-                last_altitude  = excluded.last_altitude,
-                last_speed     = excluded.last_speed,
-                last_squawk    = COALESCE(NULLIF(excluded.last_squawk, ''),    sightings_hourly.last_squawk),
-                min_altitude   = CASE
-                    WHEN excluded.min_altitude IS NULL THEN sightings_hourly.min_altitude
-                    WHEN sightings_hourly.min_altitude IS NULL THEN excluded.min_altitude
-                    ELSE MIN(sightings_hourly.min_altitude, excluded.min_altitude)
-                END,
-                max_altitude   = CASE
-                    WHEN excluded.max_altitude IS NULL THEN sightings_hourly.max_altitude
-                    WHEN sightings_hourly.max_altitude IS NULL THEN excluded.max_altitude
-                    ELSE MAX(sightings_hourly.max_altitude, excluded.max_altitude)
-                END,
-                max_speed      = CASE
-                    WHEN excluded.max_speed IS NULL THEN sightings_hourly.max_speed
-                    WHEN sightings_hourly.max_speed IS NULL THEN excluded.max_speed
-                    ELSE MAX(sightings_hourly.max_speed, excluded.max_speed)
-                END,
-                min_nonzero_altitude = CASE
-                    WHEN excluded.min_nonzero_altitude IS NULL THEN sightings_hourly.min_nonzero_altitude
-                    WHEN sightings_hourly.min_nonzero_altitude IS NULL THEN excluded.min_nonzero_altitude
-                    ELSE MIN(sightings_hourly.min_nonzero_altitude, excluded.min_nonzero_altitude)
-                END
-        """, (
-            ac["hex"], hour_bucket, ac["callsign"] or "",
-            ac["aircraft_type"] or "", ac["type_desc"] or "",
-            now, now,                                    # first_seen_at, last_seen_at
-            ac["lat"], ac["lon"], ac["altitude"], ac["speed"],  # last_*
-            ac["altitude"], ac["altitude"], ac["speed"],  # min_alt, max_alt, max_speed
-            ac["squawk"] or "",
-            _alt_nonzero,                                # v2.87.1: min_nonzero_altitude
-        ))
-
-        # v2.88.0: per-aircraft per-day session tracking. Reads the
-        # existing row, decides whether this poll continues the
-        # current session or starts a new one (gap >
-        # `_session_gap_min` minutes ends a session), promotes to
-        # best-of-day if the in-flight session is now the longest,
-        # writes back via INSERT OR REPLACE. This is the read path
-        # for the Stats `longest_track` card and its drill panel —
-        # the previous all_sightings Python walk read 950K+ rows
-        # per Stats render; this rollup turns it into ORDER BY DESC
-        # LIMIT 1 over ~50-200 rows/day.
-        #
-        # Two queries per aircraft per poll (SELECT + INSERT OR
-        # REPLACE). Considered a single ON CONFLICT DO UPDATE
-        # like sightings_hourly does, but the gap-detection logic
-        # would require repeating the same CASE expression four
-        # times in the SET clause (current_start, best_start,
-        # best_end, best_duration all need the "did we just gap?"
-        # decision). Two queries with Python branching is roughly
-        # half the line count and substantially more readable —
-        # and at 50 aircraft × 20s polls × 2 queries it's ~5
-        # queries/sec/process, well below SQLite's noise floor.
-        #
-        # Day-bucket alignment is local-tz (not UTC like the other
-        # rollups) — see migration v6 docstring for the rationale.
-        # Sessions split only at local midnight, when traffic is
-        # minimal, matching the user's mental model of "today".
-        day_bucket = _local_day_bucket(now)
-        gap_sec = _session_gap_min * 60
-        existing = conn.execute(
-            "SELECT current_session_start, current_session_last, "
-            "       best_session_start, best_session_end, best_session_duration, "
-            "       callsign, aircraft_type "
-            "FROM aircraft_track_daily WHERE icao=? AND day_bucket=?",
-            (ac["hex"], day_bucket)
-        ).fetchone()
-        if existing is None or now - existing[1] > gap_sec:
-            # New row OR gap detected: start a fresh in-flight session.
-            atd_cur_start = now
-            atd_cur_last = now
-        else:
-            # Continue the existing session.
-            atd_cur_start = existing[0]
-            atd_cur_last = now
-        atd_cur_dur = atd_cur_last - atd_cur_start
-        if existing is None or atd_cur_dur > existing[4]:
-            # First sighting today, or in-flight session has now
-            # exceeded the previous best.
-            atd_best_start = atd_cur_start
-            atd_best_end = atd_cur_last
-            atd_best_dur = atd_cur_dur
-        else:
-            # Earlier session (closed or in-flight) is still longest.
-            atd_best_start = existing[2]
-            atd_best_end = existing[3]
-            atd_best_dur = existing[4]
-        # Callsign and aircraft_type: latest non-empty wins, matching
-        # the COALESCE-NULLIF pattern in the sightings_hourly UPSERT
-        # above. Empty strings (no callsign reported on this poll)
-        # preserve whatever was previously stored.
-        atd_new_callsign = (ac["callsign"] or "").strip()
-        atd_new_type = (ac["aircraft_type"] or "").strip()
-        if existing is None:
-            atd_callsign_out = atd_new_callsign
-            atd_type_out = atd_new_type
-        else:
-            atd_callsign_out = atd_new_callsign or (existing[5] or "")
-            atd_type_out = atd_new_type or (existing[6] or "")
-        conn.execute("""
-            INSERT OR REPLACE INTO aircraft_track_daily (
-                icao, day_bucket, callsign, aircraft_type,
-                current_session_start, current_session_last,
-                best_session_start, best_session_end, best_session_duration
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            ac["hex"], day_bucket, atd_callsign_out, atd_type_out,
-            atd_cur_start, atd_cur_last,
-            atd_best_start, atd_best_end, atd_best_dur,
-        ))
-
-        # v2.48.0: emergency-squawk edge detection. We fire an
-        # emergency_squawk event when an aircraft's current squawk is
-        # 7500/7600/7700 AND the previous observation we have of this
-        # ICAO was either absent (fresh appearance) or a DIFFERENT
-        # squawk. That way a plane circling in range with a stuck 7700
-        # fires once, not every minute. Per-ICAO cooldown in the
-        # notifier (default 60min) adds belt-and-suspenders protection.
-        #
-        # _last_squawk_by_icao is process-local; on restart, ongoing
-        # emergency squawkers fire once — which is the correct default
-        # (the operator probably wants to know there's an active
-        # emergency after a service restart).
-        cur_sq = ac["squawk"] or ""
-        prev_sq = _last_squawk_by_icao.get(ac["hex"], "")
-        if cur_sq in _EMERGENCY_SQUAWK_LABELS and cur_sq != prev_sq:
-            label = _EMERGENCY_SQUAWK_LABELS[cur_sq]
-            callsign = (ac["callsign"] or "").strip() or ac["hex"]
-            type_desc = ac.get("aircraft_type") or "unknown type"
-            alt_str = f"{ac['altitude']:,} ft" if ac.get("altitude") else "altitude unknown"
-            _safe_notify(
-                "emergency_squawk",
-                f"Emergency squawk {cur_sq} - {callsign}",
-                f"{callsign} ({ac['hex']}) is squawking {cur_sq} ({label}). "
-                f"Type: {type_desc}. Altitude: {alt_str}.",
-                priority="high",
-                tags=["rotating_light"],
-                aircraft_icao=ac["hex"],
-                click_route="live",
-                track_url=_build_track_url(
-                    ac["hex"],
-                    receiver.get("track_link_provider") or "airplanes_live",
-                ),
-            )
-        # Update the tracker regardless — we want to know what the
-        # aircraft was squawking last poll no matter whether it was
-        # emergency or normal.
-        _last_squawk_by_icao[ac["hex"]] = cur_sq
-
-        # v2.51.0: full UPSERT to maintain denormalized search-feature columns.
-        # Replaces the old INSERT OR IGNORE pattern. On insert, populate
-        # everything we know about this first sighting. On conflict (row
-        # already exists), update last_callsign / aircraft_type / last_lat /
-        # last_lon / last_seen_at / sighting_count to reflect this newer
-        # sighting. first_seen_at, first_callsign, first_aircraft_type are
-        # NEVER touched on conflict — those capture the first-ever sighting
-        # by definition and remain immutable.
-        #
-        # Flavor C: fts_dirty is set to 1 on INSERT (new row needs FTS
-        # entry) or whenever an FTS-indexed field changes on UPDATE.
-        # Routine sighting_count bumps don't touch fts_dirty. The
-        # cycle-end flush below clears these by syncing FTS5.
-        from countries import country_for_icao
-        from designators import operator_from_callsign
-        from categorize import classify as _categorize
-        _cs = (ac["callsign"] or "").strip()
-        _atype = ac["aircraft_type"] or ""
-        _adesc = ac.get("type_desc") or ""
-        _country = country_for_icao(ac["hex"])
-        # v2.50.42: derive operator from callsign. Returns the 3-letter
-        # ICAO airline designator (e.g. "UAL") when the callsign starts
-        # with a recognized airline code, else None. Empty string in the
-        # column would tokenize into FTS5 as nothing — but None becomes
-        # NULL which the FTS5 join handles cleanly.
-        _operator = operator_from_callsign(_cs) or ""
-        # v2.60.1: compute distance in canonical km from the aircraft's
-        # current position to the configured receiver location. None
-        # when receiver isn't configured or aircraft has no position.
-        # ORDER BY seen_aircraft.last_distance now sorts the full
-        # result set on Search.
-        _distance_km = _compute_distance_km(ac.get("lat"), ac.get("lon"))
-        # v2.89.0: compute is_military and category BEFORE the
-        # seen_aircraft UPSERT so the row's category column reflects
-        # the same classification the rest of this poll uses (military
-        # status drives military_sightings inserts later in the loop;
-        # we cache the result here and reuse it). The category
-        # heuristics live in categorize.py — single source of truth
-        # shared with migration v7's backfill and the Stats
-        # category_mix card's read query.
-        is_mil, special_label = is_military(raw, config)
-        _category = _categorize(_atype, _adesc, is_mil)
-        # Sticky-military rule lives in the SQL ON CONFLICT below: if
-        # either the new poll's classification OR the existing row's
-        # classification is 'military', the result stays 'military'.
-        # That means a feeder flicker (dbFlags missing on one poll)
-        # can't downgrade a known military aircraft to commercial.
-        # v3.4.62: best_track_seconds is the all-time longest single
-        # continuous track (session) for this aircraft, in seconds. We
-        # already computed today's best session (atd_best_dur) just above
-        # for aircraft_track_daily, so we fold a MAX into this existing
-        # UPSERT rather than adding a statement to the hot path. It's a
-        # high-water mark: ON CONFLICT keeps the larger of the stored value
-        # and today's best, so it never regresses even after the day that
-        # set the record ages out of the aircraft_track_daily retention
-        # window. COALESCE(..., 0) handles the NULL stored on legacy rows
-        # (scalar MAX() returns NULL if any argument is NULL). Like
-        # sighting_count, it is intentionally unindexed (see migration v11).
-        conn.execute("""
-            INSERT INTO seen_aircraft (
-                icao, first_seen_at, first_callsign, first_aircraft_type,
-                last_callsign, aircraft_type, aircraft_type_desc, operator, country,
-                last_lat, last_lon, last_distance, last_seen_at, sighting_count,
-                fts_dirty, category, best_track_seconds
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)
-            ON CONFLICT(icao) DO UPDATE SET
-                last_callsign = COALESCE(NULLIF(excluded.last_callsign, ''), last_callsign),
-                aircraft_type = COALESCE(NULLIF(excluded.aircraft_type, ''), aircraft_type),
-                aircraft_type_desc = COALESCE(NULLIF(excluded.aircraft_type_desc, ''), aircraft_type_desc),
-                operator = COALESCE(NULLIF(excluded.operator, ''), operator),
-                country = COALESCE(excluded.country, country),
-                last_lat = COALESCE(excluded.last_lat, last_lat),
-                last_lon = COALESCE(excluded.last_lon, last_lon),
-                last_distance = COALESCE(excluded.last_distance, last_distance),
-                last_seen_at = excluded.last_seen_at,
-                sighting_count = sighting_count + 1,
-                best_track_seconds = MAX(
-                    COALESCE(seen_aircraft.best_track_seconds, 0),
-                    excluded.best_track_seconds
-                ),
-                category = CASE
-                    WHEN excluded.category = 'military' THEN 'military'
-                    WHEN seen_aircraft.category = 'military' THEN 'military'
-                    ELSE excluded.category
-                END,
-                fts_dirty = CASE
-                    WHEN last_callsign IS NOT COALESCE(NULLIF(excluded.last_callsign, ''), last_callsign) THEN 1
-                    WHEN aircraft_type IS NOT COALESCE(NULLIF(excluded.aircraft_type, ''), aircraft_type) THEN 1
-                    WHEN aircraft_type_desc IS NOT COALESCE(NULLIF(excluded.aircraft_type_desc, ''), aircraft_type_desc) THEN 1
-                    WHEN operator IS NOT COALESCE(NULLIF(excluded.operator, ''), operator) THEN 1
-                    WHEN country IS NOT COALESCE(excluded.country, country) THEN 1
-                    ELSE fts_dirty
-                END
-        """, (ac["hex"], now, _cs, _atype,
-              _cs, _atype, _adesc, _operator, _country,
-              ac.get("lat"), ac.get("lon"), _distance_km, now, _category,
-              atd_best_dur))
-
-        # Update all-time records (Wave 3). Each check is a single SELECT and
-        # an UPDATE only on the rare case of a new record. No noticeable cost.
-        # Wrapped in try/except so one weird aircraft can't kill the whole poll
-        # — the rest of the data still gets saved.
-        #
-        # Quality filters (see stats quality filters section at top of file):
-        # - Skip TIS-B/MLAT pseudo-targets entirely. Their data is relayed
-        #   and often inaccurate — they shouldn't set permanent records.
-        # - For fastest_ever, enforce the type-aware speed ceiling to
-        #   reject transponder glitches (e.g. a B763 reporting 1010 kt).
-        # - Slowest/lowest-altitude intentionally are NOT all-time records
-        #   (that direction would just trend toward 1 kt / 1 ft over time
-        #   as more ground noise gets caught), so no filter needed there.
+        raw = _sanitize_feed_record(raw)
+        counts = (all_count, mil_count, watch_count)
+        conn.execute("SAVEPOINT poll_aircraft")
         try:
-            if is_pseudo_icao(ac.get("hex")):
-                pass  # skip all record updates for pseudo-targets
-            else:
-                if ac["speed"] is not None and ac["speed"] > 0:
-                    cap = speed_ceiling_for_type(ac.get("aircraft_type"))
-                    if ac["speed"] <= cap:
-                        _update_record(conn, "fastest_ever", ac["speed"], "gt", ac, now)
-                if ac["altitude"] is not None:
-                    _update_record(conn, "highest_altitude_ever", ac["altitude"], "gt", ac, now)
-                    if ac["altitude"] > 0:
-                        _update_record(conn, "lowest_altitude_ever", ac["altitude"], "lt", ac, now)
-                # Furthest — only if we know the receiver's location
-                rx = config.get("receiver", {})
-                if (ac["lat"] is not None and ac["lon"] is not None
-                        and rx.get("latitude") is not None and rx.get("longitude") is not None):
-                    unit = (rx.get("distance_unit") or "mi").lower()
-                    dist = _haversine(rx["latitude"], rx["longitude"],
-                                      ac["lat"], ac["lon"], unit)
-                    _update_record(conn, "furthest_ever", dist, "gt", ac, now, extra=unit)
-        except Exception as e:
-            logger.warning(f"Record update failed for {ac.get('hex', '?')}: {e}")
+            ac = normalize(raw)
+            if not ac["hex"]:
+                continue
 
-        # Military check — is_mil and special_label were already
-        # computed above for the seen_aircraft category column.
-        # Reusing them here avoids a second is_military(raw, config)
-        # call per aircraft per poll.
-        if is_mil:
+            # Store in all_sightings
             conn.execute("""
-                INSERT INTO military_sightings
-                (icao, callsign, speed, lat, lon, altitude, aircraft_type, type_desc, seen_at, special_label, squawk)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO all_sightings
+                (icao, callsign, speed, lat, lon, altitude, aircraft_type, type_desc, seen_at, squawk)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (ac["hex"], ac["callsign"], ac["speed"], ac["lat"], ac["lon"],
-                  ac["altitude"], ac["aircraft_type"], ac["type_desc"], now, special_label, ac["squawk"]))
-            mil_count += 1
-            # v3.4.6: keep military_hourly rollup current. Same shape as
-            # the sightings_hourly upsert above. PK (icao, hour_bucket)
-            # collapses repeat polls within an hour into one row;
-            # special_label / callsign / aircraft_type are preserved
-            # via COALESCE so a later non-empty value updates the row
-            # but a NULL/empty value doesn't wipe out an earlier
-            # populated one.
+                  ac["altitude"], ac["aircraft_type"], ac["type_desc"], now, ac["squawk"]))
+            all_count += 1
+
+            # v2.50.0: also upsert into the hourly rollup. Per-aircraft-per-hour
+            # row that aggregates count + first/last + extremes + last-state
+            # for the queries that originally backed the All tab page render
+            # (since Phase 1D, the same aggregates back Search and Stats).
+            # See design doc section 5 (Option A — online populate) for the
+            # rationale; tl;dr is that the write amplification is small (one
+            # extra UPSERT per poll per aircraft) and avoids the UNION-with-
+            # current-hour complexity a batch-rollup approach would force on
+            # read paths.
+            #
+            # Conflict resolution per column:
+            #   callsign / aircraft_type / type_desc / last_squawk:
+            #       COALESCE(NULLIF(excluded.x, ''), table.x)
+            #       — keep the new value if non-empty, else preserve existing
+            #   sighting_count: incremented
+            #   first_seen_at: MIN — first sighting in hour wins
+            #   last_seen_at: always overwritten — most recent observation
+            #   last_lat/lon/altitude/speed: most recent NON-NULL observation
+            #       (v3.4.141 — a position-less poll used to blank them, so
+            #       edge aircraft dropped out of the range rose/histogram)
+            #   min_altitude, max_altitude, max_speed:
+            #       MIN/MAX — extremes preserved across the hour
+            hour_bucket = (now // 3600) * 3600
+            # v2.87.1: also compute min_nonzero_altitude — the per-bucket
+            # minimum altitude across non-zero observations only. None when
+            # this poll's altitude is null or zero (taxi/ground/no data);
+            # the conflict resolution below skips nulls so existing
+            # bucket values survive. Source for the Stats lowest_altitude
+            # card; see migration v5 docstring for the why-not-min_altitude
+            # rationale.
+            _alt = ac["altitude"]
+            _alt_nonzero = _alt if (_alt is not None and _alt > 0) else None
             conn.execute("""
-                INSERT INTO military_hourly (
+                INSERT INTO sightings_hourly (
                     icao, hour_bucket, callsign, aircraft_type, type_desc,
-                    special_label, sighting_count, first_seen_at, last_seen_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                    sighting_count, first_seen_at, last_seen_at,
+                    last_lat, last_lon, last_altitude, last_speed,
+                    min_altitude, max_altitude, max_speed, last_squawk,
+                    min_nonzero_altitude
+                ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (icao, hour_bucket) DO UPDATE SET
-                    callsign       = COALESCE(NULLIF(excluded.callsign, ''),       military_hourly.callsign),
-                    aircraft_type  = COALESCE(NULLIF(excluded.aircraft_type, ''),  military_hourly.aircraft_type),
-                    type_desc      = COALESCE(NULLIF(excluded.type_desc, ''),      military_hourly.type_desc),
-                    special_label  = COALESCE(NULLIF(excluded.special_label, ''),  military_hourly.special_label),
-                    sighting_count = military_hourly.sighting_count + 1,
-                    last_seen_at   = excluded.last_seen_at
+                    callsign       = COALESCE(NULLIF(excluded.callsign, ''),       sightings_hourly.callsign),
+                    aircraft_type  = COALESCE(NULLIF(excluded.aircraft_type, ''),  sightings_hourly.aircraft_type),
+                    type_desc      = COALESCE(NULLIF(excluded.type_desc, ''),      sightings_hourly.type_desc),
+                    sighting_count = sightings_hourly.sighting_count + 1,
+                    last_seen_at   = excluded.last_seen_at,
+                    last_lat       = COALESCE(excluded.last_lat,      sightings_hourly.last_lat),
+                    last_lon       = COALESCE(excluded.last_lon,      sightings_hourly.last_lon),
+                    last_altitude  = COALESCE(excluded.last_altitude, sightings_hourly.last_altitude),
+                    last_speed     = COALESCE(excluded.last_speed,    sightings_hourly.last_speed),
+                    last_squawk    = COALESCE(NULLIF(excluded.last_squawk, ''),    sightings_hourly.last_squawk),
+                    min_altitude   = CASE
+                        WHEN excluded.min_altitude IS NULL THEN sightings_hourly.min_altitude
+                        WHEN sightings_hourly.min_altitude IS NULL THEN excluded.min_altitude
+                        ELSE MIN(sightings_hourly.min_altitude, excluded.min_altitude)
+                    END,
+                    max_altitude   = CASE
+                        WHEN excluded.max_altitude IS NULL THEN sightings_hourly.max_altitude
+                        WHEN sightings_hourly.max_altitude IS NULL THEN excluded.max_altitude
+                        ELSE MAX(sightings_hourly.max_altitude, excluded.max_altitude)
+                    END,
+                    max_speed      = CASE
+                        WHEN excluded.max_speed IS NULL THEN sightings_hourly.max_speed
+                        WHEN sightings_hourly.max_speed IS NULL THEN excluded.max_speed
+                        ELSE MAX(sightings_hourly.max_speed, excluded.max_speed)
+                    END,
+                    min_nonzero_altitude = CASE
+                        WHEN excluded.min_nonzero_altitude IS NULL THEN sightings_hourly.min_nonzero_altitude
+                        WHEN sightings_hourly.min_nonzero_altitude IS NULL THEN excluded.min_nonzero_altitude
+                        ELSE MIN(sightings_hourly.min_nonzero_altitude, excluded.min_nonzero_altitude)
+                    END
             """, (
                 ac["hex"], hour_bucket, ac["callsign"] or "",
                 ac["aircraft_type"] or "", ac["type_desc"] or "",
-                special_label or "",
-                now, now,
+                now, now,                                    # first_seen_at, last_seen_at
+                ac["lat"], ac["lon"], ac["altitude"], ac["speed"],  # last_*
+                ac["altitude"], ac["altitude"], ac["speed"],  # min_alt, max_alt, max_speed
+                ac["squawk"] or "",
+                _alt_nonzero,                                # v2.87.1: min_nonzero_altitude
             ))
-            # Special aircraft notification. Only fires for aircraft listed in
-            # military.special_aircraft (the ones with custom labels like
-            # "Air Force 1"), not every generic military contact. Cooldown per
-            # ICAO suppresses repeat alerts while the aircraft stays in range.
-            if special_label:
+
+            # v2.88.0: per-aircraft per-day session tracking. Reads the
+            # existing row, decides whether this poll continues the
+            # current session or starts a new one (gap >
+            # `_session_gap_min` minutes ends a session), promotes to
+            # best-of-day if the in-flight session is now the longest,
+            # writes back via INSERT OR REPLACE. This is the read path
+            # for the Stats `longest_track` card and its drill panel —
+            # the previous all_sightings Python walk read 950K+ rows
+            # per Stats render; this rollup turns it into ORDER BY DESC
+            # LIMIT 1 over ~50-200 rows/day.
+            #
+            # Two queries per aircraft per poll (SELECT + INSERT OR
+            # REPLACE). Considered a single ON CONFLICT DO UPDATE
+            # like sightings_hourly does, but the gap-detection logic
+            # would require repeating the same CASE expression four
+            # times in the SET clause (current_start, best_start,
+            # best_end, best_duration all need the "did we just gap?"
+            # decision). Two queries with Python branching is roughly
+            # half the line count and substantially more readable —
+            # and at 50 aircraft × 20s polls × 2 queries it's ~5
+            # queries/sec/process, well below SQLite's noise floor.
+            #
+            # Day-bucket alignment is local-tz (not UTC like the other
+            # rollups) — see migration v6 docstring for the rationale.
+            # Sessions split only at local midnight, when traffic is
+            # minimal, matching the user's mental model of "today".
+            day_bucket = _local_day_bucket(now)
+            gap_sec = _session_gap_min * 60
+            existing = conn.execute(
+                "SELECT current_session_start, current_session_last, "
+                "       best_session_start, best_session_end, best_session_duration, "
+                "       callsign, aircraft_type "
+                "FROM aircraft_track_daily WHERE icao=? AND day_bucket=?",
+                (ac["hex"], day_bucket)
+            ).fetchone()
+            if existing is None or now - existing[1] > gap_sec:
+                # New row OR gap detected: start a fresh in-flight session.
+                atd_cur_start = now
+                atd_cur_last = now
+            else:
+                # Continue the existing session.
+                atd_cur_start = existing[0]
+                atd_cur_last = now
+            atd_cur_dur = atd_cur_last - atd_cur_start
+            if existing is None or atd_cur_dur > existing[4]:
+                # First sighting today, or in-flight session has now
+                # exceeded the previous best.
+                atd_best_start = atd_cur_start
+                atd_best_end = atd_cur_last
+                atd_best_dur = atd_cur_dur
+            else:
+                # Earlier session (closed or in-flight) is still longest.
+                atd_best_start = existing[2]
+                atd_best_end = existing[3]
+                atd_best_dur = existing[4]
+            # Callsign and aircraft_type: latest non-empty wins, matching
+            # the COALESCE-NULLIF pattern in the sightings_hourly UPSERT
+            # above. Empty strings (no callsign reported on this poll)
+            # preserve whatever was previously stored.
+            atd_new_callsign = (ac["callsign"] or "").strip()
+            atd_new_type = (ac["aircraft_type"] or "").strip()
+            if existing is None:
+                atd_callsign_out = atd_new_callsign
+                atd_type_out = atd_new_type
+            else:
+                atd_callsign_out = atd_new_callsign or (existing[5] or "")
+                atd_type_out = atd_new_type or (existing[6] or "")
+            conn.execute("""
+                INSERT OR REPLACE INTO aircraft_track_daily (
+                    icao, day_bucket, callsign, aircraft_type,
+                    current_session_start, current_session_last,
+                    best_session_start, best_session_end, best_session_duration
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                ac["hex"], day_bucket, atd_callsign_out, atd_type_out,
+                atd_cur_start, atd_cur_last,
+                atd_best_start, atd_best_end, atd_best_dur,
+            ))
+
+            # v2.48.0: emergency-squawk edge detection. We fire an
+            # emergency_squawk event when an aircraft's current squawk is
+            # 7500/7600/7700 AND the previous observation we have of this
+            # ICAO was either absent (fresh appearance) or a DIFFERENT
+            # squawk. That way a plane circling in range with a stuck 7700
+            # fires once, not every minute. Per-ICAO cooldown in the
+            # notifier (default 60min) adds belt-and-suspenders protection.
+            #
+            # _last_squawk_by_icao is process-local; on restart, ongoing
+            # emergency squawkers fire once — which is the correct default
+            # (the operator probably wants to know there's an active
+            # emergency after a service restart).
+            cur_sq = ac["squawk"] or ""
+            prev_sq = _last_squawk_by_icao.get(ac["hex"], "")
+            if cur_sq in _EMERGENCY_SQUAWK_LABELS and cur_sq != prev_sq:
+                label = _EMERGENCY_SQUAWK_LABELS[cur_sq]
+                callsign = (ac["callsign"] or "").strip() or ac["hex"]
+                type_desc = ac.get("aircraft_type") or "unknown type"
+                alt_str = f"{ac['altitude']:,} ft" if ac.get("altitude") else "altitude unknown"
                 _safe_notify(
-                    "special_aircraft",
-                    f"Special aircraft: {special_label}",
-                    f"{special_label} ({ac['callsign'] or ac['hex']}) "
-                    f"is visible to your receiver. "
-                    f"Type: {ac.get('aircraft_type') or 'unknown'}. "
-                    f"Altitude: {ac.get('altitude') or '?'} ft.",
+                    "emergency_squawk",
+                    f"Emergency squawk {cur_sq} - {callsign}",
+                    f"{callsign} ({ac['hex']}) is squawking {cur_sq} ({label}). "
+                    f"Type: {type_desc}. Altitude: {alt_str}.",
                     priority="high",
-                    tags=["airplane"],
+                    tags=["rotating_light"],
                     aircraft_icao=ac["hex"],
-                    click_route="military",
+                    click_route="live",
                     track_url=_build_track_url(
                         ac["hex"],
                         receiver.get("track_link_provider") or "airplanes_live",
                     ),
                 )
+            # Update the tracker regardless — we want to know what the
+            # aircraft was squawking last poll no matter whether it was
+            # emergency or normal.
+            _last_squawk_by_icao[ac["hex"]] = cur_sq
 
-        # Watchlist check
-        watch_label = match_watchlist(raw, watchlist_lookup)
-        if watch_label:
+            # v2.51.0: full UPSERT to maintain denormalized search-feature columns.
+            # Replaces the old INSERT OR IGNORE pattern. On insert, populate
+            # everything we know about this first sighting. On conflict (row
+            # already exists), update last_callsign / aircraft_type / last_lat /
+            # last_lon / last_seen_at / sighting_count to reflect this newer
+            # sighting. first_seen_at, first_callsign, first_aircraft_type are
+            # NEVER touched on conflict — those capture the first-ever sighting
+            # by definition and remain immutable.
+            #
+            # Flavor C: fts_dirty is set to 1 on INSERT (new row needs FTS
+            # entry) or whenever an FTS-indexed field changes on UPDATE.
+            # Routine sighting_count bumps don't touch fts_dirty. The
+            # cycle-end flush below clears these by syncing FTS5.
+            from countries import country_for_icao
+            from designators import operator_from_callsign
+            from categorize import classify as _categorize
+            _cs = (ac["callsign"] or "").strip()
+            _atype = ac["aircraft_type"] or ""
+            _adesc = ac.get("type_desc") or ""
+            _country = country_for_icao(ac["hex"])
+            # v2.50.42: derive operator from callsign. Returns the 3-letter
+            # ICAO airline designator (e.g. "UAL") when the callsign starts
+            # with a recognized airline code, else None. Empty string in the
+            # column would tokenize into FTS5 as nothing — but None becomes
+            # NULL which the FTS5 join handles cleanly.
+            _operator = operator_from_callsign(_cs) or ""
+            # v2.60.1: compute distance in canonical km from the aircraft's
+            # current position to the configured receiver location. None
+            # when receiver isn't configured or aircraft has no position.
+            # ORDER BY seen_aircraft.last_distance now sorts the full
+            # result set on Search.
+            _distance_km = _compute_distance_km(ac.get("lat"), ac.get("lon"))
+            # v2.89.0: compute is_military and category BEFORE the
+            # seen_aircraft UPSERT so the row's category column reflects
+            # the same classification the rest of this poll uses (military
+            # status drives military_sightings inserts later in the loop;
+            # we cache the result here and reuse it). The category
+            # heuristics live in categorize.py — single source of truth
+            # shared with migration v7's backfill and the Stats
+            # category_mix card's read query.
+            is_mil, special_label = is_military(raw, config)
+            _category = _categorize(_atype, _adesc, is_mil)
+            # Sticky-military rule lives in the SQL ON CONFLICT below: if
+            # either the new poll's classification OR the existing row's
+            # classification is 'military', the result stays 'military'.
+            # That means a feeder flicker (dbFlags missing on one poll)
+            # can't downgrade a known military aircraft to commercial.
+            # v3.4.62: best_track_seconds is the all-time longest single
+            # continuous track (session) for this aircraft, in seconds. We
+            # already computed today's best session (atd_best_dur) just above
+            # for aircraft_track_daily, so we fold a MAX into this existing
+            # UPSERT rather than adding a statement to the hot path. It's a
+            # high-water mark: ON CONFLICT keeps the larger of the stored value
+            # and today's best, so it never regresses even after the day that
+            # set the record ages out of the aircraft_track_daily retention
+            # window. COALESCE(..., 0) handles the NULL stored on legacy rows
+            # (scalar MAX() returns NULL if any argument is NULL). Like
+            # sighting_count, it is intentionally unindexed (see migration v11).
             conn.execute("""
-                INSERT INTO watchlist_sightings
-                (icao, callsign, speed, lat, lon, altitude, aircraft_type, type_desc, seen_at, watchlist_label, squawk)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (ac["hex"], ac["callsign"], ac["speed"], ac["lat"], ac["lon"],
-                  ac["altitude"], ac["aircraft_type"], ac["type_desc"], now, watch_label, ac["squawk"]))
-            watch_count += 1
-            # v3.4.6: keep watchlist_hourly rollup current. PK is THREE-way
-            # (icao, hour_bucket, watchlist_label) because we need to
-            # COUNT(DISTINCT watchlist_label) from the rollup for the
-            # watchlist_rules_hit Stats card. Same callsign/type
-            # COALESCE preservation as the military path.
-            conn.execute("""
-                INSERT INTO watchlist_hourly (
-                    icao, hour_bucket, watchlist_label, callsign,
-                    aircraft_type, type_desc, sighting_count,
-                    first_seen_at, last_seen_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
-                ON CONFLICT (icao, hour_bucket, watchlist_label) DO UPDATE SET
-                    callsign       = COALESCE(NULLIF(excluded.callsign, ''),       watchlist_hourly.callsign),
-                    aircraft_type  = COALESCE(NULLIF(excluded.aircraft_type, ''),  watchlist_hourly.aircraft_type),
-                    type_desc      = COALESCE(NULLIF(excluded.type_desc, ''),      watchlist_hourly.type_desc),
-                    sighting_count = watchlist_hourly.sighting_count + 1,
-                    last_seen_at   = excluded.last_seen_at
-            """, (
-                ac["hex"], hour_bucket, watch_label,
-                ac["callsign"] or "",
-                ac["aircraft_type"] or "", ac["type_desc"] or "",
-                now, now,
-            ))
-            # Watchlist hit notification. Cooldown per ICAO (default 10 min)
-            # prevents a plane circling in range from firing every poll.
-            _safe_notify(
-                "watchlist_hit",
-                f"Watchlist: {watch_label}",
-                f"{watch_label} ({ac['callsign'] or ac['hex']}) "
-                f"is visible. Type: {ac.get('aircraft_type') or 'unknown'}. "
-                f"Altitude: {ac.get('altitude') or '?'} ft.",
-                priority="default",
-                tags=["eye"],
-                aircraft_icao=ac["hex"],
-                click_route="watchlist",
-                track_url=_build_track_url(
-                    ac["hex"],
-                    receiver.get("track_link_provider") or "airplanes_live",
-                ),
-            )
+                INSERT INTO seen_aircraft (
+                    icao, first_seen_at, first_callsign, first_aircraft_type,
+                    last_callsign, aircraft_type, aircraft_type_desc, operator, country,
+                    last_lat, last_lon, last_distance, last_seen_at, sighting_count,
+                    fts_dirty, category, best_track_seconds
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)
+                ON CONFLICT(icao) DO UPDATE SET
+                    last_callsign = COALESCE(NULLIF(excluded.last_callsign, ''), last_callsign),
+                    aircraft_type = COALESCE(NULLIF(excluded.aircraft_type, ''), aircraft_type),
+                    aircraft_type_desc = COALESCE(NULLIF(excluded.aircraft_type_desc, ''), aircraft_type_desc),
+                    operator = COALESCE(NULLIF(excluded.operator, ''), operator),
+                    country = COALESCE(excluded.country, country),
+                    last_lat = COALESCE(excluded.last_lat, last_lat),
+                    last_lon = COALESCE(excluded.last_lon, last_lon),
+                    last_distance = COALESCE(excluded.last_distance, last_distance),
+                    last_seen_at = excluded.last_seen_at,
+                    sighting_count = sighting_count + 1,
+                    best_track_seconds = MAX(
+                        COALESCE(seen_aircraft.best_track_seconds, 0),
+                        excluded.best_track_seconds
+                    ),
+                    category = CASE
+                        WHEN excluded.category = 'military' THEN 'military'
+                        WHEN seen_aircraft.category = 'military' THEN 'military'
+                        ELSE excluded.category
+                    END,
+                    fts_dirty = CASE
+                        WHEN last_callsign IS NOT COALESCE(NULLIF(excluded.last_callsign, ''), last_callsign) THEN 1
+                        WHEN aircraft_type IS NOT COALESCE(NULLIF(excluded.aircraft_type, ''), aircraft_type) THEN 1
+                        WHEN aircraft_type_desc IS NOT COALESCE(NULLIF(excluded.aircraft_type_desc, ''), aircraft_type_desc) THEN 1
+                        WHEN operator IS NOT COALESCE(NULLIF(excluded.operator, ''), operator) THEN 1
+                        WHEN country IS NOT COALESCE(excluded.country, country) THEN 1
+                        ELSE fts_dirty
+                    END
+            """, (ac["hex"], now, _cs, _atype,
+                  _cs, _atype, _adesc, _operator, _country,
+                  ac.get("lat"), ac.get("lon"), _distance_km, now, _category,
+                  atd_best_dur))
+
+            # Update all-time records (Wave 3). Each check is a single SELECT and
+            # an UPDATE only on the rare case of a new record. No noticeable cost.
+            # Wrapped in try/except so one weird aircraft can't kill the whole poll
+            # — the rest of the data still gets saved.
+            #
+            # Quality filters (see stats quality filters section at top of file):
+            # - Skip TIS-B/MLAT pseudo-targets entirely. Their data is relayed
+            #   and often inaccurate — they shouldn't set permanent records.
+            # - For fastest_ever, enforce the type-aware speed ceiling to
+            #   reject transponder glitches (e.g. a B763 reporting 1010 kt).
+            # - Slowest/lowest-altitude intentionally are NOT all-time records
+            #   (that direction would just trend toward 1 kt / 1 ft over time
+            #   as more ground noise gets caught), so no filter needed there.
+            try:
+                if is_pseudo_icao(ac.get("hex")):
+                    pass  # skip all record updates for pseudo-targets
+                else:
+                    if ac["speed"] is not None and ac["speed"] > 0:
+                        cap = speed_ceiling_for_type(ac.get("aircraft_type"))
+                        if ac["speed"] <= cap:
+                            _update_record(conn, "fastest_ever", ac["speed"], "gt", ac, now)
+                    if ac["altitude"] is not None:
+                        _update_record(conn, "highest_altitude_ever", ac["altitude"], "gt", ac, now)
+                        if ac["altitude"] > 0:
+                            _update_record(conn, "lowest_altitude_ever", ac["altitude"], "lt", ac, now)
+                    # Furthest — only if we know the receiver's location
+                    rx = config.get("receiver", {})
+                    if (ac["lat"] is not None and ac["lon"] is not None
+                            and rx.get("latitude") is not None and rx.get("longitude") is not None):
+                        unit = (rx.get("distance_unit") or "mi").lower()
+                        dist = _haversine(rx["latitude"], rx["longitude"],
+                                          ac["lat"], ac["lon"], unit)
+                        _update_record(conn, "furthest_ever", dist, "gt", ac, now, extra=unit)
+            except Exception as e:
+                logger.warning(f"Record update failed for {ac.get('hex', '?')}: {e}")
+
+            # Military check — is_mil and special_label were already
+            # computed above for the seen_aircraft category column.
+            # Reusing them here avoids a second is_military(raw, config)
+            # call per aircraft per poll.
+            if is_mil:
+                conn.execute("""
+                    INSERT INTO military_sightings
+                    (icao, callsign, speed, lat, lon, altitude, aircraft_type, type_desc, seen_at, special_label, squawk)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (ac["hex"], ac["callsign"], ac["speed"], ac["lat"], ac["lon"],
+                      ac["altitude"], ac["aircraft_type"], ac["type_desc"], now, special_label, ac["squawk"]))
+                mil_count += 1
+                # v3.4.6: keep military_hourly rollup current. Same shape as
+                # the sightings_hourly upsert above. PK (icao, hour_bucket)
+                # collapses repeat polls within an hour into one row;
+                # special_label / callsign / aircraft_type are preserved
+                # via COALESCE so a later non-empty value updates the row
+                # but a NULL/empty value doesn't wipe out an earlier
+                # populated one.
+                conn.execute("""
+                    INSERT INTO military_hourly (
+                        icao, hour_bucket, callsign, aircraft_type, type_desc,
+                        special_label, sighting_count, first_seen_at, last_seen_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                    ON CONFLICT (icao, hour_bucket) DO UPDATE SET
+                        callsign       = COALESCE(NULLIF(excluded.callsign, ''),       military_hourly.callsign),
+                        aircraft_type  = COALESCE(NULLIF(excluded.aircraft_type, ''),  military_hourly.aircraft_type),
+                        type_desc      = COALESCE(NULLIF(excluded.type_desc, ''),      military_hourly.type_desc),
+                        special_label  = COALESCE(NULLIF(excluded.special_label, ''),  military_hourly.special_label),
+                        sighting_count = military_hourly.sighting_count + 1,
+                        last_seen_at   = excluded.last_seen_at
+                """, (
+                    ac["hex"], hour_bucket, ac["callsign"] or "",
+                    ac["aircraft_type"] or "", ac["type_desc"] or "",
+                    special_label or "",
+                    now, now,
+                ))
+                # Special aircraft notification. Only fires for aircraft listed in
+                # military.special_aircraft (the ones with custom labels like
+                # "Air Force 1"), not every generic military contact. Cooldown per
+                # ICAO suppresses repeat alerts while the aircraft stays in range.
+                if special_label:
+                    _safe_notify(
+                        "special_aircraft",
+                        f"Special aircraft: {special_label}",
+                        f"{special_label} ({ac['callsign'] or ac['hex']}) "
+                        f"is visible to your receiver. "
+                        f"Type: {ac.get('aircraft_type') or 'unknown'}. "
+                        f"Altitude: {ac.get('altitude') or '?'} ft.",
+                        priority="high",
+                        tags=["airplane"],
+                        aircraft_icao=ac["hex"],
+                        click_route="military",
+                        track_url=_build_track_url(
+                            ac["hex"],
+                            receiver.get("track_link_provider") or "airplanes_live",
+                        ),
+                    )
+
+            # Watchlist check
+            watch_label = match_watchlist(raw, watchlist_lookup)
+            if watch_label:
+                conn.execute("""
+                    INSERT INTO watchlist_sightings
+                    (icao, callsign, speed, lat, lon, altitude, aircraft_type, type_desc, seen_at, watchlist_label, squawk)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (ac["hex"], ac["callsign"], ac["speed"], ac["lat"], ac["lon"],
+                      ac["altitude"], ac["aircraft_type"], ac["type_desc"], now, watch_label, ac["squawk"]))
+                watch_count += 1
+                # v3.4.6: keep watchlist_hourly rollup current. PK is THREE-way
+                # (icao, hour_bucket, watchlist_label) because we need to
+                # COUNT(DISTINCT watchlist_label) from the rollup for the
+                # watchlist_rules_hit Stats card. Same callsign/type
+                # COALESCE preservation as the military path.
+                conn.execute("""
+                    INSERT INTO watchlist_hourly (
+                        icao, hour_bucket, watchlist_label, callsign,
+                        aircraft_type, type_desc, sighting_count,
+                        first_seen_at, last_seen_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                    ON CONFLICT (icao, hour_bucket, watchlist_label) DO UPDATE SET
+                        callsign       = COALESCE(NULLIF(excluded.callsign, ''),       watchlist_hourly.callsign),
+                        aircraft_type  = COALESCE(NULLIF(excluded.aircraft_type, ''),  watchlist_hourly.aircraft_type),
+                        type_desc      = COALESCE(NULLIF(excluded.type_desc, ''),      watchlist_hourly.type_desc),
+                        sighting_count = watchlist_hourly.sighting_count + 1,
+                        last_seen_at   = excluded.last_seen_at
+                """, (
+                    ac["hex"], hour_bucket, watch_label,
+                    ac["callsign"] or "",
+                    ac["aircraft_type"] or "", ac["type_desc"] or "",
+                    now, now,
+                ))
+                # Watchlist hit notification. Cooldown per ICAO (default 10 min)
+                # prevents a plane circling in range from firing every poll.
+                _safe_notify(
+                    "watchlist_hit",
+                    f"Watchlist: {watch_label}",
+                    f"{watch_label} ({ac['callsign'] or ac['hex']}) "
+                    f"is visible. Type: {ac.get('aircraft_type') or 'unknown'}. "
+                    f"Altitude: {ac.get('altitude') or '?'} ft.",
+                    priority="default",
+                    tags=["eye"],
+                    aircraft_icao=ac["hex"],
+                    click_route="watchlist",
+                    track_url=_build_track_url(
+                        ac["hex"],
+                        receiver.get("track_link_provider") or "airplanes_live",
+                    ),
+                )
+        except Exception as e:
+            conn.execute("ROLLBACK TO poll_aircraft")
+            all_count, mil_count, watch_count = counts
+            _log_skipped_record(raw, e)
+        finally:
+            conn.execute("RELEASE poll_aircraft")
 
     # Peak simultaneous record (Wave 3) — check once per poll
     if all_count > 0:
@@ -3864,7 +3912,7 @@ def fetch_and_store(config: Dict, watchlist_lookup: Dict):
     # emergency code will fire a fresh notification — which is the
     # right behavior (we treat "gone for a poll" the same as "new").
     visible_hexes = {
-        (raw.get("hex") or "").lower()
+        clean_icao_hex(raw.get("hex")).lower()
         for raw in raw_list
         if isinstance(raw, dict) and raw.get("hex")
     }

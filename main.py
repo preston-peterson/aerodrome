@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Version: 3.4.140
+# Version: 3.4.141
 """
 main.py — Aerodrome ADS-B Tracker
 
@@ -308,7 +308,7 @@ def run_collector(config: dict, stop_event: threading.Event):
             check_capacity_alerts(config)
             # v3.4.53: periodic query-planner stats refresh. Internally
             # rate-limited to once every 6 hours (STATS_OPTIMIZE_INTERVAL_SEC),
-            # so calling it every poll is fine. Bounded PRAGMA optimize, never
+            # so calling it every poll is fine. Sampled ANALYZE, never
             # raises. Keeps SQLite's plans correct as tables grow — without it,
             # stats from a fresh install go stale and mis-plan queries months
             # later (the cause of the ~5s Stats top_aircraft query).

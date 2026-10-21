@@ -19,6 +19,28 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.141] — 2026-10-21
+
+### Fixed
+- **One unusual aircraft can no longer stop Aerodrome from recording.** If your receiver reported an aircraft with an empty callsign field, a non-text type description or an out-of-range number, every aircraft in that poll was thrown away — and that repeated on every poll for as long as the aircraft stayed in range. Each aircraft is now stored on its own and anything malformed is skipped. The Live list and map no longer go blank for the same reason, and aircraft on the ground show "—" for altitude instead of "NaN ft".
+- **"View in Search" on the Peak simultaneous card works.** It showed an error instead of the aircraft that were up at today's peak.
+- **Range rings are the right size in nautical miles.** With the distance unit set to `nmi`, rings on the Live map and the aircraft page were drawn in statute miles, about 13% too small.
+- **Aircraft categories are more accurate.** The King Air 350 and the turbine Bonanza no longer count as airliners; the Airbus A220, the Embraer E2 jets and the MD-11 now do; and helicopters are recognised from every helicopter type in ICAO's type-designator list (Aerodrome knew 18). Aircraft already in your history are re-categorised once when you update, so the Stats category mix and the `commercial` / `ga` / `helicopter` search filters use the new rules for all of your history.
+- **Stats range charts keep aircraft at the edge of range.** An aircraft's last known position for an hour was erased whenever a later report in that hour had no position, so distant aircraft dropped out of the range rose and the distance histogram.
+- **Clearing watchlist history also clears its Stats.** Removing a watchlist entry together with its history, or clearing all watchlist history, left the Stats watchlist cards counting the deleted sightings.
+- **Switching from demo mode to a real receiver deletes the right database.** The switch deleted a file in the wrong place, so demo sightings stayed in your stats, and it saved the new settings without checking them. It now checks the new settings before changing anything, deletes the database your install actually uses, and saves to the configuration file Aerodrome loaded.
+- **Notification links highlight the aircraft again.** Tapping a watchlist or military notification opens the right tab and briefly highlights that aircraft's row, as it was meant to.
+- **Map fixes.** On installs without a receiver location, a map error every minute interrupted the map's settings refresh; it no longer happens. The details panel's "No longer being received" note now clears when the aircraft comes back into range.
+- **Database query planning stays current.** Aerodrome's periodic refresh of SQLite's query-planner statistics never actually ran, so long-running installs planned queries from statistics taken when the database was new. They are now refreshed every six hours with a sampled pass that typically takes well under a second.
+
+### Behind the scenes
+- Feed records pass through `_sanitize_feed_record` (fields read as strings must be strings; non-finite numbers are dropped) in both the collector and `/api/live`, and `_to_number` returns `None` for inf/NaN. Each aircraft's writes run in a SAVEPOINT inside the poll's single transaction; a record that still raises is rolled back on its own and logged at most every 10 minutes.
+- `sightings_hourly.last_lat/last_lon/last_altitude/last_speed` keep the last non-NULL value (`COALESCE`), matching `seen_aircraft`.
+- `refresh_query_planner_stats` runs `ANALYZE` under `analysis_limit=1000`. `PRAGMA optimize` only considers tables queried on the same connection, so on its fresh connection it did nothing; the `0x10000` flag that lifts that needs SQLite 3.46.
+- Schema migration v17 re-derives `seen_aircraft.category` for non-military rows with the corrected `categorize.classify`.
+- The `peak_today` resolver reads rows positionally (the search connection has no `row_factory`).
+- New tests: `test_poll_robustness.py`, `test_destructive_endpoints.py`, the v17 migration and `peak_today` without a `row_factory`.
+
 ## [3.4.140] — 2026-10-21
 
 ### Changed

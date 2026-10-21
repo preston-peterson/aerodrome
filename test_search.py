@@ -1812,6 +1812,20 @@ class TestPeakToday(unittest.TestCase):
         self.assertEqual(set(row["icao"] for row in r["rows"]),
                          {"C00001", "C00002", "C00003"})
 
+    def test_executor_peak_today_without_row_factory(self):
+        # /api/search's connection (collector._open_db_conn) has no
+        # row_factory, so the resolver must not index rows by name.
+        self._seed_aircraft(["A00001", "A00002", "C00001", "C00002",
+                             "C00003"])
+        for ic in ["A00001", "A00002"]: self._seed_sighting(ic, 60)
+        for ic in ["C00001", "C00002", "C00003"]: self._seed_sighting(ic, 120)
+        self.conn.commit()
+        self.conn.row_factory = None
+        r = execute_search(self.conn, parse_query("peak_today"))
+        self.assertEqual(r["total_count"], 3)
+        self.assertEqual(set(row["icao"] for row in r["rows"]),
+                         {"C00001", "C00002", "C00003"})
+
     def test_executor_composes_peak_today_with_country(self):
         # Set up: peak bucket has 4 ICAOs (2 US, 2 Canada).
         # `peak_today Canada` should return only the 2 Canadians.

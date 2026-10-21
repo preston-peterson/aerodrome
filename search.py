@@ -939,10 +939,11 @@ def _resolve_peak_today_if_present(conn: sqlite3.Connection,
         pf["peak_count"] = 0
         return parsed
 
-    peak_min = int(bucket_row["bucket_min"])
+    # Positional access: /api/search's connection has no row_factory.
+    peak_min = int(bucket_row[0])
     peak_start = peak_min * 60
     peak_end = peak_start + 60
-    peak_count = int(bucket_row["n"] or 0)
+    peak_count = int(bucket_row[1] or 0)
 
     # Stage 2: collect distinct ICAOs in the peak bucket. Bounded by
     # 60 seconds of sightings — typically 10-100 rows. The DISTINCT
@@ -952,7 +953,7 @@ def _resolve_peak_today_if_present(conn: sqlite3.Connection,
         "WHERE seen_at >= ? AND seen_at < ?",
         (peak_start, peak_end),
     ).fetchall()
-    peak_icaos = [r["icao"] for r in icao_rows]
+    peak_icaos = [r[0] for r in icao_rows]
 
     pf["peak_icaos"] = peak_icaos
     pf["peak_at_ts"] = peak_start
