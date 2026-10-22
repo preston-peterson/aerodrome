@@ -1,5 +1,5 @@
 # Aerodrome
-<!-- Version: 3.4.144 -->
+<!-- Version: 3.4.145 -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -143,14 +143,15 @@ aerodrome/
 ├── config.yaml.example           shipped template for config.yaml
 ├── requirements.txt              runtime dependencies (pinned compatible-with)
 ├── requirements-dev.txt          screenshot harness + PDF builder deps
-├── install.sh                    setup script (venv, systemd unit, sudoers rule)
-├── uninstall.sh                  symmetric removal
+├── install.sh                    setup script (venv, systemd unit, sudoers rule; --privileges-only)
+├── uninstall.sh                  symmetric removal (--purge / --keep)
 ├── bump-version.sh               release tooling — version + CHANGELOG + PDF rebuild
 ├── VERSION                       single line, the canonical version string
 ├── templates/                    HTML pages served by server.py
 ├── static/                       CSS, JS, fonts, theme assets
 ├── scripts/
 │   ├── bootstrap.sh              curl-installable one-line setup (see Install)
+│   ├── recover-sudoers.sh        permissions refresh: hands off to install.sh --privileges-only
 │   ├── package-release.sh        produces release zip + .sha256 (self-verified; --verify)
 │   ├── publish-release.sh        publishes + verifies a GitHub Release (--check-only pre-push)
 │   ├── check_release_zip.py      proves zip == git archive of a commit/tree; maintainer-path denylist
@@ -166,6 +167,7 @@ aerodrome/
 │       └── backfill.py           generate historical sightings for testing
 ├── docs/                         user-facing documentation, screenshots, PDF
 ├── .github/                      issue templates, PR template, repo-setup guide
+├── test_bootstrap.py             installer tests — bootstrap.sh in a stub sandbox
 ├── test_bump_version.py          release tests — bump-version.sh gates, check, re-run, PDF
 ├── test_categorize.py            unit tests — military/civil classification
 ├── test_check_installers.py      release tests — installer-consistency gate
@@ -173,6 +175,7 @@ aerodrome/
 ├── test_designators.py           unit tests — aircraft type and operator decoders
 ├── test_destructive_endpoints.py unit tests — switch-to-real + watchlist-history deletes
 ├── test_icao_hex.py              unit tests — ICAO hex ingest validation
+├── test_install_sh.py            installer tests — install.sh + recover-sudoers.sh under stub sudo
 ├── test_map_carto_key.py         unit tests — map.carto_api_key validation
 ├── test_migration_v7.py          unit tests — schema migration v7
 ├── test_photo_resolver.py        unit tests — photo enrichment cache logic
@@ -182,10 +185,14 @@ aerodrome/
 ├── test_schema_migrations.py     unit tests — migration framework
 ├── test_search.py                unit tests — search query language
 ├── test_search_v2_91_tokens.py   unit tests — search token grammar (v2.91 additions)
+├── test_service_account.py       unit tests — the app's own account comes from its uid, not $LOGNAME/$USER
 ├── test_session_track.py         unit tests — session-aware track stitching
 ├── test_stats_drills.py          unit tests — Stats detail-panel drill queries
 ├── test_stats_most_seen.py       unit tests — all-time most-seen stats card
+├── test_sudoers_gate_contract.py unit tests — Updates-page sudoers gate + refresh commands
 ├── test_type_code.py             unit tests — aircraft type code (feed vs hexdb fallback)
+├── test_uninstall.py             installer tests — uninstall.sh removal rules
+├── test_updates_modal_commands.py unit tests — Updates-page refresh command (static)
 ├── test_web_hardening.py         unit tests — Host allowlist + input sanitising
 ├── README.md                     this file
 ├── CHANGELOG.md                  per-release entries, bottom-up additions

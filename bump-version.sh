@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.4.144
+# Version: 3.4.145
 # =============================================================================
 # bump-version.sh — Bump Aerodrome version + auto-update CHANGELOG.md
 # =============================================================================
@@ -748,13 +748,15 @@ fi
 # Installer consistency — REQUIRED (v3.4.144+), no skip flag.
 # =============================================================================
 # scripts/check_installers.py: every tracked *.sh parses (`bash -n`);
-# pkg_detect() is byte-identical in install.sh and scripts/bootstrap.sh; the
-# sudoers rule lines and SUDOERS_VERSION marker in install.sh match
-# scripts/recover-sudoers.sh. These copies are duplicated on purpose (each
-# script must work standalone) and nothing else keeps them in step — a drift
-# ships a recovery script that installs different rules, or an installer that
-# detects a different package manager. Like the PII audit, there is no skip
-# flag: fix the drift.
+# pkg_detect() is byte-identical in install.sh and scripts/bootstrap.sh
+# (duplicated on purpose — each script must work standalone); the sudoers
+# rules live only in install.sh's render_sudoers() and
+# scripts/recover-sudoers.sh hands off to `install.sh --privileges-only`
+# (v3.4.145+); no early-exit reader after a pipe in a pipefail script; and
+# uninstall.sh removes ntfy's cache file. Nothing else keeps these in step —
+# a drift ships an installer that detects a different package manager, a
+# second copy of the rules, or a check that fails at random. Like the PII
+# audit, there is no skip flag: fix the drift.
 echo "Installer consistency check..."
 if ! python3 "${SCRIPT_DIR}/scripts/check_installers.py" "$SCRIPT_DIR"; then
     echo ""
@@ -1001,6 +1003,7 @@ FILES=(
     "README.md"
     "bump-version.sh"
     "scripts/package-release.sh"
+    "scripts/bootstrap.sh"
     "CONTRIBUTING.md"
 )
 

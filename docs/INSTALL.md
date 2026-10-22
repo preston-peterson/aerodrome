@@ -21,6 +21,7 @@ something specific, the table of contents below has direct links.
 - [Updating](#updating)
 - [Rolling back](#rolling-back)
 - [Applying sudoers updates](#applying-sudoers-updates)
+  - [Moving Aerodrome to another account](#moving-aerodrome-to-another-account)
 - [Uninstalling](#uninstalling)
 - [Configuration](#configuration)
   - [Receiver location](#receiver-location-for-the-distance-column)
@@ -48,8 +49,8 @@ something specific, the table of contents below has direct links.
     - **Arch-family** — Arch Linux (rolling), Manjaro, EndeavourOS
     - **openSUSE** — Tumbleweed, Leap 15.5+
   Any other distro with systemd + apt-get/dnf/pacman/zypper will likely
-  install (the bootstrap will warn and prompt before proceeding); see
-  *Multi-distro support* below for details.
+  install (the bootstrap warns and asks before proceeding; `--force` skips
+  the question); see *Multi-distro support* below for details.
 - Python 3.10+ (installed automatically by the install script if missing).
 
 ## Hardware sizing
@@ -175,17 +176,23 @@ That's it. The bootstrap walks through eight steps:
 
 1. **Platform check** — detects the distro family from `/etc/os-release`
    (Debian, Fedora, Arch, or openSUSE) and selects the matching package
-   manager (apt, dnf, pacman, or zypper). On unrecognized distros, prints
-   a warning and requires `--force` to proceed.
-2. **Existing-install check** — refuses to overwrite an existing install
-   and points you at the in-app updater instead.
+   manager (apt, dnf, pacman, or zypper). On an unrecognized distro that
+   has one of those package managers, it warns and asks before going on
+   (`--force` skips the question) and then uses that package manager.
+2. **Existing-install check** — stops if Aerodrome is already installed
+   and points you at the in-app updater instead. It never deletes or takes
+   over a folder: the install folder must be new, or an empty folder you
+   can write to (see *The install folder* below).
 3. **Prerequisites** — installs `unzip` and Python's venv module via the
    detected package manager if they're missing. (On Debian-family this is
    the separate `python3-venv` package; on Fedora, Arch, and openSUSE the
    venv module is bundled into the main `python3` package, so no separate
    install is needed.)
 4. **Release resolution** — queries the GitHub Releases API for the
-   latest release tag (or accepts `--version vX.Y.Z` to pin).
+   latest release tag (or accepts `--version vX.Y.Z` to pin, which skips
+   the lookup). GitHub limits these lookups per hour for each network; if
+   yours has used them up, the bootstrap says so and, when GitHub reports
+   it, when the limit resets.
 5. **Download + verify** — pulls `aerodrome-vX.Y.Z.zip` and the matching
    `.sha256` file from the GitHub Releases page, verifies the checksum,
    and refuses to proceed if it doesn't match.
@@ -202,8 +209,9 @@ That's it. The bootstrap walks through eight steps:
    hands off to the bundled `install.sh`.
 8. **install.sh runs** — creates a Python venv, installs dependencies,
    writes the systemd unit, installs a scoped `sudoers.d` rule for the
-   in-UI restart button, opens port 8000 on firewalld-managed hosts
-   (Fedora, openSUSE), and starts the service.
+   in-UI restart button (checked with `visudo` before it takes effect),
+   and starts the service. On firewalld-managed hosts (Fedora, openSUSE)
+   the bootstrap then opens port 8000 (see *Firewall handling*).
 
 When complete, open `http://your-host:8000/` and visit the gear menu →
 Configuration to adjust the auto-detected timezone, set up a watchlist,
@@ -212,9 +220,10 @@ enable push notifications, and configure the rest.
 **Useful bootstrap flags:**
 
 ```
---prefix <path>        Install directory (default: /opt/aerodrome)
+--prefix <path>        The install folder itself (default: /opt/aerodrome)
 --version <vX.Y.Z>     Pin to a specific release (default: latest)
 --from-zip <path>      Skip the GitHub fetch and install from a local zip
+--demo                 Demo mode: simulated aircraft, no receiver needed
 --receiver-ip <ip>     ADS-B receiver IP (skips prompt)
 --receiver-port <n>    Receiver port (skips prompt; default 8080)
 --lat <n>              Receiver latitude (skips prompt)
@@ -222,12 +231,28 @@ enable push notifications, and configure the rest.
 --distance-unit <u>    mi / nmi / km (skips prompt; default mi)
 --timezone <tz>        IANA tz name (skips prompt; default: system)
 --force                Bypass OS-compat warning on unrecognized distros
--y, --yes              Accept all defaults non-interactively
+                       (any distro with apt-get, dnf, pacman or zypper)
+-y, --yes              Accept all defaults non-interactively (needs
+                       --receiver-ip, or --demo)
 -h, --help             Show full help and exit
 ```
 
 Run `bash <(curl -fsSL https://install.aerodromeadsb.com) --help` to see
-the same list at any time.
+the same list at any time. The setup questions need a terminal: piped in
+(`curl … | bash`) the bootstrap stops before downloading anything unless you
+add `--yes --receiver-ip <ip>` (or `--yes --demo`).
+
+**The install folder.** `--prefix` names the folder Aerodrome is installed
+*into* — its files land directly in it — so use a folder of its own:
+`--prefix ~/aerodrome`, not `--prefix ~`. The bootstrap refuses your home
+folder, system folders (`/`, `/opt`, `/usr/local`, `/etc`, …) and paths
+containing `"`, `\`, `$`, `%`, a control character (such as a tab) or a
+trailing space (systemd can't use those in a unit file; spaces inside the
+path are fine), and suggests a `<folder>/aerodrome` instead. The folder
+must not exist yet, or be an empty folder you can already write: the
+bootstrap never deletes anything in it and never changes the owner of a
+folder it didn't create (it tells you the `chown` or `chmod` to run if you
+want to use one anyway).
 
 **What the bootstrap does NOT do**: configure remote access (Tailscale,
 Cloudflare Tunnel, reverse proxy), set up backups beyond what Aerodrome
@@ -298,9 +323,13 @@ The install script:
 
 When complete, open `http://your-server-ip:8000` in your browser.
 
-> **Note:** The install script auto-detects your current username and
-> configures the systemd service to run as that user. Just don't run it
-> as root.
+> **Note:** The install script configures the systemd service to run as
+> the account that runs it — with `sudo bash install.sh`, the account that
+> typed `sudo`. To install for another account, give it the folder
+> (`sudo chown -R <account>: /opt/aerodrome`) and run the script as that
+> account — logged in as it, or with
+> `sudo -iu <account> bash /opt/aerodrome/install.sh` (the account needs
+> sudo rights for the install). Just don't run it from a root login.
 
 **Bootstrap-from-local-zip variant**: if you'd prefer the bootstrap's
 prompts and prereq detection without the GitHub fetch, the bootstrap
@@ -495,10 +524,13 @@ It'll only work cleanly on distros without SELinux enforcement
 (Debian/Ubuntu/Arch/openSUSE-Leap).
 
 **Existing installs at `~/aerodrome`:** keep working untouched. The
-bootstrap detects an existing install at any `--prefix` location
-(VERSION + main.py present) and upgrades it in place rather than
-treating it as a fresh install. No forced migration. If you ever want
-to move an existing install to `/opt/aerodrome`, the procedure is:
+bootstrap never installs over an existing one: when Aerodrome is already
+installed it stops and points you at the Updates page, and when an
+Aerodrome folder (VERSION + main.py) is already at the `--prefix` — for
+example what `uninstall.sh --purge` leaves behind — it stops too (run
+`./install.sh` inside that folder to reinstall there, or move it aside).
+No forced migration. If you ever want to move an existing install to
+`/opt/aerodrome`, the procedure is:
 uninstall (keeping data), reinstall to `/opt/aerodrome`, copy your old
 `config.yaml` + `aircraft_history.db` over. The web UI's
 *Configuration → Backup & Restore* page does that copy step for you
@@ -531,22 +563,27 @@ These are also printed if you decline the prompt, so you can run them
 later. Debian/Ubuntu and Arch don't enable firewalld by default and
 will skip this step silently.
 
-`uninstall.sh` mirrors the install side: on firewalld-active hosts
-where port 8000 is currently open, it prompts to close it during
-uninstall. The state stays symmetric — what the install opens, the
-uninstall closes.
+When the bootstrap opens the port it records that in
+`.aerodrome-firewalld-port` inside the install folder, and `uninstall.sh`
+closes port 8000 only when that record is there — what the install
+opened, the uninstall closes, and a port that was opened some other way
+(another service may need it) is left alone: uninstall prints the close
+command instead. Installs made before v3.4.145 have no record, so their
+uninstall prints the command too.
 
 ### Best-effort tier (tier-2)
 
 If your distro isn't in the tier-1 list but has both `systemctl` AND one
 of `apt-get`/`dnf`/`pacman`/`zypper`, the bootstrap will warn and prompt
-to continue. It'll then proceed with whichever package manager it finds.
-This covers obscure derivatives the explicit ID list doesn't enumerate.
+to continue. It'll then proceed with whichever package manager it finds,
+using that family's package names (and `install.sh` does the same). This
+covers obscure derivatives the explicit ID list doesn't enumerate.
 
-Override the interactive prompt with `--yes` or `--force`:
+Override the interactive prompt with `--force` (or `--yes`, which also
+needs `--receiver-ip` or `--demo`):
 
 ```bash
-bash <(curl -fsSL https://install.aerodromeadsb.com) --yes
+bash <(curl -fsSL https://install.aerodromeadsb.com) --force
 ```
 
 ### What's not supported (tier-3 hard refuse)
@@ -804,34 +841,80 @@ Apply button is disabled until the sudoers file is refreshed.
 
 **Why doesn't Aerodrome just update the sudoers file automatically?**
 Because that would be a permission-escalation risk. If the Aerodrome
-service (running as an unprivileged user) could write new sudo rules
+service (running as a non-root account) could write new sudo rules
 for itself, any compromise of the service would let an attacker grant
 themselves arbitrary root privileges. Keeping the refresh a manual
 step means you explicitly consent to each permission change.
 
 **What do I do when I see the banner?** SSH to your server and run the
-command the banner shows — copy it with the button next to it. It runs
-the *staged* release's sudoers recovery script, which looks like:
+command the banner shows — copy it with the button next to it. For a
+staged update it looks like:
 
 ```bash
 ssh user@your-server
-sudo AERODROME_INSTALL_DIR=/opt/aerodrome bash /opt/aerodrome/update/aerodrome/scripts/recover-sudoers.sh
+sudo bash /opt/aerodrome/update/scripts/recover-sudoers.sh --install-dir /opt/aerodrome
 ```
 
-(Re-running the *installed* `install.sh` doesn't help here: it writes the
-sudoers version of the release you already have, not the one you're
-updating to.) The recovery script only rewrites `/etc/sudoers.d/aerodrome`
-— it validates the new rules with `visudo` before installing them and
-leaves everything else (your config, database, logs, venv) untouched. You
-don't need to stop the service first. After running, click **Re-check**
-in the modal; once the version matches, the Apply button enables and you
-can proceed with the update normally.
+This only refreshes Aerodrome's system permissions. The script runs
+whichever copy of `install.sh` — the staged one or the installed one —
+carries the newest permission rules, in a mode (`--privileges-only`) that
+rewrites only `/etc/sudoers.d/aerodrome`: the new rules are checked with
+`visudo` first and swapped in all at once, so a failed check leaves the
+old file exactly as it was. It doesn't reinstall, restart or change
+anything else (your config, database, logs and venv are untouched), it
+keeps the account Aerodrome runs as, and it never replaces newer
+permission rules with older ones. You don't need to stop the service
+first. After running, click **Re-check** in the modal; once the version
+matches, the Apply button enables and you can proceed with the update
+normally.
+
+With no update staged (the banner on the Updates page says the
+*installed* release expects newer rules), the command is the installed
+copy: `sudo bash /opt/aerodrome/scripts/recover-sudoers.sh`. Older
+Aerodrome versions show older forms of the command —
+`sudo bash /opt/aerodrome/update/install.sh` or
+`sudo AERODROME_INSTALL_DIR=/opt/aerodrome bash /opt/aerodrome/update/scripts/recover-sudoers.sh`
+— and both do the same permissions-only refresh once a v3.4.145 or later
+release is staged. Some older releases instead show
+`sudo bash /opt/aerodrome/install.sh` (the *installed* installer) for a
+staged update, for example on the upload card. That re-runs the release you
+already have and writes *its* permission rules, so the prompt won't clear:
+run `sudo bash /opt/aerodrome/update/install.sh` instead, or
+`sudo bash /opt/aerodrome/update/aerodrome/install.sh` if the update was
+staged into that folder.
+
+After a deliberate rollback to an older release (v3.4.145 or later), a
+re-run of its installer keeps the newer rules it finds (it says so, and
+prints the command to use the older rules on purpose):
+`sudo bash /opt/aerodrome/install.sh --privileges-only --allow-privilege-downgrade`.
+Installers older than v3.4.145 don't check, and write their own rules.
 
 **Which releases need this?** Most don't. The banner only appears
 when a release genuinely changed the sudoers file — you'll see it in
 the changelog for those releases too. After the refresh, every
 subsequent release that keeps the same sudoers version applies with
 no extra step.
+
+### Moving Aerodrome to another account
+
+Aerodrome's service runs as the account that installed it, and a re-run
+of `install.sh` keeps that account: run without `sudo` by a different
+account, it stops with a message before changing anything, and
+`sudo bash install.sh` keeps the existing account. To move Aerodrome to
+another account deliberately:
+
+```bash
+sudo systemctl disable --now aerodrome
+sudo rm /etc/systemd/system/aerodrome.service
+sudo systemctl daemon-reload
+sudo chown -R <new-account>: /opt/aerodrome
+# …and a database or log folder you keep outside the install folder, if any
+# then, as the new account (logged in as it, or: sudo -iu <new-account>):
+cd /opt/aerodrome && ./install.sh
+```
+
+On a demo install, do the same for `aerodrome-synthetic-feeder` first
+(`disable --now`, remove its unit file, `daemon-reload`).
 
 ## Uninstalling
 
@@ -848,19 +931,49 @@ chmod +x uninstall.sh
 ./uninstall.sh
 ```
 
-The uninstall script is interactive by default — it will prompt before
-deleting your database, logs, or config. If you want to skip the
-prompts:
+The uninstall script is interactive by default — it asks one question
+per kind of data (database, backups, logs, config), naming the file or
+folder and its size. If you want to skip the questions:
 
 ```bash
-./uninstall.sh --purge   # Remove everything (data included)
+./uninstall.sh --purge   # Remove everything Aerodrome created (data included)
 ./uninstall.sh --keep    # Remove only the service and venv, keep all data
 ```
 
-The uninstaller removes the systemd service, the Python virtual
-environment, runtime files (`.tracker.pid`, `__pycache__`), and
-(optionally) your data. It does **not** remove system packages like
-`python3` or `pip`, since those may be used by other applications.
+It always removes the systemd service(s), the sudoers rule, the Python
+virtual environment, runtime files (`.tracker.pid`, `__pycache__`) and
+staged updates (`update/`). `--purge` also removes:
+
+- the database (wherever `data.db_file` points), its `-wal`/`-shm` files,
+  its `.pre-restore` safety copies and the daily-summary state file;
+- `.backups/` — pre-update snapshots, database snapshots **and the backup
+  zips you made in the web UI**: copy any backup you want to keep out of
+  `.backups/` first;
+- the logs;
+- `config.yaml` and its backups (`config.yaml.bak.*`,
+  `ntfy-server.yml.from-backup.*`);
+- a local ntfy server Aerodrome installed, with its cached messages.
+
+A database or log folder you keep *outside* the install folder is handled
+file by file: from a log folder elsewhere only Aerodrome's own
+`tracker.log*` files are removed (the folder goes too only if that leaves
+it empty), and a database elsewhere is removed only if it really is an
+SQLite database. System and home folders are never touched, whatever
+`config.yaml` says. The install folder itself is not removed — the script
+prints the command for that.
+
+Run the `uninstall.sh` inside your install folder (a symlink to it works
+too). It stops without changing anything when its folder isn't an Aerodrome
+install (a copy kept somewhere else), when it is the copy inside a staged
+update (`update/`; it names the right one), or when Aerodrome sits directly
+in a system or home folder — remove that kind of install by hand.
+
+Port 8000 in firewalld is closed only if the installer recorded opening
+it (see *Firewall handling*); otherwise the close command is printed.
+`--keep` never closes it.
+
+The uninstaller does **not** remove system packages like `python3` or
+`pip`, since those may be used by other applications.
 
 ## Configuration
 
@@ -1365,6 +1478,21 @@ aerodrome/
 
 - Open the firewall port: `sudo ufw allow 8000/tcp`
 - Confirm the service is listening: `ss -tln | grep 8000`
+
+**The installer says Aerodrome is already installed, but its folder is gone**
+
+The install folder was deleted without running `uninstall.sh` first (or an
+install stopped part-way and its folder was removed), so the service and its
+permission rule are still registered. Remove them, then re-run the installer
+(the bootstrap prints the same commands):
+
+```bash
+sudo systemctl disable --now aerodrome
+sudo rm -f /etc/systemd/system/aerodrome.service /etc/sudoers.d/aerodrome
+sudo systemctl daemon-reload
+```
+
+On a demo install, do the same for `aerodrome-synthetic-feeder`.
 
 **Watchlist tail number not resolving**
 

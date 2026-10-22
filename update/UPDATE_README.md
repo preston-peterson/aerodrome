@@ -44,13 +44,20 @@ has the previous install intact for manual recovery.
 Aerodrome uses a `/etc/sudoers.d/aerodrome` rule for a small set of
 privileged operations (installing/uninstalling the ntfy service, purging
 data). When a release bumps the sudoers version, applying the update from
-the web UI is blocked until you SSH to the server and run `install.sh` to
-refresh the sudoers file. This is a one-time step per sudoers-version bump
-and is shown prominently on the Updates page when required.
+the web UI is blocked until you SSH to the server and run the command the
+Updates page shows, for example:
 
-## Preserving staged work
+    sudo bash /opt/aerodrome/update/scripts/recover-sudoers.sh --install-dir /opt/aerodrome
 
-This folder (minus `UPDATE_README.md` and `.gitkeep`) is NOT cleared on
-successful apply — anything you staged here survives, so mid-flow updates
-aren't lost. The two docs files above are refreshed from each new release
-so the in-app viewer always shows the current staging-folder help.
+It refreshes Aerodrome's system permissions only — no reinstall, no
+restart, same service account, and never older rules over newer ones.
+This is a one-time step per sudoers-version bump and is shown prominently
+on the Updates page when required.
+
+## After a successful apply
+
+This folder is cleared on a successful apply — everything except
+`UPDATE_README.md` and `.gitkeep`, which are refreshed from the new release
+so the in-app viewer always shows the current staging-folder help. If the
+apply stops before that point (for example the sudoers check above), the
+staged release stays here untouched.

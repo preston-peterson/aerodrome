@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Version: 3.0.14
+# Version: 3.4.145
 # =============================================================================
 # Aerodrome — Curl Install Bootstrap
 # =============================================================================
@@ -11,7 +11,11 @@
 #   bash scripts/bootstrap.sh --from-zip ~/Downloads/aerodrome-v3.0.12.zip --prefix /tmp/ad
 #
 # Flags:
-#   --prefix <path>        Install directory (default: /opt/aerodrome)
+#   --prefix <path>        The install directory itself (default: /opt/aerodrome).
+#                          It must be new, or an empty folder you can write
+#                          to; system and home folders, and paths containing
+#                          " \ $ %, a control character (tab, newline) or a
+#                          trailing space, are refused (inner spaces are fine)
 #   --version <vX.Y.Z>     Pin to a specific release (default: latest)
 #   --from-zip <path>      Skip GitHub fetch; install from a local zip
 #   --receiver-ip <ip>     ADS-B receiver IP (skips prompt)
@@ -21,19 +25,29 @@
 #   --distance-unit <u>    mi / nmi / km (skips prompt; default mi)
 #   --timezone <tz>        IANA tz name (skips prompt; default: system)
 #   --force                Bypass OS-compat warning on unrecognized distros
-#   -y, --yes              Accept all defaults non-interactively
+#   -y, --yes              Accept all defaults non-interactively (needs
+#                          --receiver-ip or --demo)
 #   -h, --help             Show this help and exit
 #
 # What this script does:
 #   1. Detects OS (Debian-family check, three-tier behavior)
-#   2. Verifies/installs prereqs (curl, unzip, sha256sum, python3, python3-venv)
-#   3. Refuses if Aerodrome is already installed (points at in-app updater)
+#   2. Refuses if Aerodrome is already installed (points at in-app updater),
+#      and never deletes or takes over an existing folder
+#   3. Verifies/installs prereqs (curl, unzip, sha256sum, python3, python3-venv)
 #   4. Resolves install version via GitHub Releases API (or --version, or --from-zip)
 #   5. Downloads release zip + .sha256, verifies checksum
-#   6. Prompts for the bare-minimum config (or reads flags)
-#   7. Extracts to <prefix>, patches config.yaml with the prompted values
+#   6. Extracts to <prefix>
+#   7. Prompts for the bare-minimum config (or reads flags) and patches config.yaml
 #   8. Hands off to the bundled install.sh for venv + systemd + sudoers work
 #   9. Prints the web UI URL
+#
+# Structure: everything is a function definition until the LAST line, which
+# runs main() inside a { …; } group that bash parses whole before running it.
+# A download cut short therefore never runs a partial script.
+# Read-only test hooks: AERODROME_BOOTSTRAP_OS_RELEASE (default
+# /etc/os-release), AERODROME_BOOTSTRAP_UNIT (default
+# /etc/systemd/system/aerodrome.service), AERODROME_BOOTSTRAP_SOURCE_ONLY=1
+# (define the functions, don't run main).
 #
 # =============================================================================
 
@@ -53,6 +67,386 @@ REPO="preston-peterson/aerodrome"
 RAW_BASE="https://raw.githubusercontent.com/${REPO}"
 API_BASE="https://api.github.com/repos/${REPO}"
 
+OS_RELEASE="${AERODROME_BOOTSTRAP_OS_RELEASE:-/etc/os-release}"
+AERODROME_UNIT="${AERODROME_BOOTSTRAP_UNIT:-/etc/systemd/system/aerodrome.service}"
+
+show_help() {
+    # v3.0.3: literal heredoc instead of `sed "$0"`. The previous
+    # implementation worked when invoked as a saved file (./bootstrap.sh
+    # --help) but silently produced no output when invoked via process
+    # substitution (bash <(curl -fsSL https://install.aerodromeadsb.com)
+    # --help) — in that path, "$0" is /dev/fd/63, a file descriptor bash
+    # has already consumed reading the script body, so the sed read from
+    # an empty FD and exit 0 returned silently. Heredoc is invocation-
+    # path-agnostic. If the canonical install URL or flags change, edit
+    # both this block AND the top-of-file comment block above; they are
+    # intentional duplicates so the user-facing help and the source-
+    # reading reader see the same thing.
+    cat <<'EOF'
+Aerodrome — Curl Install Bootstrap
+
+Headline command:
+  bash <(curl -fsSL https://install.aerodromeadsb.com)
+
+Local testing:
+  bash scripts/bootstrap.sh --from-zip ~/Downloads/aerodrome-vX.Y.Z.zip --prefix /tmp/ad
+
+Flags:
+  --prefix <path>        The install directory itself (default: /opt/aerodrome).
+                         Files go directly INTO it, so it must be new or an
+                         empty folder you can write to. System and home
+                         folders are refused (use e.g. --prefix ~/aerodrome),
+                         and so are paths containing " \ $ %, a control
+                         character (tab, newline) or a trailing space (spaces
+                         inside the path are fine).
+                         Pre-v3.3.0 default was ~/aerodrome; override
+                         with --prefix ~/aerodrome to restore that layout.
+  --version <vX.Y.Z>     Pin to a specific release (default: latest)
+  --from-zip <path>      Skip GitHub fetch; install from a local zip
+  --demo                 Install in demo mode with simulated aircraft data
+                         (skips receiver prompts; uses synthetic feeder)
+  --receiver-ip <ip>     ADS-B receiver IP (skips prompt)
+  --receiver-port <n>    ADS-B receiver port (skips prompt; default 8080)
+  --lat <n>              Receiver latitude (skips prompt)
+  --lon <n>              Receiver longitude (skips prompt)
+  --distance-unit <u>    mi / nmi / km (skips prompt; default mi)
+  --timezone <tz>        IANA tz name (skips prompt; default: system)
+  --force                Bypass OS-compat warning on unrecognized distros
+                         (any distro with apt-get, dnf, pacman or zypper)
+  -y, --yes              Accept all defaults non-interactively (needs
+                         --receiver-ip or --demo)
+  -h, --help             Show this help and exit
+
+What this script does:
+  1. Detects OS (Debian-family check, three-tier behavior)
+  2. Refuses if Aerodrome is already installed (points at in-app updater),
+     and never deletes or takes over an existing folder
+  3. Verifies/installs prereqs (curl, unzip, sha256sum, python3, python3-venv)
+  4. Resolves install version via GitHub Releases API (or --version, or --from-zip)
+  5. Downloads release zip + .sha256, verifies checksum
+  6. Extracts to <prefix>
+  7. Prompts for the bare-minimum config (or reads flags) and patches config.yaml
+  8. Hands off to the bundled install.sh for venv + systemd + sudoers work
+  9. Prints the web UI URL
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+log_step() { echo -e "${CYAN}[$1]${RESET} $2"; }
+log_ok()   { echo -e "  ${GREEN}✓${RESET} $1"; }
+log_warn() { echo -e "  ${YELLOW}⚠${RESET}  $1"; }
+log_err()  { echo -e "  ${RED}✗${RESET} $1" >&2; }
+log_info() { echo -e "  ${DIM}·${RESET} $1"; }
+
+# need_val <args left> <flag> <value> — a value flag must have a value (and
+# not swallow the next flag, e.g. `--prefix --yes`).
+need_val() {
+    if [ "$1" -lt 2 ] || [[ "$3" == --* ]]; then
+        echo -e "${RED}$2 needs a value${RESET}" >&2
+        echo "Run with --help for usage" >&2
+        exit 1
+    fi
+}
+
+# Read with default. If ASSUME_YES, take the default silently.
+ask_default() {
+    local prompt="$1" default="$2" __resultvar="$3"
+    local input=""
+    if [ "$ASSUME_YES" = true ]; then
+        printf -v "$__resultvar" '%s' "$default"
+        return 0
+    fi
+    if [ -n "$default" ]; then
+        read -r -p "  $prompt [$default]: " input
+    else
+        read -r -p "  $prompt: " input
+    fi
+    if [ -z "$input" ]; then
+        printf -v "$__resultvar" '%s' "$default"
+    else
+        printf -v "$__resultvar" '%s' "$input"
+    fi
+}
+
+# v3.2.0: multi-distro support. Detect the package manager family and load
+# its install commands + translated package names. The four tier-1 families
+# proceed silently; anything else falls to tier-2 (best-effort) if systemctl
+# is present, or tier-3 (hard refuse) if not. pkg_detect() is byte-identical
+# in install.sh (checked on every release by scripts/check_installers.py).
+pkg_detect() {
+    local os_id="" os_like="" osr="${AERODROME_BOOTSTRAP_OS_RELEASE:-/etc/os-release}"
+    if [ -r "$osr" ]; then
+        eval "$(
+            . "$osr"
+            printf 'os_id=%q\nos_like=%q\n' "${ID:-}" "${ID_LIKE:-}"
+        )"
+    fi
+    PKG_FAMILY=unknown
+    case "$os_id" in
+        debian|ubuntu|raspbian|linuxmint|pop|elementary|neon|kali|parrot)
+            PKG_FAMILY=debian ;;
+        fedora|rhel|centos|rocky|almalinux|amzn|ol)
+            PKG_FAMILY=fedora ;;
+        arch|manjaro|endeavouros|garuda|artix|cachyos)
+            PKG_FAMILY=arch ;;
+        opensuse*|sles|sled)
+            PKG_FAMILY=opensuse ;;
+        *)
+            case " $os_like " in
+                *" debian "*|*" ubuntu "*) PKG_FAMILY=debian ;;
+                *" fedora "*|*" rhel "*|*" centos "*) PKG_FAMILY=fedora ;;
+                *" arch "*) PKG_FAMILY=arch ;;
+                *" suse "*|*" opensuse "*) PKG_FAMILY=opensuse ;;
+            esac ;;
+    esac
+    # ID/ID_LIKE unrecognised but a known package manager is installed: use
+    # its family so prerequisite installs can work. PKG_FAMILY_GUESSED tells
+    # the caller it is a guess (the bootstrap still warns or needs --force).
+    PKG_FAMILY_GUESSED=false
+    if [ "$PKG_FAMILY" = unknown ]; then
+        if   command -v apt-get >/dev/null 2>&1; then PKG_FAMILY=debian
+        elif command -v dnf     >/dev/null 2>&1; then PKG_FAMILY=fedora
+        elif command -v pacman  >/dev/null 2>&1; then PKG_FAMILY=arch
+        elif command -v zypper  >/dev/null 2>&1; then PKG_FAMILY=opensuse
+        fi
+        if [ "$PKG_FAMILY" != unknown ]; then PKG_FAMILY_GUESSED=true; fi
+    fi
+    case "$PKG_FAMILY" in
+        debian)
+            PKG_REFRESH_CMD="sudo apt-get update -qq"
+            PKG_INSTALL_CMD="sudo apt-get install -y -qq"
+            PKG_PYTHON3="python3"; PKG_PIP="python3-pip"
+            PKG_VENV="python3-venv"; PKG_CURL="curl"; PKG_UNZIP="unzip" ;;
+        fedora)
+            PKG_REFRESH_CMD=""
+            PKG_INSTALL_CMD="sudo dnf install -y -q"
+            PKG_PYTHON3="python3"; PKG_PIP="python3-pip"
+            PKG_VENV=""; PKG_CURL="curl"; PKG_UNZIP="unzip" ;;
+        arch)
+            PKG_REFRESH_CMD="sudo pacman -Sy --noconfirm"
+            PKG_INSTALL_CMD="sudo pacman -S --needed --noconfirm"
+            PKG_PYTHON3="python"; PKG_PIP="python-pip"
+            PKG_VENV=""; PKG_CURL="curl"; PKG_UNZIP="unzip" ;;
+        opensuse)
+            PKG_REFRESH_CMD="sudo zypper --non-interactive refresh"
+            PKG_INSTALL_CMD="sudo zypper --non-interactive install"
+            PKG_PYTHON3="python3"; PKG_PIP="python3-pip"
+            PKG_VENV=""; PKG_CURL="curl"; PKG_UNZIP="unzip" ;;
+        *)
+            PKG_REFRESH_CMD=""; PKG_INSTALL_CMD=""
+            PKG_PYTHON3=""; PKG_PIP=""; PKG_VENV=""; PKG_CURL=""; PKG_UNZIP="" ;;
+    esac
+}
+pkg_install() {
+    local pkgs=() p
+    for p in "$@"; do [ -n "$p" ] && pkgs+=("$p"); done
+    [ "${#pkgs[@]}" -eq 0 ] && return 0
+    [ -z "$PKG_INSTALL_CMD" ] && {
+        echo "pkg_install: no install command for PKG_FAMILY=$PKG_FAMILY" >&2
+        return 1
+    }
+    $PKG_INSTALL_CMD "${pkgs[@]}"
+}
+pkg_refresh() {
+    [ -z "$PKG_REFRESH_CMD" ] && return 0
+    $PKG_REFRESH_CMD
+}
+
+# latest_lookup_failed <HTTP status, 000 = no answer> <curl -D header dump>
+# GitHub answers only so many unauthenticated API calls per hour from one
+# public IP address — shared by every machine behind it, installed Aerodromes
+# checking for updates included — then refuses with 403 and
+# x-ratelimit-remaining: 0 (or 429), x-ratelimit-reset = when (epoch). Say
+# that plainly: --version skips the API (downloads come from github.com).
+latest_lookup_failed() {
+    local code="$1" left reset when
+    left="$(header_digits "$2" x-ratelimit-remaining)"
+    reset="$(header_digits "$2" x-ratelimit-reset)"
+    if [ "$code" = 429 ] || { [ "$code" = 403 ] && [ "$left" = 0 ]; }; then
+        log_err "GitHub's hourly limit for this network is used up (HTTP $code)."
+        {
+            echo "    Every device that shares this network's public IP address counts"
+            echo "    toward it, including an installed Aerodrome checking for updates."
+            if [ -n "$reset" ] && when="$(date -d "@$reset" '+%H:%M %Z' 2>/dev/null)"; then
+                echo "    It resets at $when."
+            fi
+            echo "    Re-run once it resets, or skip this lookup with --version vX.Y.Z — the"
+            echo "    download itself comes from github.com and doesn't count toward the limit."
+            echo "    Releases: https://github.com/${REPO}/releases"
+        } >&2
+        return 0
+    fi
+    if [ "$code" = 000 ]; then
+        log_err "Failed to fetch latest release info from GitHub."
+    else
+        log_err "Failed to fetch latest release info from GitHub (HTTP $code)."
+    fi
+    log_err "Check network connectivity, or use --version vX.Y.Z to pin."
+}
+# header_digits <curl -D header dump> <lower-case name> — that header's value
+# in the final reply (any case), digits only; empty when it has none or the
+# dump is missing. (On stdin: awk would take a relative TMPDIR shaped like
+# name=value for a variable assignment.)
+header_digits() {
+    awk -F': *' -v h="$2" '/^HTTP\// { v = "" } tolower($1) == h { v = $2 }
+        END { gsub(/[^0-9]/, "", v); print v }' 2>/dev/null < "$1" || true
+}
+
+# --- Install directory guard -------------------------------------------------
+# The prefix is the install directory ITSELF (files land directly in it) —
+# not a parent dir like an autotools --prefix — so it must never be a system
+# directory, the home directory, or an ancestor of either. It also ends up in
+# systemd unit files, where " \ $ % have special meaning even inside quotes.
+# Usage: prefix_refusal_reason <absolute path> -> prints the reason and
+# returns 0 when the path must be refused; returns 1 (silent) when acceptable.
+prefix_refusal_reason() {
+    local p="$1" home
+    home="$(realpath -m -- "${HOME:-/}")"
+    # systemd also strips a trailing space/tab from a unit's values and can't
+    # carry a control character (tab, CR, newline) in a path at all.
+    case "$p" in
+        *[\"\\\$%]*|*[[:cntrl:]]*|*[[:space:]])
+            echo "it contains a character a systemd unit can't use (\" \\ \$ %, a control character such as a tab or newline, or a trailing space) — pick a path without them (spaces inside the path are fine)"
+            return 0 ;;
+    esac
+    case "$p" in
+        /*) ;;
+        *)  echo "it is not an absolute path"; return 0 ;;
+    esac
+    [ "$p" = / ] && { echo "it is the filesystem root"; return 0; }
+    case "$home/" in
+        "$p"/*) echo "it is your home directory, or contains it"; return 0 ;;
+    esac
+    case "$p" in
+        /*/*) ;;
+        *)  echo "it is a top-level system directory"; return 0 ;;
+    esac
+    case "$p" in
+        /proc/*|/sys/*|/dev/*|/run/*|/boot/*|/etc/*|/bin/*|/sbin/*|/lib/*|/lib32/*|/lib64/*|/libx32/*)
+            echo "it is inside a system-managed directory"; return 0 ;;
+    esac
+    case "$p" in
+        /usr/*/*|/var/*/*) ;;                      # deeper than /usr/X or /var/X: allowed unless listed below
+        /usr/*|/var/*) echo "it is a system directory"; return 0 ;;
+    esac
+    case "$p" in
+        /usr/local/bin|/usr/local/sbin|/usr/local/lib|/usr/local/lib64|/usr/local/libexec|\
+        /usr/local/share|/usr/local/etc|/usr/local/include|/usr/local/src|/usr/local/games|/usr/local/man)
+            echo "it is a system directory"; return 0 ;;
+    esac
+    return 1
+}
+
+# Normalise PREFIX and refuse dangerous targets. Checks BOTH the lexical path
+# the unit file will name and the symlink-resolved path the files land in.
+# Sets PREFIX to the lexical normal form (no ./, .., //, trailing /).
+validate_prefix() {
+    local raw="$1" lexical physical why p
+    if [ -z "$raw" ]; then
+        log_err "Refusing to install: --prefix is empty. Name the install directory, e.g. --prefix /opt/aerodrome"
+        return 1
+    fi
+    raw="${raw/#\~/$HOME}"
+    case "$raw" in /*) ;; *) raw="$(pwd)/$raw" ;; esac
+    lexical="$(realpath -m -s -- "$raw")" || { log_err "Refusing to install: cannot normalise $raw"; return 1; }
+    physical="$(realpath -m -- "$raw")"   || { log_err "Refusing to install: cannot resolve $raw"; return 1; }
+    # GNU realpath keeps a leading "//" (POSIX leaves it implementation-defined);
+    # squeeze it so "//" can't pass as something other than "/".
+    lexical="/${lexical#"${lexical%%[!/]*}"}"
+    physical="/${physical#"${physical%%[!/]*}"}"
+    for p in "$lexical" "$physical"; do
+        if why="$(prefix_refusal_reason "$p")"; then
+            log_err "Refusing to install into $p: $why."
+            log_err "Aerodrome installs directly INTO the prefix. Try: --prefix $(printf %q "${lexical%/}/aerodrome")"
+            return 1
+        fi
+    done
+    PREFIX="$lexical"
+}
+
+# --- Existing-install check, without a pipeline ------------------------------
+# install.sh always writes this exact unit path; systemd's own listing is the
+# fallback for a unit installed elsewhere. Capture-then-match: never
+# `cmd | grep -q`, whose early exit kills the writer with SIGPIPE — which
+# pipefail turned into a random "not installed" (and a second install).
+aerodrome_unit_registered() {
+    [ -e "$AERODROME_UNIT" ] && return 0
+    command -v systemctl >/dev/null 2>&1 || return 1
+    local listing
+    listing="$(systemctl list-unit-files --no-legend aerodrome.service 2>/dev/null)" || true
+    [[ $'\n'"$listing" == *$'\n'aerodrome.service[[:space:]]* ]]
+}
+# WorkingDirectory= of the unit file ("" when absent). awk reads the file
+# itself here (no pipe), so stopping at the first match is safe.
+unit_working_dir() {
+    [ -r "$AERODROME_UNIT" ] || return 0
+    awk '/^WorkingDirectory=/ { sub(/^WorkingDirectory=/, ""); print; exit }' "$AERODROME_UNIT" 2>/dev/null || true
+}
+
+# How to remove a registered aerodrome.service and its permission rule by
+# hand (when there is no uninstall.sh to run).
+print_leftover_removal() {
+    echo "      sudo systemctl disable --now aerodrome"
+    echo "      sudo rm -f /etc/systemd/system/aerodrome.service /etc/sudoers.d/aerodrome"
+    echo "      sudo systemctl daemon-reload"
+    echo "    On a demo install, also: sudo systemctl disable --now aerodrome-synthetic-feeder"
+    echo "    and: sudo rm -f /etc/systemd/system/aerodrome-synthetic-feeder.service"
+}
+
+# Cleanup on exit. The download tempdir (release zip, checksum, API response,
+# extraction scratch) is always removed — nothing reads it after extraction.
+# A partial install tree is never deleted: on failure it is left in place,
+# with a pointer. Once install.sh has started it may have registered the
+# service and its permission rule, so the pointer says how to undo those
+# first (the folder's uninstall.sh) — deleting the folder alone leaves them.
+COMPLETED=false
+TMPDIR_BOOT=""
+INSTALL_CREATED_BY_US=false
+EXTRACTED=false
+INSTALL_SH_STARTED=false
+PREFIX=""
+cleanup() {
+    case "$TMPDIR_BOOT" in
+        */aerodrome-bootstrap.*)
+            # `|| log_warn`: under set -e a failed rm would abort the trap
+            # before the partial-tree pointer below is printed.
+            if [ -d "$TMPDIR_BOOT" ]; then
+                rm -rf "$TMPDIR_BOOT" || log_warn "Could not remove temp dir $TMPDIR_BOOT"
+            fi ;;
+    esac
+    if [ "$COMPLETED" = false ] && [ -d "$PREFIX" ]; then
+        if [ "$INSTALL_CREATED_BY_US" = true ]; then
+            local rm_cmd="rm -rf $(printf %q "$PREFIX")"
+            case "$PREFIX" in "$HOME"/*) ;; *) rm_cmd="sudo $rm_cmd" ;; esac
+            log_warn "Install incomplete — leaving partial tree at $PREFIX for inspection."
+            if [ "$INSTALL_SH_STARTED" = true ]; then
+                undo_service_hint
+                log_warn "Then, if you want the folder gone: $rm_cmd"
+            else
+                log_warn "If you want it gone: $rm_cmd"
+            fi
+        elif [ "$EXTRACTED" = true ]; then
+            log_warn "Install incomplete — the release files are in $PREFIX, a folder that"
+            log_warn "existed before this run (it was left in place)."
+            [ "$INSTALL_SH_STARTED" = true ] && undo_service_hint
+            log_warn "Remove what you don't need by hand."
+        fi
+    fi
+}
+# Part of the cleanup pointer once install.sh has run.
+undo_service_hint() {
+    if [ -f "$PREFIX/uninstall.sh" ]; then
+        log_warn "To undo it, first run:  bash $(printf %q "$PREFIX/uninstall.sh") --keep"
+        log_warn "(it removes the service and its permission rule, and keeps your settings)."
+    else
+        log_warn "To undo it, first remove the service and its permission rule:"
+        print_leftover_removal
+    fi
+}
+
+main() {
 # ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
@@ -79,63 +473,11 @@ DIST_UNIT_SET=false
 TIMEZONE_SET=false
 DEMO_MODE_SET=false
 
-show_help() {
-    # v3.0.3: literal heredoc instead of `sed "$0"`. The previous
-    # implementation worked when invoked as a saved file (./bootstrap.sh
-    # --help) but silently produced no output when invoked via process
-    # substitution (bash <(curl -fsSL https://install.aerodromeadsb.com)
-    # --help) — in that path, "$0" is /dev/fd/63, a file descriptor bash
-    # has already consumed reading the script body, so the sed read from
-    # an empty FD and exit 0 returned silently. Heredoc is invocation-
-    # path-agnostic. If the canonical install URL or flags change, edit
-    # both this block AND the top-of-file comment block above; they are
-    # intentional duplicates so the user-facing help and the source-
-    # reading reader see the same thing.
-    cat <<'EOF'
-Aerodrome — Curl Install Bootstrap
-
-Headline command:
-  bash <(curl -fsSL https://install.aerodromeadsb.com)
-
-Local testing:
-  bash scripts/bootstrap.sh --from-zip ~/Downloads/aerodrome-vX.Y.Z.zip --prefix /tmp/ad
-
-Flags:
-  --prefix <path>        Install directory (default: /opt/aerodrome).
-                         Pre-v3.3.0 default was ~/aerodrome; override
-                         with --prefix ~/aerodrome to restore that layout.
-  --version <vX.Y.Z>     Pin to a specific release (default: latest)
-  --from-zip <path>      Skip GitHub fetch; install from a local zip
-  --demo                 Install in demo mode with simulated aircraft data
-                         (skips receiver prompts; uses synthetic feeder)
-  --receiver-ip <ip>     ADS-B receiver IP (skips prompt)
-  --receiver-port <n>    ADS-B receiver port (skips prompt; default 8080)
-  --lat <n>              Receiver latitude (skips prompt)
-  --lon <n>              Receiver longitude (skips prompt)
-  --distance-unit <u>    mi / nmi / km (skips prompt; default mi)
-  --timezone <tz>        IANA tz name (skips prompt; default: system)
-  --force                Bypass OS-compat warning on unrecognized distros
-  -y, --yes              Accept all defaults non-interactively
-  -h, --help             Show this help and exit
-
-What this script does:
-  1. Detects OS (Debian-family check, three-tier behavior)
-  2. Verifies/installs prereqs (curl, unzip, sha256sum, python3, python3-venv)
-  3. Refuses if Aerodrome is already installed (points at in-app updater)
-  4. Resolves install version via GitHub Releases API (or --version, or --from-zip)
-  5. Downloads release zip + .sha256, verifies checksum
-  6. Prompts for the bare-minimum config (or reads flags)
-  7. Extracts to <prefix>, patches config.yaml with the prompted values
-  8. Hands off to the bundled install.sh for venv + systemd + sudoers work
-  9. Prints the web UI URL
-EOF
-}
-
 while [ $# -gt 0 ]; do
     case "$1" in
-        --prefix)         PREFIX="$2"; shift 2 ;;
-        --version)        VERSION="$2"; shift 2 ;;
-        --from-zip)       FROM_ZIP="$2"; shift 2 ;;
+        --prefix)         need_val $# "$1" "${2-}"; PREFIX="$2"; shift 2 ;;
+        --version)        need_val $# "$1" "${2-}"; VERSION="$2"; shift 2 ;;
+        --from-zip)       need_val $# "$1" "${2-}"; FROM_ZIP="$2"; shift 2 ;;
         --demo)
             DEMO_MODE=true
             DEMO_MODE_SET=true
@@ -147,12 +489,12 @@ while [ $# -gt 0 ]; do
             RECV_PORT="8080"
             RECV_PORT_SET=true
             shift ;;
-        --receiver-ip)    RECV_IP="$2"; RECV_IP_SET=true; shift 2 ;;
-        --receiver-port)  RECV_PORT="$2"; RECV_PORT_SET=true; shift 2 ;;
-        --lat)            LAT="$2"; LAT_SET=true; shift 2 ;;
-        --lon)            LON="$2"; LON_SET=true; shift 2 ;;
-        --distance-unit)  DIST_UNIT="$2"; DIST_UNIT_SET=true; shift 2 ;;
-        --timezone)       TIMEZONE="$2"; TIMEZONE_SET=true; shift 2 ;;
+        --receiver-ip)    need_val $# "$1" "${2-}"; RECV_IP="$2"; RECV_IP_SET=true; shift 2 ;;
+        --receiver-port)  need_val $# "$1" "${2-}"; RECV_PORT="$2"; RECV_PORT_SET=true; shift 2 ;;
+        --lat)            need_val $# "$1" "${2-}"; LAT="$2"; LAT_SET=true; shift 2 ;;
+        --lon)            need_val $# "$1" "${2-}"; LON="$2"; LON_SET=true; shift 2 ;;
+        --distance-unit)  need_val $# "$1" "${2-}"; DIST_UNIT="$2"; DIST_UNIT_SET=true; shift 2 ;;
+        --timezone)       need_val $# "$1" "${2-}"; TIMEZONE="$2"; TIMEZONE_SET=true; shift 2 ;;
         --force)          FORCE=true; shift ;;
         -y|--yes)         ASSUME_YES=true; shift ;;
         -h|--help)        show_help; exit 0 ;;
@@ -171,59 +513,28 @@ if [ "$(id -u)" = "0" ]; then
     exit 1
 fi
 
-# Resolve PREFIX to absolute path; expand ~ if literal
-PREFIX="${PREFIX/#\~/$HOME}"
-case "$PREFIX" in
-    /*) ;;
-    *)  PREFIX="$(pwd)/$PREFIX" ;;
-esac
+# Resolve PREFIX to a normalised absolute path (~ expanded) and refuse system
+# and home folders — before the banner and before anything is downloaded.
+validate_prefix "$PREFIX" || exit 1
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-log_step() { echo -e "${CYAN}[$1]${RESET} $2"; }
-log_ok()   { echo -e "  ${GREEN}✓${RESET} $1"; }
-log_warn() { echo -e "  ${YELLOW}⚠${RESET}  $1"; }
-log_err()  { echo -e "  ${RED}✗${RESET} $1" >&2; }
-log_info() { echo -e "  ${DIM}·${RESET} $1"; }
+# With --yes nobody answers the receiver prompt, and the IP is required: it
+# used to loop forever there. Say so now, before anything is downloaded.
+if [ "$ASSUME_YES" = true ] && [ "$RECV_IP_SET" = false ]; then
+    log_err "--yes needs --receiver-ip <ip> (or --demo for simulated data):"
+    log_err "nobody is there to answer the receiver prompt."
+    exit 1
+fi
 
-# Read with default. If ASSUME_YES, take the default silently.
-ask_default() {
-    local prompt="$1" default="$2" __resultvar="$3"
-    local input=""
-    if [ "$ASSUME_YES" = true ]; then
-        printf -v "$__resultvar" '%s' "$default"
-        return 0
-    fi
-    if [ -n "$default" ]; then
-        read -r -p "  $prompt [$default]: " input
-    else
-        read -r -p "  $prompt: " input
-    fi
-    if [ -z "$input" ]; then
-        printf -v "$__resultvar" '%s' "$default"
-    else
-        printf -v "$__resultvar" '%s' "$input"
-    fi
-}
+# Without --yes the setup questions need a terminal. Piped in (`curl … | bash`)
+# the script itself is stdin and every prompt would read end-of-file, ending
+# the run after the download with a half-configured tree. Say so now.
+if [ "$ASSUME_YES" != true ] && [ ! -t 0 ]; then
+    log_err "No terminal to answer the setup questions. Run it as:"
+    log_err "  bash <(curl -fsSL https://install.aerodromeadsb.com)"
+    log_err "or add --yes --receiver-ip <ip> (or --yes --demo) to accept the defaults."
+    exit 1
+fi
 
-# Cleanup on exit. If we created a tempdir or partial install, clean up unless
-# the script completed fully (COMPLETED=true).
-COMPLETED=false
-TMPDIR_BOOT=""
-INSTALL_CREATED_BY_US=false
-
-cleanup() {
-    if [ "$COMPLETED" = false ]; then
-        if [ -n "$TMPDIR_BOOT" ] && [ -d "$TMPDIR_BOOT" ]; then
-            rm -rf "$TMPDIR_BOOT"
-        fi
-        if [ "$INSTALL_CREATED_BY_US" = true ] && [ -d "$PREFIX" ]; then
-            log_warn "Install incomplete — leaving partial tree at $PREFIX for inspection."
-            log_warn "If you want it gone: rm -rf $PREFIX"
-        fi
-    fi
-}
 trap cleanup EXIT
 
 # ---------------------------------------------------------------------------
@@ -243,7 +554,7 @@ log_step "1/7" "Checking platform..."
 OS_ID=""
 OS_LIKE=""
 OS_PRETTY=""
-if [ -r /etc/os-release ]; then
+if [ -r "$OS_RELEASE" ]; then
     # v3.0.13: source /etc/os-release in a SUBSHELL, not the current
     # shell, so its variable definitions don't leak. /etc/os-release
     # uses shell syntax (NAME=, VERSION=, ID=, ID_LIKE=, VERSION_ID=,
@@ -260,7 +571,7 @@ if [ -r /etc/os-release ]; then
     # parens (like "Noble Numbat") survive the round trip; eval
     # re-injects them as plain assignments into the parent shell.
     eval "$(
-        . /etc/os-release
+        . "$OS_RELEASE"
         printf 'OS_ID=%q\nOS_LIKE=%q\nOS_PRETTY=%q\n' \
             "${ID:-}" "${ID_LIKE:-}" "${PRETTY_NAME:-${ID:-unknown}}"
     )"
@@ -271,81 +582,13 @@ fi
 ARCH="$(uname -m)"
 log_info "Detected: $OS_PRETTY ($ARCH)"
 
-# v3.2.0: multi-distro support. Detect the package manager family and load
-# its install commands + translated package names. The four tier-1 families
-# proceed silently; anything else falls to tier-2 (best-effort) if systemctl
-# is present, or tier-3 (hard refuse) if not.
-pkg_detect() {
-    local os_id="" os_like=""
-    if [ -r /etc/os-release ]; then
-        eval "$(
-            . /etc/os-release
-            printf 'os_id=%q\nos_like=%q\n' "${ID:-}" "${ID_LIKE:-}"
-        )"
-    fi
-    PKG_FAMILY=unknown
-    case "$os_id" in
-        debian|ubuntu|raspbian|linuxmint|pop|elementary|neon|kali|parrot)
-            PKG_FAMILY=debian ;;
-        fedora|rhel|centos|rocky|almalinux|amzn|ol)
-            PKG_FAMILY=fedora ;;
-        arch|manjaro|endeavouros|garuda|artix|cachyos)
-            PKG_FAMILY=arch ;;
-        opensuse*|sles|sled)
-            PKG_FAMILY=opensuse ;;
-        *)
-            case " $os_like " in
-                *" debian "*|*" ubuntu "*) PKG_FAMILY=debian ;;
-                *" fedora "*|*" rhel "*|*" centos "*) PKG_FAMILY=fedora ;;
-                *" arch "*) PKG_FAMILY=arch ;;
-                *" suse "*|*" opensuse "*) PKG_FAMILY=opensuse ;;
-            esac ;;
-    esac
-    case "$PKG_FAMILY" in
-        debian)
-            PKG_REFRESH_CMD="sudo apt-get update -qq"
-            PKG_INSTALL_CMD="sudo apt-get install -y -qq"
-            PKG_PYTHON3="python3"; PKG_PIP="python3-pip"
-            PKG_VENV="python3-venv"; PKG_CURL="curl"; PKG_UNZIP="unzip" ;;
-        fedora)
-            PKG_REFRESH_CMD=""
-            PKG_INSTALL_CMD="sudo dnf install -y -q"
-            PKG_PYTHON3="python3"; PKG_PIP="python3-pip"
-            PKG_VENV=""; PKG_CURL="curl"; PKG_UNZIP="unzip" ;;
-        arch)
-            PKG_REFRESH_CMD="sudo pacman -Sy --noconfirm"
-            PKG_INSTALL_CMD="sudo pacman -S --needed --noconfirm"
-            PKG_PYTHON3="python"; PKG_PIP="python-pip"
-            PKG_VENV=""; PKG_CURL="curl"; PKG_UNZIP="unzip" ;;
-        opensuse)
-            PKG_REFRESH_CMD="sudo zypper --non-interactive refresh"
-            PKG_INSTALL_CMD="sudo zypper --non-interactive install"
-            PKG_PYTHON3="python3"; PKG_PIP="python3-pip"
-            PKG_VENV=""; PKG_CURL="curl"; PKG_UNZIP="unzip" ;;
-        *)
-            PKG_REFRESH_CMD=""; PKG_INSTALL_CMD="" ;;
-    esac
-}
-pkg_install() {
-    local pkgs=() p
-    for p in "$@"; do [ -n "$p" ] && pkgs+=("$p"); done
-    [ "${#pkgs[@]}" -eq 0 ] && return 0
-    [ -z "$PKG_INSTALL_CMD" ] && {
-        echo "pkg_install: no install command for PKG_FAMILY=$PKG_FAMILY" >&2
-        return 1
-    }
-    $PKG_INSTALL_CMD "${pkgs[@]}"
-}
-pkg_refresh() {
-    [ -z "$PKG_REFRESH_CMD" ] && return 0
-    $PKG_REFRESH_CMD
-}
 pkg_detect
 
 # Tier 1: recognized family with a known package manager — proceed silently.
+# A family guessed from the package manager alone is not "recognized".
 recognized=false
 case "$PKG_FAMILY" in
-    debian|fedora|arch|opensuse) recognized=true ;;
+    debian|fedora|arch|opensuse) [ "$PKG_FAMILY_GUESSED" = true ] || recognized=true ;;
 esac
 
 if [ "$recognized" = true ]; then
@@ -369,7 +612,7 @@ else
 
     if [ "$has_systemctl" = false ] || [ "$has_known_pkgmgr" = false ]; then
         log_err "Aerodrome's installer requires systemd (systemctl) and one of"
-        log_err "apt-get, dnf, pacman, or zypper. Your system reports ID=$os_id."
+        log_err "apt-get, dnf, pacman, or zypper. Your system reports ID=${OS_ID:-unknown}."
         echo ""
         echo "  See docs/INSTALL.md for manual install steps on other distros."
         echo "  Browse the docs at: https://github.com/${REPO}/blob/main/docs/INSTALL.md"
@@ -377,16 +620,16 @@ else
     fi
 
     if [ "$FORCE" = true ]; then
-        log_warn "Unrecognized distro ($os_id), but a known package manager and"
+        log_warn "Unrecognized distro (${OS_ID:-unknown}), but a known package manager and"
         log_warn "systemctl are present — continuing per --force"
     else
         log_warn "Aerodrome is tested on Debian/Ubuntu, Fedora/RHEL, Arch, and openSUSE."
-        log_warn "Your system reports ID=$os_id, but a known package manager and"
+        log_warn "Your system reports ID=${OS_ID:-unknown}, but a known package manager and"
         log_warn "systemctl are available, so the install will probably work."
         if [ "$ASSUME_YES" = true ]; then
             log_warn "Continuing anyway per --yes."
         else
-            read -r -p "  Continue? [y/N] " reply
+            read -r -p "  Continue? [y/N] " reply || reply=""
             if [[ ! "$reply" =~ ^[Yy]$ ]]; then
                 echo "Aborted."
                 exit 0
@@ -396,18 +639,13 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# [2/7] Existing-install detection
+# [2/7] Existing-install detection — and never delete or take over a folder
 # ---------------------------------------------------------------------------
 log_step "2/7" "Checking for existing Aerodrome install..."
 
-# Most reliable signal: the systemd unit file
-if systemctl list-unit-files 2>/dev/null | grep -q '^aerodrome\.service'; then
-    # Try to read the install dir from the unit file
-    existing_dir=""
-    unit_path="/etc/systemd/system/aerodrome.service"
-    if [ -r "$unit_path" ]; then
-        existing_dir="$(grep -m1 '^WorkingDirectory=' "$unit_path" | cut -d= -f2-)"
-    fi
+# Most reliable signal: the systemd unit
+if aerodrome_unit_registered; then
+    existing_dir="$(unit_working_dir)"
     existing_ver="?"
     if [ -n "$existing_dir" ] && [ -r "$existing_dir/VERSION" ]; then
         existing_ver="$(cat "$existing_dir/VERSION" 2>/dev/null || echo '?')"
@@ -415,24 +653,71 @@ if systemctl list-unit-files 2>/dev/null | grep -q '^aerodrome\.service'; then
 
     log_err "Aerodrome is already installed (v${existing_ver}${existing_dir:+ at $existing_dir})."
     echo ""
-    echo "  To upgrade: open the web UI and use the Updates page"
-    if [ -n "$existing_dir" ]; then
-        # Best-effort: print the URL the user is most likely to hit it at
+    if [ -n "$existing_dir" ] && [ -d "$existing_dir" ]; then
+        echo "  To upgrade: open the web UI and use the Updates page"
         echo "             (Updates → Local update or GitHub update)"
+        echo "  To start fresh: run uninstall.sh in the existing install directory first"
+        echo "             (bash $(printf %q "$existing_dir/uninstall.sh"))"
+    else
+        # A service whose folder was deleted by hand (or a partial install):
+        # there is no uninstall.sh left to run.
+        if [ -n "$existing_dir" ]; then
+            echo "  Its service is still registered, but its install folder ($existing_dir) no longer exists."
+        else
+            echo "  Its service is registered, but doesn't say which folder it runs from."
+        fi
+        echo "  To remove what is left (the service and its permission rule), run:"
+        print_leftover_removal
+        echo "  then re-run this installer."
     fi
-    echo "  To start fresh: run uninstall.sh in the existing install directory first"
     exit 1
 fi
 
-# Secondary check: install path already exists and contains an Aerodrome tree
-if [ -d "$PREFIX" ] && [ -e "$PREFIX/VERSION" ] && [ -e "$PREFIX/main.py" ]; then
-    log_err "An Aerodrome tree already exists at $PREFIX (v$(cat "$PREFIX/VERSION" 2>/dev/null || echo '?'))"
-    log_err "but no systemd unit is registered."
+# An Aerodrome tree already at the prefix with no service — a partial
+# install, a manual extract, or what `uninstall.sh --purge` leaves (it keeps
+# the code).
+if [ -e "$PREFIX/VERSION" ] && [ -e "$PREFIX/main.py" ]; then
+    log_err "An Aerodrome tree is already at $PREFIX (v$(cat "$PREFIX/VERSION" 2>/dev/null || echo '?'))."
     echo ""
-    echo "  This usually means a partial install or a manual extract."
-    echo "  Either run install.sh from inside the existing tree, or remove it"
-    echo "  and re-run this bootstrap."
+    echo "  To reinstall there, run ./install.sh inside it. To start fresh, move it"
+    echo "  aside or remove it (copy out anything you want first), then re-run."
     exit 1
+fi
+
+# The prefix must be new, or an empty directory this account can already
+# write: the installer never deletes a folder's contents and never takes
+# over (chowns) a directory it didn't create.
+PREFIX_PREEXISTED=false
+if [ -e "$PREFIX" ] || [ -L "$PREFIX" ]; then
+    if [ ! -d "$PREFIX" ]; then
+        log_err "$PREFIX already exists and is not a directory."
+        log_err "Pick a new path, e.g. --prefix $(printf %q "$(dirname "$PREFIX")/aerodrome")"
+        exit 1
+    fi
+    # A folder this account can't list could hold anything (ls prints nothing
+    # and fails): refuse it rather than take it for empty.
+    if ! _prefix_ls="$(ls -A -- "$PREFIX" 2>/dev/null)"; then
+        log_err "$PREFIX already exists and can't be listed by $(id -un) — pick a new path"
+        log_err "(e.g. --prefix $(printf %q "$PREFIX/aerodrome"))."
+        exit 1
+    elif [ -n "$_prefix_ls" ]; then
+        log_err "$PREFIX already exists, isn't empty, and isn't an Aerodrome install."
+        log_err "The installer never deletes or takes over a folder. Use a new path"
+        log_err "(e.g. --prefix $(printf %q "$PREFIX/aerodrome")), or empty it yourself first."
+        exit 1
+    fi
+    if [ ! -w "$PREFIX" ] || [ ! -x "$PREFIX" ]; then
+        _prefix_owner="$(stat -c %U -- "$PREFIX" 2>/dev/null || echo '?')"
+        log_err "$PREFIX already exists and isn't writable by $(id -un) (owner: ${_prefix_owner})."
+        log_err "The installer won't take over a directory it didn't create. Use a new path (e.g. --prefix $(printf %q "$PREFIX/aerodrome")),"
+        if [ "$_prefix_owner" = "$(id -un)" ]; then
+            log_err "or make it writable first:  chmod u+wx $(printf %q "$PREFIX")"
+        else
+            log_err "or make it yours first:  sudo chown $(id -u):$(id -g) $(printf %q "$PREFIX")"
+        fi
+        exit 1
+    fi
+    PREFIX_PREEXISTED=true
 fi
 
 log_ok "No existing install found"
@@ -481,15 +766,17 @@ fi
 # distro Python install with corrupt bytecode or broken site hooks
 # fails every -c invocation, which previously surfaced as a
 # misleading "version too old" message pointing at deadsnakes.
-_py_check_out=$(python3 -c 'import sys; print("yes" if sys.version_info >= (3,10) else "no")' 2>&1)
-_py_check_rc=$?
+# (`|| _py_check_rc=$?`: under set -e a bare failing assignment would end
+# the script before the diagnosis below could print.)
+_py_check_rc=0
+_py_check_out=$(python3 -c 'import sys; print("yes" if sys.version_info >= (3,10) else "no")' 2>&1) \
+    || _py_check_rc=$?
 if [ "$_py_check_rc" -ne 0 ] || [ "$_py_check_out" != "yes" ]; then
     # Two distinct failure modes:
     #   1. python3 -c failed entirely (broken install, stale bytecode,
     #      bad site-packages hook) — stderr probably has a traceback
     #   2. python3 -c succeeded but reported the wrong version
     _py_version_str=$(python3 --version 2>&1 || echo 'none')
-    _py_version_works=false
     if [ "$_py_check_rc" -eq 0 ] && [ "$_py_check_out" = "no" ]; then
         # Case 2: interpreter ran fine, version is genuinely too old
         log_err "Python 3.10+ required; found $_py_version_str"
@@ -526,15 +813,17 @@ log_step "4/7" "Resolving release..."
 TMPDIR_BOOT="$(mktemp -d -t aerodrome-bootstrap.XXXXXX)"
 
 if [ -n "$FROM_ZIP" ]; then
-    if [ ! -r "$FROM_ZIP" ]; then
+    if [ ! -r "$FROM_ZIP" ] || [ ! -f "$FROM_ZIP" ]; then
         log_err "--from-zip path not readable: $FROM_ZIP"
         exit 1
     fi
+    FROM_ZIP="$(realpath -e -- "$FROM_ZIP")"
     log_ok "Using local zip: $FROM_ZIP"
-    cp "$FROM_ZIP" "$TMPDIR_BOOT/release.zip"
-    # Try to extract the version from the zip's top-level directory name
+    ZIP_FILE="$FROM_ZIP"       # unzipped in place — no copy into the temp dir
+    # Try to extract the version from the zip's top-level directory name.
+    # (awk reads the whole listing — no early exit on the right of a pipe.)
     RESOLVED_VER=$(unzip -l "$FROM_ZIP" 2>/dev/null \
-        | awk '/aerodrome-v[0-9]+\.[0-9]+\.[0-9]+\/$/ {print $NF; exit}' \
+        | awk '/aerodrome-v[0-9]+\.[0-9]+\.[0-9]+\/$/ && !f {print $NF; f=1}' \
         | sed -E 's|aerodrome-(v[0-9]+\.[0-9]+\.[0-9]+)/|\1|' \
         || true)
     [ -n "$RESOLVED_VER" ] || RESOLVED_VER="(unknown)"
@@ -542,19 +831,29 @@ if [ -n "$FROM_ZIP" ]; then
     SKIP_CHECKSUM=true
 else
     SKIP_CHECKSUM=false
+    ZIP_FILE="$TMPDIR_BOOT/release.zip"
     if [ "$VERSION" = "latest" ]; then
         log_info "Querying GitHub Releases API for latest..."
         api_resp="$TMPDIR_BOOT/releases-latest.json"
-        if ! curl -fsSL -o "$api_resp" "$API_BASE/releases/latest"; then
-            log_err "Failed to fetch latest release info from GitHub."
-            log_err "Check network connectivity, or use --version vX.Y.Z to pin."
-            exit 1
-        fi
-        # Extract tag_name without jq dependency
+        # No -f: an HTTP refusal (status code) must be told apart from no
+        # answer at all (000: network or DNS) — see latest_lookup_failed.
+        # Any 2xx reply is read, as with -f.
+        api_code="$(curl -sSL -o "$api_resp" -D "$TMPDIR_BOOT/releases-latest.headers" \
+            -w '%{http_code}' "$API_BASE/releases/latest")" || api_code=000
+        case "$api_code" in
+            2??) ;;
+            *) latest_lookup_failed "$api_code" "$TMPDIR_BOOT/releases-latest.headers"
+               exit 1 ;;
+        esac
+        # Extract tag_name without jq dependency; anything but a string value
+        # prints nothing (sed -n …p). (`|| RESOLVED_VER=""`: when grep finds
+        # nothing, pipefail fails the assignment — the message below is the
+        # one to show, not a silent set -e exit.)
         RESOLVED_VER=$(grep -m1 '"tag_name"' "$api_resp" \
-            | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
+            | sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p') || RESOLVED_VER=""
         if [ -z "$RESOLVED_VER" ]; then
-            log_err "Could not parse tag_name from API response. Possibly rate-limited?"
+            log_err "Could not read the latest version from GitHub's reply."
+            log_err "Use --version vX.Y.Z to pin."
             exit 1
         fi
     else
@@ -586,7 +885,9 @@ else
 
     # Verify
     log_info "Verifying SHA256..."
-    expected_sha=$(awk '{print $1}' "$TMPDIR_BOOT/release.zip.sha256")
+    # On stdin: awk would take a relative TMPDIR shaped like name=value for
+    # a variable assignment (mktemp keeps a relative TMPDIR relative).
+    expected_sha=$(awk '{print $1}' < "$TMPDIR_BOOT/release.zip.sha256")
     actual_sha=$(sha256sum "$TMPDIR_BOOT/release.zip" | awk '{print $1}')
     if [ "$expected_sha" != "$actual_sha" ]; then
         log_err "SHA256 MISMATCH"
@@ -599,55 +900,36 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# [5/7] Resolve install directory + extract
+# [5/7] Create the install directory + extract
 # ---------------------------------------------------------------------------
 log_step "5/7" "Setting up install directory..."
 
-# v3.3.0: detect whether we're upgrading an existing install at this
-# location vs. doing a fresh install. An existing install is identified
-# by the presence of VERSION + main.py; if found we proceed in upgrade
-# mode and don't touch the directory permissions.
-EXISTING_INSTALL=false
-if [ -f "$PREFIX/VERSION" ] && [ -f "$PREFIX/main.py" ]; then
-    EXISTING_INSTALL=true
-    log_info "Existing install detected at $PREFIX — upgrading in place"
-elif [ -d "$PREFIX" ] && [ -n "$(ls -A "$PREFIX" 2>/dev/null)" ]; then
-    log_warn "Directory $PREFIX already exists and is not empty,"
-    log_warn "but doesn't look like an Aerodrome install (no VERSION/main.py)."
-    if [ "$ASSUME_YES" = true ]; then
-        log_err "Refusing to overwrite (would need interactive confirmation)."
-        exit 1
-    fi
-    read -r -p "  Overwrite? Existing contents will be removed [y/N] " reply
-    if [[ ! "$reply" =~ ^[Yy]$ ]]; then
-        echo "Aborted."
-        exit 0
-    fi
-    # Need sudo if outside the user's home
+# Create the prefix only when it didn't exist (step 2 refused anything else
+# that was there). A pre-existing empty folder this account can write is
+# used as it is — never chowned.
+# The prefix itself is created WITHOUT -p: if something created it since
+# step 2 checked (another run, another user), mkdir fails and the folder is
+# left alone instead of being taken over.
+if [ "$PREFIX_PREEXISTED" = false ]; then
     case "$PREFIX" in
-        "$HOME"/*|"$HOME") rm -rf "$PREFIX" ;;
-        *)                 sudo rm -rf "$PREFIX" ;;
+        "$HOME"/*)
+            mkdir -p -- "$(dirname -- "$PREFIX")"
+            if ! mkdir -- "$PREFIX"; then
+                log_err "$PREFIX appeared while this ran; the installer won't use a folder it didn't create. Re-run."
+                exit 1
+            fi ;;
+        *)
+            log_info "Creating $PREFIX (requires sudo since it's outside your home)..."
+            sudo mkdir -p -- "$(dirname -- "$PREFIX")"
+            if ! sudo mkdir -- "$PREFIX"; then
+                log_err "$PREFIX appeared while this ran; the installer won't take over a folder it didn't create. Re-run."
+                exit 1
+            fi
+            # chown so the user can write release files, config.yaml, etc.
+            # without sudo for the rest of this script and for in-app updates.
+            # Numeric ids: `id -gn` complains when the primary group has no name.
+            sudo chown "$(id -u):$(id -g)" "$PREFIX" ;;
     esac
-fi
-
-# Determine whether PREFIX is inside the user's home (no sudo needed for
-# mkdir) or outside (need sudo to create + chown to user afterwards).
-NEED_SUDO_FOR_PREFIX=false
-case "$PREFIX" in
-    "$HOME"/*|"$HOME") ;;
-    *) NEED_SUDO_FOR_PREFIX=true ;;
-esac
-
-if [ "$EXISTING_INSTALL" = false ]; then
-    if [ "$NEED_SUDO_FOR_PREFIX" = true ]; then
-        log_info "Creating $PREFIX (requires sudo since it's outside your home)..."
-        sudo mkdir -p "$PREFIX"
-        # chown so the user can write release files, config.yaml, etc.
-        # without sudo for the rest of this script and for in-app updates.
-        sudo chown "$USER:$USER" "$PREFIX"
-    else
-        mkdir -p "$PREFIX"
-    fi
     INSTALL_CREATED_BY_US=true
 fi
 
@@ -655,7 +937,10 @@ fi
 log_info "Extracting to $PREFIX..."
 extract_tmp="$TMPDIR_BOOT/extracted"
 mkdir -p "$extract_tmp"
-unzip -q "$TMPDIR_BOOT/release.zip" -d "$extract_tmp"
+if ! unzip -q "$ZIP_FILE" -d "$extract_tmp"; then
+    log_err "Could not unpack the release (see the unzip error above; often a full disk)."
+    exit 1
+fi
 
 # Find the directory containing VERSION + main.py
 src_root=""
@@ -671,8 +956,25 @@ if [ -z "$src_root" ] || [ ! -d "$src_root" ]; then
     exit 1
 fi
 
-# Move contents to PREFIX
-mv "$src_root"/* "$src_root"/.[!.]* "$PREFIX/" 2>/dev/null || true
+# Move contents to PREFIX. dotglob+nullglob so dotfiles (.gitignore,
+# .pii-allowlist, .github/) come along and no unmatched pattern is passed
+# literally to mv — the reason errors used to be thrown away, which also hid
+# real failures (full disk on the /tmp → PREFIX copy, permissions) and let a
+# half-moved tree carry on to install.sh.
+shopt -s dotglob nullglob
+src_entries=("$src_root"/*)
+shopt -u dotglob nullglob
+EXTRACTED=true
+if ! mv -- "${src_entries[@]}" "$PREFIX/"; then
+    log_err "Could not move the release files into $PREFIX (see the mv error above;"
+    log_err "usually a full disk or a permissions problem)."
+    exit 1
+fi
+if [ -n "$(ls -A "$src_root")" ] || [ ! -f "$PREFIX/VERSION" ] || [ ! -f "$PREFIX/main.py" ] \
+        || [ ! -f "$PREFIX/install.sh" ] || [ ! -f "$PREFIX/config.yaml.example" ]; then
+    log_err "Extraction into $PREFIX is incomplete — refusing to continue."
+    exit 1
+fi
 log_ok "Extracted to $PREFIX"
 
 # ---------------------------------------------------------------------------
@@ -895,6 +1197,7 @@ if [ "$DEMO_MODE" = "true" ]; then
     INSTALL_ARGS+=("--home-lat" "${LAT:-40.0}")
     INSTALL_ARGS+=("--home-lon" "${LON:--75.0}")
 fi
+INSTALL_SH_STARTED=true
 ( cd "$PREFIX" && ./install.sh "${INSTALL_ARGS[@]}" )
 
 # ---------------------------------------------------------------------------
@@ -909,7 +1212,9 @@ fi
 if command -v firewall-cmd >/dev/null 2>&1 && \
         systemctl is-active firewalld --quiet 2>/dev/null; then
     # Only offer if port 8000 isn't already open on the default zone.
-    if ! sudo firewall-cmd --list-ports 2>/dev/null | grep -qw "8000/tcp"; then
+    # (Capture, then match: no early-exit reader on the right of a pipe.)
+    _open_ports="$(sudo firewall-cmd --list-ports 2>/dev/null || true)"
+    if [[ " $_open_ports " != *" 8000/tcp "* ]]; then
         echo ""
         log_info "firewalld is active. Port 8000 (the web UI) is currently closed."
         do_open=false
@@ -917,7 +1222,7 @@ if command -v firewall-cmd >/dev/null 2>&1 && \
             do_open=true
             log_info "Opening port 8000 automatically (per --yes/--force)"
         else
-            read -r -p "  Open port 8000 in firewalld so you can reach the dashboard? [Y/n] " reply
+            read -r -p "  Open port 8000 in firewalld so you can reach the dashboard? [Y/n] " reply || reply=""
             if [[ ! "$reply" =~ ^[Nn]$ ]]; then
                 do_open=true
             fi
@@ -926,6 +1231,10 @@ if command -v firewall-cmd >/dev/null 2>&1 && \
             if sudo firewall-cmd --add-port=8000/tcp --permanent >/dev/null 2>&1 \
                     && sudo firewall-cmd --reload >/dev/null 2>&1; then
                 log_ok "Opened port 8000/tcp permanently on the public zone"
+                # Recorded so `uninstall.sh --purge` closes it again — and
+                # only then: a port Aerodrome didn't open is never closed by it.
+                printf '8000/tcp\n' > "$PREFIX/.aerodrome-firewalld-port" \
+                    || log_warn "Could not record that the port was opened (uninstall.sh will print the close command instead)."
             else
                 log_warn "Could not open port 8000 — run manually:"
                 echo "    sudo firewall-cmd --add-port=8000/tcp --permanent && sudo firewall-cmd --reload"
@@ -942,9 +1251,12 @@ fi
 # ---------------------------------------------------------------------------
 COMPLETED=true
 # v3.2.1: cross-distro server IP detection — see install.sh for rationale.
-SERVER_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '/src/{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')"
-[ -z "$SERVER_IP" ] && SERVER_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
-[ -z "$SERVER_IP" ] && SERVER_IP="$(hostname -i 2>/dev/null | awk '{print $1}')"
+# Each probe may fail (no `ip`, inetutils `hostname` without -I): `|| true`
+# so pipefail + set -e can't end a finished install before this banner.
+SERVER_IP="$(ip -4 route get 1.1.1.1 2>/dev/null \
+    | awk '!f && /src/ {for(i=1;i<=NF;i++) if($i=="src" && !f){print $(i+1); f=1}}' || true)"
+[ -z "$SERVER_IP" ] && SERVER_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+[ -z "$SERVER_IP" ] && SERVER_IP="$(hostname -i 2>/dev/null | awk '{print $1}' || true)"
 [ -z "$SERVER_IP" ] && SERVER_IP="localhost"
 echo ""
 echo -e "${GREEN}══════════════════════════════════════════════${RESET}"
@@ -976,3 +1288,10 @@ echo "  Service:  sudo systemctl status aerodrome"
 echo "  Logs:     sudo journalctl -u aerodrome -f"
 echo "  Config:   $PREFIX/config.yaml"
 echo ""
+}
+
+# Nothing above this line has done anything yet: a truncated download stops
+# here (or earlier, mid-definition) without running main. The call is a
+# { …; } group, so a download cut inside this last line can't parse, and
+# runs nothing — not even main with the flags dropped.
+[ "${AERODROME_BOOTSTRAP_SOURCE_ONLY:-0}" = 1 ] || { main "$@"; }

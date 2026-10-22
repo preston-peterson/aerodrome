@@ -49,6 +49,7 @@ import os
 import platform
 import re
 import secrets
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -357,10 +358,12 @@ def _sudo_run(cmd: list, input_text: Optional[str] = None) -> subprocess.Complet
         # A common failure mode: sudoers rule doesn't permit this command.
         # Make the error actionable.
         if "a password is required" in stderr or "sudo:" in stderr:
+            recover = Path(__file__).resolve().parent / "scripts" / "recover-sudoers.sh"
             raise RuntimeError(
-                f"sudo rejected '{' '.join(cmd)}'. "
-                f"The sudoers rule may not permit this command. "
-                f"Re-run install.sh to refresh the sudoers entries. Raw error: {msg}"
+                f"sudo refused '{' '.join(cmd)}'. "
+                f"Run the command shown on Aerodrome's Updates page, or "
+                f"`sudo bash {shlex.quote(str(recover))}`, on the server "
+                f"(it refreshes Aerodrome's system permissions only). Raw error: {msg}"
             )
         raise RuntimeError(f"Command failed: {' '.join(cmd)}: {msg}")
     return r
@@ -709,9 +712,14 @@ def install(port: int = 2586, bind: str = "0.0.0.0",
 
     # --- Create the cache dir (owned by the aerodrome user so we can write
     # the staged binary into it without another sudo call). The sudoers rule
-    # pins the owner to the current user. ---
+    # pins the owner to the current user: the account this process runs as,
+    # not an inherited $LOGNAME/$USER (which getpass.getuser() reads first). ---
     import getpass
-    aero_user = getpass.getuser()
+    import pwd
+    try:
+        aero_user = pwd.getpwuid(os.geteuid()).pw_name
+    except KeyError:    # no passwd entry for our uid (directory offline)
+        aero_user = getpass.getuser()
     try:
         _sudo_run(["install", "-d", "-m", "0755",
                    "-o", aero_user, "-g", aero_user, str(CACHE_DIR)])

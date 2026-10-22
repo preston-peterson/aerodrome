@@ -711,8 +711,10 @@ class GatesBeforeWrites(_FixtureCase):
         cases = {
             "pkg-detect": ("install.sh", lambda s: s.replace(
                 "pkg_detect() {\n", "pkg_detect() {\n    : drifted\n", 1)),
-            "sudoers-rules": ("scripts/recover-sudoers.sh", lambda s: s.replace(
-                "SUDOEOF\n", "SUDOEOF\n${USER} ALL=(ALL) NOPASSWD: /bin/true\n", 1)),
+            "recover-delegates": ("scripts/recover-sudoers.sh", lambda s: s +
+                "# svc-a ALL=(ALL) NOPASSWD: /bin/true\n"),
+            "pipefail-readers": ("scripts/bootstrap.sh", lambda s: s +
+                "\nsystemctl list-unit-files | grep -q x || true\n"),
             "bash-syntax": ("uninstall.sh", lambda s: s + "\nif then\n"),
         }
         for check, (rel, mutate) in cases.items():

@@ -158,7 +158,7 @@ Run the unit tests from the repo root:
 python3 -m unittest -v
 ```
 
-They're stdlib `unittest` files (`test_*.py`) covering migrations, search, categorisation, the collector poll loop and more, plus subprocess suites that drive the release scripts (`bump-version.sh`, `package-release.sh`, `publish-release.sh`) in throwaway copies of your working tree. Those take a minute or two; `AERODROME_SKIP_SLOW_TESTS=1 python3 -m unittest` skips them for fast iteration — run the full suite before a release.
+They're stdlib `unittest` files (`test_*.py`) covering migrations, search, categorisation, the collector poll loop and more, plus subprocess suites that drive the release scripts (`bump-version.sh`, `package-release.sh`, `publish-release.sh`) and the installers (`install.sh`, `scripts/bootstrap.sh`, `uninstall.sh`, `scripts/recover-sudoers.sh` — stub `sudo`, a fake root, never the real `/etc`) in throwaway copies of your working tree. Those take a minute or two; `AERODROME_SKIP_SLOW_TESTS=1 python3 -m unittest` skips them for fast iteration — run the full suite before a release.
 
 Beyond that, manual testing is the workflow:
 

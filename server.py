@@ -1,4 +1,4 @@
-# Version: 3.4.144
+# Version: 3.4.145
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -49,6 +49,10 @@ logger = logging.getLogger("adsb.server")
 
 CONFIG = {}
 CONFIG_PATH = ""
+
+# The live sudoers drop-in install.sh writes. Read at call time by the drift
+# checks, so tests (and a throwaway local instance) can point it elsewhere.
+SUDOERS_DROPIN = Path("/etc/sudoers.d/aerodrome")
 
 # Notifier singleton. Constructed in get_app() from the initial config and
 # handed to the collector via collector.set_notifier(). Also kept at module
@@ -1232,14 +1236,27 @@ names like <code>raspberrypi.local</code>, and hostnames you've allowed.</p>
 
 def _sudoers_recovery_command(update_root: Path,
                               install_dir: Optional[Path] = None) -> str:
-    """The command the "Sudoers update required" prompt shows: the STAGED
-    release's recover-sudoers.sh (install.sh refuses to run from update/),
-    told where the live install is. Paths are shell-quoted."""
+    """The command the "Sudoers update required" prompt shows for a STAGED
+    release: its scripts/recover-sudoers.sh, told where the live install is.
+    That script hands off to the install.sh carrying the newest permission
+    rules (staged or installed) in --privileges-only mode, which refreshes
+    the sudoers rule only. `--install-dir` instead of the older
+    `sudo AERODROME_INSTALL_DIR=… bash …` form: no `sudo VAR=value` (sudo
+    may refuse to pass it through). Paths are shell-quoted."""
     import shlex
     inst = install_dir or Path(__file__).resolve().parent
     script = update_root / "scripts" / "recover-sudoers.sh"
-    return (f"sudo AERODROME_INSTALL_DIR={shlex.quote(str(inst))} "
-            f"bash {shlex.quote(str(script))}")
+    return (f"sudo bash {shlex.quote(str(script))} "
+            f"--install-dir {shlex.quote(str(inst))}")
+
+
+def _live_recovery_command(install_dir: Optional[Path] = None) -> str:
+    """The command that refreshes the permissions of the INSTALLED release
+    (no update staged): its own scripts/recover-sudoers.sh. It also picks up a
+    staged update's newer rules, if one is staged. Path is shell-quoted."""
+    import shlex
+    inst = install_dir or Path(__file__).resolve().parent
+    return f"sudo bash {shlex.quote(str(inst / 'scripts' / 'recover-sudoers.sh'))}"
 
 
 def get_app(config: dict, config_path: str) -> FastAPI:
@@ -9769,7 +9786,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
               out forever on first upgrade)
         """
         staged_installer = update_root / "install.sh"
-        live_sudoers = Path("/etc/sudoers.d/aerodrome")
+        live_sudoers = SUDOERS_DROPIN
 
         staged_ver = _read_sudoers_version(staged_installer)
         if staged_ver is None:
@@ -9799,8 +9816,9 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             # Couldn't read the live file at all. Most common reason:
             # pre-v2.40.1 sudoers grant doesn't include a rule letting us
             # sudo-cat this file. We don't want to hard-block the upgrade
-            # that WOULD fix that situation, so we let it through. Users
-            # who see post-upgrade feature failures can re-run install.sh.
+            # that WOULD fix that situation, so we let it through. After the
+            # upgrade the live check (/api/sudoers/status) can read it and
+            # shows the refresh command if one is still needed.
             return {
                 "can_verify": False,
                 "needs_refresh": False,
@@ -9814,19 +9832,18 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             # v3.4.44: recovery_command points at the STAGED release, not
             # the live one — /opt/aerodrome/install.sh is the LIVE install.sh,
             # which writes the OLD SUDOERS_VERSION and can never lift the gate.
-            # v3.4.140: but not at the staged install.sh either: since v3.4.61
-            # install.sh refuses to run from inside an update/ staging dir
-            # (exit 2), so that command always failed. The staged
-            # scripts/recover-sudoers.sh is built for exactly this — it writes
-            # only the sudoers file, from wherever it sits — and takes the
-            # install dir explicitly (it can't infer it from a staging path).
+            # v3.4.145: the staged scripts/recover-sudoers.sh is a hand-off: it
+            # runs whichever install.sh (staged or installed) carries the
+            # newest rules in --privileges-only mode — the sudoers rule only,
+            # same service account, never older rules over newer ones. It is
+            # told the install dir explicitly (--install-dir).
             return {
                 "can_verify": True,
                 "needs_refresh": True,
                 "reason": (
                     f"Staged release requires sudoers version {staged_ver}, "
                     f"but /etc/sudoers.d/aerodrome is at version {live_ver}. "
-                    f"Re-run install.sh on the server before applying this update."
+                    f"Run the command below on the server, then press Re-check."
                 ),
                 "staged_version": staged_ver,
                 "live_version": live_ver,
@@ -9878,7 +9895,8 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         install.sh. Same return shape as _check_sudoers_drift for consistency
         with the existing applyLocal frontend code."""
         installed = Path(__file__).parent / "install.sh"
-        live_sudoers = Path("/etc/sudoers.d/aerodrome")
+        live_sudoers = SUDOERS_DROPIN
+        recovery_command = _live_recovery_command()
         expected_ver = _read_sudoers_version(installed)
         if expected_ver is None or expected_ver == 0:
             return {
@@ -9888,6 +9906,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 "expected_version": expected_ver,
                 "live_version": None,
                 "install_dir": str(installed.parent),
+                "recovery_command": recovery_command,
             }
         live_ver = _read_sudoers_version(live_sudoers)
         if live_ver is None:
@@ -9895,10 +9914,11 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 "can_verify": False,
                 "needs_refresh": False,
                 "reason": "Cannot read /etc/sudoers.d/aerodrome. "
-                          "Re-run install.sh to set up the read grant.",
+                          "Run the command below on the server to set up the permission check.",
                 "expected_version": expected_ver,
                 "live_version": None,
                 "install_dir": str(installed.parent),
+                "recovery_command": recovery_command,
             }
         if live_ver < expected_ver:
             return {
@@ -9907,11 +9927,12 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 "reason": (
                     f"Installed Aerodrome expects sudoers version {expected_ver}, "
                     f"but /etc/sudoers.d/aerodrome is at version {live_ver}. "
-                    f"Re-run install.sh on the server to refresh permissions."
+                    f"Run the command below on the server, then press Re-check."
                 ),
                 "expected_version": expected_ver,
                 "live_version": live_ver,
                 "install_dir": str(installed.parent),
+                "recovery_command": recovery_command,
             }
         return {
             "can_verify": True,
@@ -9920,6 +9941,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             "expected_version": expected_ver,
             "live_version": live_ver,
             "install_dir": str(installed.parent),
+            "recovery_command": recovery_command,
         }
 
     @app.get("/api/sudoers/status")
@@ -10052,7 +10074,8 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 "ok": False,
                 "error": "sudoers_refresh_required",
                 "message": sudoers_check.get("reason",
-                    "Sudoers version is stale. Re-run install.sh on the server."),
+                    "Aerodrome's system permissions need a refresh first — "
+                    "run the command shown, then Re-check."),
                 "sudoers": sudoers_check,
                 # v3.1.1: include the install_dir so the client-side modal can
                 # show the exact command path. Without this the modal falls
@@ -10202,8 +10225,9 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                     sh.chmod(mode | 0o111)
             logger.info("Restored executable bit on shell scripts in install dir")
         except Exception as e:
-            # Not fatal — the sudoers-update instruction in the UI uses
-            # `sudo bash install.sh` which doesn't need +x, so users can
+            # Not fatal — the permissions-refresh command the UI shows is
+            # `sudo bash <install>/scripts/recover-sudoers.sh`, which doesn't
+            # need +x (nor does the install.sh it hands off to), so users can
             # still recover. Log it loudly so we see it in journalctl.
             logger.warning(f"Could not restore +x on shell scripts: {e}")
 

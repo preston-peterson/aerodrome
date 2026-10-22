@@ -80,7 +80,7 @@ The `?icaos=` query string is comma-separated. The response is `{hex: registrati
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/status` | Comprehensive health check — collector, web server, database, receiver, hexdb resolver, system info |
-| GET | `/api/sudoers/status` | Check if /etc/sudoers.d/aerodrome matches the expected version |
+| GET | `/api/sudoers/status` | Check if /etc/sudoers.d/aerodrome matches the expected version; every reply carries `recovery_command`, the permissions-refresh command to run on the server |
 
 `/api/status` is used both by the Status page and by external health-check tooling. The response shape is documented in the comment block above the handler. It's the most stable endpoint in the API — deliberately kept backward-compatible.
 

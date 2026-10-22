@@ -123,19 +123,26 @@ class TestSudoersRecoveryCommand(unittest.TestCase):
     def test_points_at_staged_recover_script_with_install_dir(self):
         cmd = server._sudoers_recovery_command(Path("/opt/aerodrome/update/aerodrome"),
                                                Path("/opt/aerodrome"))
-        self.assertEqual(cmd, "sudo AERODROME_INSTALL_DIR=/opt/aerodrome bash "
-                              "/opt/aerodrome/update/aerodrome/scripts/recover-sudoers.sh")
+        self.assertEqual(cmd, "sudo bash /opt/aerodrome/update/aerodrome/scripts/recover-sudoers.sh "
+                              "--install-dir /opt/aerodrome")
         self.assertNotIn("install.sh", cmd)
+        self.assertNotIn("AERODROME_INSTALL_DIR=", cmd)   # no `sudo VAR=value` (needs SETENV)
 
     def test_paths_with_spaces_are_quoted(self):
         cmd = server._sudoers_recovery_command(Path("/home/u/My Apps/aero/update/aerodrome"),
                                                Path("/home/u/My Apps/aero"))
-        self.assertIn("AERODROME_INSTALL_DIR='/home/u/My Apps/aero'", cmd)
+        self.assertIn("--install-dir '/home/u/My Apps/aero'", cmd)
         self.assertIn("'/home/u/My Apps/aero/update/aerodrome/scripts/recover-sudoers.sh'", cmd)
+        self.assertNotIn("install.sh", cmd)
+
+    def test_live_command_is_the_installed_recover_script(self):
+        self.assertEqual(server._live_recovery_command(Path("/home/u/My Apps/aero")),
+                         "sudo bash '/home/u/My Apps/aero/scripts/recover-sudoers.sh'")
 
     def test_target_script_ships_and_has_no_staging_refusal(self):
         script = (REPO / "scripts" / "recover-sudoers.sh").read_text()
-        self.assertIn("AERODROME_INSTALL_DIR", script)
+        self.assertIn("AERODROME_INSTALL_DIR", script)    # the v3.4.140–144 command still works
+        self.assertIn("--install-dir", script)
         # install.sh's guard is what made the old command fail (exit 2)
         self.assertNotIn("sitting inside an existing install's update/", script)
         self.assertIn("sitting inside an existing install's update/",

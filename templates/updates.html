@@ -1,4 +1,4 @@
-<!-- Version: 3.4.144 -->
+<!-- Version: 3.4.145 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -493,6 +493,20 @@ function _esc(s){
         .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+// v3.4.145: single-quote a path for a copy-paste shell command (the same
+// job shlex.quote does server-side). Insert the result through _esc().
+function _shq(s){
+    return "'" + String(s).replace(/'/g, "'\\''") + "'";
+}
+
+// v3.4.145: the permissions-refresh command for the installed release, used
+// when the server didn't send one (an older server). recover-sudoers.sh hands
+// off to the install.sh with the newest rules (staged or installed), so this
+// also lifts a staged update's gate.
+function _recoverCmd(installDir){
+    return `sudo bash ${_shq((installDir || '/opt/aerodrome') + '/scripts/recover-sudoers.sh')}`;
+}
+
 // v3.4.38: shared helper read by both the local-apply and GitHub-apply
 // fetch sites. Returns the current checkbox state, defaulting to false
 // if the checkbox element isn't in the DOM (defensive against future
@@ -524,12 +538,12 @@ function showSudoersRequiredModal(opts){
     const stagedVer = opts.staged_version != null ? opts.staged_version : '?';
     const liveVer = opts.live_version != null ? opts.live_version : '(none)';
     const installDir = opts.install_dir || '/opt/aerodrome';
-    // v3.4.44: prefer the server-supplied recovery_command (points at the
-    // STAGED install.sh that writes the new SUDOERS_VERSION). Fall back to
-    // the old `<install_dir>/install.sh` form when the server hasn't
-    // supplied one — that path serves the no-update-drift case where the
-    // live install.sh DOES match the running release.
-    const command = opts.recovery_command || `sudo bash ${installDir}/install.sh`;
+    // v3.4.44: prefer the server-supplied recovery_command (the STAGED
+    // release's recover-sudoers.sh, told the install dir). v3.4.145: the
+    // fallback is the installed recover-sudoers.sh, which hands off to the
+    // install.sh with the newest rules — staged or installed — so it lifts
+    // the gate too (the installed install.sh alone never could).
+    const command = opts.recovery_command || _recoverCmd(installDir);
 
     return new Promise(resolve => {
         const bg = document.createElement('div');
@@ -569,7 +583,8 @@ function showSudoersRequiredModal(opts){
             <p style="font-size:12px;color:var(--t2);line-height:1.6;margin:0 0 8px 0;">
                 Aerodrome can't update the sudoers file on its own — that would be a permission
                 escalation risk. Please SSH to your server and run the command below.
-                Re-running install.sh is idempotent and safe.
+                This only refreshes Aerodrome's system permissions. It doesn't reinstall,
+                restart or change anything else.
             </p>
             <div style="position:relative;background:var(--bg0);border:1px solid var(--bdr);
                         border-radius:6px;padding:10px 12px;font-family:var(--mono);font-size:12px;
@@ -791,18 +806,22 @@ async function checkLocal(){
                 const ev = driftCheck.expected_version;
                 const lv = driftCheck.live_version;
                 const installDir = driftCheck.install_dir || '/opt/aerodrome';
+                // v3.4.145: the server sends the command (the installed
+                // recover-sudoers.sh); an older server's reply doesn't.
+                const driftCmd = driftCheck.recovery_command || _recoverCmd(installDir);
                 driftBanner =
                     `<div class="status-msg warn" style="margin-bottom:8px">` +
                     `⚠ <strong>Sudoers refresh required.</strong> ` +
                     `Installed Aerodrome expects version ${_esc(ev)} but ` +
                     `/etc/sudoers.d/aerodrome is at version ${_esc(lv)}. ` +
                     `Some features (ntfy install/uninstall, data purge) will fail until you SSH to the server and run: ` +
-                    `<br><code style="display:inline-block;margin-top:4px;font-size:11px;padding:2px 6px;background:var(--bg0);border-radius:3px;">sudo bash ${_esc(installDir)}/install.sh</code>` +
+                    `<br><code style="display:inline-block;margin-top:4px;font-size:11px;padding:2px 6px;background:var(--bg0);border-radius:3px;">${_esc(driftCmd)}</code>` +
                     // v2.41.20: explicit note so users don't try `./install.sh`
                     // and hit "permission denied" when the release zip stripped
                     // the execute bit. `sudo bash <script>` works regardless.
                     `<div style="margin-top:6px;font-size:11px;opacity:0.75">` +
-                    `Use the full <code>sudo bash</code> form above — it works whether or not install.sh is marked executable.` +
+                    `Use the full <code>sudo bash</code> form above — it works whether or not the script is marked executable. ` +
+                    `It only refreshes Aerodrome's system permissions.` +
                     `</div>` +
                     `</div>`;
                 setBadge('refresh needed', 'warn');
@@ -928,6 +947,7 @@ async function applyLocal(version){
             staged_version: _lastSudoersCheck.staged_version,
             live_version: _lastSudoersCheck.live_version,
             install_dir: _lastUpdateInfo.install_dir || null,
+            recovery_command: _lastSudoersCheck.recovery_command || null,
         });
         if (!ok) return;
         // User re-checked and it's now clean. Refresh state from server
@@ -992,6 +1012,7 @@ async function applyLocal(version){
                     staged_version: j.sudoers.staged_version,
                     live_version: j.sudoers.live_version,
                     install_dir: _lastUpdateInfo.install_dir || null,
+                    recovery_command: (j.sudoers || {}).recovery_command || null,
                 });
                 checkLocal();
                 return;
@@ -1890,10 +1911,10 @@ async function applyGithubUpdate(tag){
             _lastUpdateInfo = { version: tag, install_dir: j.install_dir || null };
             const installDir = j.install_dir || '/opt/aerodrome';
             // v3.4.44: same recovery_command preference as the modal —
-            // use the server-supplied command (points at the STAGED
-            // install.sh) when present, fall back to the old form only
-            // when the server hasn't supplied one.
-            const cmd = j.sudoers.recovery_command || `sudo bash ${installDir}/install.sh`;
+            // use the server-supplied command (the STAGED release's
+            // recover-sudoers.sh) when present; v3.4.145: otherwise the
+            // installed recover-sudoers.sh (it picks the newest rules).
+            const cmd = j.sudoers.recovery_command || _recoverCmd(installDir);
             const stagedV = j.sudoers.staged_version != null ? j.sudoers.staged_version : '?';
             const liveV = j.sudoers.live_version != null ? j.sudoers.live_version : '(none)';
             status.innerHTML = `
@@ -1921,8 +1942,8 @@ async function applyGithubUpdate(tag){
                                 padding:3px 10px;cursor:pointer;">Copy</button>
                     </div>
                     <div style="font-size:11px;color:var(--t3);margin-bottom:14px;">
-                        It's safe to re-run install.sh on an existing install — it skips
-                        steps that are already done and only refreshes what needs refreshing.
+                        This only refreshes Aerodrome's system permissions. It doesn't reinstall,
+                        restart or change anything else.
                     </div>
                     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
                         <button class="btn btn-primary" id="_ghsu_recheck">I ran the command — re-check</button>
@@ -1971,6 +1992,7 @@ async function applyGithubUpdate(tag){
                             staged_version: j.sudoers.staged_version,
                             live_version: j.sudoers.live_version,
                             install_dir: j.install_dir || null,
+                            recovery_command: j.sudoers.recovery_command || null,
                             update_version: tag,
                         });
                     }

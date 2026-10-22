@@ -1,4 +1,4 @@
-# Version: 3.4.144
+# Version: 3.4.145
 """
 collector.py — ADS-B data fetcher and classifier.
 
@@ -329,9 +329,10 @@ def _attempt_demo_port_recovery(config: dict):
         if result.returncode != 0:
             logger.error(
                 "Auto-recovery: sudo tee failed (rc=%d). Stderr: %s. If "
-                "you see 'sudo: a password is required', re-run "
-                "./install.sh on this server to refresh the sudoers rule "
-                "to SUDOERS_VERSION 5+.",
+                "you see 'sudo: a password is required', run the command "
+                "shown on Aerodrome's Updates page, or `sudo bash "
+                "<install>/scripts/recover-sudoers.sh`, on this server — it "
+                "refreshes Aerodrome's system permissions only.",
                 result.returncode, (result.stderr or "").strip(),
             )
             return None

@@ -286,6 +286,7 @@ def check_version_references(report: DriftReport, verbose: bool = False):
         REPO_ROOT / "requirements.txt",
         REPO_ROOT / "bump-version.sh",
         REPO_ROOT / "scripts" / "package-release.sh",
+        REPO_ROOT / "scripts" / "bootstrap.sh",
         REPO_ROOT / "README.md",
         REPO_ROOT / "CONTRIBUTING.md",
     ]

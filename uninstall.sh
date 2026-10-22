@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.4.144
+# Version: 3.4.145
 # =============================================================================
 # Aerodrome — Uninstall Script
 # =============================================================================
@@ -7,24 +7,48 @@
 # Removes Aerodrome from the system, reversing what install.sh set up.
 #
 # Usage:
-#   ./uninstall.sh           # Interactive — prompts before deleting data
+#   ./uninstall.sh           # Interactive — one question per category of data
 #   ./uninstall.sh --purge   # Remove everything (data included) without prompts
 #   ./uninstall.sh --keep    # Keep all data files, no prompts (service only)
 #
 # What gets removed (always):
-#   - systemd service (stopped, disabled, unit file deleted)
+#   - systemd service(s) (stopped, disabled, unit files deleted) and the
+#     sudoers rule
 #   - Python virtual environment (./venv)
-#   - PID file (.tracker.pid)
+#   - PID file (.tracker.pid) and staged updates (./update)
 #
-# What you're prompted about:
-#   - Database file (aircraft_history.db)
-#   - Logs directory (logs/)
-#   - Config file (config.yaml)
+# What you're asked about (--purge removes all of it, --keep none of it):
+#   - Database (data.db_file from config.yaml, default aircraft_history.db),
+#     its -wal/-shm files, its .pre-restore safety copies, and the
+#     daily-summary state file kept next to it
+#   - Backups & update snapshots (.backups/: pre-update snapshots, database
+#     snapshots, and backup zips you made from the web UI — copy any backup
+#     you want to keep out of .backups/ first)
+#   - Logs (logging.dir from config.yaml, default logs/)
+#   - Config file (config.yaml) and its backups (config.yaml.bak.*,
+#     ntfy-server.yml.from-backup.*)
 #   - Local ntfy server (if Aerodrome installed one via the Notifications
-#     tab — detected via /var/lib/ntfy/aerodrome-installed stamp)
-#   - Cached ntfy messages (/var/lib/ntfy/cache.db) — only prompted if
-#     you chose to uninstall the local ntfy server
-#   - The project directory itself
+#     tab — detected via /var/lib/ntfy/aerodrome-installed stamp) and its
+#     cached messages
+#   - Port 8000/tcp in firewalld — closed only if Aerodrome's installer
+#     recorded opening it (.aerodrome-firewalld-port); otherwise the close
+#     command is printed for you to run
+#   - The project directory itself (the command to remove it is printed)
+#
+# Where it runs: only inside the install it removes (a symlink to it works on
+# the real install). It stops before changing anything (exit 2) when its
+# folder isn't an Aerodrome install (no VERSION + main.py: a copy kept
+# somewhere else, or the script piped into bash), when it is the copy inside
+# a staged update (<install>/update/…; it names the real uninstall.sh), or
+# when the install sits directly in a system or home folder (remove that one
+# by hand).
+#
+# Deletion rules: whole folders are removed only INSIDE the install folder.
+# A database or log folder that config.yaml puts outside it is handled file
+# by file, by name, never as a whole folder: a log folder elsewhere loses
+# only Aerodrome's own tracker.log*, and a database elsewhere is removed only
+# if it really is an SQLite database. System and home folders are never
+# touched, whatever config.yaml says.
 #
 # What is NEVER removed:
 #   - System packages (python3, pip, venv) — might be used by other apps
@@ -39,7 +63,10 @@ CYAN='\033[36m\033[1m'
 YELLOW='\033[33m\033[1m'
 RESET='\033[0m'
 
-INSTALL_DIR="$(cd "$(dirname "$0")" && pwd)"
+# The install folder is the REAL folder of this file: a symlinked entry point
+# acts on the install it belongs to, not on the folder the link sits in.
+_self="$(readlink -f -- "$0" 2>/dev/null || printf '%s\n' "$0")"
+INSTALL_DIR="$(cd "$(dirname "$_self")" && pwd)"
 SERVICE_NAME="aerodrome"
 
 PURGE=false
@@ -49,7 +76,7 @@ for arg in "$@"; do
         --purge) PURGE=true ;;
         --keep)  KEEP=true ;;
         --help|-h)
-            head -30 "$0" | tail -27 | sed 's/^# \?//'
+            sed -n '6,/^# =====/{/^# =====/d;s/^# \{0,1\}//;p;}' "$0"
             exit 0
             ;;
         *)
@@ -65,6 +92,54 @@ if [ "$PURGE" = true ] && [ "$KEEP" = true ]; then
     exit 1
 fi
 
+# Paths are normalised with realpath -m before every check, so /home/u/../u,
+# trailing slashes and symlinks can't slip past them. Fails closed: a path
+# that can't be normalised counts as outside the install AND protected, so
+# nothing is ever deleted on a guess.
+_real() { realpath -m -- "$1" 2>/dev/null; }
+_system_or_home_dir() {   # /, any top-level dir, $HOME or an ancestor of it
+    local r h
+    r="$(_real "${1:-/}")" && h="$(_real "${HOME:-/}")" || return 0
+    [ "$r" = / ] || [[ "$r" != /*/* ]] || [ "$r" = "$h" ] || [[ "$h" == "$r"/* ]]
+}
+
+# --- Is this an Aerodrome install? ---
+# Everything below deletes relative to this script's own folder, so it
+# refuses — before anything is asked or changed — to run anywhere else.
+if ! _real / >/dev/null; then
+    echo -e "${RED}✗${RESET} This system's realpath can't normalise paths (realpath -m) — nothing was changed." >&2
+    echo "    uninstall.sh needs it (GNU or uutils coreutils) to keep its deletions inside the install folder." >&2
+    exit 2
+fi
+if [ ! -f "$INSTALL_DIR/VERSION" ] || [ ! -f "$INSTALL_DIR/main.py" ]; then
+    echo -e "${RED}✗${RESET} ${INSTALL_DIR} is not an Aerodrome install folder — nothing was changed." >&2
+    echo "    Run the uninstall.sh inside your install folder (for example /opt/aerodrome/uninstall.sh)." >&2
+    exit 2
+fi
+# A staged update's copy (<install>/update/, update/aerodrome/, …) belongs to
+# the install above it: same walk as install.sh's staging check.
+_p="$INSTALL_DIR"
+while [ -n "$_p" ] && [ "$_p" != / ]; do
+    _pp="$(dirname "$_p")"
+    if [ "$(basename "$_p")" = update ] && [ -f "$_pp/VERSION" ] && [ -f "$_pp/main.py" ]; then
+        echo -e "${RED}✗${RESET} This copy is a staged update inside the install at ${_pp} — nothing was changed." >&2
+        echo "    To uninstall Aerodrome, run: $(printf %q "$_pp/uninstall.sh")" >&2
+        exit 2
+    fi
+    _p="$_pp"
+done
+# An install placed directly in a system or home folder (an old installer
+# allowed that): its venv/, logs/, update/ and .backups/ could be anyone's.
+if _system_or_home_dir "$INSTALL_DIR"; then
+    echo -e "${RED}✗${RESET} Aerodrome sits directly in ${INSTALL_DIR}, a system or home folder — nothing was changed." >&2
+    echo "    Folders such as venv/, logs/ and .backups/ there may not be Aerodrome's, so remove it by hand:" >&2
+    echo "      sudo systemctl disable --now aerodrome    (on a demo install: aerodrome-synthetic-feeder too)" >&2
+    echo "      sudo rm -f /etc/systemd/system/aerodrome.service /etc/sudoers.d/aerodrome" >&2
+    echo "      sudo systemctl daemon-reload" >&2
+    echo "    then delete Aerodrome's own files from ${INSTALL_DIR} yourself." >&2
+    exit 2
+fi
+
 echo ""
 echo -e "${CYAN}╔══════════════════════════════════════════════╗${RESET}"
 echo -e "${CYAN}║         Aerodrome — Uninstall                ║${RESET}"
@@ -75,8 +150,10 @@ echo "  Service name: ${SERVICE_NAME}"
 echo ""
 
 # --- Confirm ---
+# (`|| REPLY=""`: with no terminal, read fails — treat that as "no", never
+# as a reason for set -e to stop half-way.)
 if [ "$PURGE" = false ] && [ "$KEEP" = false ]; then
-    read -p "Are you sure you want to uninstall Aerodrome? [y/N] " -n 1 -r
+    read -p "Are you sure you want to uninstall Aerodrome? [y/N] " -n 1 -r || REPLY=""
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         echo "Cancelled."
@@ -84,9 +161,106 @@ if [ "$PURGE" = false ] && [ "$KEEP" = false ]; then
     fi
 fi
 
+# --- Resolve where this install keeps its data ---
+# Runs BEFORE the venv is removed so the venv's PyYAML — the parser the app
+# itself uses — reads config.yaml. A line-grep got trailing comments, single
+# quotes and CRLF wrong, and could pick up a path named inside a comment.
+# Relative paths resolve against the install dir, as server.py/main.py do.
+# Falls back to a section-aware awk reader when no Python+PyYAML is usable.
+DB_FILE="aircraft_history.db"
+LOG_DIR="logs"
+CFG_FILE="${INSTALL_DIR}/config.yaml"
+if [ -f "$CFG_FILE" ]; then
+    _py=""
+    for _cand in "${INSTALL_DIR}/venv/bin/python3" python3; do
+        if "$_cand" -I -c 'import yaml' >/dev/null 2>&1; then _py="$_cand"; break; fi
+    done
+    _resolved=""
+    if [ -n "$_py" ]; then
+        _resolved="$("$_py" -I - "$CFG_FILE" 2>/dev/null <<'PYEOF' || true
+import sys, yaml
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        c = yaml.safe_load(f) or {}
+except Exception:
+    sys.exit(1)
+d = c.get("data") if isinstance(c.get("data"), dict) else {}
+g = c.get("logging") if isinstance(c.get("logging"), dict) else {}
+print(str(d.get("db_file") or "aircraft_history.db"))
+print(str(g.get("dir") or "logs"))
+PYEOF
+)"
+    fi
+    if [ -n "$_resolved" ]; then
+        DB_FILE="$(printf '%s\n' "$_resolved" | sed -n 1p)"
+        LOG_DIR="$(printf '%s\n' "$_resolved" | sed -n 2p)"
+    else
+        # $1 = top-level section, $2 = key. Strips CR, quotes, trailing comment.
+        _cfg_get() {
+            awk -v sect="$1" -v key="$2" -v q1="'" -v q2='"' '
+                { sub(/\r$/, "") }
+                /^[^[:space:]#]/ { cur = $0; sub(/:.*/, "", cur) }
+                !done && cur == sect && $0 ~ ("^[[:space:]]+" key ":") {
+                    v = $0; sub("^[[:space:]]+" key ":[[:space:]]*", "", v)
+                    c = substr(v, 1, 1)
+                    if (c == q1 || c == q2) {
+                        v = substr(v, 2); i = index(v, c); if (i) v = substr(v, 1, i - 1)
+                    } else {
+                        sub(/[[:space:]]+#.*$/, "", v); sub(/[[:space:]]+$/, "", v)
+                    }
+                    print v; done = 1
+                }' "$CFG_FILE"
+        }
+        _v="$(_cfg_get data db_file)";  [ -n "$_v" ] && DB_FILE="$_v"
+        _v="$(_cfg_get logging dir)";   [ -n "$_v" ] && LOG_DIR="$_v"
+    fi
+fi
+case "$DB_FILE" in /*) ;; *) DB_FILE="${INSTALL_DIR}/${DB_FILE}" ;; esac
+case "$LOG_DIR" in /*) ;; *) LOG_DIR="${INSTALL_DIR}/${LOG_DIR}" ;; esac
+DATA_DIR="$(dirname "$DB_FILE")"
+
+# Deletion rules: `rm -rf` only ever runs on a path whose REAL location is
+# strictly inside the install dir. Anything config.yaml points OUTSIDE it (a
+# database or log folder on another disk) is removed file by file, by name,
+# never recursively, and only after _protected_path says it is not a
+# system/home location. _real (above) fails closed: a path it can't normalise
+# is never "inside" and always "protected".
+INSTALL_REAL="$(_real "$INSTALL_DIR")" || INSTALL_REAL=""
+_inside_install() {
+    local r; r="$(_real "$1")" || return 1
+    [ -n "$INSTALL_REAL" ] && [ "$r" != "$INSTALL_REAL" ] && [[ "$r" == "$INSTALL_REAL"/* ]]
+}
+_protected_path() {       # normalised: never delete these, whatever config.yaml says
+    local r; r="$(_real "${1:-/}")" || return 0
+    [ -n "$INSTALL_REAL" ] || return 0
+    _system_or_home_dir "$r" && return 0
+    { [ "$r" = "$INSTALL_REAL" ] || [[ "$INSTALL_REAL" == "$r"/* ]]; } && return 0  # install dir or an ancestor
+    return 1
+}
+# Remove what remove_or_keep decided to delete, under the rules above.
+_remove_paths() {
+    local p
+    for p in "$@"; do
+        if _inside_install "$p"; then
+            rm -rf -- "$p"
+        elif [ -d "$p" ] && [ ! -L "$p" ]; then
+            echo -e "  ${YELLOW}!${RESET} not removing ${p}: a directory outside ${INSTALL_DIR}"
+        else
+            rm -f -- "$p"
+        fi
+    done
+}
+# Is unit $1 known to systemd? Capture, then match (no early-exit reader
+# after a pipe, so this stays correct if pipefail is ever turned on).
+_unit_known() {
+    local units
+    units="$(sudo systemctl list-unit-files 2>/dev/null || true)"
+    [[ $'\n'"$units" == *$'\n'"$1"[[:space:]]* ]]
+}
+
 # --- Step 1: Stop and disable systemd service ---
 echo -e "${CYAN}[1/6]${RESET} Stopping and removing systemd service..."
-if sudo systemctl list-unit-files 2>/dev/null | grep -q "^${SERVICE_NAME}.service"; then
+if _unit_known "${SERVICE_NAME}.service"; then
     sudo systemctl stop ${SERVICE_NAME} 2>/dev/null || true
     sudo systemctl disable ${SERVICE_NAME} 2>/dev/null || true
     sudo rm -f /etc/systemd/system/${SERVICE_NAME}.service
@@ -103,7 +277,7 @@ fi
 # output clean either way. Same operations as the main service:
 # stop, disable, remove unit file, daemon-reload.
 FEEDER_SERVICE_NAME="aerodrome-synthetic-feeder"
-if sudo systemctl list-unit-files 2>/dev/null | grep -q "^${FEEDER_SERVICE_NAME}.service"; then
+if _unit_known "${FEEDER_SERVICE_NAME}.service"; then
     sudo systemctl stop ${FEEDER_SERVICE_NAME} 2>/dev/null || true
     sudo systemctl disable ${FEEDER_SERVICE_NAME} 2>/dev/null || true
     sudo rm -f /etc/systemd/system/${FEEDER_SERVICE_NAME}.service
@@ -112,11 +286,15 @@ if sudo systemctl list-unit-files 2>/dev/null | grep -q "^${FEEDER_SERVICE_NAME}
     echo -e "  ${GREEN}✓${RESET} Synthetic-feeder service stopped, disabled, and removed (demo mode)"
 fi
 
-# Remove sudoers rule for in-UI restart button (if present)
-if [ -f /etc/sudoers.d/aerodrome ]; then
+# Remove the sudoers rule (if present). Checked through sudo: on some
+# distros /etc/sudoers.d isn't searchable by a normal user, so a plain
+# [ -f ] would never see the file.
+if sudo test -e /etc/sudoers.d/aerodrome; then
     sudo rm -f /etc/sudoers.d/aerodrome
     echo -e "  ${GREEN}✓${RESET} Sudoers rule removed"
 fi
+# Temp files of an install.sh run that was killed mid-write (sudo ignores them).
+sudo find /etc/sudoers.d -maxdepth 1 -type f -name '.aerodrome.*' -delete 2>/dev/null || true
 
 # --- Step 2: Remove virtual environment ---
 echo -e "${CYAN}[2/6]${RESET} Removing Python virtual environment..."
@@ -130,68 +308,98 @@ fi
 # --- Step 3: Remove PID file ---
 echo -e "${CYAN}[3/6]${RESET} Removing runtime files..."
 rm -f "${INSTALL_DIR}/.tracker.pid"
-find "${INSTALL_DIR}" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
-find "${INSTALL_DIR}" -name "*.pyc" -delete 2>/dev/null || true
-echo -e "  ${GREEN}✓${RESET} PID file and Python caches removed"
+# Staged updates (release zips + extracted trees from the Updates page).
+# Not user data — the app recreates the folder on demand.
+rm -rf "${INSTALL_DIR}/update"
+# Python caches only where Aerodrome's own code lives (the install folder
+# itself, scripts/ and tools/), never a sweep of everything under it.
+rm -rf -- "${INSTALL_DIR}/__pycache__"
+rm -f -- "${INSTALL_DIR}"/*.pyc
+for _d in "${INSTALL_DIR}/scripts" "${INSTALL_DIR}/tools"; do
+    if [ -d "$_d" ] && [ ! -L "$_d" ]; then
+        find "$_d" -name "__pycache__" -type d -prune -exec rm -rf -- {} + 2>/dev/null || true
+        find "$_d" -name "*.pyc" -type f -delete 2>/dev/null || true
+    fi
+done
+echo -e "  ${GREEN}✓${RESET} PID file, staged updates and Python caches removed"
 
 # --- Step 4: Handle data files (prompt or flag-driven) ---
 echo -e "${CYAN}[4/6]${RESET} Handling data files..."
 
+# remove_or_keep "<description>" <path>... — one decision per category.
+# Missing paths are skipped; callers expand globs with nullglob on.
+# Returns 0 when it removed them, 1 when kept, absent or refused.
 remove_or_keep() {
-    local path="$1"
-    local description="$2"
+    local description="$1"; shift
+    local present=() p
+    for p in "$@"; do
+        if _protected_path "$p"; then
+            echo -e "  ${RED}!${RESET} ${description}: refusing to delete ${p} (resolved from config.yaml) — check data.db_file / logging.dir"
+            return 1
+        fi
+        if [ -e "$p" ] || [ -L "$p" ]; then present+=("$p"); fi
+    done
 
-    if [ ! -e "$path" ]; then
+    if [ ${#present[@]} -eq 0 ]; then
         echo -e "  ${YELLOW}·${RESET} ${description}: not present"
-        return
+        return 1
     fi
 
     if [ "$PURGE" = true ]; then
-        rm -rf "$path"
+        _remove_paths "${present[@]}"
         echo -e "  ${GREEN}✓${RESET} ${description}: removed (--purge)"
-        return
+        return 0
     fi
 
     if [ "$KEEP" = true ]; then
         echo -e "  ${YELLOW}·${RESET} ${description}: kept (--keep)"
-        return
+        return 1
     fi
 
-    # Interactive prompt
-    local size=""
-    if [ -f "$path" ]; then
-        size=" ($(du -h "$path" | cut -f1))"
-    elif [ -d "$path" ]; then
-        size=" ($(du -sh "$path" 2>/dev/null | cut -f1))"
-    fi
-    read -p "  Delete ${description}${size}? [y/N] " -n 1 -r
+    # Interactive prompt: name the path when there's one, so a surprising
+    # resolution is visible before anything is deleted.
+    local size what
+    size="$(du -shc -- "${present[@]}" 2>/dev/null | tail -1 | cut -f1)"
+    what="${present[0]}"
+    [ ${#present[@]} -gt 1 ] && what="${present[0]} + $(( ${#present[@]} - 1 )) more"
+    read -p "  Delete ${description} — ${what} (${size})? [y/N] " -n 1 -r || REPLY=""
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
-        rm -rf "$path"
+        _remove_paths "${present[@]}"
         echo -e "    ${GREEN}✓${RESET} Removed"
-    else
-        echo -e "    ${YELLOW}·${RESET} Kept"
+        return 0
     fi
+    echo -e "    ${YELLOW}·${RESET} Kept"
+    return 1
 }
 
-# Read the db file path from config if present
-DB_FILE="${INSTALL_DIR}/aircraft_history.db"
-if [ -f "${INSTALL_DIR}/config.yaml" ]; then
-    CFG_DB=$(grep -E "^\s*db_file:" "${INSTALL_DIR}/config.yaml" | head -1 | sed -E 's/.*db_file:\s*"?([^"]+)"?.*/\1/')
-    if [ -n "$CFG_DB" ]; then
-        # Resolve relative paths against install dir
-        case "$CFG_DB" in
-            /*) DB_FILE="$CFG_DB" ;;
-            *)  DB_FILE="${INSTALL_DIR}/${CFG_DB}" ;;
-        esac
+shopt -s nullglob
+if [ -d "$DB_FILE" ] && [ ! -L "$DB_FILE" ]; then
+    echo -e "  ${RED}!${RESET} Database: ${DB_FILE} is a directory, not a database file — skipped (check data.db_file in config.yaml)"
+elif [ -e "$DB_FILE" ] && ! _inside_install "$DB_FILE" \
+        && [ "$(head -c 15 -- "$DB_FILE" 2>/dev/null)" != "SQLite format 3" ]; then
+    echo -e "  ${RED}!${RESET} Database: ${DB_FILE} is outside ${INSTALL_DIR} and is not a SQLite database — left in place (check data.db_file in config.yaml)"
+else
+    remove_or_keep "Database (aircraft history)" \
+        "$DB_FILE" "${DB_FILE}-wal" "${DB_FILE}-shm" \
+        "${DB_FILE}".bak.*.pre-restore \
+        "${DATA_DIR}/.daily-summary-state.json" || true
+fi
+remove_or_keep "Backups & update snapshots" "${INSTALL_DIR}/.backups" || true
+if _inside_install "$LOG_DIR"; then
+    remove_or_keep "Logs directory" "$LOG_DIR" || true
+else
+    # A log folder elsewhere may be shared (a USB/SSD mount, /var/log/…):
+    # remove only the file Aerodrome writes there, then the folder if empty.
+    if remove_or_keep "Logs (Aerodrome's files in ${LOG_DIR})" "$LOG_DIR"/tracker.log "$LOG_DIR"/tracker.log.*; then
+        rmdir -- "$LOG_DIR" 2>/dev/null || true
     fi
 fi
-
-remove_or_keep "$DB_FILE" "Database (aircraft history)"
-remove_or_keep "${DB_FILE}-wal" "Database WAL file"
-remove_or_keep "${DB_FILE}-shm" "Database SHM file"
-remove_or_keep "${INSTALL_DIR}/logs" "Logs directory"
-remove_or_keep "${INSTALL_DIR}/config.yaml" "Config file (config.yaml)"
+remove_or_keep "Config file and its backups" \
+    "${INSTALL_DIR}/config.yaml" \
+    "${INSTALL_DIR}"/config.yaml.bak.* \
+    "${INSTALL_DIR}"/ntfy-server.yml.from-backup.* || true
+shopt -u nullglob
 
 # --- Step 5: Remove local ntfy server (if Aerodrome installed one) ---
 # v2.41.0: the Notifications tab's "Install local ntfy" creates an install
@@ -213,17 +421,16 @@ if [ -f "$NTFY_STAMP" ]; then
         echo -e "  ${YELLOW}·${RESET} Local ntfy ${NTFY_VER} kept (--keep)"
     else
         # Interactive prompt
-        read -p "  Remove Aerodrome-installed ntfy server (version ${NTFY_VER})? [y/N] " -n 1 -r
+        read -p "  Remove Aerodrome-installed ntfy server (version ${NTFY_VER})? [y/N] " -n 1 -r || REPLY=""
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             should_remove_ntfy=true
             # Second prompt for the cache data — kept separate because some
             # users want to reinstall later and keep their topic history.
-            ntfy_cache_size=""
-            if [ -f /var/cache/ntfy/cache.db ]; then
-                ntfy_cache_size=" ($(sudo du -sh /var/cache/ntfy 2>/dev/null | cut -f1))"
-            fi
-            read -p "    Also delete cached messages${ntfy_cache_size}? [y/N] " -n 1 -r
+            # server.yml (ntfy_installer.py) sets cache-file: /var/lib/ntfy/cache.db;
+            # /var/cache/ntfy is where attachments/staging live.
+            ntfy_cache_size=" ($(sudo du -shc /var/lib/ntfy/cache.db* /var/cache/ntfy 2>/dev/null | tail -1 | cut -f1))"
+            read -p "    Also delete cached messages${ntfy_cache_size}? [y/N] " -n 1 -r || REPLY=""
             echo
             if [[ $REPLY =~ ^[Yy]$ ]]; then
                 should_purge_ntfy_data=true
@@ -251,17 +458,18 @@ if [ -f "$NTFY_STAMP" ]; then
 
         # Purge cache if requested
         if [ "$should_purge_ntfy_data" = true ]; then
-            for p in /var/cache/ntfy/cache.db \
+            for p in /var/lib/ntfy/cache.db \
+                     /var/lib/ntfy/cache.db-wal \
+                     /var/lib/ntfy/cache.db-shm \
+                     /var/cache/ntfy/cache.db \
                      /var/cache/ntfy/cache.db-wal \
                      /var/cache/ntfy/cache.db-shm; do
                 sudo rm -f "$p" 2>/dev/null || true
             done
-            sudo rm -rf /var/cache/ntfy/attachments 2>/dev/null || true
+            sudo rm -rf /var/cache/ntfy/attachments /var/cache/ntfy/staging 2>/dev/null || true
             echo -e "    ${GREEN}✓${RESET} Cached messages removed"
         else
-            if [ -f /var/cache/ntfy/cache.db ]; then
-                echo -e "    ${YELLOW}·${RESET} Cached messages kept at /var/cache/ntfy/"
-            fi
+            echo -e "    ${YELLOW}·${RESET} Cached messages (if any) kept at /var/lib/ntfy/"
         fi
 
         # Clean up now-empty directories (best-effort; won't delete if non-empty)
@@ -278,26 +486,29 @@ echo -e "${CYAN}[6/6]${RESET} Project directory..."
 
 # v3.3.0: if INSTALL_DIR is outside the user's home, the user can't
 # remove its parent-directory entry without root — so emit the
-# correct sudo'd command. Inside the home, no sudo needed.
+# correct sudo'd command. Inside the home, no sudo needed. (An install that
+# sits directly in a system or home folder was refused at the top.)
+_q="$(printf %q "$INSTALL_DIR")"
 case "$INSTALL_DIR" in
-    "$HOME"/*|"$HOME") _rm_cmd="rm -rf ${INSTALL_DIR}" ;;
-    *)                 _rm_cmd="sudo rm -rf ${INSTALL_DIR}" ;;
+    "$HOME"/*) _rm_cmd="rm -rf ${_q}" ;;
+    *)         _rm_cmd="sudo rm -rf ${_q}" ;;
 esac
+_rm_hint="cd / && ${_rm_cmd}"
 
 # Don't remove the directory if we're running from inside it
 # (We can remove it, but it'll be weird to leave the user sitting in a deleted cwd)
 if [ "$PURGE" = true ]; then
     echo -e "  ${YELLOW}!${RESET} To remove the project directory itself, run from elsewhere:"
-    echo "      cd / && ${_rm_cmd}"
+    echo "      ${_rm_hint}"
 elif [ "$KEEP" = true ]; then
     echo -e "  ${YELLOW}·${RESET} Project directory kept at ${INSTALL_DIR}"
 else
-    read -p "  Show command to remove the project directory itself? [y/N] " -n 1 -r
+    read -p "  Show command to remove the project directory itself? [y/N] " -n 1 -r || REPLY=""
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         echo ""
         echo "  Run from outside the directory:"
-        echo -e "      ${CYAN}cd / && ${_rm_cmd}${RESET}"
+        echo -e "      ${CYAN}${_rm_hint}${RESET}"
     fi
 fi
 
@@ -307,68 +518,65 @@ echo -e "${GREEN}═════════════════════
 echo -e "${GREEN}  Uninstall complete!${RESET}"
 echo -e "${GREEN}══════════════════════════════════════════════${RESET}"
 echo ""
-echo "  Aerodrome has been removed from this system."
-echo ""
-
-# v3.2.0: family-aware "system packages weren't removed" hint. Most users
-# will leave python3/pip alone — they're useful for other things — so this
-# is purely informational. Detect the package manager and emit the right
-# removal command for the user's distro.
-_uninstall_os_id=""
-if [ -r /etc/os-release ]; then
-    eval "$(
-        . /etc/os-release
-        printf '_uninstall_os_id=%q\n' "${ID:-}"
-    )"
+if [ "$KEEP" = true ]; then
+    echo "  The Aerodrome service has been removed. Your data, settings and the"
+    echo "  program files were kept in ${INSTALL_DIR}."
+else
+    echo "  Aerodrome has been removed from this system."
 fi
-case "$_uninstall_os_id" in
-    debian|ubuntu|raspbian|linuxmint|pop|elementary|neon|kali|parrot)
-        _uninstall_pkg_remove="sudo apt-get remove python3-venv"
-        _uninstall_pkg_list="python3, pip, python3-venv" ;;
-    fedora|rhel|centos|rocky|almalinux|amzn|ol)
-        _uninstall_pkg_remove="sudo dnf remove python3 python3-pip"
-        _uninstall_pkg_list="python3, python3-pip" ;;
-    arch|manjaro|endeavouros|garuda|artix|cachyos)
-        _uninstall_pkg_remove="sudo pacman -R python python-pip"
-        _uninstall_pkg_list="python, python-pip" ;;
-    opensuse*|sles|sled)
-        _uninstall_pkg_remove="sudo zypper remove python3 python3-pip"
-        _uninstall_pkg_list="python3, python3-pip" ;;
-    *)
-        _uninstall_pkg_remove="(use your distro's package manager)"
-        _uninstall_pkg_list="python3 and its modules" ;;
-esac
-
-echo "  NOT removed (intentional):"
-echo "    - System packages ($_uninstall_pkg_list)"
-echo "      Remove manually if desired: $_uninstall_pkg_remove"
 echo ""
 
-# v3.3.0: if firewalld is active and port 8000 is open, offer to close
-# it. The bootstrap opens this port on Fedora/openSUSE Tumbleweed
-# during install; pairing the close at uninstall keeps the firewall
-# state symmetric. Skip silently on systems without firewalld
-# (Debian/Ubuntu/Arch in their default state).
+# Port 8000/tcp in firewalld. The bootstrap opens it on firewalld distros
+# (Fedora, openSUSE, RHEL family) and records that in
+# .aerodrome-firewalld-port. Only a port Aerodrome recorded opening is
+# closed — another service may need a port that was already open. --keep
+# never closes it; either way the close command is printed when it stays.
+FW_MARKER="${INSTALL_DIR}/.aerodrome-firewalld-port"
+FW_CLOSE_CMD="sudo firewall-cmd --remove-port=8000/tcp --permanent && sudo firewall-cmd --reload"
 if command -v firewall-cmd >/dev/null 2>&1 && \
         systemctl is-active firewalld --quiet 2>/dev/null; then
-    if sudo firewall-cmd --list-ports 2>/dev/null | grep -qw "8000/tcp"; then
-        echo "  firewalld has port 8000/tcp open (opened during Aerodrome install)."
-        read -p "  Close port 8000 now? [Y/n] " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+    _fw_ports="$(sudo firewall-cmd --list-ports 2>/dev/null || true)"
+    if [[ " $_fw_ports " == *" 8000/tcp "* ]]; then
+        if [ -f "$FW_MARKER" ]; then
+            echo "  firewalld has port 8000/tcp open (Aerodrome's installer opened it)."
+            if [ "$PURGE" = true ]; then
+                REPLY=y
+            elif [ "$KEEP" = true ]; then
+                REPLY=n
+            else
+                read -p "  Close port 8000 now? [Y/n] " -n 1 -r || REPLY=""
+                echo
+                [ -n "$REPLY" ] || REPLY=y
+            fi
+        else
+            echo "  firewalld has port 8000/tcp open, but Aerodrome didn't record opening it —"
+            echo "  close it yourself if nothing else needs it."
+            if [ "$PURGE" = true ] || [ "$KEEP" = true ]; then
+                REPLY=n
+            else
+                read -p "  Close port 8000 now? [y/N] " -n 1 -r || REPLY=""
+                echo
+            fi
+        fi
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
             if sudo firewall-cmd --remove-port=8000/tcp --permanent >/dev/null 2>&1 \
                     && sudo firewall-cmd --reload >/dev/null 2>&1; then
                 echo -e "  ${GREEN}✓${RESET} Closed port 8000/tcp on the public zone"
+                rm -f "$FW_MARKER"
             else
                 echo -e "  ${YELLOW}!${RESET} Could not close port 8000 — run manually:"
-                echo "      sudo firewall-cmd --remove-port=8000/tcp --permanent && sudo firewall-cmd --reload"
+                echo "      ${FW_CLOSE_CMD}"
             fi
         else
-            echo "  Port 8000 left open. To close later:"
-            echo "      sudo firewall-cmd --remove-port=8000/tcp --permanent && sudo firewall-cmd --reload"
+            echo "  Port 8000 left open. To close it:"
+            echo "      ${FW_CLOSE_CMD}"
         fi
         echo ""
     fi
+fi
+# The marker only describes this install; --purge removes it with the rest.
+if [ "$PURGE" = true ]; then
+    rm -f "$FW_MARKER"
 fi
 
 echo "  If you ever want to reinstall, just run ./install.sh again."
