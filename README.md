@@ -1,5 +1,5 @@
 # Aerodrome
-<!-- Version: 3.4.143 -->
+<!-- Version: 3.4.144 -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -151,7 +151,10 @@ aerodrome/
 ├── static/                       CSS, JS, fonts, theme assets
 ├── scripts/
 │   ├── bootstrap.sh              curl-installable one-line setup (see Install)
-│   ├── package-release.sh        produces release zip + .sha256
+│   ├── package-release.sh        produces release zip + .sha256 (self-verified; --verify)
+│   ├── publish-release.sh        publishes + verifies a GitHub Release (--check-only pre-push)
+│   ├── check_release_zip.py      proves zip == git archive of a commit/tree; maintainer-path denylist
+│   ├── check_installers.py       installer-consistency release gate
 │   ├── build_overview_pdf.py     rebuilds docs/Aerodrome_Overview.pdf
 │   ├── screenshots.py            Playwright harness for docs/*.png
 │   └── check_docs.py             advisory drift detector
@@ -163,18 +166,27 @@ aerodrome/
 │       └── backfill.py           generate historical sightings for testing
 ├── docs/                         user-facing documentation, screenshots, PDF
 ├── .github/                      issue templates, PR template, repo-setup guide
+├── test_bump_version.py          release tests — bump-version.sh gates, check, re-run, PDF
 ├── test_categorize.py            unit tests — military/civil classification
+├── test_check_installers.py      release tests — installer-consistency gate
+├── test_check_release_zip.py     release tests — zip checker, package + publish scripts
 ├── test_designators.py           unit tests — aircraft type and operator decoders
+├── test_destructive_endpoints.py unit tests — switch-to-real + watchlist-history deletes
 ├── test_icao_hex.py              unit tests — ICAO hex ingest validation
+├── test_map_carto_key.py         unit tests — map.carto_api_key validation
 ├── test_migration_v7.py          unit tests — schema migration v7
 ├── test_photo_resolver.py        unit tests — photo enrichment cache logic
+├── test_poll_robustness.py       unit tests — collector poll resilience to bad records
 ├── test_preflight.py             unit tests — startup config validation
 ├── test_route_resolver.py        unit tests — route enrichment + current-leg inference
 ├── test_schema_migrations.py     unit tests — migration framework
 ├── test_search.py                unit tests — search query language
 ├── test_search_v2_91_tokens.py   unit tests — search token grammar (v2.91 additions)
 ├── test_session_track.py         unit tests — session-aware track stitching
+├── test_stats_drills.py          unit tests — Stats detail-panel drill queries
 ├── test_stats_most_seen.py       unit tests — all-time most-seen stats card
+├── test_type_code.py             unit tests — aircraft type code (feed vs hexdb fallback)
+├── test_web_hardening.py         unit tests — Host allowlist + input sanitising
 ├── README.md                     this file
 ├── CHANGELOG.md                  per-release entries, bottom-up additions
 ├── CONTRIBUTING.md               bug-report checklist, why PRs are disabled

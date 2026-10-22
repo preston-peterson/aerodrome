@@ -338,6 +338,7 @@ def build():
         title=f"Aerodrome — Project Overview (v{VERSION})",
         author="Aerodrome Project",
         subject="A self-hosted ADS-B aircraft tracker",
+        invariant=1,  # fixed CreationDate/ModDate/ID: same tree → same bytes
     )
 
     story = []

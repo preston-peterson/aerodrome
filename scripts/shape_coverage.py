@@ -30,19 +30,27 @@ Two information sources, in priority order:
 
 The DOC 8643 fetch is network-best-effort: no network / fetch failure /
 unreadable cache = the audit runs on the local table alone and says so.
+--cache-only reads the cached CSV when it exists and never fetches or
+writes it (what `bump-version.sh check` and package-release.sh use, so a
+gates-only run makes no network call yet reaches the same strict-gate
+verdict as the `set` run that read the same cache).
 
-Exit codes (this is a bump gate, advisory by default):
-  0  everything checked out, or the audit could not run at all
+Exit codes (bump-version.sh gates on any non-zero):
+  0  report printed. A missing/empty local DB or an offline DOC 8643
+     fetch is NOT a failure — the report just says what it lacked.
   1  (--strict / AERODROME_SHAPE_GATE=strict) AND the local table shows
      a type WITHOUT a shape accounting for >= --min-share (default 5%)
      of local traffic. A release-blocking signal: you are staring at
      chevrons for a big chunk of your own sky.
+  2  the shipped static/shapes-data.js is unreadable or yields no shape
+     codes — the radar would draw no silhouettes at all.
 
 Usage:
   python3 scripts/shape_coverage.py                 # human report
   python3 scripts/shape_coverage.py --json          # machine-readable
   python3 scripts/shape_coverage.py --top 25        # bigger list
   python3 scripts/shape_coverage.py --update-cache  # refresh DOC 8643
+  python3 scripts/shape_coverage.py --cache-only    # never fetch / write
   AERODROME_SHAPE_GATE=strict bump-version.sh ...   # gate mode
 """
 
@@ -68,16 +76,26 @@ def load_shapes():
     (never from SOURCES — the audit must reflect what ships, not what's
     configured)."""
     js = os.path.join(REPO, "static", "shapes-data.js")
-    with open(js, encoding="utf-8") as f:
-        return set(re.findall(r'"([A-Z0-9]{4})":', f.read()))
+    try:
+        with open(js, encoding="utf-8") as f:
+            codes = set(re.findall(r'"([A-Z0-9]{4})":', f.read()))
+    except (OSError, UnicodeDecodeError) as exc:
+        print(f"  ✗ cannot read static/shapes-data.js: {exc}")
+        sys.exit(2)
+    if not codes:
+        print("  ✗ static/shapes-data.js has no shape codes — corrupt or"
+              " truncated; regenerate with scripts/gen_type_shapes.py")
+        sys.exit(2)
+    return codes
 
 
-def load_doc8643(quiet):
+def load_doc8643(quiet, cache_only=False):
     """designator -> {desc, rotor}, one entry per code. The CSV lists one
     row per manufacturer/model variant, so 'rotor' is the OR across all
     rows for a code. DOC 8643 classifies rotorcraft in the `description`
     column ("Helicopter" / "Tiltrotor"). Cache-first, network
-    best-effort. Returns {} when neither source is available."""
+    best-effort (cache_only: never fetch, never write the cache).
+    Returns {} when neither source is available."""
     import csv
     import io
 
@@ -106,6 +124,8 @@ def load_doc8643(quiet):
             return cached
     except OSError:
         pass
+    if cache_only:
+        return {}
     try:
         with urllib.request.urlopen(DOC8643_URL, timeout=15) as resp:
             text = resp.read().decode("utf-8", "replace")
@@ -155,10 +175,10 @@ def _table_rotorcraft(db_path):
     return set()
 
 
-def audit(db_path=None, doc=True):
+def audit(db_path=None, doc=True, cache_only=False):
     shapes = load_shapes()
     traffic, have_db, db_note = load_traffic(db_path)
-    names = load_doc8643(quiet=not doc) if doc else {}
+    names = load_doc8643(quiet=not doc, cache_only=cache_only) if doc else {}
 
     total = sum(traffic.values())
     # "Missing" excludes rotorcraft — they're covered by the rotor disc
@@ -206,6 +226,9 @@ def main():
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--no-doc", action="store_true",
                     help="skip the DOC 8643 fetch/cache entirely (offline)")
+    ap.add_argument("--cache-only", action="store_true",
+                    help="read scripts/doc8643.csv if present; never fetch "
+                         "or write it (gates-only runs)")
     ap.add_argument("--min-share", type=float, default=5.0,
                     help="strict mode fails when one missing type exceeds "
                          "this %% of local traffic")
@@ -219,7 +242,7 @@ def main():
 
     if args.update_cache and os.path.exists(DOC8643_CACHE):
         os.remove(DOC8643_CACHE)
-    r = audit(db_path=args.db, doc=not args.no_doc)
+    r = audit(db_path=args.db, doc=not args.no_doc, cache_only=args.cache_only)
 
     if args.json:
         print(json.dumps(r, indent=2))
@@ -246,7 +269,8 @@ def main():
                   f" a few hundred plane gaps is expected —"
                   f" chevrons are correct for rarities)")
         else:
-            print("  DOC 8643: unavailable (offline or --no-doc)")
+            print("  DOC 8643: unavailable (offline, --no-doc, or --cache-only"
+                  " with no cached scripts/doc8643.csv)")
 
     worst = max((m["share_pct"] for m in r["missing_ranked"]), default=0.0)
     if strict and r["db_available"] and worst >= args.min_share:

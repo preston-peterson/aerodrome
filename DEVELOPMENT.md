@@ -152,7 +152,15 @@ See `ARCHITECTURE.md` for the mental model. Short version:
 
 ## Testing your changes
 
-There's no test suite (yet). Manual testing is the workflow:
+Run the unit tests from the repo root:
+
+```bash
+python3 -m unittest -v
+```
+
+They're stdlib `unittest` files (`test_*.py`) covering migrations, search, categorisation, the collector poll loop and more, plus subprocess suites that drive the release scripts (`bump-version.sh`, `package-release.sh`, `publish-release.sh`) in throwaway copies of your working tree. Those take a minute or two; `AERODROME_SKIP_SLOW_TESTS=1 python3 -m unittest` skips them for fast iteration — run the full suite before a release.
+
+Beyond that, manual testing is the workflow:
 
 1. Make your change.
 2. If you changed Python, restart the service.
@@ -228,7 +236,11 @@ Every change gets a version bump via `bump-version.sh`:
 ./bump-version.sh major "Changed config format — breaking change" --type=changed
 ```
 
-This updates `VERSION`, rewrites the `<!-- Version: ... -->` markers at the top of every Python and HTML file, and prepends a new entry to `CHANGELOG.md`. On minor/major bumps it also rebuilds `docs/Aerodrome_Overview.pdf` (if reportlab is installed) and surfaces a reminder if the tech-debt audit is stale.
+Before anything is written, the release gates run: a syntax check of every Python file, an import check, a static name-resolution check, a JavaScript parse of every template's inline scripts and Aerodrome's own `static/*.js` (as classic browser scripts, so a top-level `return`/`await`/`import`/`export` is an error), the aircraft-shape data check, an installer-consistency check (`scripts/check_installers.py`) and a PII audit of every file git can see. **A gate failure writes nothing** — fix the problem and re-run the same command. A gate turned off with a `--skip-*` flag is printed as SKIPPED. Only then does it update `VERSION`, rewrite the `<!-- Version: ... -->` markers at the top of every Python and HTML file, and prepend a new entry to `CHANGELOG.md`. Every bump also rebuilds `docs/Aerodrome_Overview.pdf` (with `venv/bin/python3` when present, since that's where reportlab lives; the build is deterministic, so the same tree gives the same bytes) and, on minor/major bumps, surfaces a reminder if the tech-debt audit is stale.
+
+`./bump-version.sh check` runs the same gates and writes nothing (no network either) — `scripts/package-release.sh` runs it before every package, after refusing any untracked, non-ignored file (the gates would see it, the zip wouldn't contain it: `git add` it or ignore it).
+
+The JavaScript gate needs **node 18 or newer** on `PATH`. Ubuntu 22.04's `apt install nodejs` is v12, which is too old — install a current Node from NodeSource or nvm there. On a contributor machine that can't have node, `--skip-js-parse` skips that one gate; never use it for a published release.
 
 Don't edit `VERSION` by hand — the version-string sync across 20+ files is tedious and easy to get wrong.
 

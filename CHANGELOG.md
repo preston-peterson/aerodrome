@@ -19,6 +19,15 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.144] — 2026-10-21
+
+### Behind the scenes
+- **Release checks now stop a broken release.** The release script's checks for the aircraft-shape data, and for the JavaScript in every page template and in Aerodrome's own script files, now actually stop a release when they fail. Before, they only printed a warning. Python files are syntax-checked too.
+- A failed check leaves nothing half-updated, and re-running the release command repeats every check.
+- Each release zip is checked to be exactly the source it was built from before it is staged, and exactly the tagged source (same files, same contents) before it is published.
+- The overview PDF is rebuilt with the right tools on every release, a failed rebuild is reported, and rebuilding unchanged sources gives the identical file.
+- The parts the installer scripts share (package detection and the permission rules) are now checked on every release to stay in sync.
+
 ## [3.4.143] — 2026-10-21
 
 ### Fixed
