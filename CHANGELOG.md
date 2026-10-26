@@ -19,6 +19,30 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.146] — 2026-10-25
+
+**Hardened the local notification server's settings — plain web addresses only, restore carries over only the settings Aerodrome manages, the Notifications tab asks before removing settings you added by hand, deleting cached messages on uninstall removes the cache the server really uses, and the Configuration page's messages open in a proper box.**
+
+### Fixed
+- **Hardened the local notification server's settings.** The server-address field now accepts only a plain web address, such as `http://192.0.2.10:2586`, and says what's wrong otherwise. Restoring a backup carries over only the notification-server settings Aerodrome manages — address, port, listen address and the iPhone relay — and lists anything it left out. If you added your own settings to the notification server's config file, changing the address or the relay from the Notifications tab now names them and asks before saving; if you cancel, nothing changes.
+- **"Also delete cached messages" removes the right file.** Uninstalling the local notification server with that box checked now deletes the message cache the server actually uses, and the Notifications tab tells you when cached messages from an earlier install are still on this machine before you reinstall — with the one command that deletes them and a Copy button, since until the server is installed the tab offers only Install. If some of the cache can't be removed, the uninstall names the file and what to run instead of reporting success, and the Notifications tab keeps offering Uninstall so you can run it again.
+- **Messages on the Configuration page open in a proper box.** Errors and confirmations such as "Save failed", "Base URL required" or "ntfy uninstalled" used to appear as plain text at the very bottom of the page, and the page jumped down to show them. They now open as a box in the middle of the screen over the dimmed page. A long message scrolls inside the box, so its title and OK button stay on screen, on a phone too.
+
+### Behind the scenes
+- Aerodrome now reads the notification server's config file the way YAML does, so an address or port you edited by hand — with single quotes, a trailing comment or a plain `:2586` listen address — is kept when you change another setting, instead of falling back to the defaults.
+- A saved address that's no longer accepted shows as empty in the Notifications tab, with a note under the field saying so; enter a plain address such as `http://192.0.2.10:2586` to save other changes.
+- Aerodrome keeps the notification server's listen address only as `0.0.0.0:PORT`, `127.0.0.1:PORT` or `:PORT`. If you set a different one by hand, the Notifications tab says so when you save; put it back before saving (reinstalling the notification server also resets it). A restore leaves it in place instead of replacing it.
+- If turning the iPhone relay on or off doesn't save — you cancel, the change is refused, the address field is empty, or the network drops — the checkbox goes back to how it was, so the tab always shows the setting in force. If the setting was saved but the notification server didn't restart, the tab reads it back from the config file instead. A second click while a save is still running is undone rather than starting another save.
+- "Also delete cached messages" removes only the cache Aerodrome's notification server uses, `/var/lib/ntfy/cache.db` and the two files SQLite keeps beside it, and its description no longer mentions message attachments. It no longer looks in `/var/cache/ntfy`, where Aerodrome never kept messages. A cache file you set yourself in the notification server's config file is left in place, and the uninstall says so.
+- The command-line uninstaller removes the same cached-message files and says which ones it couldn't remove instead of always reporting success.
+- The Configuration page's Copy buttons — for the phone-setup addresses, the answers for the CARTO key request and the leftover-messages command — go back to their label a moment after showing "✓ copied!" or "✗ blocked". A quick second click used to leave "✓ copied!" showing for good, and "✗ blocked" never cleared. When the page is opened over plain HTTP, keyboard focus now stays on the button after copying instead of going back to the top of the page.
+- If the notification server on this machine has settings you added by hand, a restore leaves its config unchanged and saves the backup's copy next to the install as `ntfy-server.yml.from-backup.<timestamp>`, readable only by the account Aerodrome runs as.
+- If the notification server doesn't restart after a restore, the restore summary still lists the settings that were left out.
+- Removed three outdated screenshots from the documentation folder, and the release checks now stop a documentation image that the screenshot script didn't make and nobody has reviewed.
+
+### Operational notes
+- On an install set up before this release, deleting the notification server's cached messages needs Aerodrome's system permissions refreshed once. If an uninstall with "Also delete cached messages" says it couldn't remove the cache, run the `sudo bash … recover-sudoers.sh` command it shows on the server (it refreshes Aerodrome's permissions only), then click Uninstall again on the Notifications tab with the box checked. Or remove the files yourself: `sudo rm -f /var/lib/ntfy/cache.db /var/lib/ntfy/cache.db-wal /var/lib/ntfy/cache.db-shm`.
+
 ## [3.4.145] — 2026-10-22
 
 **Safer installers: the one-line installer never deletes or takes over a folder, `install.sh` keeps the service's account, `uninstall.sh --purge` removes everything Aerodrome created and nothing else, and the "Sudoers update required" command now works wherever an update was staged.**
@@ -2073,8 +2097,8 @@ complete version.)*
 
   **Three install paths to demo mode**, all functionally equivalent:
   1. *Curl one-liner, interactive*: `bash <(curl -fsSL https://install.aerodromeadsb.com)` → pick option 2 at the prompt.
-  2. *Curl one-liner, scripted*: `bash <(curl -fsSL https://install.aerodromeadsb.com) --demo --lat 44.84 --lon -88.23`.
-  3. *Manual zip install*: download the release zip, unzip, `./install.sh --demo --home-lat 44.84 --home-lon -88.23`. This third path is fully standalone — `install.sh --demo` patches `config.yaml` to flip `demo.enabled=true` and point `receiver.ip/port` at the synthetic feeder, installs the feeder systemd unit, runs the watchlist seeder, and extends the scoped sudoers rule so the switch-to-real wizard's `systemctl stop/disable` calls work without a password. Manual zip installs of the real-receiver flow (no `--demo` flag) are completely unchanged from v3.0.x.
+  2. *Curl one-liner, scripted*: `bash <(curl -fsSL https://install.aerodromeadsb.com) --demo --lat 37.62 --lon -122.38`.
+  3. *Manual zip install*: download the release zip, unzip, `./install.sh --demo --home-lat 37.62 --home-lon -122.38`. This third path is fully standalone — `install.sh --demo` patches `config.yaml` to flip `demo.enabled=true` and point `receiver.ip/port` at the synthetic feeder, installs the feeder systemd unit, runs the watchlist seeder, and extends the scoped sudoers rule so the switch-to-real wizard's `systemctl stop/disable` calls work without a password. Manual zip installs of the real-receiver flow (no `--demo` flag) are completely unchanged from v3.0.x.
 
   **Uninstall awareness:** `./uninstall.sh` is now aware of the synthetic-feeder service. On any install where the feeder unit exists, uninstall stops + disables + removes it alongside the main aerodrome.service — no special demo-mode uninstall flag needed, and non-demo installs see "no feeder service found" rather than error noise.
 

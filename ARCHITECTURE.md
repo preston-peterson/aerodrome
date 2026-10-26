@@ -43,7 +43,7 @@ The collector thread polls your local ADS-B receiver every N seconds (default 60
 | `config_validator.py` | Runtime config schema validation | ~900 lines |
 | `schema_migrations.py` | Versioned schema migrations (rollup, concurrent-minute, daily-track, update-state) | ~1,380 lines |
 | `designators.py` | ICAO aircraft type + airline lookup tables | ~400 lines |
-| `ntfy_installer.py` | Self-hosted ntfy server install/upgrade helper | ~1,020 lines |
+| `ntfy_installer.py` | Self-hosted ntfy server install/upgrade helper; validates and renders its `server.yml` | ~1,300 lines |
 | `templates/*.html` | 11 admin pages — vanilla HTML/CSS/JS, no framework | ~13,500 lines |
 | `static/theme.css`, `static/theme.js` | Shared theme system across all templates | ~660 lines |
 

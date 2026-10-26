@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.4.145
+# Version: 3.4.146
 # =============================================================================
 # Aerodrome — Server Install Script
 # =============================================================================
@@ -196,9 +196,14 @@ ${u} ALL=(ALL) NOPASSWD: /bin/rm -f /etc/ntfy/server.yml
 ${u} ALL=(ALL) NOPASSWD: /bin/rm -f /etc/systemd/system/ntfy.service
 ${u} ALL=(ALL) NOPASSWD: /bin/rm -f /var/lib/ntfy/aerodrome-installed
 # v2.41.0: data-purge commands, used only when user opts in via the
-# "Also delete cached messages" checkbox during uninstall. Scoped to
-# the three ntfy cache files + the attachments subdirectory. Explicit
-# paths — no wildcards.
+# "Also delete cached messages" checkbox during uninstall. Explicit paths
+# — no wildcards. Since v3.4.146 the app removes ntfy's message cache at
+# /var/lib/ntfy/cache.db (the file server.yml names) and its -wal/-shm;
+# the /var/cache/ntfy cache.db/attachments lines are no longer used and
+# stay only until this rule set is next replaced.
+${u} ALL=(ALL) NOPASSWD: /bin/rm -f /var/lib/ntfy/cache.db
+${u} ALL=(ALL) NOPASSWD: /bin/rm -f /var/lib/ntfy/cache.db-wal
+${u} ALL=(ALL) NOPASSWD: /bin/rm -f /var/lib/ntfy/cache.db-shm
 ${u} ALL=(ALL) NOPASSWD: /bin/rm -f /var/cache/ntfy/cache.db
 ${u} ALL=(ALL) NOPASSWD: /bin/rm -f /var/cache/ntfy/cache.db-wal
 ${u} ALL=(ALL) NOPASSWD: /bin/rm -f /var/cache/ntfy/cache.db-shm

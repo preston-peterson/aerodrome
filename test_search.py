@@ -973,7 +973,7 @@ class TestExecutor(unittest.TestCase):
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)""",
         ("ADFDC8", now-3600, "TREK01", "C130", "AE-MIL", "TREK01", "C130",
          "Lockheed C-130H Hercules", "USAF", "United States",
-         44.1, -89.5, now-1800, 78))
+         37.5, -122.1, now-1800, 78))
         self.conn.execute("""INSERT INTO seen_aircraft_fts (rowid, icao, registration, last_callsign, aircraft_type, aircraft_type_desc, operator, country) VALUES (
             (SELECT rowid FROM seen_aircraft WHERE icao='ADFDC8'),
             'ADFDC8', 'AE-MIL', 'TREK01', 'C130', 'Lockheed C-130H Hercules', 'USAF', 'United States')""")

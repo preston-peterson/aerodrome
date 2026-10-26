@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.4.145
+# Version: 3.4.146
 # =============================================================================
 # Aerodrome — Uninstall Script
 # =============================================================================
@@ -428,8 +428,8 @@ if [ -f "$NTFY_STAMP" ]; then
             # Second prompt for the cache data — kept separate because some
             # users want to reinstall later and keep their topic history.
             # server.yml (ntfy_installer.py) sets cache-file: /var/lib/ntfy/cache.db;
-            # /var/cache/ntfy is where attachments/staging live.
-            ntfy_cache_size=" ($(sudo du -shc /var/lib/ntfy/cache.db* /var/cache/ntfy 2>/dev/null | tail -1 | cut -f1))"
+            # the size is what the purge below would delete.
+            ntfy_cache_size=" ($(sudo du -shc /var/lib/ntfy/cache.db* 2>/dev/null | tail -1 | cut -f1))"
             read -p "    Also delete cached messages${ntfy_cache_size}? [y/N] " -n 1 -r || REPLY=""
             echo
             if [[ $REPLY =~ ^[Yy]$ ]]; then
@@ -454,20 +454,28 @@ if [ -f "$NTFY_STAMP" ]; then
             fi
         done
         sudo systemctl daemon-reload 2>/dev/null || true
+        # The folder the app downloads the ntfy binary into (no messages).
+        sudo rm -rf /var/cache/ntfy/staging 2>/dev/null || true
         echo -e "    ${GREEN}✓${RESET} Local ntfy removed"
 
-        # Purge cache if requested
+        # Purge cache if requested. Exactly the files the app's "Also delete
+        # cached messages" removes (ntfy_installer.ntfy_purge_argvs());
+        # check_installers.py ntfy-cache and test_check_installers.py keep the
+        # two in step. Nothing in /var/cache/ntfy: no Aerodrome release kept
+        # messages there, and ntfy's own package does. (This step runs only
+        # with the stamp; the app can also purge a cache left with no install.)
         if [ "$should_purge_ntfy_data" = true ]; then
+            ntfy_purge_left=""
             for p in /var/lib/ntfy/cache.db \
                      /var/lib/ntfy/cache.db-wal \
-                     /var/lib/ntfy/cache.db-shm \
-                     /var/cache/ntfy/cache.db \
-                     /var/cache/ntfy/cache.db-wal \
-                     /var/cache/ntfy/cache.db-shm; do
-                sudo rm -f "$p" 2>/dev/null || true
+                     /var/lib/ntfy/cache.db-shm; do
+                sudo rm -f "$p" 2>/dev/null || ntfy_purge_left="${ntfy_purge_left} $p"
             done
-            sudo rm -rf /var/cache/ntfy/attachments /var/cache/ntfy/staging 2>/dev/null || true
-            echo -e "    ${GREEN}✓${RESET} Cached messages removed"
+            if [ -z "$ntfy_purge_left" ]; then
+                echo -e "    ${GREEN}✓${RESET} Cached messages removed"
+            else
+                echo -e "    ${YELLOW}!${RESET} Cached messages not removed:${ntfy_purge_left}"
+            fi
         else
             echo -e "    ${YELLOW}·${RESET} Cached messages (if any) kept at /var/lib/ntfy/"
         fi

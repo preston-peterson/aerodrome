@@ -1,4 +1,4 @@
-<!-- Version: 3.4.145 -->
+<!-- Version: 3.4.146 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -337,6 +337,31 @@ input[disabled] { opacity:.5; cursor:not-allowed; }
     display:flex; justify-content:flex-end; gap:8px; padding:14px 20px;
 }
 
+/* alertModal() — this page's info/error box (used only here). Its markup
+   also carries index.html's .modal-bg/.modal class names, but that CSS
+   isn't loaded on this page, so the box is styled by its own classes.
+   A long message scrolls inside the box; the title and OK stay on screen
+   (max-height:100% is the backdrop's visible height less its padding, so a
+   phone's browser toolbars can't push them off it the way 100vh can). */
+.alert-modal-bg {
+    position:fixed; inset:0; background:rgba(0,0,0,.7);
+    display:flex; align-items:center; justify-content:center; padding:20px;
+}
+.alert-modal {
+    background:var(--bg2); border:1px solid var(--bdr); border-radius:10px;
+    width:100%; padding:20px 22px; color:var(--t1);
+    max-height:100%; display:flex; flex-direction:column;
+}
+.alert-modal .alert-modal-body { overflow-y:auto; min-height:0; overflow-wrap:anywhere; }
+.alert-modal .modal-title { font-size:15px; font-weight:600; }
+.alert-modal .modal-actions { display:flex; justify-content:flex-end; gap:8px; }
+.alert-modal .modal-btn {
+    font-family:var(--font); font-size:13px; font-weight:500; padding:7px 16px;
+    border-radius:6px; border:1px solid var(--cyan); background:var(--cyan);
+    color:var(--bg0); cursor:pointer;
+}
+.alert-modal .modal-btn:hover { filter:brightness(1.15); }
+
 </style>
 </head>
 <body>
@@ -626,23 +651,26 @@ function _escHtmlCfg(s){
 // Fall back to execCommand('copy') via a temporary textarea — still
 // supported in all modern browsers and works over HTTP.
 async function copyToClipboard(text, feedbackEl) {
-    const showCopied = () => {
+    // "✓ copied!" or "✗ blocked" shows for 1.5 s, then the button's own
+    // label comes back. The label is saved once, by the click that starts
+    // the feedback, so a second click while a result still shows can't save
+    // that result as the label to go back to; each result restarts the 1.5 s.
+    const show = (label, color) => {
         if (!feedbackEl) return;
-        const prev = feedbackEl.textContent;
-        const prevColor = feedbackEl.style.color;
-        feedbackEl.textContent = '✓ copied!';
-        feedbackEl.style.color = 'var(--green, #22c55e)';
-        setTimeout(() => {
-            feedbackEl.textContent = prev || 'Copy';
-            feedbackEl.style.color = prevColor;
+        const saved = feedbackEl._copyFeedback
+            || {label: feedbackEl.textContent, color: feedbackEl.style.color};
+        clearTimeout(saved.timer);
+        feedbackEl._copyFeedback = saved;
+        feedbackEl.textContent = label;
+        feedbackEl.style.color = color;
+        saved.timer = setTimeout(() => {
+            feedbackEl.textContent = saved.label || 'Copy';
+            feedbackEl.style.color = saved.color;
+            feedbackEl._copyFeedback = null;
         }, 1500);
     };
-    const showBlocked = () => {
-        if (feedbackEl) {
-            feedbackEl.textContent = '✗ blocked';
-            feedbackEl.style.color = 'var(--red)';
-        }
-    };
+    const showCopied = () => show('✓ copied!', 'var(--green, #22c55e)');
+    const showBlocked = () => show('✗ blocked', 'var(--red)');
 
     // Tier 1: async Clipboard API (HTTPS / localhost only)
     if (navigator.clipboard && window.isSecureContext) {
@@ -653,7 +681,10 @@ async function copyToClipboard(text, feedbackEl) {
         } catch (e) { /* fall through */ }
     }
 
-    // Tier 2: execCommand via hidden textarea — works over HTTP
+    // Tier 2: execCommand via hidden textarea — works over HTTP. Focus goes
+    // back where it was (the Copy button), so a keyboard user's next Tab
+    // carries on from there instead of from the top of the page.
+    const hadFocus = document.activeElement;
     try {
         const ta = document.createElement('textarea');
         ta.value = text;
@@ -665,6 +696,7 @@ async function copyToClipboard(text, feedbackEl) {
         ta.setSelectionRange(0, text.length);
         const ok = document.execCommand('copy');
         document.body.removeChild(ta);
+        if (hadFocus && hadFocus.isConnected) hadFocus.focus({preventScroll: true});
         if (ok) {
             showCopied();
             return true;
@@ -3528,15 +3560,25 @@ function _renderNtfyPanel(statusPayload) {
                 no ntfy release binary available.</div>`;
         }
         // v2.41.0: note leftover cache.db from prior install so users aren't
-        // surprised when reinstalling pulls in old messages.
+        // surprised when reinstalling pulls in old messages. This panel offers
+        // only Install, so the note gives the one command that deletes them:
+        // the three files ntfy_installer.ntfy_purge_argvs() removes, named
+        // outright (a cache.db* wildcard expands as the user, who may not be
+        // able to list /var/lib/ntfy, and then deletes nothing). On a narrow
+        // screen the Copy button drops under the command, so no path splits.
         const staleNote = statusPayload.stale_data
             ? `<div style="margin-bottom:10px;padding:8px 10px;background:rgba(245,158,11,.08);
                            border-left:2px solid var(--amber);border-radius:0 4px 4px 0;
                            font-size:11px;color:var(--t2);line-height:1.5">
                    Cached messages from a prior install are still present at
                    <code>/var/lib/ntfy/cache.db</code>. Reinstalling will pick them up.
-                   To start fresh, run uninstall with "Also delete cached messages"
-                   checked first, then reinstall.
+                   To start fresh, run this on the Aerodrome machine first, then reinstall:
+                   <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:6px;padding:6px 8px;
+                               background:var(--bg2);border:1px solid var(--bdr);border-radius:4px">
+                       <code id="nfStaleCacheCmd" style="flex:1 1 260px;min-width:0;overflow-wrap:anywhere">sudo rm -f /var/lib/ntfy/cache.db /var/lib/ntfy/cache.db-wal /var/lib/ntfy/cache.db-shm</code>
+                       <button type="button" class="btn" style="flex:none;margin-left:auto;font-size:11px;padding:3px 10px;background:var(--bg3)"
+                               onclick="copyToClipboard(document.getElementById('nfStaleCacheCmd').textContent, this)">Copy</button>
+                   </div>
                </div>`
             : '';
         return `
@@ -3595,6 +3637,8 @@ function _renderNtfyPanel(statusPayload) {
     const cfg = statusPayload.config || {};
     const baseUrl = cfg.base_url || '';
     const upstreamRelay = cfg.upstream_relay !== false;  // default on
+    // v3.4.146: base_url is null when the saved address is no longer accepted.
+    const baseUrlProblem = (cfg.problems || []).includes('base-url');
     const detectedIp = cfg.detected_lan_ip || '';
     // v3.4.27: pull error reason for the warning, and gate the self-heal
     // button on detectedIp being a real LAN address.
@@ -3654,11 +3698,12 @@ function _renderNtfyPanel(statusPayload) {
                     <button class="btn" onclick="nfSaveNtfyConfig()" id="nfSaveConfigBtn"
                             style="padding:4px 10px;font-size:11px">Save</button>
                 </div>
+                ${baseUrlProblem ? `<div id="nfBaseUrlError" style="color:var(--red);font-size:11px;margin-top:4px;line-height:1.5">⚠ ${escapeAttr(NF_STORED_URL_MSG)}</div>` : ''}
                 ${localhostWarning}
             </label>
             <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:11px">
                 <input id="nfUpstreamRelay" type="checkbox" ${upstreamRelay ? 'checked' : ''}
-                       onchange="nfSaveNtfyConfig()" style="margin-top:2px">
+                       onchange="nfSaveNtfyConfig('relay')" style="margin-top:2px">
                 <span>
                     <strong style="color:var(--t1);font-weight:500">iOS instant-push via ntfy.sh relay</strong>
                     <div style="color:var(--t3);font-size:10px;line-height:1.5;margin-top:2px">
@@ -4095,18 +4140,24 @@ async function nfFixLocalhostBaseUrl(detectedIp, port, uiHooks) {
     uiHooks = uiHooks || {};
     const { btn, status, onSuccess } = uiHooks;
     const newUrl = 'http://' + detectedIp + ':' + port;
+    // v3.4.146: one /api/ntfy/config save at a time (nfConfigSaving).
+    if (nfConfigSaving) return false;
     if (btn) btn.disabled = true;
     if (status) {
         status.textContent = 'Updating server.yml…';
         status.style.color = 'var(--t3)';
     }
+    nfConfigSaving = true;
     try {
-        const r = await fetch('/api/ntfy/config', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({base_url: newUrl}),
-        });
-        const j = await r.json();
+        const {j, cancelled} = await nfPostNtfyConfig({base_url: newUrl});
+        if (cancelled) {
+            if (status) {
+                status.style.color = 'var(--t3)';
+                status.textContent = 'Not saved — nothing was changed.';
+            }
+            if (btn) btn.disabled = false;
+            return false;
+        }
         if (!j.ok) {
             if (status) {
                 status.style.color = 'var(--red)';
@@ -4138,6 +4189,8 @@ async function nfFixLocalhostBaseUrl(detectedIp, port, uiHooks) {
         }
         if (btn) btn.disabled = false;
         return false;
+    } finally {
+        nfConfigSaving = false;
     }
 }
 
@@ -4274,7 +4327,7 @@ function nfUninstallPrompt() {
                 <span>
                     <strong>Also delete cached messages</strong>
                     <div style="color:var(--t3);font-size:11px;margin-top:3px">
-                        Wipes <code>/var/lib/ntfy/cache.db</code> and any message attachments.
+                        Wipes <code>/var/lib/ntfy/cache.db</code>.
                         Leave unchecked if you might reinstall later and want to keep your
                         message history.
                     </div>
@@ -4306,6 +4359,49 @@ function nfUninstallPrompt() {
     });
 }
 
+// v3.4.146: POST /api/ntfy/config. A 409 custom_keys means server.yml has
+// settings Aerodrome doesn't manage; saving re-renders the file and would
+// remove them, so ask first (names only) and resend with drop_custom_keys
+// set to exactly the names shown. If a setting was added in between, the
+// server answers 409 again with the new list and we ask again.
+// Returns {j, cancelled}.
+const NF_STORED_URL_MSG = 'Your saved notification server address is no longer accepted — re-enter it.';
+// One /api/ntfy/config save at a time (Save, the relay checkbox, the
+// "Use <detected IP>" fix): a second full POST could overwrite the first,
+// and a put-back from one could contradict the other's result. A relay click
+// while a save is in flight is undone at once (the box keeps focus).
+let nfConfigSaving = false;
+async function nfPostNtfyConfig(body) {
+    const post = (b) => fetch('/api/ntfy/config', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(b),
+    });
+    let r = await post(body);
+    let j = await r.json();
+    while (r.status === 409 && j.code === 'custom_keys') {
+        const names = j.custom_keys || [];
+        if (!confirm("Your notification server's config file has settings Aerodrome "
+                   + "doesn't manage: " + names.join(', ')
+                   + '. Saving removes them. Save anyway?')) {
+            return {j, cancelled: true};
+        }
+        r = await post(Object.assign({}, body, {drop_custom_keys: names}));
+        j = await r.json();
+    }
+    return {j, cancelled: false};
+}
+
+// v3.4.146: a red line in the panel's result slot (server text, set as text).
+function nfShowConfigError(resultEl, msg) {
+    if (!resultEl) return;
+    resultEl.textContent = '';
+    const span = document.createElement('span');
+    span.style.color = 'var(--red)';
+    span.textContent = '⚠ ' + msg;
+    resultEl.appendChild(span);
+}
+
 // v2.40.5: save ntfy server.yml edits (Base URL + upstream-relay toggle).
 // Called by:
 //   - Save button on the Base URL field
@@ -4313,32 +4409,41 @@ function nfUninstallPrompt() {
 // Partial-update semantics on the backend: we always send both fields, so a
 // checkbox toggle saves the current Base URL value too. That's fine — the
 // input already reflects what's in config.
-async function nfSaveNtfyConfig() {
+async function nfSaveNtfyConfig(trigger) {
     const urlEl = document.getElementById('nfBaseUrl');
     const upEl = document.getElementById('nfUpstreamRelay');
     const resultEl = document.getElementById('nfConfigResult');
     const saveBtn = document.getElementById('nfSaveConfigBtn');
     if (!urlEl || !upEl) return;
+    if (nfConfigSaving) {
+        if (trigger === 'relay') upEl.checked = !upEl.checked;
+        return;
+    }
     const body = {
         base_url: urlEl.value.trim(),
         upstream_relay: !!upEl.checked,
     };
+    // A relay toggle that doesn't save is put back, so the box always shows
+    // the setting in force.
+    const putRelayBack = () => { if (trigger === 'relay') upEl.checked = !body.upstream_relay; };
     if (!body.base_url) {
+        putRelayBack();
         await alertModal('Base URL required',
             'The Base URL field cannot be empty. This is what your phone uses to reach '
           + 'the ntfy server — leaving it empty would break notifications.',
             'error');
         return;
     }
+    nfConfigSaving = true;
     if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = 'Saving…'; }
     if (resultEl) resultEl.textContent = 'Saving…';
     try {
-        const r = await fetch('/api/ntfy/config', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(body),
-        });
-        const j = await r.json();
+        const {j, cancelled} = await nfPostNtfyConfig(body);
+        if (cancelled) {
+            putRelayBack();
+            if (resultEl) resultEl.textContent = 'Not saved — nothing was changed.';
+            return;
+        }
         if (j.ok) {
             if (resultEl) {
                 resultEl.innerHTML = '<span style="color:var(--green, #22c55e)">✓ Saved — ntfy restarted</span>';
@@ -4347,18 +4452,26 @@ async function nfSaveNtfyConfig() {
             // Re-read status so the panel reflects the new values (and any
             // localhost-warning banner appears/disappears as needed).
             loadNtfyStatus();
+        } else if (j.code === 'stored_value_invalid') {
+            putRelayBack();
+            nfShowConfigError(resultEl, j.message || j.error);
         } else {
+            // written: server.yml has the new values but ntfy didn't
+            // restart; re-read the file rather than put the box back.
+            if (j.written) loadNtfyStatus(); else putRelayBack();
             if (resultEl) resultEl.innerHTML = '';
             await alertModal('Save failed',
                 j.message || j.error || 'Unknown error. Check logs for details.',
                 'error');
         }
     } catch (e) {
+        putRelayBack();
         if (resultEl) resultEl.innerHTML = '';
         await alertModal('Save failed',
             'Network or server error: ' + e.message, 'error');
     } finally {
         if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = 'Save'; }
+        nfConfigSaving = false;
     }
 }
 

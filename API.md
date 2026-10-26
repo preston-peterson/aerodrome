@@ -138,11 +138,24 @@ For users running a self-hosted ntfy server via Aerodrome's installer helper.
 |---|---|---|
 | GET | `/api/ntfy/status` | Is a self-hosted ntfy running? What version? Reachable? |
 | POST | `/api/ntfy/install` | Install ntfy to a user-specified directory |
-| POST | `/api/ntfy/config` | Update the running ntfy's config.yml |
+| POST | `/api/ntfy/config` | Change the local ntfy server's address (`base_url`) or iPhone relay (`upstream_relay`) |
 | POST | `/api/ntfy/upgrade` | Upgrade ntfy to a newer version |
-| POST | `/api/ntfy/uninstall` | Remove the self-hosted ntfy install |
+| POST | `/api/ntfy/uninstall` | Remove the self-hosted ntfy install; `{"purge_data": true}` also deletes its cached messages (`/var/lib/ntfy/cache.db` and its `-wal`/`-shm`; a `cache-file` set by hand in server.yml is left in place, and `message` says so) |
 
 These endpoints delegate to `ntfy_installer.py`. Requires sudoers entries — see install.sh.
+
+**Server address.** `/api/ntfy/install` and `/api/ntfy/config` accept only a plain web address in `base_url`: `http://` or `https://`, a host name, IPv4 address or `[IPv6]` address, an optional port (1–65535) and an optional path — no spaces, quotes, user name, query or fragment, at most 255 characters (for example `http://192.0.2.10:2586`). Anything else is a `400` with the same text in `error` and `message`, and nothing is changed.
+
+**`POST /api/ntfy/config`** takes `{"base_url"?, "upstream_relay"?, "drop_custom_keys"?}`. A field you leave out keeps its current value. Aerodrome rewrites the notification server's config file from the settings it manages, so it can refuse instead of saving. Every refusal writes nothing, names settings only (never their values) and explains itself in `message`; the two you can act on are:
+
+| Status | `code` | Meaning |
+|---|---|---|
+| 409 | `custom_keys` | The config file has settings Aerodrome doesn't manage, listed in `custom_keys` (for example `["auth-file"]`). Saving would remove them. To save anyway, resend with `drop_custom_keys` set to that list (the Notifications tab names them and asks before it does). If the file has a setting your list doesn't name (one added since), you get a fresh 409 with the current names instead of a save. |
+| 400 | `stored_value_invalid` | A setting can't be carried over from the file — usually a saved address that's no longer accepted. The names are in `keys`. For `base-url`, send a new `base_url`; for `upstream-base-url`, send `upstream_relay`. For `listen-http`, this endpoint can't take a new value: Aerodrome keeps only `0.0.0.0:PORT`, `127.0.0.1:PORT` or `:PORT` there, so fix it in `/etc/ntfy/server.yml` by hand or uninstall and reinstall the notification server. |
+
+Other 400s (`invalid`, `unreadable`, or a notification server Aerodrome doesn't manage) carry their reason in `message`.
+
+`GET /api/ntfy/status` reports the same picture in its `config` block: `base_url` (null when the saved address is no longer accepted), `upstream_relay`, `custom_keys` and `problems` (setting names only).
 
 ## Updates
 

@@ -1,11 +1,11 @@
 """Release-gate tests for bump-version.sh.
 
 Covers the gates (Python syntax, import, name resolution, JavaScript parse
-with the classic-script grammar, type-shape, installer consistency, PII),
-the gates-before-writes ordering, skipped gates being reported, `set`
-validation, `check`, the idempotent re-run (and the already-packaged
-warning), the PII audit's scope, the verbatim CHANGELOG entry and the
-deterministic Overview PDF.
+with the classic-script grammar, type-shape, installer consistency, PII,
+documentation images), the gates-before-writes ordering, skipped gates
+being reported, `set` validation, `check`, the idempotent re-run (and the
+already-packaged warning), the PII audit's scope, the verbatim CHANGELOG
+entry and the deterministic Overview PDF.
 
 Each case copies the WORKING tree — git's tracked + untracked-not-ignored
 files, so new not-yet-added scripts are the ones under test — into a fresh
@@ -206,9 +206,10 @@ class GateBlocks(_FixtureCase):
         for gate in ("Python syntax check", "Pre-release import check",
                      "Static name-resolution check", "JavaScript parse check",
                      "Type-shape coverage audit", "Installer consistency check",
-                     "PII audit"):
+                     "PII audit", "Documentation image check"):
             self.assertIn(gate, out)
             self.assertLess(out.index(gate), out.index("Bumping version"), gate)
+        self.assertLess(out.index("PII audit"), out.index("Documentation image check"))
         self.assertNotIn("SKIPPED", out)
         self.assertEqual((t / "VERSION").read_text().strip(), self.new)
 
@@ -741,6 +742,122 @@ class GatesBeforeWrites(_FixtureCase):
         self.assertIn("DOC 8643: unavailable", out)
         self.assertNotIn("fetch failed", out)
         self.assertFalse(cache.exists())
+
+
+@unittest.skipIf(SKIP_SLOW, SLOW_SKIP_REASON)
+@unittest.skipUnless(IN_GIT_CHECKOUT, CHECKOUT_SKIP_REASON)
+class DocImageGate(_FixtureCase):
+    """Every image under docs/ is either one scripts/screenshots.py makes or
+    listed in scripts/reviewed-doc-images.sha256 at its exact sha256."""
+    INCLUDE_DOCS = True
+    LIST = "scripts/reviewed-doc-images.sha256"
+    IMAGE_EXT = (".png", ".jpg", ".jpeg", ".gif", ".webp")
+    FAKE_IMAGE = b"\x89PNG\r\n\x1a\n" + b"fixture image"
+
+    def _reviewed(self, t):
+        rows = {}
+        for line in (t / self.LIST).read_text().splitlines():
+            if line.strip() and not line.startswith("#"):
+                sha, path = line.split(None, 1)
+                rows[path.strip()] = sha
+        return rows
+
+    def test_real_docs_pass(self):
+        t = self.tree()
+        listed = self._reviewed(t)
+        self.assertTrue(listed, "the reviewed list is empty")
+        for path in listed:
+            self.assertTrue((t / path).is_file(), f"{path} is listed but not in docs/")
+        images = [p for p in (t / "docs").rglob("*") if p.suffix.lower() in self.IMAGE_EXT]
+        rc, out = self.check(t)
+        self.assertEqual(rc, 0, out[-3000:])
+        self.assertIn("Documentation image check", out)
+        self.assertIn(f"{len(images)} documentation images: "
+                      f"{len(images) - len(listed)} made by scripts/screenshots.py, "
+                      f"{len(listed)} reviewed", out)
+
+    def test_unknown_image_blocks(self):
+        # Untracked-but-not-ignored counts (it could be committed); a harness
+        # name outside docs/ itself is not one the harness writes; the
+        # extension match ignores case.
+        for rel, tracked in (("docs/fixture-shot.png", False),
+                             ("docs/img/screenshot-live.png", True),
+                             ("docs/fixture-shot.JPG", True),
+                             ("docs/fixture-shot.webp", True)):
+            with self.subTest(image=rel):
+                t = self.tree()
+                p = t / rel
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_bytes(self.FAKE_IMAGE)
+                if tracked:
+                    git(t, "add", rel)
+                    git(t, "commit", "-qm", f"add {rel}")
+                rc, out = self.set_new(t)
+                self.assertEqual(rc, 1, out[-3000:])
+                self.assertIn(f"✗ {rel}", out)
+                self.assertIn("not made by scripts/screenshots.py", out)
+                self.assertIn(self.LIST, out)   # says how to clear it
+                self.assertNothingWritten(t, out=out)
+
+    def test_changed_listed_image_blocks_until_reviewed_again(self):
+        t = self.tree()
+        path, sha = sorted(self._reviewed(t).items())[0]
+        p = t / path
+        with open(p, "ab") as f:
+            f.write(b"\0")
+        rc, out = self.check(t)
+        self.assertEqual(rc, 1, out[-3000:])
+        self.assertIn(f"✗ {path}", out)
+        self.assertIn("changed since it was reviewed", out)
+        self.assertIn("scripts/screenshots.py", out)
+        lst = t / self.LIST
+        new = hashlib.sha256(p.read_bytes()).hexdigest()
+        lst.write_text(lst.read_text().replace(sha, new, 1))
+        rc, out = self.check(t)
+        self.assertEqual(rc, 0, out[-3000:])
+
+    def test_generated_names_come_from_the_script(self):
+        t = self.tree()
+        # A name the harness writes passes whatever its bytes, with no list line.
+        (t / "docs" / "screenshot-live.png").write_bytes(self.FAKE_IMAGE)
+        rc, out = self.check(t)
+        self.assertEqual(rc, 0, out[-3000:])
+        self.assertIn("Documentation image check", out)
+        # The names are read from scripts/screenshots.py: rename a shot there
+        # and the old file stops being one it makes, while the new name is.
+        s = t / "scripts" / "screenshots.py"
+        src = s.read_text()
+        self.assertIn("'screenshot-live.png'", src)
+        s.write_text(src.replace("'screenshot-live.png'", "'screenshot-live-renamed.png'"))
+        rc, out = self.check(t)
+        self.assertEqual(rc, 1, out[-3000:])
+        self.assertIn("✗ docs/screenshot-live.png", out)
+        (t / "docs" / "screenshot-live.png").rename(t / "docs" / "screenshot-live-renamed.png")
+        rc, out = self.check(t)
+        self.assertEqual(rc, 0, out[-3000:])
+        # Only the renderers main() runs count: one dropped from its list no
+        # longer vouches for its image.
+        src = s.read_text()
+        self.assertIn("        screenshot_about,\n", src)
+        s.write_text(src.replace("        screenshot_about,\n", "", 1))
+        rc, out = self.check(t)
+        self.assertEqual(rc, 1, out[-3000:])
+        self.assertIn("✗ docs/screenshot-about.png", out)
+        # A renderer whose file name the check can't read fails closed.
+        s.write_text(src.replace("'screenshot-about.png'", "f'screenshot-{\"about\"}.png'", 1))
+        rc, out = self.check(t)
+        self.assertEqual(rc, 1, out[-3000:])
+        self.assertIn("screenshot_about", out)
+
+    def test_malformed_list_line_blocks(self):
+        t = self.tree()
+        lst = t / self.LIST
+        n = len(lst.read_text().splitlines()) + 1
+        with open(lst, "a") as f:
+            f.write("docs/screenshot-live.png reviewed\n")
+        rc, out = self.check(t)
+        self.assertEqual(rc, 1, out[-3000:])
+        self.assertIn(f"{self.LIST}:{n}", out)
 
 
 def _reportlab_available():

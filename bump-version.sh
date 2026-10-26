@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.4.145
+# Version: 3.4.146
 # =============================================================================
 # bump-version.sh — Bump Aerodrome version + auto-update CHANGELOG.md
 # =============================================================================
@@ -15,11 +15,11 @@
 #                                                 writes nothing)
 #
 # Every REQUIRED gate (Python syntax, import, name resolution, JavaScript
-# parse, type-shape, installer consistency, PII) runs BEFORE anything is
-# written. A gate failure writes nothing: fix the problem and re-run the same
-# command — a re-run of the same `set` re-runs every gate and, from the same
-# inputs, rewrites byte-identical files. A skipped gate (--skip-*) is
-# printed as SKIPPED, and the run is then not release-ready.
+# parse, type-shape, installer consistency, PII, documentation images) runs
+# BEFORE anything is written. A gate failure writes nothing: fix the problem
+# and re-run the same command — a re-run of the same `set` re-runs every gate
+# and, from the same inputs, rewrites byte-identical files. A skipped gate
+# (--skip-*) is printed as SKIPPED, and the run is then not release-ready.
 #
 # After packaging (scripts/package-release.sh), re-gate with `check`, never
 # `set`: once the box has applied vX.Y.Z, vX.Y.Z is frozen — don't re-set or
@@ -57,8 +57,8 @@
 #                                         Only for a host without node >= 18
 #                                         — never for a release you publish)
 #
-# There is no skip flag for the Python syntax, import, installer-consistency
-# or PII gates.
+# There is no skip flag for the Python syntax, import, installer-consistency,
+# PII or documentation-image gates.
 #
 # Examples:
 #   ./bump-version.sh patch "Fixed sorting bug on Live tab"
@@ -941,6 +941,145 @@ sys.exit(0)
 PYEOF
 )
 if ! BUMP_PENDING_ENTRY="$PENDING_ENTRY" python3 -c "$PII_AUDIT_PY"; then
+    nothing_written
+    exit 1
+fi
+echo ""
+
+# =============================================================================
+# Documentation image check — REQUIRED (v3.4.146+), no skip flag.
+# =============================================================================
+# Every image under docs/ (png/jpg/jpeg/gif/webp) that git can see — tracked
+# plus untracked-but-not-ignored, like the PII audit; outside a git checkout,
+# a walk of docs/ — must be either
+#   (a) one scripts/screenshots.py makes: the harness renders every page from
+#       invented data. The names are read from the script itself — the image
+#       file names written by the renderers main() runs (it saves each one to
+#       docs/<name>) — never from a copy kept here; or
+#   (b) listed in scripts/reviewed-doc-images.sha256 with its exact sha256:
+#       an image made some other way that someone reviewed. Changing a listed
+#       image's bytes fails the gate until it is reviewed again.
+# The PII audit reads text only; an image gets no other check before it
+# ships. Like the PII audit, there is no skip flag: regenerate the image
+# through the harness, or review it and update the list.
+DOC_IMAGES_PY=$(cat <<'PYEOF'
+import ast, hashlib, os, re, subprocess, sys, warnings
+warnings.simplefilter('ignore', SyntaxWarning)   # as the syntax gate: a warning, not an error
+
+HARNESS = 'scripts/screenshots.py'
+REVIEWED = 'scripts/reviewed-doc-images.sha256'
+IMAGE_EXT = ('.png', '.jpg', '.jpeg', '.gif', '.webp')
+NAME_RE = re.compile(r'[\w-][\w.-]*')          # a bare file name, no directory
+
+def is_image(path):
+    return path.lower().endswith(IMAGE_EXT)
+
+def doc_images():
+    """docs/ images git can see, when the cwd is the top of a checkout;
+    otherwise (an unpacked release, or a tree nested in another repo) a walk."""
+    try:
+        top = subprocess.run(['git', 'rev-parse', '--show-toplevel'],
+                             capture_output=True, check=True).stdout
+        if os.path.realpath(top.decode('utf-8', 'surrogateescape').strip()) == os.path.realpath('.'):
+            out = subprocess.run(['git', 'ls-files', '-z', '--cached', '--others',
+                                  '--exclude-standard', '--', 'docs/'],
+                                 capture_output=True, check=True).stdout
+            return sorted({p for p in out.decode('utf-8', 'surrogateescape').split('\0')
+                           if p and is_image(p) and os.path.isfile(p)})
+    except (OSError, subprocess.CalledProcessError):
+        pass
+    paths = []
+    for root, dirs, files in os.walk('docs'):
+        paths += [os.path.relpath(os.path.join(root, f)) for f in files if is_image(f)]
+    return sorted(paths)
+
+def harness_outputs(problems):
+    """docs/<name> for every image name a renderer in main()'s `renderers`
+    list writes (a string literal in that renderer's body)."""
+    try:
+        with open(HARNESS, encoding='utf-8') as f:
+            tree = ast.parse(f.read(), HARNESS)
+    except (OSError, SyntaxError, ValueError) as e:
+        problems.append(f'{HARNESS} — cannot be read ({type(e).__name__}), so no image counts as made by it')
+        return set()
+    funcs = {n.name: n for n in tree.body
+             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    def walk(name):
+        return ast.walk(funcs[name]) if name in funcs else ()
+    renderers = []
+    for node in walk('main'):
+        if (isinstance(node, ast.Assign) and isinstance(node.value, ast.List)
+                and any(isinstance(t, ast.Name) and t.id == 'renderers' for t in node.targets)):
+            renderers = [e.id for e in node.value.elts if isinstance(e, ast.Name)]
+    if not renderers:
+        problems.append(f"{HARNESS} — no `renderers = [...]` list found in main()")
+    names = set()
+    for r in renderers:
+        found = {n.value for n in walk(r)
+                 if isinstance(n, ast.Constant) and isinstance(n.value, str)
+                 and NAME_RE.fullmatch(n.value) and is_image(n.value)}
+        if not found:
+            problems.append(f"{HARNESS} — renderer {r} writes no image name this check can read"
+                            f" (give it a literal 'name.png')")
+        names |= found
+    return {'docs/' + n for n in names}
+
+def reviewed_list(problems):
+    rows = {}
+    try:
+        with open(REVIEWED, encoding='utf-8') as f:
+            lines = f.read().splitlines()
+    except FileNotFoundError:
+        return rows
+    for i, line in enumerate(lines, 1):
+        s = line.strip()
+        if not s or s.startswith('#'):
+            continue
+        m = re.fullmatch(r'([0-9a-fA-F]{64}) [ *](\S.*)', s)
+        if not m:
+            problems.append(f'{REVIEWED}:{i} — not a `sha256sum` line (<sha256>  docs/<file>)')
+        elif m.group(2) in rows:
+            problems.append(f'{REVIEWED}:{i} — lists {m.group(2)} a second time')
+        else:
+            rows[m.group(2)] = m.group(1).lower()
+    return rows
+
+problems = []
+made = harness_outputs(problems)
+reviewed = reviewed_list(problems)
+images = doc_images()
+n_made = n_reviewed = 0
+for path in images:
+    if path in made:
+        n_made += 1
+        continue
+    want = reviewed.get(path)
+    if want is None:
+        problems.append(f'{path} — not made by {HARNESS} and not in {REVIEWED}')
+        continue
+    with open(path, 'rb') as f:
+        got = hashlib.sha256(f.read()).hexdigest()
+    if got != want:
+        problems.append(f'{path} — changed since it was reviewed'
+                        f' (listed sha256 {want[:12]}…, now {got[:12]}…)')
+    else:
+        n_reviewed += 1
+if problems:
+    for p in problems:
+        print(f'  ✗ {p}')
+    print(f'  Regenerate the image through {HARNESS} (invented data only), or review it')
+    print(f'  and add or update its line in {REVIEWED} (`sha256sum docs/<file>`')
+    print('  from the repo root).')
+    sys.exit(1)
+print(f'  ✓ {len(images)} documentation images: {n_made} made by {HARNESS}, '
+      f'{n_reviewed} reviewed ({REVIEWED})')
+PYEOF
+)
+echo "Documentation image check (docs/ images made by scripts/screenshots.py or reviewed)..."
+if ! python3 -c "$DOC_IMAGES_PY"; then
+    echo ""
+    echo "  !! Release aborted: a documentation image above is neither made by the"
+    echo "  !! screenshot script nor reviewed as it now stands."
     nothing_written
     exit 1
 fi

@@ -23,14 +23,22 @@ Paths we manage:
   /usr/local/bin/ntfy                    — the binary
   /etc/ntfy/server.yml                   — the minimal config
   /etc/systemd/system/ntfy.service       — the systemd unit
-  /var/cache/ntfy/                       — ntfy's message cache
-  /var/lib/ntfy/                         — reserved for ntfy's state
+  /var/lib/ntfy/                         — the install stamp and ntfy's message
+                                           cache (SERVER_CACHE_FILE, which
+                                           server.yml names)
+  /var/cache/ntfy/                       — the download staging dir
 
 Public API:
   install_status() → dict
       Describes what's present on disk + whether the service is running.
   install(port: int = 2586, bind: str = "0.0.0.0", topic: str = None) → dict
       Download, verify, install, configure, start. Idempotent.
+  update_config(base_url, upstream_relay, port, bind, drop_custom_keys) → dict
+      Re-render server.yml from Aerodrome's managed values and restart.
+      Refuses (writes nothing) while the file has settings Aerodrome
+      doesn't manage, unless drop_custom_keys names every one of them.
+  current_config() → dict | None
+      classify_server_yml() of the live server.yml (names only).
   upgrade() → dict
       Pull the latest release and swap the binary. Restarts the service.
   uninstall() → dict
@@ -54,7 +62,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 import requests
 
@@ -68,6 +76,13 @@ CONFIG_DIR = Path("/etc/ntfy")
 CONFIG_FILE = CONFIG_DIR / "server.yml"
 SYSTEMD_UNIT = Path("/etc/systemd/system/ntfy.service")
 CACHE_DIR = Path("/var/cache/ntfy")
+# The message cache server.yml names while ntfy runs from the root unit above.
+# The renderer takes it from this constant only, so this line is the source of
+# truth: the stale-data note and "Also delete cached messages" derive their
+# paths from it (ntfy_purge_argvs), uninstall.sh's purge list must keep this
+# path, and the release gate (check_installers.py ntfy-cache) reads it from
+# this assignment. Every release in git history wrote this same path.
+SERVER_CACHE_FILE = "/var/lib/ntfy/cache.db"
 # Stamp file — presence indicates Aerodrome-managed install vs external.
 # Contents are the ntfy version string we installed.
 STAMP_FILE = Path("/var/lib/ntfy/aerodrome-installed")
@@ -78,6 +93,202 @@ STAMP_DIR = STAMP_FILE.parent
 # is created at install time and cleaned up after.
 STAGING_DIR = CACHE_DIR / "staging"
 STAGING_BINARY = STAGING_DIR / "ntfy"
+
+# ---------------------------------------------------------------
+# server.yml: read, validate, render (v3.4.146). One block, kept verbatim so
+# a privileged helper can carry the same copy; every value is validated and
+# JSON-quoted, so no input can start a new key.
+# ---------------------------------------------------------------
+# --- BEGIN shared ntfy-yml block (byte-identical in ntfy_installer.py and scripts/aerodrome-helper) ---
+# Stdlib only (re, json), Python 3.8 syntax and APIs, so a privileged helper
+# can run the same block under the system interpreter. A change here changes
+# what root writes.
+NTFY_MANAGED_VARIABLE = ("base-url", "listen-http", "upstream-base-url")
+NTFY_MANAGED_FIXED = {"cache-duration": "12h", "behind-proxy": False}
+NTFY_CACHE_FILES = ("/var/lib/ntfy/cache.db", "/var/lib/aerodrome-ntfy/cache.db")
+NTFY_UPSTREAM = "https://ntfy.sh"
+_LABEL = r"[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?"
+_HOST = r"(?:" + _LABEL + r"(?:\." + _LABEL + r")*|\[[0-9A-Fa-f:.]{2,45}\])"
+_URL_RE = re.compile(r"\Ahttps?://" + _HOST + r"(?::([0-9]{1,5}))?(?:/[A-Za-z0-9._~/-]*)?\Z")
+_LISTEN_RE = re.compile(r"\A(0\.0\.0\.0|127\.0\.0\.1)?:([0-9]{1,5})\Z")
+# Plain scalars YAML would read as something other than a string: numbers in
+# any spelling (1.1 and 1.2), dates and timestamps, merge/value keys and the
+# 1.1 booleans. A superset of PyYAML's implicit resolvers; refused, not guessed.
+# No two quantifiers here can split the same run of characters, so a match
+# takes linear time on any input.
+_TYPED_RE = re.compile(
+    r"\A(?:[-+]?(?:[0-9_]+|(?:[0-9][0-9_]*)?\.[0-9_]+)(?:[eE][-+]?[0-9]+)?"
+    r"|[-+]?[0-9][0-9_]*\.[0-9_]*(?:[eE][-+]?[0-9]+)?"
+    r"|[-+]?0[xXoObB][0-9A-Fa-f_]+"
+    r"|[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+(?:\.[0-9_]*)?"
+    r"|[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN)"
+    r"|[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}(?:[Tt ].*)?"
+    r"|<<|="
+    r"|[Yy]|[Nn]|[Yy][Ee][Ss]|[Nn][Oo]|[Oo][Nn]|[Oo][Ff][Ff])\Z")
+_KEY_RE = re.compile(r"\A([A-Za-z0-9_][A-Za-z0-9_-]*) *:(?: +(.*))?\Z")
+_DOC_START_RE = re.compile(r"\A--- *(?: #.*)?\Z")
+_SCALAR_MAX = 1024      # longer than any value Aerodrome manages (base-url <= 255)
+
+
+def base_url_ok(s):
+    """True for http(s)://host[:port][/path] with nothing YAML or a shell
+    could misread: no quotes, spaces, control characters, query or fragment."""
+    if not isinstance(s, str) or len(s) > 255:
+        return False
+    m = _URL_RE.match(s)
+    return bool(m) and (m.group(1) is None or 1 <= int(m.group(1)) <= 65535)
+
+
+def _after_quoted(rest):
+    """What may follow a closing quote: nothing, or spaces and a comment."""
+    return rest.strip(" ") == "" or re.match(r" +#", rest) is not None
+
+
+def _yaml_scalar(raw):
+    """(ok, value) for one flat YAML scalar: "double", 'single' or plain,
+    with an optional trailing ' # comment'. Anything fancier is not ok."""
+    if len(raw) > _SCALAR_MAX or "\t" in raw:
+        return False, None              # over-long: not a managed value; tabs: YAML parsers disagree
+    s = raw.strip(" ")
+    if s[:1] == '"':
+        i = 1
+        while i < len(s) and s[i] != '"':
+            i += 2 if s[i] == "\\" else 1
+        if i >= len(s) or not _after_quoted(s[i + 1:]):
+            return False, None
+        try:
+            return True, json.loads(s[:i + 1])
+        except ValueError:
+            return False, None
+    if s[:1] == "'":
+        i = 1
+        while i < len(s):
+            if s[i] == "'":
+                if s[i + 1:i + 2] == "'":
+                    i += 2
+                    continue
+                break
+            i += 1
+        if i >= len(s) or not _after_quoted(s[i + 1:]):
+            return False, None
+        return True, s[1:i].replace("''", "'")
+    m = re.search(r" #", s)
+    if m:
+        s = s[:m.start()].rstrip(" ")
+    if s in ("", "~", "null", "Null", "NULL"):
+        return True, None
+    if s[0] in "!&*|>{}[]%@`,?-#'\"" or ": " in s or s.endswith(":"):
+        return False, None
+    if s in ("true", "True", "TRUE"):
+        return True, True
+    if s in ("false", "False", "FALSE"):
+        return True, False
+    if _TYPED_RE.match(s) or any(ord(c) < 32 or ord(c) == 127 for c in s):
+        return False, None              # numbers, dates, 1.1 booleans: a human decides
+    return True, s
+
+
+def classify_server_yml(text):
+    """Split an ntfy server.yml into what Aerodrome can carry over and what it
+    can't. Returns {port, bind, base_url, upstream, custom, problems}:
+    custom   = names of keys Aerodrome doesn't manage, or managed keys set to
+               something other than Aerodrome's value (dropping them changes
+               behaviour, so a human must agree);
+    problems = base-url / listen-http / upstream-base-url values that can't
+               be carried over (missing, malformed, duplicated, continued on
+               an indented line, or failing validation).
+    The same shapes on the fixed keys (cache-file, cache-duration,
+    behind-proxy) count as custom. Names only, never values.
+    As YAML does, a leading byte-order mark and a "---" before the first key
+    are skipped; a tab in a line's indentation (YAML refuses the file) makes
+    that line custom."""
+    managed = NTFY_MANAGED_VARIABLE + tuple(NTFY_MANAGED_FIXED) + ("cache-file",)
+    vals, custom, problems, seen, last = {}, [], [], set(), None
+    started = False
+    if text[:1] == "\ufeff":
+        text = text[1:]
+    for n, line in enumerate(text.splitlines(), 1):
+        if "\t" in line[:len(line) - len(line.lstrip())]:
+            custom.append("line %d" % n)     # even a blank or comment line
+            continue
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if not started and _DOC_START_RE.match(line):
+            started = True                   # one document start marker, before any key
+            continue
+        started = True
+        if line[0] in " \t":                 # nested under / continuing the previous key
+            if last in NTFY_MANAGED_VARIABLE:
+                problems.append(last)       # its value isn't the one-line scalar...
+                custom.append("line %d" % n)  # ...and the extra line is someone's edit
+            elif last in managed or last is None:
+                custom.append(last or "line %d" % n)
+            continue
+        m = _KEY_RE.match(line.rstrip(" "))
+        if not m:
+            custom.append("line %d" % n)
+            last = None
+            continue
+        key, last = m.group(1), m.group(1)
+        if key in seen:
+            (problems if key in NTFY_MANAGED_VARIABLE else custom).append(key)
+            continue
+        seen.add(key)
+        ok, val = _yaml_scalar(m.group(2) or "")
+        if key in NTFY_MANAGED_VARIABLE:
+            if not ok:
+                problems.append(key)
+            else:
+                vals[key] = val
+        elif key == "cache-file":
+            if not ok or val not in NTFY_CACHE_FILES:
+                custom.append(key)
+        elif key in NTFY_MANAGED_FIXED:
+            want = NTFY_MANAGED_FIXED[key]
+            if not ok or val != want or type(val) is not type(want):
+                custom.append(key)
+        else:
+            custom.append(key)
+    for key in problems:                     # a flagged value is never carried
+        vals.pop(key, None)
+    out = {"port": None, "bind": None, "base_url": None, "upstream": False}
+    if base_url_ok(vals.get("base-url")):
+        out["base_url"] = vals["base-url"]
+    else:
+        problems.append("base-url")
+    lm = _LISTEN_RE.match(vals["listen-http"]) if isinstance(vals.get("listen-http"), str) else None
+    if lm and 1 <= int(lm.group(2)) <= 65535:
+        out["port"], out["bind"] = int(lm.group(2)), lm.group(1) or "0.0.0.0"
+    else:
+        problems.append("listen-http")
+    if "upstream-base-url" in vals:
+        if vals["upstream-base-url"] == NTFY_UPSTREAM:
+            out["upstream"] = True
+        else:
+            custom.append("upstream-base-url")
+    out["custom"] = sorted(set(custom))
+    out["problems"] = sorted(set(problems))
+    return out
+
+
+def render_server_yml(port, bind, base_url, upstream, cache_file=None):
+    """The whole file, from validated values only. Every value is a
+    JSON-quoted scalar, so no input can start a new key."""
+    if type(port) is not int or not 1 <= port <= 65535 or bind not in ("0.0.0.0", "127.0.0.1"):
+        raise ValueError("bad port or bind")
+    if not base_url_ok(base_url) or (cache_file is not None and cache_file not in NTFY_CACHE_FILES):
+        raise ValueError("bad base-url or cache-file")
+    pairs = [("base-url", base_url), ("listen-http", "%s:%d" % (bind, port))]
+    if cache_file is not None:
+        pairs.append(("cache-file", cache_file))
+    pairs += [("cache-duration", "12h"), ("behind-proxy", False)]
+    if upstream:
+        pairs.append(("upstream-base-url", NTFY_UPSTREAM))
+    return "\n".join(
+        ["# Aerodrome-managed ntfy config. Saving in Aerodrome's Notifications tab rewrites",
+         "# this file; settings you add here are named there and never removed silently."]
+        + ["%s: %s" % (k, json.dumps(v)) for k, v in pairs]) + "\n"
+# --- END shared ntfy-yml block ---
 
 # ---------------------------------------------------------------
 # Release fetch
@@ -235,32 +446,34 @@ def _version_via_http() -> Optional[str]:
         return None
 
 
-def _read_server_port() -> Optional[int]:
-    """Extract the listen port from /etc/ntfy/server.yml. The relevant
-    directive is `listen-http: "bind:port"` or `listen-http: ":port"`.
-    Returns the port as int, or None if the config is missing / malformed.
-    """
+BASE_URL_ERROR = ("Server address must look like http://host:port — "
+                  "no spaces, quotes or extra parts")
+
+
+def validate_base_url(s) -> str:
+    """Return s when it is a plain http(s)://host[:port][/path] address
+    (the shared block's base_url_ok); raise ValueError otherwise. Every
+    path that writes base-url — the endpoints, install(), update_config()
+    and restore — goes through this or the renderer's own check."""
+    if not base_url_ok(s):
+        raise ValueError(BASE_URL_ERROR)
+    return s
+
+
+def current_config() -> Optional[Dict[str, Any]]:
+    """classify_server_yml() of the live server.yml, or None when it is
+    missing or unreadable. Names only in custom/problems, never values."""
     try:
-        with open(CONFIG_FILE) as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith("#") or not line:
-                    continue
-                m = re.match(r'^listen-http\s*:\s*"?([^"]+)"?\s*$', line)
-                if m:
-                    addr = m.group(1).strip()
-                    # "bind:port" or ":port" → take the last colon segment
-                    if ":" in addr:
-                        port_str = addr.rsplit(":", 1)[1]
-                        try:
-                            return int(port_str)
-                        except ValueError:
-                            return None
-    except FileNotFoundError:
+        return classify_server_yml(CONFIG_FILE.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
         return None
-    except Exception:
-        return None
-    return None
+
+
+def _read_server_port() -> Optional[int]:
+    """The listen port from server.yml's listen-http, or None when the file
+    is missing or the value can't be read exactly as YAML would."""
+    cur = current_config()
+    return cur["port"] if cur else None
 
 
 def install_status() -> Dict[str, Any]:
@@ -361,9 +574,9 @@ def _sudo_run(cmd: list, input_text: Optional[str] = None) -> subprocess.Complet
             recover = Path(__file__).resolve().parent / "scripts" / "recover-sudoers.sh"
             raise RuntimeError(
                 f"sudo refused '{' '.join(cmd)}'. "
-                f"Run the command shown on Aerodrome's Updates page, or "
-                f"`sudo bash {shlex.quote(str(recover))}`, on the server "
-                f"(it refreshes Aerodrome's system permissions only). Raw error: {msg}"
+                f"Run `sudo bash {shlex.quote(str(recover))}` on the server "
+                f"(it refreshes Aerodrome's system permissions only), or the "
+                f"command shown on Aerodrome's Updates page. Raw error: {msg}"
             )
         raise RuntimeError(f"Command failed: {' '.join(cmd)}: {msg}")
     return r
@@ -567,85 +780,40 @@ def _detect_lan_ip() -> Tuple[Optional[str], Optional[str]]:
     return (None, last_error or "unknown error")
 
 
-def _server_yml_text(port: int, bind: str, cache_dir: str,
+def _server_yml_text(port: int, bind: str,
                      base_url: Optional[str] = None,
                      upstream_relay: bool = True) -> str:
-    """Minimal ntfy config.
+    """The server.yml Aerodrome writes, via the shared render_server_yml()
+    (validated, JSON-quoted values; fixed comment text).
 
-    Important: ntfy's cache-file determines where messages are stored.
-    We use /var/lib/ntfy/cache.db. ntfy runs as root so can write there.
-    Retention is ntfy's default (12h).
+    cache-file stays SERVER_CACHE_FILE while ntfy runs from the root unit.
 
-    base_url (v2.40.5) — external URL phones use to reach this server.
-      If None, we auto-detect the LAN IP. If detection fails, we fall
-      back to localhost with a prominent warning comment. Users can
-      override later via the Notifications config UI.
+    base_url — external URL phones use to reach this server. None means a
+      fresh install: auto-detect the LAN IP, falling back to localhost when
+      detection fails (the Notifications tab shows detected_lan_ip_error and
+      offers a one-click fix). Every other caller passes a validated value.
 
-    upstream_relay (v2.40.5) — if True, adds upstream-base-url: https://ntfy.sh
-      so iOS clients get real-time push (APNs wake-up via ntfy.sh).
-      Without this, iOS only sees messages on manual refresh. Android
-      doesn't need it. Privacy note: enabling this means topic IDs
-      and message IDs are visible to ntfy.sh — not message content.
+    upstream_relay — adds upstream-base-url: https://ntfy.sh so iOS clients
+      get real-time push (ntfy.sh sees topic and message IDs, never bodies).
+
+    Raises ValueError for any value the renderer refuses.
     """
-    # Resolve base URL. The phone needs a URL it can actually reach;
-    # localhost won't work because localhost-on-the-phone isn't the
-    # server. Auto-detect LAN IP as the default.
     if base_url is None:
-        lan_ip, lan_ip_err = _detect_lan_ip()
-        if lan_ip:
-            base_url = f"http://{lan_ip}:{port}"
-            base_url_comment = (
-                "# Auto-detected LAN IP. If your phone can't reach this URL (e.g.\n"
-                "# you're on a different network), change it to something reachable\n"
-                "# from the phone — a Tailscale IP, a reverse-proxy HTTPS URL, etc."
-            )
-        else:
-            base_url = f"http://localhost:{port}"
-            # v3.4.27: include the actual detection failure reason in the
-            # config file comment so a sysadmin reading server.yml directly
-            # can see WHY auto-detection failed (typically an install-time
-            # network race: ENETUNREACH because DHCP hadn't finished).
-            err_line = f"# Detection failure: {lan_ip_err}\n" if lan_ip_err else ""
-            base_url_comment = (
-                "# WARNING: could not auto-detect a LAN IP. Using localhost means\n"
-                "# phones CANNOT reach this server. Change base-url to something\n"
-                "# reachable from your phone, e.g. http://<server-lan-ip>:{port}\n"
-                "# or a Tailscale/reverse-proxy URL.\n"
-                "{err}# (Aerodrome's Notifications UI may offer a one-click fix if\n"
-                "# re-detection now succeeds — see the wizard at /config.)"
-                .format(port=port, err=err_line)
-            )
-    else:
-        base_url_comment = "# base-url set via install options."
+        lan_ip, _err = _detect_lan_ip()
+        base_url = f"http://{lan_ip or 'localhost'}:{port}"
+    return render_server_yml(port, bind, base_url, bool(upstream_relay),
+                             cache_file=SERVER_CACHE_FILE)
 
-    if upstream_relay:
-        upstream_block = (
-            "# iOS instant-push support. Self-hosted ntfy cannot wake iPhones\n"
-            "# directly (APNs is Apple-only). Instead, ntfy.sh is used as a\n"
-            "# wake-up relay: when a message arrives here, a poll request is\n"
-            "# sent to ntfy.sh with just the message ID — which then triggers\n"
-            "# an APNs push on your iPhone. Only the topic + message ID are\n"
-            "# shared with ntfy.sh; message bodies stay on this server.\n"
-            "# Comment out this line if you don't use iOS or don't want the\n"
-            "# topic ID going to ntfy.sh. Android doesn't need it.\n"
-            "upstream-base-url: \"https://ntfy.sh\""
-        )
-    else:
-        upstream_block = (
-            "# upstream-base-url disabled. iOS clients will only see messages\n"
-            "# on manual refresh. Re-enable for iOS real-time push."
-        )
 
-    return f"""# Aerodrome-managed ntfy config. Edit at your own risk — future
-# upgrades via Aerodrome may overwrite this file.
-{base_url_comment}
-base-url: "{base_url}"
-listen-http: "{bind}:{port}"
-cache-file: /var/lib/ntfy/cache.db
-cache-duration: 12h
-behind-proxy: false
-{upstream_block}
-"""
+def _validate_install_args(port, bind, base_url) -> None:
+    """Raise ValueError unless port/bind/base_url are values the renderer
+    will accept. Runs before any sudo call."""
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise ValueError("Port must be between 1 and 65535")
+    if bind not in ("0.0.0.0", "127.0.0.1"):
+        raise ValueError("bind must be '0.0.0.0' or '127.0.0.1'")
+    if base_url is not None:
+        validate_base_url(base_url)
 
 
 def install(port: int = 2586, bind: str = "0.0.0.0",
@@ -666,13 +834,21 @@ def install(port: int = 2586, bind: str = "0.0.0.0",
             the user subscribes to.
     base_url — (v2.40.5) external URL phones use to reach this server.
             If None, auto-detected from the LAN IP; if detection fails,
-            falls back to localhost with a warning.
+            falls back to localhost with a warning. Otherwise it must pass
+            validate_base_url().
     upstream_relay — (v2.40.5) if True (default), adds upstream-base-url:
             https://ntfy.sh so iOS clients get real-time APNs push.
 
     Returns a dict: {'ok', 'message', 'status' (install_status dict),
     'topic' (the one to subscribe to), 'version' (installed)}.
+    A value the config renderer would refuse returns {'ok': False,
+    'message'} before anything is downloaded or any sudo call is made.
     """
+    try:
+        _validate_install_args(port, bind, base_url)
+    except ValueError as e:
+        return {"ok": False, "message": str(e)}
+
     status = install_status()
 
     if status["state"] == "external":
@@ -776,27 +952,28 @@ def install(port: int = 2586, bind: str = "0.0.0.0",
                     "status": install_status()}
 
     # --- Write config via sudo tee ---
-    cfg_text = _server_yml_text(port, bind, str(CACHE_DIR),
-                                base_url=base_url,
-                                upstream_relay=upstream_relay)
     try:
+        cfg_text = _server_yml_text(port, bind, base_url=base_url,
+                                    upstream_relay=upstream_relay)
         _sudo_run(["tee", str(CONFIG_FILE)], input_text=cfg_text)
-    except RuntimeError as e:
+    except (RuntimeError, ValueError) as e:
         return {"ok": False, "message": f"Failed to write config: {e}",
                 "status": install_status()}
 
     # --- Write systemd unit ---
+    # (From here on server.yml is written: failures say so with written=True.)
     try:
         _sudo_run(["tee", str(SYSTEMD_UNIT)], input_text=_systemd_unit_text())
     except RuntimeError as e:
-        return {"ok": False, "message": f"Failed to write systemd unit: {e}",
+        return {"ok": False, "written": True,
+                "message": f"Failed to write systemd unit: {e}",
                 "status": install_status()}
 
     # --- Stamp file (marks this install as aerodrome-managed) ---
     try:
         _sudo_run(["tee", str(STAMP_FILE)], input_text=version + "\n")
     except RuntimeError as e:
-        return {"ok": False, "message": f"Failed to write stamp: {e}",
+        return {"ok": False, "written": True, "message": f"Failed to write stamp: {e}",
                 "status": install_status()}
 
     # --- Enable and start service ---
@@ -805,7 +982,8 @@ def install(port: int = 2586, bind: str = "0.0.0.0",
         _sudo_run(["systemctl", "enable", "ntfy"])
         _sudo_run(["systemctl", "start", "ntfy"])
     except RuntimeError as e:
-        return {"ok": False, "message": f"Failed to enable/start service: {e}",
+        return {"ok": False, "written": True,
+                "message": f"Failed to enable/start service: {e}",
                 "status": install_status()}
 
     new_status = install_status()
@@ -821,16 +999,54 @@ def install(port: int = 2586, bind: str = "0.0.0.0",
     }
 
 
+def _stored_invalid_message(keys) -> str:
+    parts = []
+    if "base-url" in keys:
+        parts.append("Your saved notification server address is no longer "
+                     "accepted — re-enter it.")
+    other = [k for k in keys if k != "base-url"]
+    if other:
+        parts.append(f"The notification server's config file has a value Aerodrome "
+                     f"can't carry over: {', '.join(other)}.")
+        if "listen-http" in other:
+            parts.append("Aerodrome keeps listen-http only as 0.0.0.0:PORT, "
+                         "127.0.0.1:PORT or :PORT.")
+        parts.append(f"Fix it in {CONFIG_FILE}, or uninstall and reinstall the "
+                     f"notification server.")
+    return " ".join(parts)
+
+
 def update_config(base_url: Optional[str] = None,
-                  upstream_relay: Optional[bool] = None) -> Dict[str, Any]:
-    """(v2.40.5) Rewrite /etc/ntfy/server.yml with updated base_url
-    and/or upstream_relay, preserving other settings. Restarts the
-    service so changes take effect.
+                  upstream_relay: Optional[bool] = None,
+                  port: Optional[int] = None,
+                  bind: Optional[str] = None,
+                  drop_custom_keys: Optional[Sequence[str]] = None) -> Dict[str, Any]:
+    """(v2.40.5; reworked v3.4.146) Rewrite /etc/ntfy/server.yml from
+    Aerodrome's managed values and restart ntfy. None keeps the live value
+    for that field. Only for aerodrome_managed installs.
 
-    Only works for aerodrome_managed installs — externally-managed
-    configs are not touched (user is responsible).
+    The file is always re-rendered whole, so settings Aerodrome doesn't
+    manage would be lost: they are dropped only when the caller names every
+    one of them in drop_custom_keys (the custom_keys list a refusal
+    returned). A setting added after that refusal isn't in the caller's
+    list, so it brings a fresh refusal instead of being dropped unseen.
+    Refusals write nothing and make no sudo call:
+      code "invalid"              — a supplied value the renderer refuses;
+      code "unreadable"           — the live file can't be read;
+      code "custom_keys"          — the live file has settings Aerodrome
+                                    doesn't manage (custom_keys: names) that
+                                    drop_custom_keys doesn't name;
+      code "stored_value_invalid" — a live value that can't be carried over
+                                    (keys: names): a field left as None, or
+                                    a listen-http Aerodrome can't represent
+                                    (an IPv6, host-name or one-interface
+                                    bind set by hand) that a supplied
+                                    port/bind would replace.
+    Names only in every response, never values.
 
-    Returns {'ok': bool, 'message': str, 'base_url': str, 'upstream_relay': bool}.
+    Returns {'ok', 'message', 'base_url', 'upstream_relay', 'port', 'bind',
+    'dropped_keys'} on success. When the file was written but ntfy didn't
+    restart: {'ok': False, 'written': True, 'dropped_keys', 'message'}.
     """
     status = install_status()
     if status["state"] != "aerodrome_managed":
@@ -840,22 +1056,56 @@ def update_config(base_url: Optional[str] = None,
                        "Edit /etc/ntfy/server.yml directly.",
         }
 
-    # Read the existing port + bind from the live config so we don't
-    # reset those to defaults. If we can't parse them, bail.
-    port = _read_server_port() or 2586
-    bind = _read_server_bind() or "0.0.0.0"
+    try:
+        if base_url is not None:
+            validate_base_url(base_url)
+        if port is not None or bind is not None:
+            _validate_install_args(port if port is not None else 2586,
+                                   bind if bind is not None else "0.0.0.0", None)
+    except ValueError as e:
+        return {"ok": False, "code": "invalid", "message": str(e)}
 
-    # If the caller passed None for either param, we read the CURRENT
-    # value from the existing config and keep it. This way a partial
-    # update (e.g. just toggling upstream_relay) doesn't reset base_url.
+    cur = current_config()
+    if cur is None:
+        return {"ok": False, "code": "unreadable",
+                "message": f"Couldn't read {CONFIG_FILE}, so nothing was changed."}
+
+    confirmed = (set(drop_custom_keys)
+                 if isinstance(drop_custom_keys, (list, tuple, set, frozenset)) else set())
+    if set(cur["custom"]) - confirmed:
+        return {
+            "ok": False, "code": "custom_keys", "custom_keys": cur["custom"],
+            "message": "Your notification server's config file has settings Aerodrome "
+                       f"doesn't manage: {', '.join(cur['custom'])}. "
+                       "Saving would remove them.",
+        }
+
+    # Fields the caller left as None come from the live file — only when
+    # that value can be carried over exactly. listen-http is always checked:
+    # left as None it is carried, and a supplied port/bind (restore) would
+    # replace a hand-set value Aerodrome can't represent, which never happens
+    # silently. base-url is checked only when left as None, so re-entering a
+    # rejected address stays the way out.
+    needed = {"listen-http"}
     if base_url is None:
-        base_url = _read_base_url()
+        needed.add("base-url")
     if upstream_relay is None:
-        upstream_relay = _read_upstream_relay()
+        needed.add("upstream-base-url")
+    bad = sorted(needed & set(cur["problems"]))
+    if bad:
+        return {"ok": False, "code": "stored_value_invalid", "keys": bad,
+                "message": _stored_invalid_message(bad)}
 
-    cfg_text = _server_yml_text(port, bind, str(CACHE_DIR),
-                                base_url=base_url,
-                                upstream_relay=upstream_relay)
+    base_url = cur["base_url"] if base_url is None else base_url
+    port = cur["port"] if port is None else port
+    bind = cur["bind"] if bind is None else bind
+    upstream_relay = cur["upstream"] if upstream_relay is None else bool(upstream_relay)
+    try:
+        cfg_text = render_server_yml(port, bind, base_url, upstream_relay,
+                                     cache_file=SERVER_CACHE_FILE)
+    except ValueError as e:
+        return {"ok": False, "code": "invalid", "message": str(e)}
+
     try:
         _sudo_run(["tee", str(CONFIG_FILE)], input_text=cfg_text)
     except RuntimeError as e:
@@ -864,68 +1114,42 @@ def update_config(base_url: Optional[str] = None,
     try:
         _sudo_run(["systemctl", "restart", "ntfy"])
     except RuntimeError as e:
-        return {"ok": False, "message": f"Config written but failed to restart: {e}"}
+        return {"ok": False, "written": True, "dropped_keys": cur["custom"],
+                "message": f"Config written but failed to restart: {e}"}
 
     return {
         "ok": True,
         "message": "ntfy config updated and service restarted.",
         "base_url": base_url,
         "upstream_relay": upstream_relay,
+        "port": port,
+        "bind": bind,
+        "dropped_keys": cur["custom"],
     }
 
 
 def _read_server_bind() -> Optional[str]:
-    """Extract bind address from listen-http directive. Returns e.g.
-    '0.0.0.0' or '127.0.0.1'. Returns None if not set or malformed."""
-    try:
-        with open(CONFIG_FILE) as f:
-            for line in f:
-                s = line.strip()
-                if s.startswith("#") or not s:
-                    continue
-                m = re.match(r'^listen-http\s*:\s*"?([^"]+)"?\s*$', s)
-                if m:
-                    addr = m.group(1).strip()
-                    if ":" in addr:
-                        bind = addr.rsplit(":", 1)[0]
-                        return bind or "0.0.0.0"
-    except Exception:
-        return None
-    return None
+    """Bind address from listen-http ('0.0.0.0' or '127.0.0.1'), or None
+    when the file is missing or the value can't be carried over."""
+    cur = current_config()
+    return cur["bind"] if cur else None
 
 
 def _read_base_url() -> Optional[str]:
-    """Read the current base-url from server.yml. Returns None if missing."""
-    try:
-        with open(CONFIG_FILE) as f:
-            for line in f:
-                s = line.strip()
-                if s.startswith("#") or not s:
-                    continue
-                m = re.match(r'^base-url\s*:\s*"?([^"]+?)"?\s*$', s)
-                if m:
-                    return m.group(1).strip()
-    except Exception:
-        return None
-    return None
+    """The live base-url, or None when it is missing or no longer passes
+    validate_base_url()."""
+    cur = current_config()
+    return cur["base_url"] if cur else None
 
 
 def _read_upstream_relay() -> bool:
-    """Return True if upstream-base-url is set (uncommented) in server.yml.
-    Default True so toggling only one field doesn't inadvertently disable
-    upstream relay on a user who had it enabled."""
-    try:
-        with open(CONFIG_FILE) as f:
-            for line in f:
-                s = line.strip()
-                if s.startswith("#") or not s:
-                    continue
-                if re.match(r'^upstream-base-url\s*:', s):
-                    return True
-        # Config file exists but no active upstream-base-url line found
-        return False
-    except Exception:
-        return True  # Default on error
+    """True when server.yml relays to ntfy.sh. Defaults to True when the
+    file or the value can't be read, so a failed read never shows the
+    relay as off to a user who has it on."""
+    cur = current_config()
+    if cur is None or "upstream-base-url" in cur["problems"]:
+        return True
+    return cur["upstream"]
 
 
 def upgrade() -> Dict[str, Any]:
@@ -994,9 +1218,16 @@ def uninstall(purge_data: bool = False) -> Dict[str, Any]:
     """Remove Aerodrome-managed ntfy install. Safe to run from any state —
     missing files are ignored. Refuses to touch external installs.
 
-    purge_data (v2.41.0) — if True, also delete /var/lib/ntfy/cache.db
-    and any other runtime data in /var/lib/ntfy/. Default False so
-    users who reinstall later keep their topic's message history."""
+    purge_data (v2.41.0) — if True, also delete ntfy's cached messages
+    (ntfy_purge_argvs: SERVER_CACHE_FILE and its -wal/-shm). Default False
+    so users who reinstall later keep their topic's message history.
+    purged_data in the result is True only when that deletion went through.
+
+    The stamp goes last, and only when every earlier step worked: anything
+    left behind (a refused purge, a file sudo wouldn't remove) keeps the
+    install 'partial', whose panel offers Uninstall again — without the
+    stamp a leftover binary would read as 'external' (never touched) and a
+    leftover cache as 'not_installed' (no uninstall control)."""
     status = install_status()
     if status["state"] == "external":
         return {"ok": False,
@@ -1007,8 +1238,20 @@ def uninstall(purge_data: bool = False) -> Dict[str, Any]:
         # Even when there's no install, honor the purge request if the user
         # somehow has stale data left over from a prior install.
         if purge_data:
-            _purge_ntfy_data()
-        return {"ok": True, "message": "Nothing to uninstall.", "status": status}
+            try:
+                _purge_ntfy_data()
+            except Exception as e:
+                return {"ok": False,
+                        "message": f"Nothing to uninstall. Deleting cached messages failed: {e}",
+                        "status": status, "purged_data": False}
+        return {"ok": True, "message": "Nothing to uninstall.", "status": status,
+                "purged_data": purge_data}
+
+    # A cache-file set by hand in server.yml (a custom setting) isn't
+    # Aerodrome's to delete: the purge removes SERVER_CACHE_FILE only, and the
+    # result says the hand-set one was left (its name, never its value). Read
+    # before server.yml is removed below.
+    hand_cache = purge_data and "cache-file" in ((current_config() or {}).get("custom") or ())
 
     errors = []
     # Best-effort stop + disable; ignore failures (service may already be gone)
@@ -1021,21 +1264,30 @@ def uninstall(purge_data: bool = False) -> Dict[str, Any]:
             if SYSTEMD_UNIT.exists():
                 errors.append(str(e))
 
-    # Remove files
-    for path in (SYSTEMD_UNIT, BINARY_PATH, CONFIG_FILE, STAMP_FILE):
+    # Remove files (the stamp last, below)
+    for path in (SYSTEMD_UNIT, BINARY_PATH, CONFIG_FILE):
         if path.exists():
             try:
                 _sudo_run(["rm", "-f", str(path)])
             except RuntimeError as e:
                 errors.append(f"rm {path}: {e}")
 
-    # v2.41.0: if user asked to purge data, wipe cache.db and the cache dir
-    # contents. This is destructive — only on explicit opt-in.
+    # v2.41.0: if user asked to purge data, wipe the message cache
+    # (ntfy_purge_argvs). This is destructive — only on explicit opt-in.
+    purged = False
     if purge_data:
         try:
             _purge_ntfy_data()
+            purged = True
         except Exception as e:
             errors.append(f"purge data: {e}")
+
+    # The stamp only once everything above worked (see the docstring).
+    if not errors and STAMP_FILE.exists():
+        try:
+            _sudo_run(["rm", "-f", str(STAMP_FILE)])
+        except RuntimeError as e:
+            errors.append(f"rm {STAMP_FILE}: {e}")
 
     # Remove empty directories — leave them if they contain user data
     for path in (CONFIG_DIR, CACHE_DIR, STAMP_DIR):
@@ -1056,33 +1308,61 @@ def uninstall(purge_data: bool = False) -> Dict[str, Any]:
         return {"ok": False,
                 "message": f"Uninstall finished with errors: {'; '.join(errors)}",
                 "status": new_status,
-                "purged_data": purge_data}
+                "purged_data": purged}
     msg = "Uninstalled ntfy."
     if purge_data:
-        msg += " Cached message data at /var/lib/ntfy/ was also removed."
+        msg += f" Cached message data at {Path(SERVER_CACHE_FILE).parent}/ was also removed."
+        if hand_cache:
+            msg += " The cache file you set by hand in server.yml (cache-file) was left in place."
     else:
-        msg += " Cached message data at /var/lib/ntfy/cache.db was kept."
+        msg += f" Cached message data at {SERVER_CACHE_FILE} was kept."
     return {"ok": True, "message": msg, "status": new_status,
-            "purged_data": purge_data}
+            "purged_data": purged}
+
+
+def _sqlite_files(db) -> list:
+    """An SQLite database and the -wal/-shm files SQLite keeps beside it."""
+    return [Path(f"{db}{side}") for side in ("", "-wal", "-shm")]
+
+
+def ntfy_purge_argvs() -> list:
+    """The commands "Also delete cached messages" runs through sudo -n, one
+    per path: `rm -f` on the cache server.yml names (SERVER_CACHE_FILE) and
+    SQLite's -wal/-shm beside it — the cache every release wrote and a
+    reinstall picks up. sudo matches a rule's whole command line, so
+    install.sh's sudoers rules must grant each argv word for word.
+
+    Nothing in /var/cache/ntfy: no Aerodrome release wrote a cache or
+    attachments there (the purge looked there by mistake before v3.4.146),
+    and ntfy's own package keeps its cache there. uninstall.sh's purge
+    removes the same files."""
+    return [["rm", "-f", str(p)] for p in _sqlite_files(SERVER_CACHE_FILE)]
 
 
 def _purge_ntfy_data() -> None:
-    """Remove ntfy's cached message data. Best-effort; raises on failure."""
-    for name in ("cache.db", "cache.db-wal", "cache.db-shm"):
-        p = CACHE_DIR / name
-        if p.exists():
-            _sudo_run(["rm", "-f", str(p)])
-    # Also remove any attachments subdirectory ntfy may have created
-    attachments = CACHE_DIR / "attachments"
-    if attachments.exists():
-        _sudo_run(["rm", "-rf", str(attachments)])
+    """Remove ntfy's cached message data (ntfy_purge_argvs). Tries every
+    path that exists — a dangling link too — then raises one RuntimeError
+    naming the ones that couldn't be removed (e.g. sudo refused: no rule
+    for that path yet)."""
+    failed = []
+    for argv in ntfy_purge_argvs():
+        path = argv[-1]
+        if not os.path.lexists(path):
+            continue
+        try:
+            _sudo_run(argv)
+        except RuntimeError as e:
+            failed.append(f"{path}: {e}")
+    if failed:
+        raise RuntimeError("couldn't remove " + "; ".join(failed))
 
 
 def stale_data_present() -> bool:
-    """(v2.41.0) Return True if /var/lib/ntfy/cache.db exists even though
-    no ntfy install is active. Used by the install flow to inform the
-    user their reinstall will inherit old cached messages."""
+    """(v2.41.0) Return True if the message cache a reinstall would use
+    (SERVER_CACHE_FILE, or its -wal/-shm) exists even though no ntfy install
+    is active. Used by the install flow to inform the user their reinstall
+    will inherit old cached messages."""
     status = install_status()
     if status["state"] != "not_installed":
         return False
-    return (CACHE_DIR / "cache.db").exists()
+    return any(p.exists() for p in _sqlite_files(SERVER_CACHE_FILE))

@@ -59,7 +59,7 @@ SOURCES = {
     "B38M": (35.9, 39.5, 2, 9.4, 6.2, 4.5, 1.7, False),   # 737 MAX 8
     "C56X": (17.4, 16.9, 2, 5.8, 3.8, 2.8, 1.2, False),   # Citation Mustang
     "SR22": (11.6, 8.8, 1, 0.0, 0.0, 2.4, 1.0, "taper"),    # Cirrus (tapered wing, near-straight LE)
-    # --- v3.4.133: live-traffic coverage gap (Wisconsin scope, 2026-09-20) ---
+    # --- v3.4.133: live-traffic coverage gap (2026-09-20) ---
     "AEST": (11.9, 9.1, 2, 3.6, 2.6, 2.2, 0.9, False),     # Aero Commander 600
     "BE36": (10.2, 8.3, 1, 0.0, 0.0, 2.2, 1.0, False),     # Bonanza A36 (V-tail drawn as conventional tail)
     "C152": (10.2, 7.4, 1, 0.0, 0.0, 2.0, 0.8, False),     # Cessna 152
@@ -76,7 +76,7 @@ SOURCES = {
     "SR20": (11.7, 8.0, 1, 0.0, 0.0, 2.4, 1.0, "taper"),   # Cirrus SR20
     "S22T": (11.6, 8.8, 1, 0.0, 0.0, 2.4, 1.0, "taper"),   # Cirrus SR22T
     "TBM9": (11.4, 11.3, 1, 0.0, 0.0, 2.6, 1.2, False),    # TBM 930
-    # --- v3.4.134: live-traffic coverage gap (Wisconsin scope, 2026-09-22) ---
+    # --- v3.4.134: live-traffic coverage gap (2026-09-22) ---
     "AC50": (12.0, 9.4, 2, 3.8, 2.6, 2.2, 0.9, False),    # Aero Commander 500
     "BE35": (10.2, 7.6, 1, 0.0, 0.0, 2.2, 1.0, False),    # Bonanza 35 (V-tail -> conventional tail)
     "C182": (11.0, 8.8, 1, 0.0, 0.0, 2.2, 0.8, False),    # Cessna Skylane
@@ -91,7 +91,7 @@ SOURCES = {
     "M5": (10.7, 7.0, 1, 0.0, 0.0, 2.1, 0.8, False),      # Maule M-5 (taildragger)
     "PA46": (13.7, 8.6, 1, 0.0, 0.0, 2.4, 0.9, False),    # Malibu/Meridian
     "T210": (10.1, 9.0, 1, 0.0, 0.0, 2.2, 0.9, False),    # Turbo Centurion
-    # --- v3.4.135: live-traffic coverage gap (Wisconsin scope, 2026-09-23) ---
+    # --- v3.4.135: live-traffic coverage gap (2026-09-23) ---
     "B744": (64.4, 70.7, 4, 15.6, 9.4, 8.0, 2.6, False),  # 747-400
     "B753": (38.0, 54.4, 2, 10.2, 7.4, 5.0, 2.2, False),  # 757-300
     "B764": (47.6, 61.5, 2, 12.4, 8.6, 5.9, 2.1, False),  # 767-400ER
@@ -102,7 +102,7 @@ SOURCES = {
     "GL7T": (35.0, 35.0, 2, 9.2, 6.2, 4.8, 2.0, False),   # Global 7000/7500/8000
     "P28A": (9.8, 7.2, 1, 0.0, 0.0, 2.0, 0.8, False),     # Cherokee 140/Cherokee family
     "E55P": (19.6, 16.9, 2, 6.2, 4.2, 3.0, 1.3, False),   # Phenom 100
-    # --- v3.4.131b: live-traffic coverage gap (Wisconsin scope, 2026-09-19) ---
+    # --- v3.4.131b: live-traffic coverage gap (2026-09-19) ---
     "A35K": (64.8, 68.8, 2, 16.8, 10.6, 7.9, 2.8, False),   # A350-1000
     "B39M": (37.3, 43.8, 2, 9.6, 6.4, 4.7, 1.7, False),     # 737 MAX 9
     "B748": (68.4, 76.3, 4, 15.0, 9.6, 8.2, 2.8, True),     # 747-8 (freighter box)
@@ -179,7 +179,7 @@ SOURCES = {
     "CL60": (21.2, 20.9, 2, 6.8, 4.4, 3.4, 1.5, False),   # Challenger 600
     "FA7X": (26.3, 27.0, 2, 7.8, 5.0, 3.9, 1.7, False),   # Falcon 7X
     "FA8X": (26.3, 27.3, 2, 7.8, 5.0, 3.9, 1.7, False),   # Falcon 8X
-    # --- v3.4.136: live-traffic coverage gap (Wisconsin scope, 2026-09-23 eve) ---
+    # --- v3.4.136: live-traffic coverage gap (2026-09-23 eve) ---
     "ASTR": (17.2, 18.2, 2, 5.8, 4.0, 2.9, 1.3, False),    # Astra (G100 origin)
     "B37M": (34.8, 35.6, 2, 9.0, 5.8, 4.3, 1.6, False),    # 737 MAX 7
     "C414": (11.6, 8.8, 2, 3.8, 2.8, 2.2, 0.8, False),     # President (Twin Comanche)

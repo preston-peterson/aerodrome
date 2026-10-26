@@ -49,9 +49,14 @@ fixtures. Stdlib only.
                     to the end with a found-flag. A line that is safe anyway
                     can say `# pipefail-ok: <why>`. Heredoc bodies are skipped.
                     Not covered: `sed …q` (too fuzzy to match reliably).
-  ntfy-cache        the cache-file path ntfy_installer.py writes into ntfy's
-                    server.yml is removed by uninstall.sh (on a code line, not
-                    only named in a comment).
+  ntfy-cache        the message cache ntfy_installer.py's server.yml names (its
+                    SERVER_CACHE_FILE assignment, which the renderer takes it
+                    from) and SQLite's -wal/-shm beside it are each removed by
+                    uninstall.sh's purge branch (`if [ "$should_purge_ntfy_data"
+                    = true ]` … `else`/`fi`, code lines only — the size
+                    prompt's `du`, an echo or a comment elsewhere don't count),
+                    and install.sh's render_sudoers() grants `/bin/rm -f` for
+                    each, so the app's "Also delete cached messages" can too.
 
 Usage:
   python3 scripts/check_installers.py [ROOT] [check,check,...]
@@ -472,21 +477,72 @@ def check_pipefail_readers(root):
     return errs
 
 
+SERVER_CACHE_RE = re.compile(r"^SERVER_CACHE_FILE\s*=\s*['\"](/[^\s'\"]+)['\"]", re.M)
+
+
+def _names_path(text, path):
+    """True when `path` occurs in text as a whole path (cache.db must not be
+    satisfied by cache.db-wal, nor by a glob such as cache.db*)."""
+    return re.search(re.escape(path) + r"(?![\w.*-])", text) is not None
+
+
+PURGE_IF_RE = re.compile(r'^(\s*)if \[ "\$should_purge_ntfy_data" = true \]; then\s*$')
+
+
+def ntfy_purge_block(text):
+    """The code lines of uninstall.sh's `if [ "$should_purge_ntfy_data" = true ];
+    then` branch, up to its `else`/`elif`/`fi` at the same indent, joined;
+    None when there is no such branch. Only these lines remove the cache: the
+    size prompt's `du`, an echo or a comment elsewhere name the same paths."""
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        m = PURGE_IF_RE.match(line)
+        if not m:
+            continue
+        end = re.compile(re.escape(m.group(1)) + r"(?:else|elif\b.*|fi)\s*$")
+        for j in range(i + 1, len(lines)):
+            if end.match(lines[j]):
+                return "\n".join(code_lines("\n".join(lines[i + 1:j])))
+        return None
+    return None
+
+
 def check_ntfy_cache(root):
     root = Path(root)
     src, unin = _read(root / "ntfy_installer.py"), _read(root / "uninstall.sh")
-    if src is None or unin is None:
-        return ["ntfy_installer.py and/or uninstall.sh not found"]
-    m = re.search(r"^cache-file:\s*['\"]?(/[^\s'\"]+)", src, re.M)
-    if not m:    # fail closed: a moved/reworded template must be re-targeted, not pass
-        return ["ntfy_installer.py: no `cache-file: /absolute/path` line found in the "
-                "server.yml template — update this check alongside it"]
-    path = m.group(1)
-    code = "\n".join(l for l in unin.splitlines() if not l.lstrip().startswith("#"))
-    if path in code:
-        return []
-    return [f"uninstall.sh never removes ntfy's cache file {path} "
-            f"(ntfy_installer.py's server.yml puts it there)"]
+    inst = _read(root / "install.sh")
+    if src is None or unin is None or inst is None:
+        return ["ntfy_installer.py, uninstall.sh and/or install.sh not found"]
+    m = SERVER_CACHE_RE.search(src)
+    if not m:    # fail closed: a moved/renamed constant must be re-targeted, not pass
+        return ["ntfy_installer.py: no `SERVER_CACHE_FILE = \"/absolute/path\"` line "
+                "found (the server.yml renderer's cache path) — update this check "
+                "alongside it"]
+    files = [m.group(1) + side for side in ("", "-wal", "-shm")]
+    errs = []
+    block = ntfy_purge_block(unin)
+    if block is None:    # fail closed: a reworded branch must be re-targeted, not pass
+        errs.append('uninstall.sh: no `if [ "$should_purge_ntfy_data" = true ]; then` '
+                    "… `else`/`fi` branch found to look for the cache purge in — update "
+                    "this check alongside it")
+    else:
+        for p in files:
+            if not _names_path(block, p):
+                errs.append(f"uninstall.sh never removes {p} (ntfy's message cache: "
+                            f"ntfy_installer.py's server.yml names {files[0]})")
+    span = func_span(inst, "render_sudoers")
+    body = heredoc(inst[span[0]:span[1]]) if span else None
+    if body is None:
+        errs.append("install.sh: no render_sudoers() << SUDOEOF heredoc to find the "
+                    "cache-purge rules in")
+        return errs
+    rules = [l for l in body.splitlines() if "ALL=(" in l and not l.lstrip().startswith("#")]
+    for p in files:
+        if not any(re.search(r"NOPASSWD:\s*/bin/rm -f " + re.escape(p) + r"\s*$", l)
+                   for l in rules):
+            errs.append(f"install.sh's sudoers rules have no `/bin/rm -f {p}` — the app's "
+                        f"\"Also delete cached messages\" can't remove it")
+    return errs
 
 
 CHECKS = [

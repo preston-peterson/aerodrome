@@ -1,0 +1,13 @@
+# Documentation images under docs/ that scripts/screenshots.py does not make,
+# each one reviewed, with the exact sha256 it was reviewed at. bump-version.sh
+# fails on a docs/ image that is neither made by that script nor listed here,
+# and on a listed one whose bytes changed. Prefer regenerating through
+# scripts/screenshots.py (invented data); add or update a line here only after
+# reviewing the image. Format: `sha256sum` output from the repo root
+# (`sha256sum -c scripts/reviewed-doc-images.sha256` checks it).
+4fd0041b888db5731af4067a5d8022d2bd4bc6aff6a87dce21cf4bdf5570e5ef  docs/screenshot-full-backup.png
+e66aa17b0d064d400e2635eba4ab528ce492d13022736d9b690ada9ae7104049  docs/screenshot-load-average.png
+897bc28c2be8975df6e7600a045d734c9d80091cf3a3207c4cf3b38726086203  docs/screenshot-load-overload.png
+fad2d73152c87cf2bddaf8c562177639bf59a0b8371c809681c47c233f376704  docs/screenshot-notification-stats.png
+373859f17e5e12a931db2645732f051af0411cede9b1a08a432191812772fd5d  docs/screenshot-ntfy-update-card.png
+b60207a9ddc6fb604544a44cb3f5c0e3ac5d7638813b77a6e3b64a99e7a07443  docs/screenshot-upload-zone.png

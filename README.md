@@ -1,5 +1,5 @@
 # Aerodrome
-<!-- Version: 3.4.145 -->
+<!-- Version: 3.4.146 -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -178,6 +178,7 @@ aerodrome/
 ├── test_install_sh.py            installer tests — install.sh + recover-sudoers.sh under stub sudo
 ├── test_map_carto_key.py         unit tests — map.carto_api_key validation
 ├── test_migration_v7.py          unit tests — schema migration v7
+├── test_ntfy_yaml.py             unit tests — notification-server settings (validation, server.yml, restore, Notifications tab, message cache)
 ├── test_photo_resolver.py        unit tests — photo enrichment cache logic
 ├── test_poll_robustness.py       unit tests — collector poll resilience to bad records
 ├── test_preflight.py             unit tests — startup config validation

@@ -9,6 +9,7 @@ dir and mutate exactly one thing.
 import contextlib
 import importlib.util
 import io
+import re
 import shutil
 import subprocess
 import tempfile
@@ -258,6 +259,8 @@ class OneMutationOneFinding(unittest.TestCase):
         self.assertEqual(ci.check_pipefail_readers(self.root), [])
 
     # -- ntfy-cache --------------------------------------------------------------
+    CACHE_ANCHOR = 'SERVER_CACHE_FILE = "/var/lib/ntfy/cache.db"'
+
     def test_ntfy_cache_only_in_a_comment(self):
         p = self.root / "uninstall.sh"
         lines = p.read_text(encoding="utf-8").splitlines(keepends=True)
@@ -266,16 +269,70 @@ class OneMutationOneFinding(unittest.TestCase):
                              for l in lines)
                      + "# purge /var/lib/ntfy/cache.db some day\n", encoding="utf-8")
         errs = ci.check_ntfy_cache(self.root)
-        self.assertEqual(len(errs), 1, errs)
-        self.assertIn("/var/lib/ntfy/cache.db", errs[0])
+        self.assertEqual(len(errs), 3, errs)        # the file, its -wal and its -shm
+        for e, side in zip(errs, ("", "-wal", "-shm")):
+            self.assertIn(f"uninstall.sh never removes /var/lib/ntfy/cache.db{side} ", e)
         self.assertOnlyFinding("ntfy-cache")
 
-    def test_ntfy_cache_template_moved_fails_closed(self):
-        self.mutate("ntfy_installer.py", "cache-file: /var/lib/ntfy/cache.db",
-                    "cache-file: {cache_path}")
+    def test_ntfy_cache_wal_alone_missing(self):
+        """cache.db-wal must not pass because cache.db is on the list."""
+        self.mutate("uninstall.sh", "/var/lib/ntfy/cache.db-wal", "/var/lib/ntfy/other.db-wal")
         errs = ci.check_ntfy_cache(self.root)
         self.assertEqual(len(errs), 1, errs)
-        self.assertIn("no `cache-file:", errs[0])
+        self.assertIn("never removes /var/lib/ntfy/cache.db-wal ", errs[0])
+        self.assertOnlyFinding("ntfy-cache")
+
+    def test_ntfy_cache_rule_missing_from_sudoers(self):
+        self.mutate("install.sh", "${u} ALL=(ALL) NOPASSWD: /bin/rm -f /var/lib/ntfy/cache.db-shm\n", "")
+        errs = ci.check_ntfy_cache(self.root)
+        self.assertEqual(len(errs), 1, errs)
+        self.assertIn("no `/bin/rm -f /var/lib/ntfy/cache.db-shm`", errs[0])
+        self.assertOnlyFinding("ntfy-cache")
+
+    def test_ntfy_cache_constant_moved_fails_closed(self):
+        self.mutate("ntfy_installer.py", self.CACHE_ANCHOR, "SERVER_CACHE_FILE = CACHE_PATH")
+        errs = ci.check_ntfy_cache(self.root)
+        self.assertEqual(len(errs), 1, errs)
+        self.assertIn("no `SERVER_CACHE_FILE = ", errs[0])
+
+    def test_ntfy_cache_follows_the_constant(self):
+        self.mutate("ntfy_installer.py", self.CACHE_ANCHOR,
+                    'SERVER_CACHE_FILE = "/var/lib/ntfy/moved.db"')
+        errs = ci.check_ntfy_cache(self.root)
+        self.assertEqual(len(errs), 6, errs)        # 3 uninstall.sh + 3 sudoers rules
+        self.assertTrue(all("/var/lib/ntfy/moved.db" in e for e in errs), errs)
+
+    def test_ntfy_cache_size_prompt_is_not_a_removal(self):
+        """The prompt's `sudo du -shc /var/lib/ntfy/cache.db*` names the file
+        but removes nothing: dropping it from the purge loop is a finding."""
+        self.assertIn("du -shc /var/lib/ntfy/cache.db*",
+                      (self.root / "uninstall.sh").read_text(encoding="utf-8"))
+        self.mutate("uninstall.sh", "for p in /var/lib/ntfy/cache.db \\\n", "for p in \\\n")
+        errs = ci.check_ntfy_cache(self.root)
+        self.assertEqual(len(errs), 1, errs)
+        self.assertIn("uninstall.sh never removes /var/lib/ntfy/cache.db ", errs[0])
+        self.assertOnlyFinding("ntfy-cache")
+
+    def test_ntfy_cache_named_outside_the_purge_branch_is_not_a_removal(self):
+        """An echo (or a removal) outside the purge branch removes nothing when
+        the user asked to delete the cache."""
+        self.mutate("uninstall.sh", "/var/lib/ntfy/cache.db-wal \\\n"
+                    "                     /var/lib/ntfy/cache.db-shm; do",
+                    "/var/lib/ntfy/cache.db-wal; do")
+        self.mutate("uninstall.sh", '        if [ "$should_purge_ntfy_data" = true ]; then\n',
+                    '        echo "would purge /var/lib/ntfy/cache.db-shm"\n'
+                    '        if [ "$should_purge_ntfy_data" = true ]; then\n')
+        errs = ci.check_ntfy_cache(self.root)
+        self.assertEqual(len(errs), 1, errs)
+        self.assertIn("uninstall.sh never removes /var/lib/ntfy/cache.db-shm ", errs[0])
+        self.assertOnlyFinding("ntfy-cache")
+
+    def test_ntfy_cache_purge_branch_missing_fails_closed(self):
+        self.mutate("uninstall.sh", 'if [ "$should_purge_ntfy_data" = true ]; then',
+                    'if [ "${should_purge_ntfy_data}" = true ]; then')
+        errs = ci.check_ntfy_cache(self.root)
+        self.assertEqual(len(errs), 1, errs)
+        self.assertIn('no `if [ "$should_purge_ntfy_data" = true ]; then`', errs[0])
 
     # -- bash-syntax -------------------------------------------------------------
     @unittest.skipUnless(HAVE_BASH, "needs bash")
@@ -285,6 +342,48 @@ class OneMutationOneFinding(unittest.TestCase):
         self.assertEqual(len(errs), 1, errs)
         self.assertIn("recover-sudoers.sh", errs[0])
         self.assertOnlyFinding("bash-syntax")
+
+
+class AppAndUninstallerPurgeTheSameFiles(unittest.TestCase):
+    """The app's "Also delete cached messages" (ntfy_installer.ntfy_purge_argvs,
+    run through sudo -n) and uninstall.sh's purge branch remove exactly the
+    same paths, and install.sh's sudoers rules grant every command the app
+    runs word for word (sudo matches a rule's whole command line)."""
+
+    PATH_RE = re.compile(r"(?<![\w.$])/(?:var|etc|usr|opt|srv|home)/[^\s\"';|&)]+")
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            spec = importlib.util.spec_from_file_location("ntfy_installer",
+                                                          REPO / "ntfy_installer.py")
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+        except ImportError as e:      # requests missing: not this test's subject
+            raise unittest.SkipTest(f"ntfy_installer not importable: {e}")
+        cls.argvs = mod.ntfy_purge_argvs()
+        cls.paths = [argv[-1] for argv in cls.argvs]
+        inst = (REPO / "install.sh").read_text(encoding="utf-8")
+        span = ci.func_span(inst, "render_sudoers")
+        cls.rules = [l for l in ci.heredoc(inst[span[0]:span[1]]).splitlines()
+                     if "ALL=(" in l and not l.lstrip().startswith("#")]
+        cls.block = ci.ntfy_purge_block((REPO / "uninstall.sh").read_text(encoding="utf-8"))
+
+    def test_the_list_is_the_file_server_yml_names(self):
+        self.assertEqual(self.paths, ["/var/lib/ntfy/cache.db", "/var/lib/ntfy/cache.db-wal",
+                                      "/var/lib/ntfy/cache.db-shm"])
+
+    def test_uninstall_sh_purges_exactly_the_apps_paths(self):
+        """Both directions: nothing the app deletes is kept by uninstall.sh,
+        and uninstall.sh's purge deletes nothing more (the binary's download
+        folder goes with the install, not with the messages)."""
+        self.assertIsNotNone(self.block, "no purge branch in uninstall.sh")
+        self.assertEqual(sorted(set(self.PATH_RE.findall(self.block))), sorted(self.paths))
+
+    def test_sudoers_grants_each_command_the_app_runs(self):
+        for argv in self.argvs:
+            want = "NOPASSWD: /bin/" + " ".join(argv)
+            self.assertTrue(any(l.rstrip().endswith(want) for l in self.rules), want)
 
 
 class PipefailLint(unittest.TestCase):

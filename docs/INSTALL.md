@@ -371,7 +371,7 @@ position; aircraft cluster around them).
 
 ```bash
 bash <(curl -fsSL https://install.aerodromeadsb.com) \
-    --demo --lat 44.84 --lon -88.23
+    --demo --lat 37.62 --lon -122.38
 ```
 
 **Via a manually-downloaded release zip:**
@@ -380,7 +380,7 @@ bash <(curl -fsSL https://install.aerodromeadsb.com) \
 unzip aerodrome-vX.Y.Z.zip
 cd aerodrome-vX.Y.Z/
 chmod +x install.sh
-./install.sh --demo --home-lat 44.84 --home-lon -88.23
+./install.sh --demo --home-lat 37.62 --home-lon -122.38
 ```
 
 This third path is independent of the bootstrap — useful for air-gapped
@@ -1272,6 +1272,22 @@ VPNs, or Tailscale), you can edit the Base URL in the Notifications
 tab — or use a Tailscale/reverse-proxy URL for remote access.
 `base-url` must be reachable from your phone; `http://localhost`
 won't work (that would be localhost on the phone, not on the server).
+The field accepts only a plain web address — `http://` or `https://`,
+a host name or IP, an optional port and path, such as
+`http://192.0.2.10:2586` — and says what's wrong with anything else.
+If an address saved earlier doesn't pass that check, the field shows
+empty with a note under it; enter the address again.
+
+**Settings you add to `server.yml` yourself.** Aerodrome rewrites
+`/etc/ntfy/server.yml` from the settings it manages (address, port,
+listen address and the iPhone relay) whenever you change the address
+or the relay. If you've added your own settings to that file — an
+`auth-file`, say — saving from the Notifications tab names them and
+asks before removing them; if you cancel, nothing changes.
+Aerodrome keeps the listen address only as `0.0.0.0:PORT`,
+`127.0.0.1:PORT` or `:PORT`; if you set another one by hand, the
+Notifications tab says so when you save — put it back to one of those
+first (reinstalling the notification server also resets it).
 
 **What each event fires on:**
 
@@ -1350,8 +1366,20 @@ complete disaster-recovery zip in one click. It contains:
 To restore to a fresh Aerodrome install: install the target version
 on the new host, open the Configuration page, scroll to Full backup
 → **Restore from backup**, and upload the zip. The server stops the
-collector, replaces the relevant files, and restarts. Your history,
-config, and notification setup come back exactly as they were.
+collector, replaces the relevant files, and restarts. Your history
+and config come back exactly as they were; a local ntfy server's
+settings come back as described next.
+
+For a local ntfy server, restore carries over only the settings
+Aerodrome manages — address, port, listen address and the iPhone
+relay — and installs ntfy first if this machine doesn't have it yet.
+Anything else in the backup's `server.yml` is left out, and the
+restore summary lists those settings by name. If the ntfy config on
+this machine has settings you added by hand, or a listen address
+Aerodrome doesn't keep, restore leaves it unchanged and saves the
+backup's copy next to the install as
+`ntfy-server.yml.from-backup.<timestamp>` (readable only by the
+account Aerodrome runs as) for you to compare.
 
 The zip is portable across hosts — you can back up on a Raspberry Pi
 and restore onto an x86 box (or vice versa), as long as the target

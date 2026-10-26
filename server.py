@@ -1,4 +1,4 @@
-# Version: 3.4.145
+# Version: 3.4.146
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -7224,8 +7224,10 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     #   - cache.db from ntfy is not backed up (large, private, rarely useful)
     #   - base_url in the restored ntfy server.yml may reference the OLD
     #     server's LAN IP; user needs to update it via the Notifications tab
-    #   - restoring ntfy's server.yml requires ntfy to be installed on the
-    #     target machine; we skip it with a warning if not
+    #   - restoring ntfy's server.yml carries over only the settings
+    #     Aerodrome manages (address, port, listen address, iPhone relay),
+    #     never the file itself (v3.4.146); a missing local ntfy is
+    #     installed first (v3.3.1); an external one is never touched
 
     @app.get("/api/backup/export")
     def backup_export():
@@ -7836,6 +7838,14 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             skipped.append({"file": "aerodrome.db", "reason": f"error: {e}"})
 
         # --- 3. ntfy/server.yml ---
+        # v3.4.146: the backup's server.yml is never written as-is. Only the
+        # settings Aerodrome manages (address, port, listen address, iPhone
+        # relay) are read out of it and written through the same validated
+        # paths the Notifications tab uses; anything else is left out and
+        # named in a warning (names only, never values). A live file with
+        # hand-added settings, or a hand-set listen address Aerodrome can't
+        # represent, is left alone and the backup's copy is saved (0600)
+        # beside the install for review.
         try:
             # v3.4.9: defense-in-depth size check on zip entry.
             # ntfy server.yml is typically a few hundred bytes to a
@@ -7849,89 +7859,128 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 })
                 raise KeyError("ntfy/server.yml size exceeds limit")
             ntfy_bytes = zf.read(prefix + "ntfy/server.yml")
+
+            def _stash_ntfy_backup():
+                # 0600: the backup's server.yml can hold credentials ntfy
+                # allows there (tokens, passwords, keys).
+                stash_path = install_dir / f"ntfy-server.yml.from-backup.{ts}"
+                fd = os.open(stash_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "wb") as f:
+                    os.fchmod(f.fileno(), 0o600)    # also an older same-name file
+                    f.write(ntfy_bytes)
+                return stash_path
+
             # Only restore if ntfy is actually installed here AND managed
             # by Aerodrome (same gate as export). Otherwise save the bytes
             # to the install dir so the user can manually move them later.
             #
-            # v3.3.1: NEW behavior for state == 'not_installed' — if the
-            # backup contains an ntfy config, the user previously had an
-            # Aerodrome-managed ntfy here, so auto-install ntfy first and
-            # then restore the config over it. The user gets back to
-            # functional parity without having to know about service-level
-            # state. Other non-managed states (external, system_managed)
-            # still stash the file because we never take over a user's
-            # own ntfy install.
+            # v3.3.1: for state == 'not_installed' the backup came from a
+            # host with an Aerodrome-managed ntfy, so install it first — the
+            # install renders the backup's managed values directly. External
+            # or system-managed installs are never taken over.
             try:
                 from ntfy_installer import (
                     install_status, install as ntfy_install,
-                    CONFIG_FILE as NTFY_CONFIG_FILE, _sudo_run,
+                    update_config as ntfy_update_config, classify_server_yml,
                 )
+                cls = classify_server_yml(ntfy_bytes.decode("utf-8", "replace"))
+                carry_upstream = (None if "upstream-base-url" in cls["problems"]
+                                  else cls["upstream"])
+                carried = [name for name, value in (("base-url", cls["base_url"]),
+                                                    ("listen-http", cls["port"]),
+                                                    ("upstream-base-url", carry_upstream))
+                           if value is not None]
                 ns = install_status()
+                fresh = ns.get("state") == "not_installed"
+                ntfy_result = None
 
-                # v3.3.1 auto-install branch
-                if ns.get("state") == "not_installed":
+                if fresh:
                     try:
-                        install_result = ntfy_install()
-                        if install_result.get("ok"):
-                            warnings.append(
-                                "Re-installed Aerodrome-managed ntfy server "
-                                "(was not present in the new install — restored "
-                                "from backup automatically)."
-                            )
-                            ns = install_status()  # re-check; should be aerodrome_managed
-                        else:
-                            # install() refused (probably external-managed
-                            # race or sudoers issue) — stash and continue
-                            stash_path = install_dir / f"ntfy-server.yml.from-backup.{ts}"
-                            stash_path.write_bytes(ntfy_bytes)
-                            skipped.append({
-                                "file": "ntfy/server.yml",
-                                "reason": f"Auto-install of ntfy failed: "
-                                          f"{install_result.get('message', 'unknown error')}. "
-                                          f"Saved to {stash_path.name}; install ntfy "
-                                          f"manually via the Notifications tab if you "
-                                          f"want notifications restored.",
-                            })
-                            ns = None  # signal "don't try to restore config below"
+                        ntfy_result = ntfy_install(
+                            port=cls["port"] or 2586,
+                            bind=cls["bind"] or "0.0.0.0",
+                            base_url=cls["base_url"],          # None → LAN auto-detect
+                            upstream_relay=(True if carry_upstream is None
+                                            else carry_upstream),
+                        )
                     except Exception as e:
-                        stash_path = install_dir / f"ntfy-server.yml.from-backup.{ts}"
-                        stash_path.write_bytes(ntfy_bytes)
+                        ntfy_result = {"ok": False, "message": str(e)}
+                    if ntfy_result.get("ok"):
+                        warnings.append(
+                            "Re-installed Aerodrome-managed ntfy server "
+                            "(was not present in the new install — restored "
+                            "from backup automatically)."
+                        )
+                    else:
+                        stash_path = _stash_ntfy_backup()
                         skipped.append({
                             "file": "ntfy/server.yml",
-                            "reason": f"ntfy auto-install failed: {e}. Saved to "
-                                      f"{stash_path.name}; install manually via "
-                                      f"the Notifications tab.",
+                            "reason": f"Auto-install of ntfy failed: "
+                                      f"{ntfy_result.get('message') or 'unknown error'}. "
+                                      f"Saved to {stash_path.name}; install ntfy "
+                                      f"manually via the Notifications tab if you "
+                                      f"want notifications restored.",
                         })
-                        ns = None
-
-                # Restore config — covers both the original aerodrome_managed
-                # case AND the v3.3.1 auto-install case (which transitions to
-                # aerodrome_managed after a successful install).
-                if ns is not None and ns.get("state") == "aerodrome_managed":
-                    # Write through sudo — same path the installer uses
-                    _sudo_run(["tee", str(NTFY_CONFIG_FILE)],
-                              input_text=ntfy_bytes.decode("utf-8"))
-                    # Restart ntfy to pick up the new config
-                    try:
-                        _sudo_run(["systemctl", "restart", "ntfy"])
-                    except RuntimeError as e:
-                        warnings.append(f"ntfy config restored but restart failed: {e}")
-                    restored["ntfy_config"] = {"ok": True, "bytes": len(ntfy_bytes)}
-                    warnings.append(
-                        "ntfy base_url in the restored config may reference the OLD "
-                        "server's LAN IP. Check it in the Notifications tab if your "
-                        "phones can't reach ntfy after restore."
-                    )
-                elif ns is not None:
+                elif ns.get("state") == "aerodrome_managed":
+                    # None for a value the backup couldn't carry keeps the
+                    # current one; hand-added settings in the LIVE file stop
+                    # the write (custom_keys) rather than being dropped, and
+                    # so does a hand-set listen address Aerodrome can't
+                    # represent (stored_value_invalid).
+                    ntfy_result = ntfy_update_config(
+                        base_url=cls["base_url"], upstream_relay=carry_upstream,
+                        port=cls["port"], bind=cls["bind"], drop_custom_keys=None)
+                    if not ntfy_result.get("ok"):
+                        stash_path = _stash_ntfy_backup()
+                        if ntfy_result.get("code") == "custom_keys":
+                            reason = (
+                                "Your current notification-server config has settings "
+                                "Aerodrome doesn't manage "
+                                f"({', '.join(ntfy_result.get('custom_keys') or [])}), "
+                                "so it was left unchanged. The backup's copy is saved "
+                                f"as {stash_path.name} for review.")
+                        else:
+                            reason = (f"{ntfy_result.get('message') or 'Update failed.'} "
+                                      f"The backup's copy is saved as {stash_path.name}.")
+                        skipped.append({"file": "ntfy/server.yml", "reason": reason})
+                else:
                     # External or system-managed ntfy — never take over
-                    stash_path = install_dir / f"ntfy-server.yml.from-backup.{ts}"
-                    stash_path.write_bytes(ntfy_bytes)
+                    stash_path = _stash_ntfy_backup()
                     skipped.append({
                         "file": "ntfy/server.yml",
                         "reason": f"ntfy is not Aerodrome-managed on this system "
                                   f"(state={ns.get('state')!r}). Saved to "
                                   f"{stash_path.name} for manual review.",
                     })
+
+                # "written": server.yml now holds the backup's managed values
+                # even though a later step (the restart) failed — skipped[]
+                # says what failed; these warnings still say what was left out.
+                if ntfy_result is not None and (ntfy_result.get("ok")
+                                                or ntfy_result.get("written")):
+                    if ntfy_result.get("ok"):
+                        restored["ntfy_config"] = {"ok": True, "bytes": len(ntfy_bytes),
+                                                   "carried": carried}
+                    if cls["custom"]:
+                        warnings.append(
+                            "Left out notification-server settings Aerodrome "
+                            "doesn't manage: " + ", ".join(cls["custom"]))
+                    if "base-url" in cls["problems"]:
+                        warnings.append(
+                            "The backup had no usable notification server address, so "
+                            + ("it was detected automatically." if fresh
+                               else "the current one was kept."))
+                    else:
+                        warnings.append(
+                            "ntfy base_url in the restored config may reference the OLD "
+                            "server's LAN IP. Check it in the Notifications tab if your "
+                            "phones can't reach ntfy after restore."
+                        )
+                    if "listen-http" in cls["problems"]:
+                        warnings.append(
+                            "The backup's notification server port wasn't usable, so "
+                            + ("the default (2586) was used." if fresh
+                               else "the current one was kept."))
             except ImportError:
                 skipped.append({"file": "ntfy/server.yml",
                                 "reason": "ntfy_installer module unavailable"})
@@ -9200,7 +9249,10 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         stale_data = False
         if status.get("state") == "aerodrome_managed":
             try:
-                from ntfy_installer import _read_base_url, _read_upstream_relay, _detect_lan_ip
+                from ntfy_installer import (
+                    current_config as ntfy_current_config,
+                    _read_upstream_relay, _detect_lan_ip,
+                )
                 # v3.4.27: _detect_lan_ip now returns (ip, error_reason).
                 # Both are surfaced in the API response so the wizard's
                 # "LAN IP could not be auto-detected" warning can show the
@@ -9208,9 +9260,14 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 # DHCP race) and the wizard's self-heal button can offer
                 # a one-click fix when re-detection now succeeds.
                 lan_ip, lan_ip_err = _detect_lan_ip()
+                # v3.4.146: base_url is None when the saved address no longer
+                # validates; custom_keys / problems are key names only.
+                cls = ntfy_current_config() or {}
                 current_config = {
-                    "base_url": _read_base_url(),
+                    "base_url": cls.get("base_url"),
                     "upstream_relay": _read_upstream_relay(),
+                    "custom_keys": cls.get("custom", []),
+                    "problems": cls.get("problems", []),
                     "detected_lan_ip": lan_ip,
                     "detected_lan_ip_error": lan_ip_err,
                 }
@@ -9247,27 +9304,28 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         service alongside Aerodrome. Idempotent — re-running when already
         installed is a no-op that returns current state."""
         try:
-            from ntfy_installer import install
+            from ntfy_installer import install, validate_base_url
         except Exception as e:
             return JSONResponse(status_code=500, content={
                 "ok": False, "error": f"ntfy_installer module unavailable: {e}"
             })
+
+        def refuse(msg):
+            return JSONResponse(status_code=400, content={
+                "ok": False, "error": msg, "message": msg})
+
         # Basic sanity on the inputs we pass to a privileged operation
         if not (1 <= body.port <= 65535):
-            return JSONResponse(status_code=400, content={
-                "ok": False, "error": "Port must be between 1 and 65535"
-            })
+            return refuse("Port must be between 1 and 65535")
         if body.bind not in ("0.0.0.0", "127.0.0.1"):
-            return JSONResponse(status_code=400, content={
-                "ok": False, "error": "bind must be '0.0.0.0' or '127.0.0.1'"
-            })
-        # Reject obviously-garbage base_url inputs, but allow users to pass
-        # any http(s) URL (they might use a Tailscale hostname, reverse proxy, etc.)
+            return refuse("bind must be '0.0.0.0' or '127.0.0.1'")
+        # v3.4.146: a plain http(s)://host[:port][/path] address only — it is
+        # written into server.yml, so nothing YAML could misread gets through.
         if body.base_url is not None:
-            if not (body.base_url.startswith("http://") or body.base_url.startswith("https://")):
-                return JSONResponse(status_code=400, content={
-                    "ok": False, "error": "base_url must start with http:// or https://"
-                })
+            try:
+                validate_base_url(body.base_url)
+            except ValueError as e:
+                return refuse(str(e))
         result = install(port=body.port, bind=body.bind, topic=body.topic,
                          base_url=body.base_url, upstream_relay=body.upstream_relay)
         if not result.get("ok"):
@@ -9278,28 +9336,44 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         # v2.40.5: partial-update semantics — None means "keep current value."
         base_url: Optional[str] = None
         upstream_relay: Optional[bool] = None
+        # v3.4.146: the names a 409 custom_keys response listed, sent back
+        # to confirm removing exactly those; a setting the caller didn't
+        # name brings a fresh 409 instead of being dropped.
+        drop_custom_keys: Optional[List[str]] = None
 
     @app.post("/api/ntfy/config")
     def ntfy_config_update(body: NtfyConfigBody):
         """(v2.40.5) Update /etc/ntfy/server.yml's base-url and/or upstream
         relay toggle. Restarts the service to apply. Only works on
         aerodrome-managed installs. Used by the Base URL field and the
-        upstream-relay checkbox in the Notifications tab."""
+        upstream-relay checkbox in the Notifications tab.
+
+        v3.4.146: 400 for an address that isn't a plain http(s) URL; 409
+        code "custom_keys" (names in custom_keys) when the file has settings
+        Aerodrome doesn't manage that drop_custom_keys doesn't name; 400 code
+        "stored_value_invalid" (names in keys) when a value the caller left
+        out can't be carried over from the file. Nothing is written on any
+        of these."""
         try:
-            from ntfy_installer import update_config
+            from ntfy_installer import update_config, validate_base_url
         except Exception as e:
             return JSONResponse(status_code=500, content={
                 "ok": False, "error": f"ntfy_installer module unavailable: {e}"
             })
         if body.base_url is not None:
-            if not (body.base_url.startswith("http://") or body.base_url.startswith("https://")):
+            try:
+                validate_base_url(body.base_url)
+            except ValueError as e:
                 return JSONResponse(status_code=400, content={
-                    "ok": False, "error": "base_url must start with http:// or https://"
-                })
+                    "ok": False, "error": str(e), "message": str(e)})
         result = update_config(base_url=body.base_url,
-                               upstream_relay=body.upstream_relay)
+                               upstream_relay=body.upstream_relay,
+                               drop_custom_keys=body.drop_custom_keys)
         if not result.get("ok"):
-            return JSONResponse(status_code=400, content=result)
+            content = dict(result)
+            content.setdefault("error", content.get("message"))
+            code = 409 if result.get("code") == "custom_keys" else 400
+            return JSONResponse(status_code=code, content=content)
         return result
 
     @app.post("/api/ntfy/upgrade")
