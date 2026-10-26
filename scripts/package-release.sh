@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.4.146
+# Version: 3.4.147
 # =============================================================================
 # package-release.sh — Build the release zip + SHA256 for the current VERSION
 # =============================================================================
@@ -41,6 +41,9 @@
 #     refuses any untracked file in the staging tree.
 #   - Zips, then proves zip == `git archive <snapshot>` (same files, bytes and
 #     exec bits; scripts/check_release_zip.py) before writing the .sha256.
+#   - Extracts the zip and test-imports the PACKAGED tree (check_release_zip.py
+#     --import-check): a module main/server/collector import at load time that
+#     isn't in the zip fails the build (v3.4.147).
 #
 # --verify re-proves an existing zip against a fresh snapshot of the working
 # tree (and refuses untracked, non-ignored files, as above), so an edit made
@@ -184,6 +187,8 @@ if [ "$MODE" = "verify" ]; then
         || fail "cannot snapshot the working tree (git add -u on a temporary index failed)"
     if python3 -I "$SCRIPT_DIR/check_release_zip.py" "$RELEASE_ZIP" "$VERSION" "$TREE" \
             --repo "$PROJECT_DIR" --label "working tree"; then
+        python3 -I "$SCRIPT_DIR/check_release_zip.py" --import-check "$RELEASE_ZIP" "$VERSION" \
+            || fail "the packaged tree doesn't import (above) — not safe to stage"
         ok "zip still == working tree — safe to stage"
         exit 0
     fi
@@ -364,6 +369,14 @@ mkdir -p "$PACKAGES_DIR"
 python3 -I "$SCRIPT_DIR/check_release_zip.py" "$RELEASE_ZIP" "$VERSION" "$SNAP_TREE" \
         --repo "$PROJECT_DIR" --label "working tree" --no-hint \
     || fail "zip is not the working tree's tracked files (above) — fix the tree and re-package; nothing packaged"
+
+# --- Packaged-tree import check (v3.4.147) ---
+# The zip holds the git index only, so a new module nobody `git add`ed would
+# be missing from it while every working-tree gate passes. Extract the zip and
+# test-import IT: every module main/server/collector import at load time —
+# including the update guard's `import updater` — must be in the zip.
+python3 -I "$SCRIPT_DIR/check_release_zip.py" --import-check "$RELEASE_ZIP" "$VERSION" \
+    || fail "the packaged tree doesn't import (above) — git add the missing module (git add -N for a new file) and re-package; nothing packaged"
 
 # --- SHA256 ---
 # Generated in path-relative (bare-name) form, sitting beside the zip in the

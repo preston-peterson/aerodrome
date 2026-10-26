@@ -44,6 +44,8 @@ The collector thread polls your local ADS-B receiver every N seconds (default 60
 | `schema_migrations.py` | Versioned schema migrations (rollup, concurrent-minute, daily-track, update-state) | ~1,380 lines |
 | `designators.py` | ICAO aircraft type + airline lookup tables | ~400 lines |
 | `ntfy_installer.py` | Self-hosted ntfy server install/upgrade helper; validates and renders its `server.yml` | ~1,300 lines |
+| `updater.py` | In-app update: staged apply, test-load, switch-in, and the boot-time guard that rolls a release back (stdlib only; imports no app module) | ~1,100 lines |
+| `atomic_io.py` | Crash-safe small-file writes: temp file + fsync + rename + directory fsync, disk-full detection (stdlib only) | ~100 lines |
 | `templates/*.html` | 11 admin pages — vanilla HTML/CSS/JS, no framework | ~13,500 lines |
 | `static/theme.css`, `static/theme.js` | Shared theme system across all templates | ~660 lines |
 
@@ -54,6 +56,38 @@ The split is deliberate:
 - **main.py** is the only place where both sides are wired together. It spins up the collector thread in `run_collector()`, lets `server.py` start its own scheduler threads at import time, and hands the FastAPI app to uvicorn in `start()`.
 
 The consequence is that each module can be read in isolation. You don't need to understand the web layer to understand how data gets collected, and vice versa.
+
+## Startup sequence
+
+What `python3 main.py start` does, in order (v3.4.147):
+
+```
+main.py import   update guard (before any third-party import): updater.on_boot()
+                   - only for `start`, and only when no other Aerodrome owns the install
+                   - an interrupted update (or rollback) → finish it or put the
+                     previous version back
+                   - a journal for a version that isn't installed (an older release
+                     without the guard was applied over it) → set aside, nothing undone
+                   - the first starts of a new release are counted; the third start
+                     after two that never confirmed puts the previous version back
+                     (unless its copy in .update-old-<ts>/ is gone: nothing to put back)
+                 import yaml, uvicorn, collector, server
+main()           restart = stop, then exec a fresh `main.py start`
+start()          another live Aerodrome on this install (identity-checked) → exit 1
+                 init_db(): creates the schema, then the one-time rollup backfills,
+                   synchronously (migrations v1, v5 and v16 read those rollups)
+                 gate: a backfill didn't finish AND migrations are pending → exit 1,
+                   nothing changed (the next start retries)
+                 apply_schema_migrations()  (BEGIN IMMEDIATE, 60 s busy timeout)
+                 collector thread, get_app(), bind pre-flight
+                 update-confirm thread, only while an update is pending: waits for
+                   GET /api/version to answer with the new version, then commits
+                   the update 30 s later (a restart the new version's UI asks for
+                   after that first answer commits it first)
+                 uvicorn.run
+```
+
+`updater.py` is boot-critical: `main.py` imports it before anything else, inside a block that can never stop startup. It is stdlib-only and imports no other Aerodrome module, so it loads from any half-switched tree.
 
 ## The threading model
 
@@ -145,6 +179,11 @@ A few invariants worth knowing because violating them breaks things in non-obvio
 - **No new config keys without updating `config_validator.py` and `config.yaml.example`.** The validator runs at startup and refuses to boot with an unknown or malformed config key. It is strict on purpose. See `CONTRIBUTING.md` for the doc-update rules.
 - **Template changes need matching screenshot updates under some rules.** See CONTRIBUTING.md.
 - **The schema migration path is versioned.** New schema changes for existing installs go through `schema_migrations.py`, which runs versioned `_migration_NN_*` functions in order against the `schema_version` table. Each migration step must be idempotent (safe to re-run) and forward-only (never drop a column; add a new one). `init_db()` in `collector.py` handles fresh installs by creating the current schema directly. Together they must be safe to run against any prior database version and a fresh empty file. Pre-v2.50.x changes were handled inline in `init_db()` via `CREATE TABLE IF NOT EXISTS` / `ALTER TABLE ADD COLUMN` inside try/except — that path is preserved for the migrations already there, but new schema changes go through the versioned framework.
+- **Rollup backfills run before migrations, synchronously, and a failed one blocks them.** `init_db()` finishes the one-time rollup backfills before it returns; `main.start()` refuses to migrate (exit 1, nothing changed) while a backfill flag is unset and migrations are pending, because migrations v1, v5 and v16 compute from those rollups and nothing recomputes them afterwards.
+- **One maintenance operation at a time.** Every endpoint that rewrites the install or the database (update upload/apply/download, restores, server-side backup create/delete, the pre-restore purge, config import/restore, switch-to-real) holds `server._MAINT`. It is try-only (refuses with 409, never waits), kept for a couple of minutes after a restart is requested, and freed at once if the restart call fails.
+- **Maintenance handlers are plain `def`, and nothing awaits a plain function.** A blocking `async def` handler freezes every other request. The few `async def` route handlers are an explicit allowlist in `test_request_limits_offload.py`, which also fails on `await <plain function>(…)` (v3.4.51 shipped one and broke every GitHub apply).
+- **`updater.py` imports no Aerodrome module, and the update guard stays above every third-party import in `main.py`.** Static tests enforce both.
+- **N-1 compatibility: whatever a release changes must still let the release before it run.** Automatic rollback puts the previous release back on the same database and install, so: every schema migration leaves the database readable and writable by the previous release; an install-level change (systemd unit, sudoers rule, a config key rename, an EnvironmentFile) keeps the old one working for one release; Python requirements only rise to versions the previous release still imports and runs with (the venv is shared: a rollback, and a refused update, both leave the new packages installed — the apply reports `previous_loads: false` when the running version no longer loads with them); and the update journal (`.update-pending.json`) and `.update-last-result.json` only ever gain fields — their state set {swapping, pending_first_boot, rolling_back, committing} is frozen, and a newer updater reads every older journal (`test_update_apply.py` keeps frozen copies of them; add one, never edit one). Note that the rollback of a release is done by that release's OWN `updater.py` (it is swapped in with the release).
 
 ## Demo mode (v3.1.0)
 

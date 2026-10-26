@@ -166,6 +166,8 @@ def check_screenshot_mock_contract(report: DriftReport, verbose: bool = False):
         'config':    [],  # many nested keys; top-level is dynamic
         'perf':      [],  # diagnostic dump, shape-stable but keys vary by OS
         'wl_entries': ['entries'],
+        # v3.4.147: the Updates page reads all three (null when idle).
+        'maintenance_status': ['busy', 'update', 'update_pending'],
     }
 
     source = screenshot_py.read_text()

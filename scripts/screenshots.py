@@ -968,6 +968,8 @@ def _build_fetch_stub() -> str:
         'config':        FULL_CONFIG,
         'perf':          PERF_DIAG,
         'search':        SEARCH_RESPONSE,
+        # v3.4.147: nothing running, no update result, nothing pending.
+        'maintenance_status': {"busy": None, "update": None, "update_pending": None},
     }
     return f"""<script>
 window.fetch = async (url) => {{
@@ -1092,6 +1094,7 @@ window.fetch = async (url) => {{
                          "A134D2": "Example Aviation LLC"}};
         return j({{ok: true, icao: hex, registered_owner: owners[hex] || null}});
     }}
+    if (url.includes('/api/maintenance/status'))  return j({json.dumps(payloads['maintenance_status'])});
     return j({{}});
 }};
 </script>"""

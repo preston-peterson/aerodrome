@@ -1906,7 +1906,11 @@ class Restore(_AppCase):
             zf.writestr("ntfy/server.yml", server_yml + "#" * size_pad)
         ep = _endpoint(self.app, "/api/backup/restore-from-path", "POST")
         payload = ep.__annotations__["payload"](path=str(zp))
-        return _out(asyncio.run(ep(payload, background_tasks=mock.Mock())))
+        out = _out(asyncio.run(ep(payload, background_tasks=mock.Mock())))
+        # v3.4.147: a restore keeps the maintenance lock until its restart
+        # lands; the (mocked) restart has "happened" before the next one.
+        server._MAINT = server._SingleRun()
+        return out
 
     def stash_files(self):
         return sorted(p.name for p in self.install_dir.glob("ntfy-server.yml.from-backup.*"))

@@ -1,4 +1,4 @@
-# Version: 3.4.146
+# Version: 3.4.147
 """
 collector.py — ADS-B data fetcher and classifier.
 
@@ -2253,23 +2253,24 @@ def init_db(db_path: str):
     conn.commit()
     conn.close()
 
-    # v2.50.0: kick off the hourly-rollup backfill in a background thread.
-    # init_db itself returns quickly; the thread does the heavy lifting.
-    # Queries that depend on the rollup (Search count, Stats summaries,
-    # the aircraft detail page's sightings count) fall back to raw
-    # `all_sightings` while the migration is in progress, so users see
-    # a working (slow) dashboard rather than a stalled startup. When the
-    # migration completes, those queries switch to the fast rollup.
-    _start_hourly_backfill_if_needed(db_path)
-
-    # v3.4.6: start the parallel military_hourly + watchlist_hourly
-    # backfills. Same pattern, same fallback behavior: while a backfill
-    # is running, the corresponding Stats card queries fall back to
-    # the raw per-poll tables (slower but correct). When the backfill
-    # completes, queries automatically switch to the fast rollup via
-    # the get_*_backfill_status() check in server.py.
-    _start_military_backfill_if_needed(db_path)
-    _start_watchlist_backfill_if_needed(db_path)
+    # One-time rollup backfills (v2.50.0 sightings_hourly, v3.4.6
+    # military_hourly + watchlist_hourly) for databases that predate them.
+    # They run SYNCHRONOUSLY, one after another, before init_db returns,
+    # because main.py applies the schema migrations right after init_db and
+    # migrations v1 (step 5d, seen_aircraft.sighting_count), v5
+    # (min_nonzero_altitude) and v16 (rollup type cleanup) READ these
+    # rollups — they have to be complete first. (They used to run in
+    # background threads beside the migrations: a backfill holds the write
+    # lock for its whole INSERT…SELECT, so on an old database the migration
+    # hit "database is locked", startup exited, the service restarted, the
+    # backfill started over — a restart loop with no web UI.)
+    # No-ops once each _aerodrome_meta flag is set (every install since
+    # v3.4.6 that has finished a start). A failed backfill leaves its flag
+    # unset and its phase "error": main.py then refuses to migrate (see
+    # rollup_backfill_incomplete) and the next start retries.
+    _backfill_hourly_if_needed(db_path)
+    _backfill_military_if_needed(db_path)
+    _backfill_watchlist_if_needed(db_path)
 
     logger.info(f"Database initialized at {db_path}")
 
@@ -2279,7 +2280,7 @@ def init_db(db_path: str):
 # get_hourly_backfill_status() for the Status page and for the server's
 # All-tab query path to decide rollup-vs-raw.
 _hourly_backfill_state = {
-    "phase": "unknown",       # "unknown" | "running" | "complete" | "skipped" | "error"
+    "phase": "unknown",       # "unknown" | "complete" | "skipped" | "error"
     "started_at": None,
     "finished_at": None,
     "rows_processed": 0,
@@ -2287,6 +2288,35 @@ _hourly_backfill_state = {
     "error": None,
 }
 _hourly_backfill_lock = threading.Lock()
+
+# Busy timeout for startup-time writers (rollup backfills, schema
+# migrations). Nothing else should hold the database at that point; if
+# something does (a sqlite3 shell, a stray process), wait for it instead of
+# failing after Python's 5 s default and crash-looping the service.
+_STARTUP_DB_TIMEOUT = 60.0
+
+# The _aerodrome_meta flags the one-time rollup backfills set when they
+# finish. main.py refuses to migrate a database while any is unset.
+ROLLUP_BACKFILL_FLAGS = ("hourly_rollup_backfilled", "military_hourly_backfilled",
+                         "watchlist_hourly_backfilled")
+
+
+def rollup_backfill_incomplete(db_path: str) -> List[str]:
+    """The ROLLUP_BACKFILL_FLAGS not yet set to '1' (all three when the meta
+    table can't be read). Read-only; waits up to 60 s for a lock."""
+    try:
+        conn = sqlite3.connect(db_path, timeout=_STARTUP_DB_TIMEOUT)
+    except sqlite3.Error:
+        return list(ROLLUP_BACKFILL_FLAGS)
+    try:
+        rows = dict(conn.execute(
+            "SELECT key, value FROM _aerodrome_meta WHERE key IN (?, ?, ?)",
+            ROLLUP_BACKFILL_FLAGS).fetchall())
+    except sqlite3.Error:
+        return list(ROLLUP_BACKFILL_FLAGS)
+    finally:
+        conn.close()
+    return [k for k in ROLLUP_BACKFILL_FLAGS if rows.get(k) != "1"]
 
 
 def get_hourly_backfill_status() -> Dict[str, Any]:
@@ -2296,15 +2326,15 @@ def get_hourly_backfill_status() -> Dict[str, Any]:
         return dict(_hourly_backfill_state)
 
 
-def _start_hourly_backfill_if_needed(db_path: str) -> None:
-    """Decide whether to run the rollup backfill, and if so kick off
-    a background thread. Idempotent — checks _aerodrome_meta to see if
-    we've already run it on this install."""
+def _backfill_hourly_if_needed(db_path: str) -> None:
+    """Build the sightings_hourly rollup from existing rows if this database
+    predates it. Runs synchronously (see init_db). Idempotent — checks
+    _aerodrome_meta to see if it has already run on this install."""
     global _hourly_backfill_state
 
     # Quick synchronous check: has this migration already run?
     try:
-        conn = _open_db_conn(db_path)
+        conn = _open_db_conn(db_path, timeout=_STARTUP_DB_TIMEOUT)
         # Ensure the meta table exists (other migrations also use it,
         # but we shouldn't depend on order).
         conn.execute("""
@@ -2325,11 +2355,14 @@ def _start_hourly_backfill_if_needed(db_path: str) -> None:
         # against. COUNT(*) on all_sightings is cheap if the index is
         # there but slow on a freshly-restored Pi-scale DB; cap the
         # query time with a reasonable timeout via the SQL itself.
+        # A failed COUNT is an error, never "no rows": marking the rollup
+        # built without building it would let the migrations stamp
+        # lifetime counts computed from an empty rollup. The outer except
+        # records the error and leaves the flag unset (the next start retries).
         try:
             n_rows = conn.execute("SELECT COUNT(*) FROM all_sightings").fetchone()[0]
-        except sqlite3.OperationalError:
-            n_rows = None
-        conn.close()
+        finally:
+            conn.close()
     except Exception as e:
         logger.warning(f"Could not check hourly_rollup_backfilled state: {e}")
         with _hourly_backfill_lock:
@@ -2339,9 +2372,9 @@ def _start_hourly_backfill_if_needed(db_path: str) -> None:
     # If there's no data yet (fresh install), no backfill is needed —
     # the online write path in fetch_and_store will populate the rollup
     # going forward. Mark as complete immediately.
-    if not n_rows:
+    if n_rows == 0:
         try:
-            conn = _open_db_conn(db_path)
+            conn = _open_db_conn(db_path, timeout=_STARTUP_DB_TIMEOUT)
             conn.execute(
                 "INSERT OR REPLACE INTO _aerodrome_meta (key, value) VALUES (?, ?)",
                 ("hourly_rollup_backfilled", "1"),
@@ -2354,30 +2387,22 @@ def _start_hourly_backfill_if_needed(db_path: str) -> None:
             _hourly_backfill_state.update({"phase": "complete", "rows_total": 0})
         return
 
-    # Real backfill needed. Kick off a daemon thread.
+    # Real backfill needed. Run it now; the web UI starts when it finishes.
     with _hourly_backfill_lock:
         _hourly_backfill_state.update({
-            "phase": "running",
             "started_at": int(time.time()),
             "rows_total": n_rows,
         })
-
-    t = threading.Thread(
-        target=_run_hourly_backfill,
-        args=(db_path, n_rows),
-        name="aerodrome-hourly-backfill",
-        daemon=True,
-    )
-    t.start()
     logger.info(
-        f"Started hourly-rollup backfill in background thread "
-        f"(estimated {n_rows:,} source rows to process)"
+        f"Building sightings_hourly rollup from {n_rows:,} existing rows "
+        f"(one-time; the web UI starts when it finishes)"
     )
+    _run_hourly_backfill(db_path, n_rows)
 
 
 def _run_hourly_backfill(db_path: str, n_rows: int) -> None:
     """Backfill sightings_hourly from existing all_sightings rows.
-    Runs in a daemon thread so service startup isn't blocked.
+    Called synchronously from init_db, before the schema migrations.
 
     Uses a window-function approach: ROW_NUMBER over (icao, hour_bucket)
     ordered by seen_at DESC tags the "latest sighting in this hour" row,
@@ -2388,8 +2413,9 @@ def _run_hourly_backfill(db_path: str, n_rows: int) -> None:
     subqueries (which scale O(n²) per bucket). Tested: 20k rows in
     ~0.3s, scaling roughly linearly to ~2 minutes for 7.4M rows."""
     global _hourly_backfill_state
+    conn = None
     try:
-        conn = _open_db_conn(db_path)
+        conn = _open_db_conn(db_path, timeout=_STARTUP_DB_TIMEOUT)
         t0 = time.time()
 
         # The aggregate part: counts, extremes, and timing per (icao, bucket).
@@ -2400,7 +2426,9 @@ def _run_hourly_backfill(db_path: str, n_rows: int) -> None:
         # all_sightings has idx_all_seen / idx_all_icao that the planner
         # can use for the partition. The output is pre-grouped — no
         # post-INSERT dedup needed.
-        conn.execute("BEGIN")
+        # IMMEDIATE: take the write lock up front, so another writer waits
+        # (busy timeout) instead of failing this transaction mid-way.
+        conn.execute("BEGIN IMMEDIATE")
         conn.execute("""
             INSERT OR REPLACE INTO sightings_hourly (
                 icao, hour_bucket, callsign, aircraft_type, type_desc,
@@ -2472,6 +2500,11 @@ def _run_hourly_backfill(db_path: str, n_rows: int) -> None:
             f"from {n_rows:,} source sightings in {elapsed:.1f}s"
         )
     except Exception as e:
+        if conn is not None:
+            try:
+                conn.close()  # rolls back; left open it holds the write lock until GC
+            except sqlite3.Error:
+                pass
         logger.error(f"Hourly-rollup backfill failed: {e}")
         with _hourly_backfill_lock:
             _hourly_backfill_state.update({
@@ -2483,10 +2516,9 @@ def _run_hourly_backfill(db_path: str, n_rows: int) -> None:
 
 # --- v3.4.6: military_hourly + watchlist_hourly backfill machinery ---
 # Same pattern as the v2.50.0 hourly_backfill above, applied to the
-# two new rollup tables. Each backfill runs in its own daemon thread,
-# tracks its own state, marks completion in _aerodrome_meta with its
-# own key. All three can run concurrently (touching different source
-# and target tables).
+# two new rollup tables. Each backfill runs synchronously from init_db
+# (one after another), tracks its own state, and marks completion in
+# _aerodrome_meta with its own key.
 
 _military_backfill_state = {
     "phase": "unknown",
@@ -2521,13 +2553,14 @@ def get_watchlist_backfill_status() -> Dict[str, Any]:
         return dict(_watchlist_backfill_state)
 
 
-def _start_military_backfill_if_needed(db_path: str) -> None:
-    """Decide whether to run the military_hourly backfill, and if so
-    kick off a background thread. Idempotent — checks _aerodrome_meta."""
+def _backfill_military_if_needed(db_path: str) -> None:
+    """Build the military_hourly rollup from existing rows if this database
+    predates it. Runs synchronously (see init_db). Idempotent — checks
+    _aerodrome_meta."""
     global _military_backfill_state
 
     try:
-        conn = _open_db_conn(db_path)
+        conn = _open_db_conn(db_path, timeout=_STARTUP_DB_TIMEOUT)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS _aerodrome_meta (
                 key TEXT PRIMARY KEY, value TEXT NOT NULL
@@ -2542,11 +2575,14 @@ def _start_military_backfill_if_needed(db_path: str) -> None:
             conn.close()
             return
 
+        # A failed COUNT is an error, never "no rows": marking the rollup
+        # built without building it would let the migrations stamp
+        # lifetime counts computed from an empty rollup. The outer except
+        # records the error and leaves the flag unset (the next start retries).
         try:
             n_rows = conn.execute("SELECT COUNT(*) FROM military_sightings").fetchone()[0]
-        except sqlite3.OperationalError:
-            n_rows = None
-        conn.close()
+        finally:
+            conn.close()
     except Exception as e:
         logger.warning(f"Could not check military_hourly_backfilled state: {e}")
         with _military_backfill_lock:
@@ -2555,9 +2591,9 @@ def _start_military_backfill_if_needed(db_path: str) -> None:
 
     # Fresh install — no rows to backfill, just mark done so the
     # online write path is the sole writer going forward.
-    if not n_rows:
+    if n_rows == 0:
         try:
-            conn = _open_db_conn(db_path)
+            conn = _open_db_conn(db_path, timeout=_STARTUP_DB_TIMEOUT)
             conn.execute(
                 "INSERT OR REPLACE INTO _aerodrome_meta (key, value) VALUES (?, ?)",
                 ("military_hourly_backfilled", "1"),
@@ -2572,30 +2608,23 @@ def _start_military_backfill_if_needed(db_path: str) -> None:
 
     with _military_backfill_lock:
         _military_backfill_state.update({
-            "phase": "running",
             "started_at": int(time.time()),
             "rows_total": n_rows,
         })
-    t = threading.Thread(
-        target=_run_military_backfill,
-        args=(db_path, n_rows),
-        name="aerodrome-military-backfill",
-        daemon=True,
-    )
-    t.start()
     logger.info(
-        f"Started military_hourly backfill in background thread "
-        f"(estimated {n_rows:,} source rows to process)"
+        f"Building military_hourly rollup from {n_rows:,} existing rows "
+        f"(one-time; the web UI starts when it finishes)"
     )
+    _run_military_backfill(db_path, n_rows)
 
 
-def _start_watchlist_backfill_if_needed(db_path: str) -> None:
-    """Decide whether to run the watchlist_hourly backfill. Same shape
-    as the military version above."""
+def _backfill_watchlist_if_needed(db_path: str) -> None:
+    """Build the watchlist_hourly rollup from existing rows if this database
+    predates it. Same shape as the military version above."""
     global _watchlist_backfill_state
 
     try:
-        conn = _open_db_conn(db_path)
+        conn = _open_db_conn(db_path, timeout=_STARTUP_DB_TIMEOUT)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS _aerodrome_meta (
                 key TEXT PRIMARY KEY, value TEXT NOT NULL
@@ -2610,20 +2639,23 @@ def _start_watchlist_backfill_if_needed(db_path: str) -> None:
             conn.close()
             return
 
+        # A failed COUNT is an error, never "no rows": marking the rollup
+        # built without building it would let the migrations stamp
+        # lifetime counts computed from an empty rollup. The outer except
+        # records the error and leaves the flag unset (the next start retries).
         try:
             n_rows = conn.execute("SELECT COUNT(*) FROM watchlist_sightings").fetchone()[0]
-        except sqlite3.OperationalError:
-            n_rows = None
-        conn.close()
+        finally:
+            conn.close()
     except Exception as e:
         logger.warning(f"Could not check watchlist_hourly_backfilled state: {e}")
         with _watchlist_backfill_lock:
             _watchlist_backfill_state.update({"phase": "error", "error": str(e)})
         return
 
-    if not n_rows:
+    if n_rows == 0:
         try:
-            conn = _open_db_conn(db_path)
+            conn = _open_db_conn(db_path, timeout=_STARTUP_DB_TIMEOUT)
             conn.execute(
                 "INSERT OR REPLACE INTO _aerodrome_meta (key, value) VALUES (?, ?)",
                 ("watchlist_hourly_backfilled", "1"),
@@ -2638,35 +2670,29 @@ def _start_watchlist_backfill_if_needed(db_path: str) -> None:
 
     with _watchlist_backfill_lock:
         _watchlist_backfill_state.update({
-            "phase": "running",
             "started_at": int(time.time()),
             "rows_total": n_rows,
         })
-    t = threading.Thread(
-        target=_run_watchlist_backfill,
-        args=(db_path, n_rows),
-        name="aerodrome-watchlist-backfill",
-        daemon=True,
-    )
-    t.start()
     logger.info(
-        f"Started watchlist_hourly backfill in background thread "
-        f"(estimated {n_rows:,} source rows to process)"
+        f"Building watchlist_hourly rollup from {n_rows:,} existing rows "
+        f"(one-time; the web UI starts when it finishes)"
     )
+    _run_watchlist_backfill(db_path, n_rows)
 
 
 def _run_military_backfill(db_path: str, n_rows: int) -> None:
     """Backfill military_hourly from existing military_sightings rows.
-    Runs in a daemon thread. Single-pass aggregate query, same
+    Called synchronously from init_db. Single-pass aggregate query, same
     window-function shape as _run_hourly_backfill but with the
     military-specific columns (no last_lat/lon/altitude/speed/min/max,
     PLUS special_label preserved from the most-recent row in each bucket
     via the rn=1 window). Idempotent via _aerodrome_meta marker."""
     global _military_backfill_state
+    conn = None
     try:
-        conn = _open_db_conn(db_path)
+        conn = _open_db_conn(db_path, timeout=_STARTUP_DB_TIMEOUT)
         t0 = time.time()
-        conn.execute("BEGIN")
+        conn.execute("BEGIN IMMEDIATE")
         conn.execute("""
             INSERT OR REPLACE INTO military_hourly (
                 icao, hour_bucket, callsign, aircraft_type, type_desc,
@@ -2724,6 +2750,11 @@ def _run_military_backfill(db_path: str, n_rows: int) -> None:
             f"from {n_rows:,} source sightings in {elapsed:.1f}s"
         )
     except Exception as e:
+        if conn is not None:
+            try:
+                conn.close()  # rolls back; left open it holds the write lock until GC
+            except sqlite3.Error:
+                pass
         logger.error(f"military_hourly backfill failed: {e}")
         with _military_backfill_lock:
             _military_backfill_state.update({
@@ -2739,10 +2770,11 @@ def _run_watchlist_backfill(db_path: str, n_rows: int) -> None:
     PARTITION BY in the window function is three columns, not two.
     Otherwise same shape as the military backfill. Idempotent."""
     global _watchlist_backfill_state
+    conn = None
     try:
-        conn = _open_db_conn(db_path)
+        conn = _open_db_conn(db_path, timeout=_STARTUP_DB_TIMEOUT)
         t0 = time.time()
-        conn.execute("BEGIN")
+        conn.execute("BEGIN IMMEDIATE")
         conn.execute("""
             INSERT OR REPLACE INTO watchlist_hourly (
                 icao, hour_bucket, watchlist_label, callsign,
@@ -2802,6 +2834,11 @@ def _run_watchlist_backfill(db_path: str, n_rows: int) -> None:
             f"from {n_rows:,} source sightings in {elapsed:.1f}s"
         )
     except Exception as e:
+        if conn is not None:
+            try:
+                conn.close()  # rolls back; left open it holds the write lock until GC
+            except sqlite3.Error:
+                pass
         logger.error(f"watchlist_hourly backfill failed: {e}")
         with _watchlist_backfill_lock:
             _watchlist_backfill_state.update({

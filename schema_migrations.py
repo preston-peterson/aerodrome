@@ -53,6 +53,16 @@ CURRENT_SCHEMA_VERSION = 18
 Migration = Tuple[int, str, Callable[[sqlite3.Connection], None]]
 
 
+def current_version(conn: sqlite3.Connection) -> int:
+    """The database's schema version, read-only: MAX(version) from
+    schema_version, or 0 when the table doesn't exist yet."""
+    try:
+        row = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
+    except sqlite3.OperationalError:
+        return 0
+    return int(row[0] or 0)
+
+
 def _ensure_schema_version_table(conn: sqlite3.Connection) -> int:
     """Create the schema_version table if it doesn't exist, and return
     the current version. A DB that's never been through this function
@@ -132,7 +142,11 @@ def apply_schema_migrations(conn: sqlite3.Connection,
         # group. This is intentional: we either ship the whole upgrade
         # or none of it, never a partial state where some tables exist
         # at v2 schema and others don't.
-        conn.execute("BEGIN")
+        # IMMEDIATE takes the write lock up front: a deferred BEGIN that
+        # reads before it writes fails at once with "database is locked"
+        # (busy handler skipped) if another connection commits in between;
+        # with IMMEDIATE the other writer waits instead.
+        conn.execute("BEGIN IMMEDIATE")
         try:
             for mig in pending:
                 t0 = time.time()

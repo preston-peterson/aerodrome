@@ -183,7 +183,7 @@ Running a service at home long-term means updates, backups, and things occasiona
 
 ## Updates via the web UI
 
-The Updates page polls GitHub on a configurable cadence (daily, weekly, monthly, or never) and shows when a new release is available. Click "Apply update" and the server downloads the release zip, verifies its SHA256 checksum, backs up the current install, swaps in the new files, re-installs dependencies, and restarts. The old install stays in `.backups/<timestamp>/` in case you need to roll back. Three optional notification surfaces — in-card banner, gear-menu badge, and ntfy push to your phone — let you know about new releases without checking the page. Dropping a local zip onto the Updates page and SSH/rsync both still work as alternatives for specific-version installs or scripted workflows.
+The Updates page polls GitHub on a configurable cadence (daily, weekly, monthly, or never) and shows when a new release is available. Click "Apply update" and the server downloads the release zip, verifies its SHA256 checksum, unpacks and test-loads the new version to the side, switches it in, and restarts — and puts the previous version back on its own if the new one doesn't start. The previous version stays in `.backups/<timestamp>/` in case you want to go back by hand. Three optional notification surfaces — in-card banner, gear-menu badge, and ntfy push to your phone — let you know about new releases without checking the page. Dropping a local zip onto the Updates page and SSH/rsync both still work as alternatives for specific-version installs or scripted workflows.
 
 ## Full backup and restore
 

@@ -59,14 +59,20 @@ def _copy_release(dest):
     return dest
 
 
+_REAL_RUN = subprocess.run
+
+
 class _Recorder:
-    """subprocess.run stand-in. `sudo -n cat <drop-in>` is answered per mode."""
+    """subprocess.run stand-in. `sudo -n cat <drop-in>` is answered per mode.
+    Anything that isn't sudo (an update's test-load, since v3.4.147) runs."""
 
     def __init__(self):
         self.calls, self.cat_reply = [], None
 
     def __call__(self, argv, *a, **k):
         argv = list(argv)
+        if argv[:1] != ["sudo"]:
+            return _REAL_RUN(argv, *a, **k)
         self.calls.append(argv)
         if argv[:3] == ["sudo", "-n", "cat"]:
             if self.cat_reply is None:
@@ -140,7 +146,9 @@ class _GateCase(unittest.TestCase):
         st = self.root / "update" if layout == "flat" else self.root / "update" / "aerodrome"
         (st / "scripts").mkdir(parents=True, exist_ok=True)
         (st / "VERSION").write_text("9.9.9\n")
-        (st / "main.py").write_text("# staged\n")
+        # loadable: since v3.4.147 an apply test-loads the release first
+        (st / "main.py").write_text("# staged\ndef main(): pass\ndef start(): pass\n")
+        (st / "server.py").write_text("# staged\ndef get_app(*a): pass\n")
         shutil.copy2(REPO / "install.sh", st / "install.sh")
         shutil.copy2(REPO / "scripts" / "recover-sudoers.sh", st / "scripts" / "recover-sudoers.sh")
         return st
@@ -205,7 +213,10 @@ class ApplyNeverBlockedByAnUnreadableDropin(_GateCase):
     def assert_applied(self):
         # Backups are named by the second; two applies in one second collide.
         shutil.rmtree(self.root / ".backups", ignore_errors=True)
-        r = self.apply()
+        # v3.4.147: an earlier test's update is still "being confirmed" (its
+        # journal), and re-applying 9.9.9 over 9.9.9 needs allow_reinstall.
+        (self.root / ".update-pending.json").unlink(missing_ok=True)
+        r = self.apply(snapshot_db=False, allow_reinstall=True)
         self.assertIsInstance(r, dict, getattr(r, "body", r))
         self.assertTrue(r.get("ok"), r)
         self.assertEqual((self.root / "VERSION").read_text().strip(), "9.9.9")

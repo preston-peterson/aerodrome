@@ -4,6 +4,7 @@ canonical single-wrapper layout; and hold the ONE maintainer-path denylist.
 
 Usage: check_release_zip.py ZIP X.Y.Z REF [--repo DIR] [--label TEXT] [--no-hint]
        check_release_zip.py --deny-paths [X.Y.Z]   < newline-separated paths
+       check_release_zip.py --import-check ZIP X.Y.Z
 
 REF is any tree-ish: a commit (publish-release.sh: the release commit) or a
 tree id (package-release.sh: a snapshot of the working tree's tracked files).
@@ -25,6 +26,18 @@ Checks (all of them, every run — never stops at the first finding):
              file's bytes identical; executable bit identical. Exact — no
              strip-list exceptions.
 Reads the zip and the archive in memory — nothing is extracted to disk.
+
+--import-check extracts ZIP to a temporary directory and test-imports the
+PACKAGED tree in a fresh `python3 -I` (v3.4.147): every module that main.py,
+server.py and collector.py import at module level — including the update
+guard's `import updater`, which main.py deliberately wraps in try/except —
+must be in the zip, and main / server / collector must import from it (the
+third-party packages are stubbed, as in bump-version.sh's import check). It
+imports with an argv[1] other than `start`, so main.py's update guard does
+nothing. Exit 0 = imports, 1 = a module is missing or fails to import, 2 =
+usage / unreadable zip. package-release.sh runs it on every build and
+--verify, so a module that isn't in git (packaging ships the index only) can
+never ship silently.
 
 --deny-paths reads paths (one per line; a leading aerodrome-vX.Y.Z/ wrapper
 is fine) and prints every one that MAINTAINER_RE matches — maintainer-only or
@@ -48,7 +61,8 @@ import zlib
 MAX_LINES = 25
 MAX_HINT_PATHS = 6
 USAGE = ("usage: check_release_zip.py ZIP X.Y.Z REF [--repo DIR] [--label TEXT] [--no-hint]\n"
-         "       check_release_zip.py --deny-paths [X.Y.Z]   < paths")
+         "       check_release_zip.py --deny-paths [X.Y.Z]   < paths\n"
+         "       check_release_zip.py --import-check ZIP X.Y.Z")
 
 # Maintainer-only / local paths that must never ship or be published. The ONE
 # definition (package-release.sh and publish-release.sh both call
@@ -106,6 +120,132 @@ def deny_main(args):
     return 1 if hits else 0
 
 
+# The probe runs in a fresh `python3 -I -B -c PROBE <tree>`: -I drops the
+# script directory from sys.path (3.11+), so the tree is inserted explicitly.
+# sys.argv[1] is the tree path — never "start" — so main.py's update guard
+# skips. Third-party packages are stubbed (same list as bump-version.sh's
+# import check): this proves the zip's own modules are all there, not that
+# the build host has the runtime dependencies.
+_IMPORT_PROBE = r"""
+import ast, importlib, os, sys, types
+tree = os.path.realpath(sys.argv[1])
+sys.path.insert(0, tree)
+os.chdir(tree)
+STUBS = ["fastapi", "fastapi.responses", "pydantic", "yaml", "requests", "uvicorn"]
+class _Stub(types.ModuleType):
+    def __getattr__(self, name): return _Stub(name)
+    def __call__(self, *a, **k): return _Stub("call")
+for name in STUBS:
+    sys.modules[name] = _Stub(name)
+stub_tops = {n.split(".")[0] for n in STUBS}
+# Third-party: the stubs plus whatever the release's requirements.txt names
+# (distribution name -> import name; the few that differ are listed).
+ALIASES = {"pyyaml": "yaml", "ruamel.yaml": "ruamel", "python-multipart": "multipart"}
+try:
+    with open("requirements.txt") as f:
+        for line in f:
+            line = line.split("#", 1)[0].strip()
+            for ch in "<>=~!;[ ":
+                line = line.replace(ch, " ")
+            if line.strip():
+                dist = line.split()[0].lower()
+                stub_tops.add(ALIASES.get(dist, dist).split(".")[0].replace("-", "_"))
+except OSError:
+    pass
+bad = []
+
+def module_level_imports(path):
+    def walk(stmts):
+        for node in stmts:
+            if isinstance(node, ast.Import):
+                for a in node.names:
+                    yield a.name.split(".")[0]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                yield node.module.split(".")[0]
+            elif isinstance(node, (ast.Try, ast.If, ast.With)):
+                for field in ("body", "orelse", "finalbody", "handlers"):
+                    for sub in getattr(node, field, []) or []:
+                        yield from walk(getattr(sub, "body", [sub]) if isinstance(sub, ast.ExceptHandler) else [sub])
+    with open(path, "rb") as f:
+        return set(walk(ast.parse(f.read(), path).body))
+
+for root in ("main.py", "server.py", "collector.py"):
+    if not os.path.isfile(root):
+        bad.append(f"{root} is not in the zip")
+        continue
+    for m in sorted(module_level_imports(root)):
+        if m in sys.stdlib_module_names or m in stub_tops:
+            continue
+        if not (os.path.isfile(m + ".py") or os.path.isfile(os.path.join(m, "__init__.py"))):
+            bad.append(f"{root} imports {m}, which is not in the zip")
+for mod, attrs in (("main", ("main", "start")), ("server", ("get_app",)),
+                   ("collector", ("init_db",))):
+    try:
+        m = importlib.import_module(mod)
+    except BaseException as e:
+        bad.append(f"import {mod}: {type(e).__name__}: {e}")
+        continue
+    if not os.path.realpath(getattr(m, "__file__", "") or "").startswith(tree + os.sep):
+        bad.append(f"{mod} was imported from outside the zip ({getattr(m, '__file__', None)})")
+    for a in attrs:
+        if not hasattr(m, a):
+            bad.append(f"{mod}.{a} is missing")
+if bad:
+    for line in bad:
+        print(line)
+    sys.exit(1)
+print("probe-ok")
+"""
+
+
+def import_check_main(args):
+    """--import-check ZIP X.Y.Z: test-import the packaged tree."""
+    import os
+    import subprocess as _sp
+    import tempfile
+    if len(args) != 2 or not re.fullmatch(r"\d+\.\d+\.\d+", args[1]):
+        print(USAGE, file=sys.stderr)
+        return 2
+    zip_path, ver = args
+    wrapper = f"aerodrome-v{ver}"
+    try:
+        zf = zipfile.ZipFile(zip_path)
+    except (OSError, zipfile.BadZipFile) as e:
+        print(f"  ✗ cannot open {zip_path}: {e}")
+        return 2
+    with tempfile.TemporaryDirectory(prefix="aerodrome-import-check-") as tmp, zf:
+        for info in zf.infolist():
+            parts = info.filename.rstrip("/").split("/")
+            if info.filename.startswith("/") or "\\" in info.filename or ".." in parts \
+                    or stat.S_ISLNK(info.external_attr >> 16):
+                print(f"  ✗ import check: unsafe entry {info.filename!r}; not extracting")
+                return 1
+        zf.extractall(tmp)
+        tree = os.path.join(tmp, wrapper)
+        if not os.path.isdir(tree):
+            print(f"  ✗ import check: no {wrapper}/ in {zip_path}")
+            return 1
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": tmp,
+               "LANG": os.environ.get("LANG", "C.UTF-8"), "PYTHONDONTWRITEBYTECODE": "1"}
+        try:
+            r = _sp.run([sys.executable, "-I", "-B", "-W", "ignore", "-c", _IMPORT_PROBE, tree],
+                        cwd=tree, capture_output=True, text=True, timeout=300, env=env)
+        except (OSError, _sp.TimeoutExpired) as e:
+            print(f"  ✗ import check could not run: {e}")
+            return 1
+    out = (r.stdout or "").strip().splitlines()
+    if r.returncode != 0 or "probe-ok" not in out:
+        lines = [ln for ln in out if ln != "probe-ok"]
+        lines += (r.stderr or "").strip().splitlines()[-8:]
+        for ln in lines[:MAX_LINES]:
+            print(f"  ✗ {ln}")
+        print(f"  ✗ the packaged tree in {zip_path.rsplit('/', 1)[-1]} does not import")
+        return 1
+    print(f"  ✓ the packaged tree imports: main, server and collector load from the zip, "
+          f"and every module they import at load time is in it")
+    return 0
+
+
 def _pop_opt(args, name):
     if name not in args:
         return None
@@ -135,6 +275,8 @@ def main(argv):
     args = list(argv)
     if args[:1] == ["--deny-paths"]:
         return deny_main(args[1:])
+    if args[:1] == ["--import-check"]:
+        return import_check_main(args[1:])
     try:
         repo = _pop_opt(args, "--repo") or "."
         label = _pop_opt(args, "--label")

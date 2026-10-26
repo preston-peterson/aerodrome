@@ -1,5 +1,5 @@
 # Aerodrome
-<!-- Version: 3.4.146 -->
+<!-- Version: 3.4.147 -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -124,6 +124,8 @@ Three moving parts in one Python process:
 ```
 aerodrome/
 ├── main.py                       entrypoint — wires up collector + web + notifier
+├── updater.py                    update guard: staged apply, swap, automatic rollback (stdlib only)
+├── atomic_io.py                  crash-safe small-file writes (temp + fsync + rename)
 ├── collector.py                  ADS-B polling, classification, hexdb enrichment, SQLite writes
 ├── server.py                     FastAPI app — dashboard routes + ~80 JSON endpoints
 ├── notifier.py                   ntfy push notifications with cooldowns
@@ -176,24 +178,29 @@ aerodrome/
 ├── test_destructive_endpoints.py unit tests — switch-to-real + watchlist-history deletes
 ├── test_icao_hex.py              unit tests — ICAO hex ingest validation
 ├── test_install_sh.py            installer tests — install.sh + recover-sudoers.sh under stub sudo
+├── test_maintenance_locks.py     unit tests — one maintenance operation at a time
 ├── test_map_carto_key.py         unit tests — map.carto_api_key validation
 ├── test_migration_v7.py          unit tests — schema migration v7
 ├── test_ntfy_yaml.py             unit tests — notification-server settings (validation, server.yml, restore, Notifications tab, message cache)
 ├── test_photo_resolver.py        unit tests — photo enrichment cache logic
 ├── test_poll_robustness.py       unit tests — collector poll resilience to bad records
 ├── test_preflight.py             unit tests — startup config validation
+├── test_request_limits_offload.py unit tests — update paths off the event loop, zip size cap
 ├── test_route_resolver.py        unit tests — route enrichment + current-leg inference
 ├── test_schema_migrations.py     unit tests — migration framework
 ├── test_search.py                unit tests — search query language
 ├── test_search_v2_91_tokens.py   unit tests — search token grammar (v2.91 additions)
 ├── test_service_account.py       unit tests — the app's own account comes from its uid, not $LOGNAME/$USER
 ├── test_session_track.py         unit tests — session-aware track stitching
+├── test_startup_rollup_backfill.py unit tests — rollup backfills before migrations, the gate
 ├── test_stats_drills.py          unit tests — Stats detail-panel drill queries
 ├── test_stats_most_seen.py       unit tests — all-time most-seen stats card
 ├── test_sudoers_gate_contract.py unit tests — Updates-page sudoers gate + refresh commands
 ├── test_type_code.py             unit tests — aircraft type code (feed vs hexdb fallback)
 ├── test_uninstall.py             installer tests — uninstall.sh removal rules
+├── test_update_apply.py          unit tests — staged update apply, boot guard, rollback, kill points
 ├── test_updates_modal_commands.py unit tests — Updates-page refresh command (static)
+├── test_updates_page_b4a.py      unit tests — Updates-page update states and wording (static)
 ├── test_web_hardening.py         unit tests — Host allowlist + input sanitising
 ├── README.md                     this file
 ├── CHANGELOG.md                  per-release entries, bottom-up additions

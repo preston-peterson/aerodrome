@@ -1,4 +1,4 @@
-# Version: 3.4.146
+# Version: 3.4.147
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -24,6 +24,7 @@ import time
 import os
 from pathlib import Path
 from typing import Optional, Dict, List, Any
+from contextlib import contextmanager
 
 import requests as req
 import yaml
@@ -44,6 +45,10 @@ from collector import _open_db_conn, aircraft_type_for
 # definitions to display precision (1 decimal); see distance.py's
 # module docstring for the conversion-factor note.
 from distance import haversine as _dist_haversine, to_user_unit as _dist_to_user_unit, compass_bearing as _dist_compass_bearing
+# v3.4.147: staged update apply + boot guard (stdlib only; imports no app
+# module, so main.py can run it first) and crash-safe small-file writes.
+import updater
+import atomic_io
 
 logger = logging.getLogger("adsb.server")
 
@@ -311,8 +316,264 @@ _PRE_RESTORE_KEEP = 3
 _PRE_RESTORE_TS_RE = re.compile(r"\.(\d{8}-\d{6})\.pre-restore$")
 
 
-def _pre_restore_install_dir() -> Path:
+def _install_dir() -> Path:
+    """The live install's directory. Every maintenance endpoint (updates,
+    backups, restores, config import) locates the install through this one
+    function, so a test can point all of them at a throwaway install."""
     return Path(__file__).parent
+
+
+def _pre_restore_install_dir() -> Path:
+    return _install_dir()
+
+
+# --- One maintenance operation at a time (v3.4.147) ---
+# Updates, restores, server-side backups, config import/restore, the
+# pre-restore purge, server-side backup delete and switch-to-real all
+# rewrite the install or the database. Two at once (an upload during an
+# apply, two server-side backups in the same second) left half-applied trees
+# and corrupt zips. One lock covers them all:
+#   - try-only: it never waits, so it is safe to take on the event loop;
+#   - an operation that requested a restart PARKS its hold for a while, so
+#     nothing else starts in the seconds before the restart lands;
+#   - expiry uses time.monotonic() (a clock change can't free or wedge it);
+#     an active hold expires after 6 h as a backstop against a leaked token.
+# Lock order: _MAINT is never waited on. Other locks (e.g. a config lock)
+# may be taken while it is held, never the other way round.
+class _SingleRun:
+    BACKSTOP_SEC = 6 * 3600
+
+    def __init__(self):
+        import itertools
+        import threading
+        self._mu = threading.Lock()     # held for microseconds only
+        self._h = None                  # {op, since_wall, until_mono, tok, parked}
+        self._seq = itertools.count(1)
+
+    def try_acquire(self, op: str):
+        """A token when the lock was free (or its hold had expired), else None."""
+        now = time.monotonic()
+        with self._mu:
+            h = self._h
+            if h is not None and now < h["until_mono"]:
+                return None
+            if h is not None:
+                logger.warning(f"Maintenance lock: taking over an expired hold "
+                               f"({h['op']}, since {time.ctime(h['since_wall'])})")
+            tok = next(self._seq)
+            self._h = {"op": op, "since_wall": time.time(),
+                       "until_mono": now + self.BACKSTOP_SEC, "tok": tok, "parked": False}
+            return tok
+
+    def release(self, tok) -> None:
+        """Free the lock. A stale or parked token does nothing."""
+        with self._mu:
+            h = self._h
+            if h is not None and h["tok"] == tok and not h["parked"]:
+                self._h = None
+
+    def park(self, tok, op: str, seconds: float) -> bool:
+        """Keep the hold for `seconds` after the operation returns (a restart
+        was requested). release() no longer frees it; expiry does."""
+        with self._mu:
+            h = self._h
+            if h is None or h["tok"] != tok:
+                return False
+            h.update(op=op, parked=True, until_mono=time.monotonic() + seconds)
+            return True
+
+    def holder(self):
+        """{op, since, age_sec, parked} of the active hold, or None."""
+        now = time.monotonic()
+        with self._mu:
+            h = self._h
+            if h is None or now >= h["until_mono"]:
+                return None
+            return {"op": h["op"], "since": h["since_wall"],
+                    "age_sec": max(0, int(time.time() - h["since_wall"])),
+                    "parked": h["parked"]}
+
+
+# Module level so other request paths can read it. get_app() starts each app
+# with a fresh one (one app per process in production).
+_MAINT = _SingleRun()
+
+# How long an operation that requested a restart keeps the lock.
+_RESTART_HOLD_SEC = 120
+
+# An update zip's total UNPACKED size is checked before anything is
+# decompressed or update/ is wiped. A release unpacks to about 12 MB.
+UPDATE_UNPACKED_MAX_BYTES = 200 * 1024 * 1024
+UPDATE_UNPACK_HEADROOM_BYTES = 256 * 1024 * 1024
+
+
+def _unpacked_size_refusal(zf, install_dir: Path):
+    """(status, code, message) when an update zip can't be a release (400),
+    is too big to unpack (413) or wouldn't fit on the disk (507); None when
+    it's fine. Uses the sizes the zip declares, so nothing is decompressed
+    to find out. Those sizes only bound what is decompressed for stored and
+    deflated entries (zipfile limits each deflate call to the declared
+    size); bzip2, LZMA and zstd entries decompress without a limit, so a
+    tiny zip could expand to gigabytes. Releases are built with deflate:
+    any other method, or encryption, is refused before anything is read."""
+    import zipfile as _zipmod
+    mb = 1024 * 1024
+    for i in zf.infolist():
+        if i.compress_type not in (_zipmod.ZIP_STORED, _zipmod.ZIP_DEFLATED) \
+                or i.flag_bits & 0x1:
+            return (400, "not_a_release",
+                    "This zip uses a compression method (or encryption) that Aerodrome "
+                    "releases never use, so it wasn't unpacked. Nothing was changed. "
+                    "Did you pick the right file?")
+    total = sum(i.file_size for i in zf.infolist())
+    if total > UPDATE_UNPACKED_MAX_BYTES:
+        return (413, "too_large",
+                f"This zip unpacks to {total // mb} MB — far more than an Aerodrome "
+                f"release (about 12 MB; the limit is {UPDATE_UNPACKED_MAX_BYTES // mb} MB). "
+                f"Nothing was changed. Did you pick the right file?")
+    try:
+        free = shutil.disk_usage(str(install_dir)).free
+    except OSError:
+        return None
+    if total > free - UPDATE_UNPACK_HEADROOM_BYTES:
+        return (507, "no_space",
+                f"Not enough free disk space to unpack this update: it needs about "
+                f"{(total + UPDATE_UNPACK_HEADROOM_BYTES) // mb} MB, {free // mb} MB "
+                f"available. Nothing was changed.")
+    return None
+
+
+class _Busy(Exception):
+    """Another maintenance operation holds the lock (or an update is being
+    confirmed). Carries the holder for the 409 body."""
+
+    def __init__(self, busy: Optional[dict], code: str = "busy", message: str = ""):
+        self.busy = busy or {}
+        self.code = code
+        super().__init__(message or _busy_message(self.busy))
+
+
+def _ago(sec) -> str:
+    sec = int(sec or 0)
+    if sec < 60:
+        return "just now"
+    if sec < 3600:
+        return f"{sec // 60} min ago"
+    return f"{sec // 3600} h {sec % 3600 // 60} min ago"
+
+
+def _busy_message(busy: dict) -> str:
+    op = str(busy.get("op") or "another maintenance task")
+    if busy.get("parked"):
+        return f"Aerodrome is {op} — try again in a minute."
+    return (f"{op[:1].upper()}{op[1:]} is running (started {_ago(busy.get('age_sec'))}). "
+            f"Try again when it finishes.")
+
+
+@contextmanager
+def _maintenance(op: str, update_op: bool = False):
+    """Hold the maintenance lock for one operation, or raise _Busy.
+
+    update_op: an update upload/apply/download is also refused while the
+    previous update is still being confirmed (its journal exists). Other
+    operations are not refused. A rollback is still possible until the new
+    version commits — normally 30 s after its first good answer, at most
+    10 min if the commit is stuck — and it puts config.yaml back to the
+    pre-update copy, so a settings change or config import made in that
+    window would be undone if the new version then crashed (database
+    changes are kept). A restart the new version's own UI asks for in that
+    window commits first (_restart_service), so it can't cause one."""
+    if update_op:
+        j = updater.pending(_install_dir())
+        if j:
+            if j.get("state") in ("swapping", "rolling_back"):
+                msg = ("The last update didn't finish switching files; Aerodrome puts "
+                       "the previous version back when it next starts. Restart Aerodrome, "
+                       "then try again.")
+            else:
+                msg = "The last update is still being confirmed — try again in a minute."
+            raise _Busy({"op": "confirming the last update", "since": None, "age_sec": 0,
+                         "parked": True}, code="update_pending", message=msg)
+    tok = _MAINT.try_acquire(op)
+    if tok is None:
+        raise _Busy(_MAINT.holder() or {"op": "another maintenance task"},
+                    code="update_in_progress" if update_op else "busy")
+    try:
+        yield tok
+    finally:
+        _MAINT.release(tok)
+
+
+def _busy_response(b: _Busy, message: Optional[str] = None, **extra) -> JSONResponse:
+    """409 with both `error` (updates.html) and `message` (config.html)."""
+    msg = message or str(b)
+    busy = {k: b.busy.get(k) for k in ("op", "since", "age_sec", "parked")}
+    return JSONResponse(status_code=409, content={
+        "ok": False, "code": b.code, "error": msg, "message": msg, "busy": busy, **extra})
+
+
+def _confirm_update_before_restart():
+    """v3.4.147: a restart asked for by the new version's own UI (settings,
+    a config import, a restore, the switch to real data) after it has
+    answered is planned, not a crash: the pending update is committed
+    first, so the restart is never counted as a failed start and can't
+    roll the release (and config.yaml) back (updater.commit_if_served).
+    Every in-app restart of Aerodrome itself goes through here. Never
+    raises: a restart is never blocked on this."""
+    try:
+        if updater.commit_if_served(_install_dir()):
+            logger.info("Update confirmed before this restart (the new version had "
+                        "already answered)")
+    except Exception as e:  # never block a restart on this
+        logger.warning(f"Could not confirm the pending update before restarting: {e}")
+
+
+def _restart_service():
+    """Trigger a systemd restart. Returns (ok, note).
+
+    Tries `systemctl restart --no-block aerodrome` first (preferred — returns
+    immediately, doesn't race with our own shutdown). Falls back to the plain
+    `systemctl restart aerodrome` if sudo rejects the --no-block variant,
+    which happens on installs whose sudoers rule predates this feature.
+
+    A non-zero return with empty stderr is treated as success — that's the
+    expected case when systemd kills us before the subprocess finishes.
+
+    v3.4.147: a pending update the new version has answered for is
+    committed first (_confirm_update_before_restart)."""
+    import subprocess
+    _confirm_update_before_restart()
+    cmds = [
+        ["sudo", "-n", "systemctl", "restart", "--no-block", "aerodrome"],
+        ["sudo", "-n", "systemctl", "restart", "aerodrome"],
+    ]
+    last_note = ""
+    for cmd in cmds:
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                return True, ""
+            err = (result.stderr or "").strip()
+            # If sudo blocked us because of the rule not matching, try the next variant
+            low = err.lower()
+            if err and ("not allowed" in low or "password is required" in low
+                        or "sudo:" in low and "command" in low):
+                last_note = err
+                continue
+            # Non-zero but no stderr — mid-request kill, treat as success
+            if not err:
+                return True, ""
+            # Some other kind of failure — real note to surface
+            return False, err
+        except subprocess.TimeoutExpired:
+            # Expected when the service kills us mid-call
+            return True, ""
+        except FileNotFoundError:
+            return False, "sudo or systemctl not found"
+        except Exception as e:
+            last_note = str(e)
+            continue
+    return False, last_note
 
 
 def _pre_restore_db_name() -> str:
@@ -1260,9 +1521,10 @@ def _live_recovery_command(install_dir: Optional[Path] = None) -> str:
 
 
 def get_app(config: dict, config_path: str) -> FastAPI:
-    global CONFIG, CONFIG_PATH, _RESOLVED_WATCHLIST_TAILS
+    global CONFIG, CONFIG_PATH, _RESOLVED_WATCHLIST_TAILS, _MAINT
     CONFIG = config
     CONFIG_PATH = config_path
+    _MAINT = _SingleRun()     # v3.4.147: one maintenance lock per app
 
     # v2.57.1: resolve any tail-only watchlist entries to ICAOs once
     # at startup so subsequent search-filter and pill-annotation paths
@@ -2655,40 +2917,20 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         """Read running version from the VERSION file alongside server.py.
         Returns the raw string (e.g. '2.98.3') or '' if unreadable."""
         try:
-            version_path = Path(__file__).parent / "VERSION"
+            version_path = _install_dir() / "VERSION"
             if version_path.exists():
                 return version_path.read_text().strip()
         except Exception:
             pass
         return ""
 
-    def _parse_semver(tag: str) -> Optional[tuple]:
-        """Parse 'v2.98.3' or '2.98.3' into (2, 98, 3). Returns None for
-        anything that doesn't parse as exactly three integer components —
-        which means non-semver tags (e.g. date-based, '-rc1' suffixes)
-        will not contribute to version comparison and will be treated
-        as 'no actionable update' rather than crashing the check."""
-        if not tag:
-            return None
-        s = tag.lstrip("v").strip()
-        # Reject anything with a pre-release/build suffix; releases/latest
-        # excludes pre-releases by definition, but defensive belt-and-braces.
-        if "-" in s or "+" in s:
-            return None
-        parts = s.split(".")
-        if len(parts) != 3:
-            return None
-        try:
-            return tuple(int(p) for p in parts)
-        except ValueError:
-            return None
-
     def _is_newer_version(latest_tag: str, running: str) -> bool:
         """True if latest_tag is strictly newer than running. False for
         equal, older, or unparseable inputs — Aerodrome never suggests
-        downgrades, and never crashes on non-semver tag formats."""
-        l = _parse_semver(latest_tag)
-        r = _parse_semver(running)
+        downgrades, and never crashes on non-semver tag formats
+        (updater.parse_version: 'v2.98.3' / '2.98.3'; '-rc1' etc. → None)."""
+        l = updater.parse_version(latest_tag)
+        r = updater.parse_version(running)
         if l is None or r is None:
             return False
         return l > r
@@ -6861,13 +7103,16 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
     def _prune_install_backups():
         """Keep only the INSTALL_BACKUP_KEEP most-recent install snapshots in
-        .backups/. Each snapshot is a folder containing the pre-update source
-        files (copied by apply_local_update)."""
+        .backups/. Each snapshot is a folder holding the previous release's
+        files (moved there when an update is confirmed). The folder a
+        pending update's journal names is never pruned."""
         try:
-            install_dir = Path(__file__).parent
+            install_dir = _install_dir()
             backups_root = install_dir / ".backups"
             if not backups_root.is_dir():
                 return
+            _j = updater.pending(install_dir)
+            protected = {str(_j.get("ts"))} if _j else set()
             # Only consider top-level directories with timestamp-like names
             snapshots = [
                 p for p in backups_root.iterdir()
@@ -6876,6 +7121,8 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             # Sort newest first (lexical works because timestamps are YYYYMMDD-HHMMSS)
             snapshots.sort(key=lambda p: p.name, reverse=True)
             for old in snapshots[INSTALL_BACKUP_KEEP:]:
+                if old.name in protected:
+                    continue
                 try:
                     shutil.rmtree(old)
                     logger.info(f"Pruned old install backup: {old.name}")
@@ -6885,47 +7132,8 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             logger.warning(f"Could not prune install backups: {e}")
 
     def _do_restart():
-        """Trigger a systemd restart. Returns (ok, note).
-
-        Tries `systemctl restart --no-block aerodrome` first (preferred — returns
-        immediately, doesn't race with our own shutdown). Falls back to the plain
-        `systemctl restart aerodrome` if sudo rejects the --no-block variant,
-        which happens on installs whose sudoers rule predates this feature.
-
-        A non-zero return with empty stderr is treated as success — that's the
-        expected case when systemd kills us before the subprocess finishes."""
-        import subprocess
-        cmds = [
-            ["sudo", "-n", "systemctl", "restart", "--no-block", "aerodrome"],
-            ["sudo", "-n", "systemctl", "restart", "aerodrome"],
-        ]
-        last_note = ""
-        for cmd in cmds:
-            try:
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-                if result.returncode == 0:
-                    return True, ""
-                err = (result.stderr or "").strip()
-                # If sudo blocked us because of the rule not matching, try the next variant
-                low = err.lower()
-                if err and ("not allowed" in low or "password is required" in low
-                            or "sudo:" in low and "command" in low):
-                    last_note = err
-                    continue
-                # Non-zero but no stderr — mid-request kill, treat as success
-                if not err:
-                    return True, ""
-                # Some other kind of failure — real note to surface
-                return False, err
-            except subprocess.TimeoutExpired:
-                # Expected when the service kills us mid-call
-                return True, ""
-            except FileNotFoundError:
-                return False, "systemctl not found"
-            except Exception as e:
-                last_note = str(e)
-                continue
-        return False, last_note
+        """Trigger a systemd restart. Returns (ok, note). See _restart_service."""
+        return _restart_service()
 
     def _do_restart_after_response(delay_seconds=0.75):
         """v3.4.2: deferred restart used by destructive endpoints.
@@ -7131,24 +7339,30 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         Backs up the current config first."""
         if not _BACKUP_NAME_RE.match(name):
             return JSONResponse(status_code=400, content={"ok": False, "error": "Invalid backup name"})
-        src = Path(__file__).parent / name
-        if not src.is_file():
-            return JSONResponse(status_code=404, content={"ok": False, "error": "Backup not found"})
         try:
-            text = src.read_text()
-        except Exception as e:
-            return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+            with _maintenance("a config restore") as tok:
+                src = _install_dir() / name
+                if not src.is_file():
+                    return JSONResponse(status_code=404, content={"ok": False, "error": "Backup not found"})
+                try:
+                    text = src.read_text()
+                except Exception as e:
+                    return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
-        ok, payload = _apply_config_from_text(text, f"backup {name}")
-        if not ok:
-            return JSONResponse(status_code=400, content=payload)
+                ok, payload = _apply_config_from_text(text, f"backup {name}")
+                if not ok:
+                    return JSONResponse(status_code=400, content=payload)
 
-        # Trigger restart via helper (handles --no-block + fallback)
-        restart_ok, note = _do_restart()
-        if not restart_ok and note:
-            payload["restart_note"] = note
+                # Trigger restart via helper (handles --no-block + fallback)
+                restart_ok, note = _do_restart()
+                if not restart_ok and note:
+                    payload["restart_note"] = note
+                if restart_ok:
+                    _MAINT.park(tok, "restarting after a config restore", _RESTART_HOLD_SEC)
 
-        return payload
+                return payload
+        except _Busy as b:
+            return _busy_response(b)
 
     # v3.4.9: helper for size-bounded UploadFile reads. The previous
     # pattern was `raw = await file.read(); if len(raw) > MAX: reject`,
@@ -7168,13 +7382,17 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     # memory (config.yaml at <256KB, update zip at <50MB). For
     # larger uploads (restore backups up to 2GB), keep using the
     # stream-to-temp-file pattern from /api/backup/import.
-    async def _read_upload_bounded(file: UploadFile, max_bytes: int):
+    #
+    # v3.4.147: synchronous (reads the spooled upload's file object), so the
+    # handlers that use it are plain `def` and run in the threadpool — a
+    # slow disk or a big upload no longer freezes every other request.
+    def _read_upload_bounded(file: UploadFile, max_bytes: int):
         CHUNK = 64 * 1024  # 64 KB — small enough to bound overshoot
         total = 0
         chunks: List[bytes] = []
         try:
             while True:
-                chunk = await file.read(CHUNK)
+                chunk = file.file.read(CHUNK)
                 if not chunk:
                     break
                 total += len(chunk)
@@ -7186,26 +7404,32 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         return b"".join(chunks), None
 
     @app.post("/api/config/import")
-    async def import_config(file: UploadFile = File(...)):
+    def import_config(file: UploadFile = File(...)):
         """Upload a user-supplied config.yaml, validate, back up current, replace, restart."""
-        # v3.4.9: size-bounded stream-read. Was unbounded `await file.read()`
-        # followed by post-hoc len() check, which allocated full upload
-        # before rejection. Now aborts as soon as the 256 KB cap is hit.
-        raw, err = await _read_upload_bounded(file, 256 * 1024)
-        if err is not None:
-            return JSONResponse(status_code=413, content={"ok": False, "error": err})
-        text = raw.decode("utf-8", errors="replace")
+        try:
+            with _maintenance("a config import") as tok:
+                # v3.4.9: size-bounded stream-read. Was unbounded `await file.read()`
+                # followed by post-hoc len() check, which allocated full upload
+                # before rejection. Now aborts as soon as the 256 KB cap is hit.
+                raw, err = _read_upload_bounded(file, 256 * 1024)
+                if err is not None:
+                    return JSONResponse(status_code=413, content={"ok": False, "error": err})
+                text = raw.decode("utf-8", errors="replace")
 
-        ok, payload = _apply_config_from_text(text, f"upload {file.filename!r}")
-        if not ok:
-            return JSONResponse(status_code=400, content=payload)
+                ok, payload = _apply_config_from_text(text, f"upload {file.filename!r}")
+                if not ok:
+                    return JSONResponse(status_code=400, content=payload)
 
-        # Trigger restart via helper (handles --no-block + fallback)
-        restart_ok, note = _do_restart()
-        if not restart_ok and note:
-            payload["restart_note"] = note
+                # Trigger restart via helper (handles --no-block + fallback)
+                restart_ok, note = _do_restart()
+                if not restart_ok and note:
+                    payload["restart_note"] = note
+                if restart_ok:
+                    _MAINT.park(tok, "restarting after a config import", _RESTART_HOLD_SEC)
 
-        return payload
+                return payload
+        except _Busy as b:
+            return _busy_response(b)
 
     # --- Full backup / restore (v2.41.4) ---
     # Bundles config.yaml + aerodrome.db + ntfy server.yml into a single zip
@@ -7477,6 +7701,19 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     @app.post("/api/backup/import")
     async def backup_import(file: UploadFile = File(...),
                             background_tasks: BackgroundTasks = None):
+        """Restore from a zip produced by /api/backup/export (see
+        _backup_import_locked). v3.4.147: one maintenance operation at a
+        time; the lock is kept for a while once the restart is scheduled."""
+        try:
+            with _maintenance("a restore") as tok:
+                result = await _backup_import_locked(file, background_tasks)
+                if isinstance(result, dict) and result.get("ok") and not result.get("restart_note"):
+                    _MAINT.park(tok, "restarting after a restore", _RESTART_HOLD_SEC)
+                return result
+        except _Busy as b:
+            return _busy_response(b)
+
+    async def _backup_import_locked(file: UploadFile, background_tasks):
         """Restore from a zip produced by /api/backup/export. Destructive:
         replaces config.yaml, aerodrome.db, and ntfy server.yml (when present).
         Backs up the existing versions of each file first, then triggers a
@@ -7497,7 +7734,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         """
         import io, json, zipfile, tempfile, shutil
 
-        install_dir = Path(__file__).parent
+        install_dir = _install_dir()
 
         # v3.4.0: stream upload to a temp file. Use .backups/.uploads/
         # so the temp shares filesystem with the eventual restore target
@@ -8070,22 +8307,29 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         without round-tripping through the browser. Returns when the
         backup is complete (synchronous). For long-running backups,
         poll /api/backup/create-server-side/progress to see status.
+
+        v3.4.147: concurrency is the maintenance lock (the old running-flag
+        check-then-set let two backups in the same second both start and
+        write the same zip). _server_side_backup_state is progress data only.
         """
-        install_dir = Path(__file__).parent
+        try:
+            with _maintenance("a server-side backup"):
+                return _create_server_side_backup_locked()
+        except _Busy as b:
+            if b.busy.get("op") == "a server-side backup":
+                # Same body as before the lock existed, plus `busy`.
+                return _busy_response(b, message="A server-side backup is already running.",
+                                      progress=dict(_server_side_backup_state))
+            return _busy_response(b)
+
+    def _create_server_side_backup_locked():
+        install_dir = _install_dir()
         backups_dir = install_dir / ".backups"
         try:
             backups_dir.mkdir(parents=True, exist_ok=True)
         except OSError as e:
             return JSONResponse(status_code=500, content={
                 "ok": False, "message": f"Could not create .backups dir: {e}",
-            })
-
-        # Concurrency guard
-        if _server_side_backup_state["running"]:
-            return JSONResponse(status_code=409, content={
-                "ok": False,
-                "message": "A server-side backup is already running.",
-                "progress": dict(_server_side_backup_state),
             })
 
         # Disk-space pre-check. The zip won't exceed the DB size +
@@ -8144,7 +8388,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 for chunk in iter(lambda: f.read(1024 * 1024), b""):
                     h.update(chunk)
             sha_hex = h.hexdigest()
-            sha_path.write_text(f"{sha_hex}  {dest_path.name}\n")
+            atomic_io.write_atomic(sha_path, f"{sha_hex}  {dest_path.name}\n")
         except Exception as e:
             logger.warning(f"sha256 sidecar write failed: {e}")
             sha_hex = None
@@ -8215,6 +8459,19 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     @app.post("/api/backup/restore-from-path")
     async def restore_from_path(payload: RestoreFromPathPayload,
                                 background_tasks: BackgroundTasks = None):
+        """Restore from a backup file already on disk (see
+        _restore_from_path_locked). v3.4.147: one maintenance operation at a
+        time; the lock is kept for a while once the restart is scheduled."""
+        try:
+            with _maintenance("a restore") as tok:
+                result = await _restore_from_path_locked(payload, background_tasks)
+                if isinstance(result, dict) and result.get("ok") and not result.get("restart_note"):
+                    _MAINT.park(tok, "restarting after a restore", _RESTART_HOLD_SEC)
+                return result
+        except _Busy as b:
+            return _busy_response(b)
+
+    async def _restore_from_path_locked(payload, background_tasks):
         """v3.4.0: restore from a backup file already on disk. Useful
         when the file is too large for the browser-upload path. The
         path must be within <install_dir>/.backups/ unless the admin
@@ -8225,7 +8482,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         chose to keep this backup on disk by using server-side
         restore. Cleanup is via DELETE /api/backup/server-side/<name>.
         """
-        install_dir = Path(__file__).parent
+        install_dir = _install_dir()
         backups_dir = (install_dir / ".backups").resolve()
 
         try:
@@ -8293,8 +8550,16 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     def delete_server_side_backup(filename: str):
         """v3.4.0: delete a named server-side backup and its sha256
         sidecar. Filename is validated to be a bare basename within
-        <install_dir>/.backups/ — no path traversal."""
-        install_dir = Path(__file__).parent
+        <install_dir>/.backups/ — no path traversal. v3.4.147: never while
+        another maintenance operation (e.g. a restore reading it) runs."""
+        try:
+            with _maintenance("a backup delete"):
+                return _delete_server_side_backup_locked(filename)
+        except _Busy as b:
+            return _busy_response(b)
+
+    def _delete_server_side_backup_locked(filename: str):
+        install_dir = _install_dir()
         backups_dir = (install_dir / ".backups").resolve()
 
         # Validate: filename must be a bare basename, must match the
@@ -8357,9 +8622,11 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         """Delete every pre-restore snapshot file. Useful when the keep-N
         retention (default 3) is more conservative than the user wants and
         they'd rather reclaim every byte. Future restores will recreate
-        the most recent snapshot anyway."""
+        the most recent snapshot anyway. v3.4.147: never while another
+        maintenance operation (e.g. a restore) runs."""
         try:
-            deleted, freed = _purge_all_pre_restore_snapshots()
+            with _maintenance("a pre-restore cleanup"):
+                deleted, freed = _purge_all_pre_restore_snapshots()
             return {
                 "ok": True,
                 "deleted_count": deleted,
@@ -8367,6 +8634,8 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 "message": f"Purged {deleted} pre-restore file(s), "
                            f"freed {freed} bytes.",
             }
+        except _Busy as b:
+            return _busy_response(b)
         except Exception as e:
             return JSONResponse(status_code=500, content={
                 "ok": False,
@@ -9414,11 +9683,61 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
     @app.post("/api/restart")
     def restart_service():
-        """Restart the Aerodrome systemd service to pick up restart-only config changes."""
+        """Restart the Aerodrome systemd service to pick up restart-only config changes.
+
+        v3.4.147: refused (409) only while a maintenance operation holds the
+        lock — never just because an update is being confirmed. If an
+        update's restart call reported OK but no restart came, the hold
+        expires after 2 minutes and this is the way out."""
+        holder = _MAINT.holder()
+        if holder:
+            return _busy_response(_Busy(holder))
         ok, note = _do_restart()
         if ok:
             return {"ok": True, "message": "Service restart initiated"}
         return JSONResponse(status_code=500, content={"ok": False, "error": note or "Restart failed"})
+
+    @app.get("/api/maintenance/status")
+    def maintenance_status():
+        """v3.4.147: what the Updates (and later Settings) page shows about
+        maintenance. `busy`: the operation holding the lock, or null.
+        `update`: the last update result (.update-last-result.json: applied,
+        rolled_back or refused), or null. `update_pending`: the update
+        being confirmed right now, or null."""
+        inst = _install_dir()
+        j = updater.pending(inst)
+        pend = None
+        if j:
+            pend = {k: j.get(k) for k in ("from_version", "to_version", "failed_starts",
+                                         "served_at", "applier_pid", "state")}
+            # The process that applied it is still the one answering: its
+            # restart call returned OK but no restart has come (yet).
+            pend["waiting_for_restart"] = j.get("applier_pid") == os.getpid()
+        return {"busy": _MAINT.holder(), "update": updater.last_result(inst),
+                "update_pending": pend}
+
+    class MaintenanceAck(BaseModel):
+        kind: str
+
+    @app.post("/api/maintenance/ack")
+    def maintenance_ack(body: MaintenanceAck):
+        """v3.4.147: dismiss a shown result (kind "update")."""
+        if body.kind != "update":
+            return JSONResponse(status_code=400, content={
+                "ok": False, "error": f"Unknown kind {body.kind!r}.",
+                "message": f"Unknown kind {body.kind!r}."})
+        path = _install_dir() / updater.LAST_RESULT
+        res = atomic_io.read_json(path)
+        if res is None:
+            return {"ok": True, "acknowledged": False}
+        res["acknowledged"] = True
+        try:
+            atomic_io.write_json_atomic(path, res)
+        except OSError as e:
+            msg = f"Could not record that: {e}"
+            return JSONResponse(status_code=507 if atomic_io.is_disk_full(e) else 500,
+                                content={"ok": False, "error": msg, "message": msg})
+        return {"ok": True, "acknowledged": True}
 
     # --- Updates ---
     # Local update flow:
@@ -9461,15 +9780,41 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         # The default-filename entries above still cover stock installs.
         pass
 
-    def _parse_version(v: str):
-        """Return a tuple of ints from 'X.Y.Z' for comparison. None if unparseable."""
+    def _apply_preserve(update_root: Path, update_dir: Path) -> set:
+        """Top-level names a staged release never swaps in. A flat staging
+        (update/VERSION) also holds update/'s own docs, which aren't part of
+        the release."""
+        keep = set(PRESERVE_PATHS)
+        if update_root.resolve() == update_dir.resolve():
+            keep |= {"UPDATE_README.md", ".gitkeep"}
+        return keep
+
+    # The live folders a release ships (so an apply may move them): what the
+    # preflight checks while nothing is staged yet.
+    _RELEASE_DIRS = ("static", "templates", "scripts", "tools", "docs", ".github")
+
+    def _update_preflight(install_dir: Path, update_root: Optional[Path] = None) -> dict:
+        """Read-only: could an apply write everything it has to? (v3.4.147)
+        Checks exactly what an apply checks: the install directory and the
+        live directories the staged release would move. With nothing staged,
+        the live directories a release ships. A folder no release contains
+        (your own, a stray __pycache__) is never moved, so never flagged."""
         try:
-            parts = v.strip().split(".")
-            if len(parts) != 3:
-                return None
-            return tuple(int(p) for p in parts)
-        except (ValueError, AttributeError):
-            return None
+            if update_root is not None and update_root.is_dir():
+                names = set(updater.release_entries(
+                    update_root, _apply_preserve(update_root, install_dir / "update")))
+            else:
+                names = {n for n in _RELEASE_DIRS
+                         if (install_dir / n).is_dir() and not (install_dir / n).is_symlink()}
+            bad = updater.permission_problems(install_dir, sorted(names))
+        except OSError as e:
+            return {"ok": False, "problems": [str(install_dir)],
+                    "message": f"Couldn't check the install folder: {e}", "fix_command": None}
+        if not bad:
+            return {"ok": True, "problems": [], "message": None, "fix_command": None}
+        return {"ok": False, "problems": bad,
+                "message": "Updates can't be applied yet: " + updater.permission_message(bad),
+                "fix_command": updater.fix_command(bad)}
 
     # Files inside update/ that should be refreshed from every new release.
     # These are the static docs of the staging folder itself — they describe
@@ -9507,8 +9852,11 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
     @app.get("/api/updates/local/check")
     def check_local_update():
-        """Scan the ./update folder and report whether a newer version is staged."""
-        install_dir = Path(__file__).parent
+        """Scan the ./update folder and report whether a newer version is staged.
+
+        v3.4.147: also `preflight` — whether an apply could write everything
+        it has to (read-only; {ok, problems, message, fix_command})."""
+        install_dir = _install_dir()
         update_dir = install_dir / "update"
         current_ver = (install_dir / "VERSION").read_text().strip() if (install_dir / "VERSION").exists() else "unknown"
 
@@ -9519,6 +9867,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 "update_version": None,
                 "reason": "No update/ directory found. Copy a new release there to stage an update.",
                 "update_dir": str(update_dir),
+                "preflight": _update_preflight(install_dir),
             }
 
         # Look for VERSION file inside update/ — accept either update/VERSION
@@ -9535,14 +9884,15 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 "update_version": None,
                 "reason": "No VERSION file in update/. Make sure you copied the full release contents.",
                 "update_dir": str(update_dir),
+                "preflight": _update_preflight(install_dir),
             }
 
-        update_ver = version_file.read_text().strip()
+        update_ver = updater.read_version(version_file) or ""
         # Root of the staged release (the dir that contains VERSION)
         update_root = version_file.parent
 
-        cur_tuple = _parse_version(current_ver)
-        new_tuple = _parse_version(update_ver)
+        cur_tuple = updater.parse_version(current_ver)
+        new_tuple = updater.parse_version(update_ver)
 
         status = "unknown"
         if cur_tuple and new_tuple:
@@ -9574,6 +9924,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             "update_root": str(update_root),
             "install_dir": str(install_dir),
             "sudoers": sudoers_check,
+            "preflight": _update_preflight(install_dir, update_root),
             "reason": (
                 "Update ready to apply." if status == "newer" and has_main
                 else "Staged version matches current." if status == "same"
@@ -9606,20 +9957,31 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     #     automatically flattened so VERSION lands at update/VERSION.
 
     @app.post("/api/updates/local/upload")
-    async def upload_local_update(file: UploadFile = File(...)):
+    def upload_local_update(file: UploadFile = File(...)):
+        """Receive a release zip and extract it into update/ (see
+        _stage_uploaded_update). v3.4.147: a plain def (runs in the
+        threadpool, never on the event loop); one maintenance operation at a
+        time, and refused while the last update is still being confirmed."""
+        try:
+            with _maintenance("an update upload", update_op=True):
+                return _stage_uploaded_update(file)
+        except _Busy as b:
+            return _busy_response(b)
+
+    def _stage_uploaded_update(file: UploadFile):
         """Receive a release zip and extract it into update/. Runs the
         same check logic as /api/updates/local/check after extraction so
         the frontend gets a ready-to-apply response."""
         import io, zipfile
 
-        install_dir = Path(__file__).parent
+        install_dir = _install_dir()
         update_dir = install_dir / "update"
         MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
 
         # v3.4.9: size-bounded stream-read. Was unbounded `await file.read()`
         # followed by post-hoc len() check, which allocated full upload
         # before rejection. Now aborts as soon as the 50 MB cap is hit.
-        raw, err = await _read_upload_bounded(file, MAX_UPLOAD_BYTES)
+        raw, err = _read_upload_bounded(file, MAX_UPLOAD_BYTES)
         if err is not None:
             return JSONResponse(status_code=413, content={
                 "ok": False,
@@ -9634,7 +9996,19 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         # Validate zip format
         try:
             zf = zipfile.ZipFile(io.BytesIO(raw), "r")
-            bad_file = zf.testzip()
+            # v3.4.147: refuse a zip that unpacks too big (or wouldn't fit)
+            # before anything is decompressed — and before update/ is wiped,
+            # so the release staged before it is kept.
+            refusal = _unpacked_size_refusal(zf, install_dir)
+            if refusal:
+                return JSONResponse(status_code=refusal[0], content={
+                    "ok": False, "code": refusal[1], "error": refusal[2], "message": refusal[2]})
+            try:
+                bad_file = zf.testzip()
+            except (NotImplementedError, RuntimeError):
+                return JSONResponse(status_code=400, content={
+                    "ok": False, "error": "This zip can't be read (an unsupported or "
+                                          "encrypted entry). Nothing was changed."})
             if bad_file is not None:
                 return JSONResponse(status_code=400, content={
                     "ok": False, "error": f"Corrupted zip entry: {bad_file}"
@@ -9755,9 +10129,9 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         # Success \u2014 return the same shape as /api/updates/local/check
         # so the frontend can pass it directly to its render function.
         current_ver = (install_dir / "VERSION").read_text().strip() if (install_dir / "VERSION").exists() else "unknown"
-        update_ver = version_file.read_text().strip()
-        cur_tuple = _parse_version(current_ver)
-        new_tuple = _parse_version(update_ver)
+        update_ver = updater.read_version(version_file) or ""
+        cur_tuple = updater.parse_version(current_ver)
+        new_tuple = updater.parse_version(update_ver)
         update_status = "unknown"
         if cur_tuple and new_tuple:
             if new_tuple > cur_tuple: update_status = "newer"
@@ -10108,20 +10482,102 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         logger.warning("Initial sudoers drift check failed: %s", e)
 
     @app.post("/api/updates/local/apply")
-    def apply_local_update(snapshot_db: bool = False):
-        """Back up current install, copy files from update/ over it, reinstall deps, restart.
+    def apply_local_update(snapshot_db: bool = False, allow_downgrade: bool = False,
+                           allow_reinstall: bool = False):
+        """Apply the release staged in update/ (see _apply_staged_update).
+
+        v3.4.147: staged apply with automatic rollback. One maintenance
+        operation at a time; refused while the last update is still being
+        confirmed. allow_downgrade / allow_reinstall let an older or the
+        same version through (API only)."""
+        try:
+            with _maintenance("an update", update_op=True) as tok:
+                return _apply_staged_update(tok, snapshot_db, allow_downgrade, allow_reinstall)
+        except _Busy as b:
+            return _busy_response(b)
+
+    def _configured_db_path(install_dir: Path) -> Path:
+        db = Path((CONFIG.get("data") or {}).get("db_file") or "aircraft_history.db")
+        return db if db.is_absolute() else install_dir / db
+
+    def _fresh_update_ts(install_dir: Path) -> str:
+        """A YYYYMMDD-HHMMSS no staging/old/failed dir or .backups/ entry uses."""
+        t = time.time()
+        for _ in range(120):
+            ts = time.strftime("%Y%m%d-%H%M%S", time.localtime(t))
+            if not any((install_dir / n).exists() for n in (
+                    f"{updater.STAGING_PREFIX}{ts}", f"{updater.OLD_PREFIX}{ts}",
+                    f"{updater.FAILED_PREFIX}{ts}", f".backups/{ts}")):
+                return ts
+            t += 1
+        return ts
+
+    def _snapshot_db_for_update(db_path: Path, backup_dir: Path) -> None:
+        """v3.4.38: opt-in consistent DB snapshot (SQLite online-backup API)
+        into .backups/<ts>/<db name>.snapshot, the folder the previous
+        release moves into once the update is confirmed. Best effort: a
+        failure is logged and the apply continues (the database itself is
+        never touched by an update)."""
+        try:
+            if db_path.exists():
+                backup_dir.mkdir(parents=True, exist_ok=True)
+                _snapshot_path = backup_dir / f"{db_path.name}.snapshot"
+                _t0 = time.time()
+                _src = _open_db_conn(str(db_path))
+                _dst = _open_db_conn(str(_snapshot_path))
+                try:
+                    with _dst:
+                        _src.backup(_dst)
+                finally:
+                    _src.close()
+                    _dst.close()
+                logger.info(f"DB snapshot written to {_snapshot_path.name}: "
+                            f"{_snapshot_path.stat().st_size:,} bytes in "
+                            f"{time.time() - _t0:.1f}s")
+            else:
+                logger.warning(f"DB snapshot requested but {db_path} does not exist; "
+                               f"skipping snapshot, continuing with apply")
+        except Exception as snap_err:
+            logger.warning(f"DB snapshot failed (apply continues): {snap_err}")
+
+    def _refuse_update(e, cur_version: str, new_version: str) -> JSONResponse:
+        """An update refusal: logged, recorded for the Updates page (best
+        effort), and returned with both `error` and `message`."""
+        new_version = updater.shown_version(new_version)
+        logger.error(f"Update to {new_version} not applied ({e.code}): {e.message}"
+                     + (f"\n{e.detail}" if e.detail else ""))
+        try:
+            atomic_io.write_json_atomic(_install_dir() / updater.LAST_RESULT, {
+                "result": "refused", "code": e.code, "message": e.message,
+                "detail": e.detail, "from_version": cur_version, "to_version": new_version,
+                "at": time.time(), "acknowledged": False})
+        except OSError as w:
+            logger.warning(f"Could not record the refused update: {w}")
+        return JSONResponse(status_code=e.http_status, content={
+            "ok": False, "code": e.code, "error": e.message, "message": e.message,
+            "detail": e.detail, "from_version": cur_version, "to_version": new_version})
+
+    def _apply_staged_update(tok, snapshot_db: bool = False, allow_downgrade: bool = False,
+                             allow_reinstall: bool = False):
+        """Apply the release staged in update/ (or update/aerodrome/).
+
+        v3.4.147: nothing of Aerodrome's own changes until the new release
+        is staged to the side (.update-staging-<ts>/), its Python packages
+        are installed if its requirements changed, and it test-loads in a
+        fresh interpreter. Then it is switched in (journal first; updater.py),
+        the service restarts, and main.py's update guard puts this version
+        back if the new one fails to start twice. A refusal keeps update/ and
+        leaves the install as it was. If the restart call itself fails, the
+        swap is undone in this process and the update is refused.
 
         v3.4.38: when `snapshot_db=true`, also writes a consistent
-        SQLite-online-backup-API snapshot of the live database into the
-        backup directory before the file-copy step. The snapshot is the
-        ONLY way to get a usable DB rollback from the apply flow — the
-        regular code-only backup deliberately excludes the DB to avoid
-        racy file copies (see PRESERVE_PATHS above). Disabled by default
-        because the snapshot is the size of the live DB, which can be
-        gigabytes; opting in is an informed-consent choice.
+        SQLite-online-backup-API snapshot of the live database into
+        .backups/<ts>/. Disabled by default because the snapshot is the size
+        of the live DB, which can be gigabytes; opting in is an
+        informed-consent choice.
         """
-        import subprocess
-        install_dir = Path(__file__).parent
+        import sys as _sys
+        install_dir = _install_dir()
         update_dir = install_dir / "update"
 
         # Re-run the check to find the staged release root
@@ -10133,7 +10589,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 "error": "No VERSION file in update/. Nothing to apply."
             })
         update_root = version_file.parent
-        new_version = version_file.read_text().strip()
+        new_version = updater.read_version(version_file) or ""
         cur_version = (install_dir / "VERSION").read_text().strip() if (install_dir / "VERSION").exists() else "unknown"
 
         # v2.40.1: sudoers-drift pre-flight guard. Even if the frontend is
@@ -10158,177 +10614,127 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 "install_dir": str(install_dir),
             })
 
-        # --- Back up everything that will be overwritten ---
-        ts = time.strftime("%Y%m%d-%H%M%S")
-        backup_dir = install_dir / ".backups" / ts
-        try:
-            backup_dir.mkdir(parents=True, exist_ok=True)
-            for item in install_dir.iterdir():
-                if item.name in PRESERVE_PATHS:
-                    continue
-                # v2.50.8: skip user-data backup artifacts (.pre-restore,
-                # .bak.*, .from-backup.*) and Python bytecode caches at
-                # the top level. PRESERVE_PATHS is exact-name only, so
-                # without this check anything with a suffix falls through
-                # and bloats .backups/<ts>/ — this is what made historical
-                # snapshots multi-GB on installs that had pre-restore
-                # files in the install root at update time.
-                if _should_skip_in_install_snapshot(item.name):
-                    continue
-                dest = backup_dir / item.name
-                if item.is_dir():
-                    # v2.50.8: also exclude __pycache__/*.pyc from any
-                    # subdirectory we DO snapshot — they show up in
-                    # scripts/ and elsewhere and have no rollback value.
-                    shutil.copytree(
-                        item, dest,
-                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
-                    )
-                else:
-                    shutil.copy2(item, dest)
-        except Exception as e:
-            logger.error(f"Backup failed: {e}")
-            return JSONResponse(status_code=500, content={
-                "ok": False,
-                "error": f"Backup failed: {e}. Update not applied."
-            })
-
-        # v3.4.38: opt-in consistent DB snapshot via the SQLite online-backup
-        # API. Runs AFTER the code/templates backup (so its failure can't
-        # block the routine apply path) and BEFORE the prune (so the
-        # snapshot is included in the backup dir that prune retains under
-        # the keep-5 policy). The snapshot lives at
-        # .backups/<ts>/<db_filename>.snapshot — sibling-of-where-it-came-
-        # from naming so a user inspecting the backup dir can match the
-        # snapshot back to its source DB.
-        #
-        # Failure mode: if the snapshot fails (disk full, permissions,
-        # source DB corruption), log a warning but DO NOT abort the
-        # apply. The user opted in to belt-AND-suspenders behavior;
-        # losing the suspenders shouldn't block them from putting their
-        # belt on.
-        if snapshot_db:
-            try:
-                _configured_db = (CONFIG.get("data") or {}).get("db_file") or "aircraft_history.db"
-                _db_path = Path(_configured_db)
-                if not _db_path.is_absolute():
-                    _db_path = install_dir / _db_path
-                if _db_path.exists():
-                    _snapshot_name = f"{_db_path.name}.snapshot"
-                    _snapshot_path = backup_dir / _snapshot_name
-                    _t0 = time.time()
-                    _src = _open_db_conn(str(_db_path))
-                    _dst = _open_db_conn(str(_snapshot_path))
-                    try:
-                        with _dst:
-                            _src.backup(_dst)
-                    finally:
-                        _src.close()
-                        _dst.close()
-                    _size = _snapshot_path.stat().st_size
-                    _elapsed = time.time() - _t0
-                    logger.info(
-                        f"DB snapshot written to {_snapshot_path.name}: "
-                        f"{_size:,} bytes in {_elapsed:.1f}s"
-                    )
-                else:
-                    logger.warning(
-                        f"DB snapshot requested but {_db_path} does not exist; "
-                        f"skipping snapshot, continuing with apply"
-                    )
-            except Exception as snap_err:
-                # Best-effort. Keep the apply going regardless of why
-                # the snapshot failed — the user has a backup of their
-                # code, the DB stays in place (PRESERVE_PATHS skips it),
-                # and the worst case is they don't have a DB rollback
-                # for this specific apply.
-                logger.warning(
-                    f"DB snapshot failed (apply continues): {snap_err}"
-                )
-
-        # Prune old install snapshots so .backups/ doesn't grow unbounded
-        _prune_install_backups()
-
-        # --- Copy new files from update_root over install_dir ---
-        copied = []
-        try:
-            for item in update_root.iterdir():
-                if item.name in PRESERVE_PATHS:
-                    # User-data paths (config.yaml, db, logs, etc.) are never
-                    # overwritten. The `update/` folder is also preserved so
-                    # that anything the user staged mid-update survives — BUT
-                    # we still want to refresh the documentation inside it
-                    # (README.md, .gitkeep) so the in-app docs viewer doesn't
-                    # show a stale copy forever. Handle that special case here.
-                    if item.name == "update" and item.is_dir():
-                        _refresh_update_folder_docs(item, install_dir / "update")
-                        copied.append("update/UPDATE_README.md (docs only)")
-                    continue
-                dest = install_dir / item.name
-                if item.is_dir():
-                    if dest.exists():
-                        shutil.rmtree(dest)
-                    shutil.copytree(item, dest)
-                else:
-                    shutil.copy2(item, dest)
-                copied.append(item.name)
-        except Exception as e:
-            logger.error(f"Copy failed: {e}")
-            return JSONResponse(status_code=500, content={
-                "ok": False,
-                "error": f"Copy failed: {e}. Partial update — check {backup_dir} to restore."
-            })
-
-        # v2.41.20: ensure all shell scripts in the install dir are executable.
-        # Background: zip archives don't always preserve the POSIX execute bit
-        # (depends on how the zip was built and extracted). Even when they do,
-        # the Python release-packaging pipeline occasionally builds zips where
-        # install.sh / uninstall.sh come in as 0644 instead of 0755. Combined
-        # with the fact that git-on-Windows and some file-transfer tools strip
-        # the exec bit entirely, users who try `./install.sh` after unzipping
-        # a release hit "permission denied" even though `sudo bash install.sh`
-        # works. Fix here: after every apply, walk the install root and flip
-        # +x on every *.sh file. Idempotent, safe, and covers any future
-        # scripts we add without needing to maintain a hard-coded list.
-        try:
-            for sh in install_dir.glob("*.sh"):
-                if sh.is_file():
-                    mode = sh.stat().st_mode
-                    # Add u+x, g+x, o+x (0o111) while preserving everything
-                    # else. Equivalent to `chmod +x <file>`.
-                    sh.chmod(mode | 0o111)
-            logger.info("Restored executable bit on shell scripts in install dir")
-        except Exception as e:
-            # Not fatal — the permissions-refresh command the UI shows is
-            # `sudo bash <install>/scripts/recover-sudoers.sh`, which doesn't
-            # need +x (nor does the install.sh it hands off to), so users can
-            # still recover. Log it loudly so we see it in journalctl.
-            logger.warning(f"Could not restore +x on shell scripts: {e}")
-
-        # --- Reinstall requirements (best effort; service restart will catch import errors) ---
+        ts = _fresh_update_ts(install_dir)
+        preserve = _apply_preserve(update_root, update_dir)
         venv_pip = install_dir / "venv" / "bin" / "pip"
-        pip_ok = True
-        pip_msg = ""
-        if venv_pip.exists() and (install_dir / "requirements.txt").exists():
+        venv_py = install_dir / "venv" / "bin" / "python3"
+        if not venv_py.exists():
+            venv_py = Path(_sys.executable)
+        # A release from before 3.4.147 has no update guard: it can never
+        # confirm or roll back an update, so going back to one (API only)
+        # is made final as soon as its restart is under way.
+        target_guarded = updater.has_guard(update_root)
+        staging = None
+        pip_detail = None
+        deps_ran = False
+        previous_loads = None
+        packages_note = "Aerodrome's files were not changed (its Python packages may have been updated)."
+        try:
             try:
-                result = subprocess.run(
-                    [str(venv_pip), "install", "-r", "requirements.txt", "-q"],
-                    cwd=str(install_dir),
-                    capture_output=True, text=True, timeout=120,
-                )
-                pip_ok = (result.returncode == 0)
-                pip_msg = result.stderr.strip() if not pip_ok else ""
-            except Exception as e:
-                pip_ok = False
-                pip_msg = str(e)
+                updater.check_versions(cur_version, new_version, allow_downgrade, allow_reinstall)
+                entries = updater.release_entries(update_root, preserve)
+                updater.preflight_space(install_dir, update_root, preserve)
+                updater.preflight_permissions(install_dir, entries)
+                staging = updater.stage(install_dir, update_root, preserve, ts)
+                if updater.deps_changed(staging, install_dir):
+                    logger.info(f"Update to {new_version}: Python requirements changed; "
+                                f"installing them")
+                    deps_ran = True
+                    pip_ok, pip_out = updater.install_deps(staging, venv_pip)
+                    if not pip_ok:
+                        pip_detail = pip_out or "pip failed"
+                        logger.warning(f"Update to {new_version}: installing Python "
+                                       f"packages failed: {pip_detail}")
+                    # The venv is shared and never rolled back: check that the
+                    # RUNNING version still loads with the new packages (a
+                    # rollback, or the next restart after a refusal, starts it).
+                    try:
+                        updater.verify(install_dir, venv_py)
+                        previous_loads = True
+                    except updater.ApplyError as pe:
+                        previous_loads = False
+                        logger.warning(f"Update to {new_version}: after installing its Python "
+                                       f"packages, the running {cur_version} no longer loads; "
+                                       f"restarting it (or rolling back to it) would fail: "
+                                       f"{pe.detail}")
+                try:
+                    updater.verify(staging, venv_py)
+                except updater.ApplyError as e:
+                    if pip_detail:
+                        raise updater.ApplyError(
+                            "deps_failed",
+                            "Installing the new release's Python packages failed, and it "
+                            "doesn't load without them. Aerodrome's files were not changed.",
+                            500, detail=f"pip:\n{pip_detail}\n\ntest-load:\n{e.detail}")
+                    raise
+            except OSError as e:
+                raise updater.ApplyError(
+                    "no_space" if atomic_io.is_disk_full(e) else "apply_failed",
+                    f"The update stopped: {e}. Aerodrome's files were not changed.",
+                    507 if atomic_io.is_disk_full(e) else 500)
+            db_path = _configured_db_path(install_dir)
+            if snapshot_db:
+                _snapshot_db_for_update(db_path, install_dir / ".backups" / ts)
+            journal = updater.swap_in(install_dir, staging, ts, cur_version, new_version, extra={
+                "db_file": str(db_path), "schema_before": updater.schema_version_ro(db_path),
+                "pip_warning": pip_detail, "previous_loads": previous_loads},
+                entries=entries)
+        except updater.ApplyError as e:
+            if staging is not None:
+                shutil.rmtree(staging, ignore_errors=True)
+            if deps_ran:
+                # pip already changed the venv: "nothing changed" isn't true.
+                for said in ("Aerodrome's files were not changed.", "Nothing was changed."):
+                    if said in e.message:
+                        e.message = e.message.replace(said, packages_note)
+                        break
+                if previous_loads is False:
+                    e.message += (f" Warning: with the new packages the running {cur_version} "
+                                  f"no longer loads, so its next restart will fail; see the log.")
+            return _refuse_update(e, cur_version, new_version)
 
-        # --- Clean the update/ directory (success path) ---
-        # Preserve the folder's own docs so the user sees instructions next time.
-        # UPDATE_README.md is the new-style name; README.md is deleted if
-        # present (legacy artifact from pre-2.40.1 installs).
+        # The new release is in place; the running process is still the old
+        # code. Restart into it.
+        restart_ok, restart_note = _do_restart()
+        if not restart_ok:
+            note = restart_note or "the restart command failed"
+            try:
+                updater.swap_back(install_dir, journal, reason=f"restart failed: {note}",
+                                  restore_config=False, record=False, discard_failed=True)
+                back = "The previous version is still running."
+            except Exception as e:
+                logger.error(f"Could not undo the update after the restart failed: {e}")
+                back = ("The previous version is still running; Aerodrome finishes putting "
+                        "its files back at its next start.")
+            if deps_ran:
+                back += " Its Python packages may have been updated."
+            return _refuse_update(updater.ApplyError(
+                "restart_failed",
+                f"The update was not applied: Aerodrome can't restart itself on this "
+                f"install ({note}). {back} See \"Updates need a restart permission\" "
+                f"in INSTALL.", 500, detail=note), cur_version, new_version)
+
+        final_now = False
+        if not target_guarded:
+            # No guard in the target: nothing would ever confirm this journal
+            # (and a later guarded release would trip over it). Final now.
+            try:
+                final_now = updater.commit(install_dir)
+                logger.info(f"Update {cur_version} -> {new_version}: that release has no "
+                            f"automatic rollback, so the update is final now")
+            except OSError as e:
+                logger.warning(f"Could not make the update to {new_version} final: {e}")
+
+        # Refresh update/'s own docs from the new release, then clear the
+        # staged copy. After the restart call on purpose: a refused restart
+        # keeps the staged release. (--no-block returns at once; systemd runs
+        # ExecStop — a new interpreter — before SIGTERM reaches us, and this
+        # takes milliseconds. An interrupted clear leaves only inert files.)
+        if (update_root / "update").is_dir():
+            _refresh_update_folder_docs(update_root / "update", update_dir)
         update_dir_keep = {"UPDATE_README.md", ".gitkeep"}
         try:
-            for item in update_dir.iterdir():
+            for item in list(update_dir.iterdir()):
                 if item.name in update_dir_keep:
                     continue
                 if item.is_dir():
@@ -10338,20 +10744,29 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         except Exception as e:
             logger.warning(f"Could not fully clear update/: {e}")
 
-        # --- Trigger restart via helper (handles --no-block + fallback) ---
-        restart_ok, restart_note = _do_restart()
-
+        # Prune old install snapshots so .backups/ doesn't grow unbounded
+        # (never the folder this update's journal names).
+        _prune_install_backups()
+        _MAINT.park(tok, "restarting after an update", _RESTART_HOLD_SEC)
+        logger.info(f"Update {cur_version} -> {new_version} switched in; restarting")
         return {
             "ok": True,
             "from_version": cur_version,
             "to_version": new_version,
-            "backup_dir": str(backup_dir.relative_to(install_dir)),
-            "files_updated": len(copied),
-            "pip_ok": pip_ok,
-            "pip_msg": pip_msg,
-            "restart_ok": restart_ok,
-            "restart_note": restart_note,
-            "message": "Update applied. Service is restarting.",
+            "backup_dir": f".backups/{ts}",
+            "restart_ok": True,
+            "restart_note": "",
+            "pip_warning": pip_detail,
+            "previous_loads": previous_loads,
+            "final": final_now,
+            # Kept for pages from before v3.4.147 (they read pip_ok/pip_msg).
+            "pip_ok": pip_detail is None,
+            "pip_msg": pip_detail or "",
+            "message": ("Update applied. Aerodrome is restarting. That release has no "
+                        "automatic rollback, so the previous version is kept in .backups/ "
+                        "for going back by hand." if final_now else
+                        "Update applied. Aerodrome is restarting; it confirms the new "
+                        "version once it answers."),
         }
 
     # ──────────────────────────────────────────────────────────────────
@@ -10448,6 +10863,13 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         except Exception as e:
             raise ValueError(f"Couldn't parse the checksum file: {e}")
 
+    class _StagingRefused(ValueError):
+        """A downloaded release refused before staging (size / space)."""
+
+        def __init__(self, status, code, message):
+            super().__init__(message)
+            self.status, self.code = status, code
+
     def _verify_and_stage_github_zip(zip_bytes: bytes,
                                      expected_hash: str,
                                      install_dir: Path) -> None:
@@ -10479,6 +10901,19 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 f"Something is wrong with the Release packaging — "
                 f"please report it at the issue tracker."
             )
+
+        # v3.4.147: refuse an oversized release before update/ is wiped
+        # (and before anything is decompressed).
+        try:
+            with _zipfile.ZipFile(_io.BytesIO(zip_bytes)) as _zf:
+                _refusal = _unpacked_size_refusal(_zf, install_dir)
+        except _zipfile.BadZipFile:
+            raise ValueError(
+                "Downloaded file isn't a valid zip archive. "
+                "The download was corrupted — try again."
+            )
+        if _refusal:
+            raise _StagingRefused(*_refusal)
 
         # Clean-slate the update/ directory, preserving only the docs that
         # apply_local_update()'s cleanup step also preserves on success.
@@ -10568,7 +11003,18 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             raise ValueError(f"Unexpected error staging zip: {e}")
 
     @app.post("/api/updates/github/apply")
-    async def apply_github_update(snapshot_db: bool = False):
+    def apply_github_update(snapshot_db: bool = False):
+        """Download + verify + stage from GitHub, then apply (see
+        _github_apply_locked). v3.4.147: a plain def; the whole download,
+        staging and apply hold the maintenance lock, and it is refused while
+        the last update is still being confirmed."""
+        try:
+            with _maintenance("an update download", update_op=True) as tok:
+                return _github_apply_locked(tok, snapshot_db)
+        except _Busy as b:
+            return _busy_response(b)
+
+    def _github_apply_locked(tok, snapshot_db: bool = False):
         """v3.0.1: download + verify + stage from GitHub, then apply.
 
         No request body — the tag to apply is read from update_state's
@@ -10605,7 +11051,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 ),
             })
 
-        install_dir = Path(__file__).parent
+        install_dir = _install_dir()
 
         # Fetch + verify + stage. Each step has its own clear error message.
         try:
@@ -10618,29 +11064,19 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             logger.info(f"GitHub apply: staged {latest} into update/, handing off to apply_local_update()")
         except ValueError as e:
             logger.warning(f"GitHub apply failed during fetch/stage: {e}")
-            return JSONResponse(status_code=500, content={
+            return JSONResponse(status_code=getattr(e, "status", 500), content={
                 "ok": False,
+                "code": getattr(e, "code", None),
                 "error": str(e),
+                "message": str(e),
             })
 
-        # Hand off to the existing apply flow. It already handles sudoers
-        # drift pre-flight, backup, copy, deps, restart, and the cleanup
-        # of update/ on success. By reusing it we get all of that for free
-        # — including the same response shape, so the UI doesn't need
-        # special handling for the GitHub-apply path.
-        # v3.4.38: thread snapshot_db through so the GitHub-apply path
-        # honors the same opt-in DB-snapshot checkbox as the local-apply path.
-        # v3.4.51: apply_local_update became a synchronous handler in v3.4.49
-        # (it does blocking work — extract, deps, restart — and FastAPI runs
-        # sync handlers in its threadpool). This caller is still async and
-        # used to `await` it; awaiting the now-sync function's dict return
-        # raised "TypeError: object dict can't be used in 'await' expression"
-        # and broke every GitHub apply. Run it via asyncio.to_thread: that
-        # both satisfies the await (to_thread returns an awaitable) and keeps
-        # the blocking apply off the event loop, matching the threadpool
-        # behavior it gets when called directly as an endpoint.
-        import asyncio
-        return await asyncio.to_thread(apply_local_update, snapshot_db=snapshot_db)
+        # Hand off to the staged apply, still holding the lock — the same
+        # sudoers pre-flight, test-load, switch-in, restart and rollback as
+        # a local apply, and the same response shape. (v3.4.51's lesson: this
+        # is the path that applies the NEXT release; it calls a plain def
+        # directly and never awaits one.)
+        return _apply_staged_update(tok, snapshot_db, False, False)
 
     @app.get("/api/updates/github/check")
     def check_github_update(force: bool = False):
@@ -10949,6 +11385,20 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
     @app.post("/api/setup/switch-to-real")
     async def switch_to_real_execute(request: Request):
+        """Run the demo→real transition (see _switch_to_real_locked).
+        v3.4.147: one maintenance operation at a time; the lock is kept for
+        a while once the restart is requested."""
+        try:
+            with _maintenance("switching to real data") as tok:
+                result = await _switch_to_real_locked(request)
+                if isinstance(result, dict) and result.get("ok"):
+                    _MAINT.park(tok, "restarting after switching to real data",
+                                _RESTART_HOLD_SEC)
+                return result
+        except _Busy as b:
+            return _busy_response(b)
+
+    async def _switch_to_real_locked(request: Request):
         """Execute the demo→real transition.
 
         Step 0 — reachability test on the new receiver. If unreachable,
@@ -11136,6 +11586,10 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                     "steps": steps}
 
         # ----- Step 4: restart aerodrome.service -----
+        # v3.4.147: a just-updated version that has answered commits first,
+        # so this restart can't count as a failed start and roll back to
+        # the pre-switch config.yaml after the demo database is gone.
+        _confirm_update_before_restart()
         try:
             _subprocess.run(
                 ["sudo", "-n", "systemctl", "restart", "--no-block", "aerodrome"],

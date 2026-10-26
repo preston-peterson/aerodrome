@@ -291,6 +291,63 @@ class TestChecker(unittest.TestCase):
         self.assertNotIn(tree, out)
 
 
+class TestImportCheck(unittest.TestCase):
+    """--import-check: the PACKAGED tree must import (v3.4.147). A zip built
+    from this repo's top-level modules passes; dropping a module that
+    main/server/collector import at load time fails, naming it — including
+    updater.py, which main.py imports inside its never-fail guard."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory(prefix="aerodrome-import-check-test-")
+        cls.files = {p.name: p.read_bytes() for p in REPO.glob("*.py")}
+        cls.files["VERSION"] = b"9.8.7\n"
+        cls.files["requirements.txt"] = (REPO / "requirements.txt").read_bytes()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def make_zip(self, drop=(), wrapper=W):
+        path = os.path.join(self.tmp.name, f"i{len(os.listdir(self.tmp.name))}.zip")
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+            for name, data in self.files.items():
+                if name not in drop:
+                    z.writestr(wrapper + name, data)
+        return path
+
+    def run_import_check(self, zpath, ver=VER):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            rc = crz.main(["--import-check", str(zpath), ver])
+        return rc, out.getvalue()
+
+    def test_complete_tree_imports(self):
+        rc, out = self.run_import_check(self.make_zip())
+        self.assertEqual(rc, 0, out)
+        self.assertIn("the packaged tree imports", out)
+
+    def test_missing_update_guard_module_fails(self):
+        rc, out = self.run_import_check(self.make_zip(drop={"updater.py"}))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("main.py imports updater, which is not in the zip", out)
+
+    def test_missing_shared_module_fails(self):
+        rc, out = self.run_import_check(self.make_zip(drop={"distance.py"}))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("imports distance, which is not in the zip", out)
+
+    def test_usage_and_bad_zip(self):
+        self.assertEqual(self.run_import_check(self.make_zip(), "x")[0], 2)
+        bad = os.path.join(self.tmp.name, "not.zip")
+        Path(bad).write_bytes(b"not a zip")
+        self.assertEqual(self.run_import_check(bad)[0], 2)
+
+    def test_wrong_wrapper_fails(self):
+        rc, out = self.run_import_check(self.make_zip(wrapper="aerodrome-v1.2.3/"))
+        self.assertEqual(rc, 1, out)
+
+
 @unittest.skipIf(SKIP_SLOW, SLOW_SKIP_REASON)
 @unittest.skipUnless(IN_GIT_CHECKOUT, CHECKOUT_SKIP_REASON)
 @unittest.skipUnless(HAVE_ZIP_TOOLS, "needs zip, unzip, sha256sum and cmp")
@@ -479,12 +536,20 @@ class TestPackageRelease(unittest.TestCase):
         self.assertIn("stray.txt", out)
 
     def test_17_deleted_tracked_file_is_refused_wherever_it_sorts(self):
-        last = git(self.t, "ls-files").splitlines()[-1]
+        # The last file the staging loop copies must be one whose deletion no
+        # earlier gate refuses first (a deleted app module fails the import
+        # check), so the fixture gets a plain file that sorts after the rest.
+        last = "zz-sorts-last.txt"
         for rel in (last, "CONTRIBUTING.md"):
             with self.subTest(deleted=rel):
                 d = Path(tempfile.mkdtemp(dir=self.tmp))
                 t = d / "aerodrome"
                 shutil.copytree(self.base, t, symlinks=True)
+                if rel == last:
+                    (t / rel).write_text("sorts after every other tracked file\n")
+                    git(t, "add", rel)
+                    git(t, "commit", "-qm", "sorts-last fixture")
+                    self.assertEqual(git(t, "ls-files").splitlines()[-1], rel)
                 (t / rel).unlink()
                 rc, out = run(["bash", "scripts/package-release.sh"], t, self.env)
                 self.assertEqual(rc, 1, out[-3000:])

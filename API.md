@@ -111,6 +111,8 @@ Full disaster-recovery bundles — config + database + notification history. Use
 
 Backups are taken live — the SQLite database is copied via SQLite's online backup API so the service doesn't have to pause.
 
+**One maintenance operation at a time.** Restores (`POST /api/backup/import`, `/api/backup/restore-from-path`), `POST /api/backup/create-server-side`, `DELETE /api/backup/server-side/{filename}`, `POST /api/backup/pre-restore/purge`, `POST /api/config/import`, `POST /api/config/restore/{name}`, `POST /api/setup/switch-to-real` and the update endpoints share one lock. While another one runs — or for up to 2 minutes after one that restarts the service — they return `409` with the same text in `error` and `message`, a `code` (`busy`; `update_in_progress` / `update_pending` on the update endpoints) and `busy: {op, since, age_sec, parked}` (what's running, its start as a Unix time, and whether it's waiting for a restart). A server-side backup refused because another server-side backup is running keeps its old body (`message: "A server-side backup is already running."`, `progress`) plus `busy`.
+
 ## Performance diagnostic
 
 | Method | Path | Purpose |
@@ -161,11 +163,45 @@ Other 400s (`invalid`, `unreadable`, or a notification server Aerodrome doesn't 
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/updates/local/check` | Check for a staged release in `update/` |
-| POST | `/api/updates/local/upload` | Upload a release zip |
-| POST | `/api/updates/local/apply` | Apply a staged release (backs up current install, swaps files, restarts service) |
-| GET | `/api/updates/github/check` | Placeholder for future GitHub-release checking. Returns `{"available": false, "enabled": false}` — not yet implemented. |
-| POST | `/api/restart` | Restart the Aerodrome service |
+| GET | `/api/updates/local/check` | Check for a staged release in `update/`; also `preflight` (below) |
+| POST | `/api/updates/local/upload` | Upload a release zip (staged into `update/`) |
+| POST | `/api/updates/local/apply` | Apply the staged release: stage to the side, test-load, switch in, restart; rolled back automatically if it doesn't start |
+| GET | `/api/updates/github/check` | The cached GitHub release check (`?force=true` checks now) |
+| POST | `/api/updates/github/apply` | Download the latest GitHub release, verify its SHA256, stage it, then apply it exactly like a local apply |
+| GET | `/api/maintenance/status` | What's running and how the last update went (below) |
+| POST | `/api/maintenance/ack` | `{"kind": "update"}` — mark the last update result as seen |
+| POST | `/api/restart` | Restart the Aerodrome service (409 only while a maintenance operation holds the lock). Asked for by a just-updated version after it has answered, it confirms that update first, so the restart is never counted as a failed start |
+
+**Apply** (`POST /api/updates/local/apply?snapshot_db=&allow_downgrade=&allow_reinstall=`, and the GitHub apply). A staged release that is older than, or the same as, the running version is refused unless `allow_downgrade=true` / `allow_reinstall=true`. Success: `{ok: true, from_version, to_version, restart_ok: true, backup_dir, pip_warning, previous_loads, final, message}`:
+
+- `pip_warning`: the package installer's message when it failed but the new version still loaded (otherwise null).
+- `previous_loads`: when the release's Python requirements changed, whether the running version still loads with the new packages (`false` means a rollback to it, or its next restart, would fail — the venv is shared and is never rolled back); null when no packages were installed.
+- `final`: `true` when the target is a release from before 3.4.147 (going back with `allow_downgrade`). Such a release can't confirm or roll back an update, so the switch is made permanent at once; the previous version is kept in `.backups/<ts>/`.
+
+Every refusal leaves Aerodrome's own files as they were and keeps the release staged (once the release's packages were installed, the venv may already have changed: the message then says so). The refusals with a `code` below return `{ok: false, code, error, message, detail, from_version, to_version}` (`detail`: the installer's and test-load's output, or the restart command's message) and are recorded for `/api/maintenance/status`; the two busy 409s return `busy` instead of `detail` and aren't recorded:
+
+| Status | `code` | Meaning |
+|---|---|---|
+| 409 | `update_in_progress` | Another maintenance operation is running (`busy` says which) |
+| 409 | `update_pending` | The previous update is still being confirmed — try again in a minute (or, when it stopped part-way through switching files, it is put back at the next start) |
+| 409 | `downgrade_refused`, `same_version` | See above |
+| 409 | `not_writable` | Folders the update must replace aren't writable by the account Aerodrome runs as; `message` has the command that fixes it |
+| 400 | `bad_version` | The staged `VERSION` isn't a release number (X.Y.Z) |
+| 500 | `stage_failed` | Copying the release to the side failed (for a reason other than disk space), or its staged copy changed while it was being checked |
+| 500 | `apply_failed` | Another file error before the switch; nothing was switched |
+| 500 | `verify_failed` | The new version doesn't load (syntax error, missing package) |
+| 500 | `deps_failed` | Its packages failed to install and it doesn't load without them |
+| 500 | `swap_failed` | Switching the files in failed; the previous version was put back |
+| 500 | `restart_failed` | Aerodrome can't restart itself on this install; the switch was undone |
+| 507 | `no_space` | Not enough free disk space to stage or switch in the release |
+
+Two refusals keep their older bodies, with no `code` and nothing recorded: `409 {ok: false, error: "sudoers_refresh_required", message, sudoers, install_dir}` when the release needs newer system permissions first (the command to run is `sudoers.recovery_command`), and `400 {ok: false, error: "No VERSION file in update/. Nothing to apply."}` when nothing is staged.
+
+**Upload** (`POST /api/updates/local/upload`, and the GitHub download) checks the zip before anything is unpacked or the staged release is replaced: `400` (`not_a_release`) for an entry compressed with anything but deflate (or stored), or encrypted — Aerodrome releases never are, and other methods could expand without limit; `413` (`too_large`) above 200 MB unpacked; `507` (`no_space`) when it wouldn't fit with 256 MB to spare. The release staged before is kept either way.
+
+**`preflight`** on `/api/updates/local/check` is a read-only check that an apply could write everything it has to — the install folder and the folders the staged release would replace (with nothing staged, the folders a release ships): `{ok, problems, message, fix_command}` (`problems`: paths that aren't writable; `fix_command`: a `chown` + `chmod u+w` command that makes them writable).
+
+**`GET /api/maintenance/status`** returns `{busy, update, update_pending}`: `busy` is the operation holding the maintenance lock (or null); `update` is the last update's result — `{result: "applied" | "rolled_back" | "refused", from_version, to_version, at, acknowledged, …}` with `reason`, `failed_dir`, `schema_before`/`schema_after` for a rollback, `code`/`message`/`detail` for a refusal, `pip_warning` and `backup_dir` for an applied update, `previous_loads` for either — or null; `update_pending` is the update being confirmed right now (`{from_version, to_version, failed_starts, served_at, applier_pid, state, waiting_for_restart}`) or null.
 
 ## Exports
 

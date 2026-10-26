@@ -30,14 +30,28 @@ You have three ways to put a release in this folder:
 
 ## What happens when you apply
 
-1. The current install is backed up to `/opt/aerodrome/.backups/<timestamp>/`
-2. Files are copied from `update/` over the live install, preserving
-   user-managed paths (config.yaml, database, logs, venv)
-3. Python dependencies are reinstalled from `requirements.txt` (best-effort)
-4. The `aerodrome` systemd service is restarted
+1. The release is copied to the side, into `.update-staging-<timestamp>/` —
+   nothing of the running install changes yet. Your config.yaml, database,
+   logs and venv are never part of it.
+2. If its `requirements.txt` lists different packages, they are installed
+   into Aerodrome's Python environment (they stay installed even if the
+   update is then refused or rolled back).
+3. The new version is test-loaded in a fresh Python process. If it can't
+   load (a syntax error, a missing package), the update stops with the
+   reason, Aerodrome's files are left as they were, and the release stays
+   staged here — fix the cause and press Apply again.
+4. The new files are switched in all at once and the service restarts. If
+   Aerodrome can't restart itself, the switch is undone and the update is
+   refused, with Aerodrome's files left as they were.
+5. If the new version fails to start twice, Aerodrome puts the previous
+   version (and its config.yaml) back on its own and records why in
+   `.update-last-result.json` and the service log; the Updates page shows
+   what was put back and why. About 30 seconds after
+   the new version answers, the update is confirmed and the previous
+   version is kept in `/opt/aerodrome/.backups/<timestamp>/`.
 
-If the apply step fails partway through, the `.backups/<timestamp>/` folder
-has the previous install intact for manual recovery.
+To go back to an earlier version by hand, see "Rolling back" in
+docs/INSTALL.md.
 
 ## Sudoers version check
 

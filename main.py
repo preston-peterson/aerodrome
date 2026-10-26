@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Version: 3.4.146
+# Version: 3.4.147
 """
 main.py — Aerodrome ADS-B Tracker
 
@@ -19,7 +19,21 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
+
+# --- update guard (boot-critical; stdlib only) ---
+# Runs before any third-party or app import: those are exactly the imports a
+# broken release breaks. For `main.py start` it finishes or undoes an
+# interrupted update, counts the first starts of a new release, and puts the
+# previous release back after it fails to start twice (updater.py). Nothing
+# else may move above this block, and updater.py imports no app module.
+try:
+    import updater as _updater
+    _updater.on_boot(Path(__file__).resolve().parent)
+except Exception as _e:          # never let the guard be what stops startup
+    sys.stderr.write(f"aerodrome: update guard unavailable: {_e!r}\n")
+    _updater = None
+# --- end update guard ---
 
 import yaml
 import uvicorn
@@ -319,28 +333,190 @@ def run_collector(config: dict, stop_event: threading.Event):
     logger.info("Collector stopped")
 
 
+def _running_instance_pid() -> Optional[int]:
+    """PID of another live Aerodrome serving this install (per .tracker.pid),
+    else None. Identity-checked (updater.other_instance_pid): a stale file
+    naming a PID the system reused — init, a shell, the feeder — after a
+    power cut no longer reads as "already running"."""
+    if _updater is not None:
+        return _updater.other_instance_pid(PID_FILE.parent, PID_FILE.name)
+    # Fallback without the update guard: live, not us, and ours to signal.
+    try:
+        txt = PID_FILE.read_text().strip()
+        pid = int(txt) if txt else 0
+    except (OSError, ValueError):
+        return None
+    if pid <= 0 or pid == os.getpid():
+        return None
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return None
+    return pid
+
+
+def _schema_current_version(db_file: str) -> int:
+    """The database's schema version (read-only; 0 before any migration)."""
+    import sqlite3 as _sq
+    from schema_migrations import current_version
+    conn = _sq.connect(db_file, timeout=60.0)
+    try:
+        return current_version(conn)
+    finally:
+        conn.close()
+
+
+def _rollup_errors() -> str:
+    """The rollup backfills' error texts, for the startup log."""
+    from collector import (get_hourly_backfill_status, get_military_backfill_status,
+                           get_watchlist_backfill_status)
+    errs = []
+    for name, fn in (("sightings_hourly", get_hourly_backfill_status),
+                     ("military_hourly", get_military_backfill_status),
+                     ("watchlist_hourly", get_watchlist_backfill_status)):
+        st = fn()
+        if st.get("phase") == "error" and st.get("error"):
+            errs.append(f"{name}: {st['error']}")
+    return "; ".join(errs) or "no error recorded"
+
+
+def _probe_targets(host: str):
+    """(address, Host header) pairs the update-confirm probe tries. IP
+    literals pass the web Host allowlist; for a hostname, _probe_version
+    sends the address it actually connected to instead."""
+    h = (host or "").strip()
+    if h in ("", "0.0.0.0"):
+        return [("127.0.0.1", "127.0.0.1")]
+    if h == "::":
+        return [("::1", "[::1]"), ("127.0.0.1", "127.0.0.1")]
+    return [(h, f"[{h}]" if ":" in h else h)]
+
+
+def _probe_version(addr: str, host_hdr: str, port: int, timeout: float = 5.0):
+    """GET /api/version once. Returns (kind, version): kind is "ok" (HTTP
+    200 with a JSON body), "bad" (an HTTP answer that isn't that, or a read
+    timeout after connecting) or "conn" (couldn't connect at all)."""
+    import http.client
+    import json as _json
+    import socket as _socket
+    conn = http.client.HTTPConnection(addr, int(port), timeout=timeout)
+    try:
+        try:
+            conn.connect()
+        except OSError:
+            return "conn", None
+        # Host: the IP literal actually connected to. A web.host that is a
+        # full hostname (not on the Host allowlist) would otherwise get 403
+        # here — a healthy release read as broken and rolled back.
+        try:
+            peer = conn.sock.getpeername()[0]
+            host_hdr = f"[{peer}]" if ":" in peer else peer
+        except (OSError, AttributeError, IndexError, TypeError):
+            pass
+        try:
+            conn.request("GET", "/api/version", headers={"Host": f"{host_hdr}:{int(port)}"})
+            r = conn.getresponse()
+            body = r.read(65536)
+        except (_socket.timeout, TimeoutError):
+            return "bad", None
+        except (ConnectionResetError, http.client.RemoteDisconnected, BrokenPipeError):
+            return "conn", None
+        except (OSError, http.client.HTTPException):
+            return "bad", None
+        if r.status != 200:
+            return "bad", None
+        try:
+            return "ok", str((_json.loads(body) or {}).get("version") or "")
+        except (ValueError, AttributeError):
+            return "bad", None
+    finally:
+        conn.close()
+
+
+def _confirm_update_when_serving(host: str, port: int, to_version: str,
+                                 *, probe=None, sleep=time.sleep, exit_fn=os._exit,
+                                 monotonic=time.monotonic, logger=None):
+    """Confirm a just-applied update from inside the new version.
+
+    1. Probe GET /api/version until it answers 200 with `to_version`, then
+       record served_at. No good answer within SERVE_DEADLINE_SEC: if any
+       HTTP answer came back (wrong status/version, or a read timeout after
+       connecting), the new version is broken in a way only it can see —
+       exit 1 so the start is counted and the guard can roll it back. If
+       nothing could even connect, the probe itself is what's blocked
+       (nothing of Aerodrome's runs between this thread's start and the
+       bind), so confirm on uptime instead, with a WARNING.
+    2. HEALTHY_AFTER_SEC later, commit() (retried with backoff). Every
+       deadline here uses time.monotonic()."""
+    log = logger or logging.getLogger("adsb.main")
+    probe = probe or _probe_version
+    upd = _updater
+    targets = _probe_targets(host)
+    deadline = monotonic() + upd.SERVE_DEADLINE_SEC
+    saw_bad = False
+    good = None
+    while not good:
+        for addr, hdr in targets:
+            kind, ver = probe(addr, hdr, port)
+            if kind == "ok" and ver == to_version:
+                good = addr
+                break
+            if kind != "conn":
+                saw_bad = True
+        if good or monotonic() >= deadline:
+            break
+        sleep(2)
+    addrs = ", ".join(a for a, _ in targets)
+    if not good:
+        if saw_bad:
+            log.error(f"{to_version} answered but not correctly for "
+                      f"{max(1, upd.SERVE_DEADLINE_SEC // 60)} minutes; exiting so the "
+                      f"update guard can roll it back")
+            exit_fn(1)
+            return
+        log.warning(f"Couldn't reach the web UI on {addrs} to confirm {to_version}; "
+                    f"confirming on uptime instead")
+    else:
+        log.info(f"{to_version} is answering on {good}:{port}; confirming the update "
+                 f"in {upd.HEALTHY_AFTER_SEC} s")
+    try:
+        upd.note_served(BASE_DIR)
+    except Exception as e:  # best effort: recording the answer is informational
+        log.warning(f"Could not record that {to_version} is answering: {e}")
+    started = monotonic()
+    while monotonic() - started < upd.HEALTHY_AFTER_SEC:
+        sleep(max(0.01, min(5.0, upd.HEALTHY_AFTER_SEC - (monotonic() - started))))
+    delays = [10, 60, 300]
+    seen = set()
+    while True:
+        try:
+            if upd.commit(BASE_DIR):
+                log.info(f"Update to {to_version} confirmed; the previous version "
+                         f"is kept in .backups/")
+            else:
+                log.warning("The update journal is in an unexpected state; "
+                            "leaving it for the next start")
+            return
+        except Exception as e:
+            kind = f"{type(e).__name__}:{getattr(e, 'errno', '')}"
+            if kind not in seen:
+                seen.add(kind)
+                log.warning(f"Could not confirm the update to {to_version} yet "
+                            f"({e}); retrying")
+            sleep(delays.pop(0) if delays else 600)
+
+
 def start(config: dict):
     logger = logging.getLogger("adsb.main")
 
-    if PID_FILE.exists():
-        # v2.41.9: defensive parse. If the file is empty or garbage
-        # (e.g. a crash during write, or a full-disk that truncated it),
-        # treat it as stale and continue rather than crashing out.
-        try:
-            pid_text = PID_FILE.read_text().strip()
-            pid = int(pid_text) if pid_text else 0
-        except (OSError, ValueError):
-            pid = 0
-        if pid > 0:
-            try:
-                os.kill(pid, 0)
-                print(f"Already running (PID {pid}). Use 'restart' or 'stop' first.")
-                sys.exit(1)
-            except ProcessLookupError:
-                PID_FILE.unlink(missing_ok=True)
-        else:
-            PID_FILE.unlink(missing_ok=True)
-
+    # Identity-checked: only a live Aerodrome running THIS install's
+    # main.py counts. Anything else in the file is stale (v2.41.9: an
+    # empty or garbage file is stale too).
+    other = _running_instance_pid()
+    if other:
+        print(f"Already running (PID {other}). Use 'restart' or 'stop' first.")
+        sys.exit(1)
+    PID_FILE.unlink(missing_ok=True)
     PID_FILE.write_text(str(os.getpid()))
     # v2.50.13: set the SQLite tuning profile BEFORE init_db so the
     # init connection itself uses the right cache_size/mmap_size/temp_store.
@@ -349,7 +525,26 @@ def start(config: dict):
     # connection runs with stale/default tuning.
     tuning_cfg = (config.get("data") or {}).get("tuning") or {}
     set_db_tuning_profile(tuning_cfg.get("profile") or "auto")
+    # init_db also runs the one-time rollup backfills, synchronously, before
+    # the migrations below (migrations v1, v5 and v16 read those rollups).
     init_db(config["data"]["db_file"])
+
+    # Migration gate: if a rollup backfill didn't finish (e.g. disk full)
+    # and migrations are pending, migrating now would stamp the database as
+    # upgraded with lifetime counts computed from an empty rollup — and
+    # nothing would ever recompute them. Stop with nothing changed instead;
+    # the next start retries the backfill. (A current-schema database whose
+    # backfill failed keeps running: the Live page shows the error.)
+    from collector import rollup_backfill_incomplete as _rollup_incomplete
+    from schema_migrations import CURRENT_SCHEMA_VERSION as _CURRENT_SCHEMA
+    _missing = _rollup_incomplete(config["data"]["db_file"])
+    if _missing and _schema_current_version(config["data"]["db_file"]) < _CURRENT_SCHEMA:
+        logger.error(
+            "The one-time rollup build didn't finish (%s: %s). No database upgrade "
+            "was applied, so nothing was changed. If the disk is full, free space; "
+            "Aerodrome retries on the next start.",
+            ", ".join(_missing), _rollup_errors())
+        sys.exit(1)
 
     # v2.51.0: apply any pending schema migrations. init_db is idempotent
     # for existing schema (CREATE TABLE IF NOT EXISTS) but doesn't handle
@@ -380,7 +575,9 @@ def start(config: dict):
         (_stats_cfg.get("timezone") or "").strip(),
         _stats_cfg.get("track_gap_minutes"),
     )
-    _mconn = _sq.connect(config["data"]["db_file"])
+    # 60 s busy timeout: wait for a stray lock holder instead of failing
+    # after Python's 5 s default and restart-looping the service.
+    _mconn = _sq.connect(config["data"]["db_file"], timeout=60.0)
     try:
         _mres = _apply_migrations(_mconn, _app_version)
         if not _mres["ok"]:
@@ -388,11 +585,17 @@ def start(config: dict):
                 f"Schema migration failed at version "
                 f"{_mres['starting_version']}: {_mres.get('error')}"
             )
-            logger.error(
-                "Refusing to start with a partially-migrated database. "
-                "DB is unchanged (transaction rolled back). Restore from "
-                "backup if needed, or report this issue with the error above."
-            )
+            if "locked" in str(_mres.get("error") or "").lower():
+                logger.error(
+                    "Another process held the database lock; nothing was "
+                    "changed. Aerodrome retries on the next start."
+                )
+            else:
+                logger.error(
+                    "Refusing to start with a partially-migrated database. "
+                    "DB is unchanged (transaction rolled back). Restore from "
+                    "backup if needed, or report this issue with the error above."
+                )
             sys.exit(1)
         if _mres["applied"]:
             for _entry in _mres["applied"]:
@@ -531,6 +734,23 @@ def start(config: dict):
     # Under systemd the stdout pipe is block-buffered — without flush=True
     # the banner would only flush on shutdown (real bug seen in v2.50.34).
 
+    # First start(s) of a just-applied update: confirm it from here once the
+    # web UI answers with the new version (see _confirm_update_when_serving).
+    # Started after init_db and the migrations, so a long first start after
+    # a big upgrade never counts against the confirm deadline.
+    _journal = None
+    if _updater is not None:
+        try:
+            _journal = _updater.pending(BASE_DIR)
+        except Exception:
+            _journal = None
+    if _journal and _journal.get("state") == "pending_first_boot":
+        logger.info(f"Confirming the update to {_journal.get('to_version')} "
+                    f"once the web UI answers")
+        threading.Thread(target=_confirm_update_when_serving,
+                         args=(host, port, str(_journal.get("to_version") or "")),
+                         name="aerodrome-update-confirm", daemon=True).start()
+
     uvicorn.run(app, host=host, port=port, log_level="warning")
 
 
@@ -576,15 +796,16 @@ def stop(config: dict):
     if not PID_FILE.exists():
         print("Not running (no PID file).")
         return
-    # v2.41.9: defensive parse — tolerate empty/garbage PID files.
-    try:
-        pid_text = PID_FILE.read_text().strip()
-        pid = int(pid_text) if pid_text else 0
-    except (OSError, ValueError):
-        pid = 0
-    if pid <= 0:
-        print("PID file is empty or corrupt — cleaning up.")
+    # Identity-checked, so a PID the system reused after a crash is never
+    # signalled (systemd runs `main.py stop` as ExecStop even after one).
+    pid = _running_instance_pid()
+    if not pid:
+        print("Not running (stale PID file removed).")
         PID_FILE.unlink(missing_ok=True)
+        return
+    if _runs_as_another_account(pid):
+        print(f"Aerodrome is running as another account (PID {pid}); this account "
+              f"can't stop it. Use: sudo systemctl stop aerodrome")
         return
     try:
         os.kill(pid, signal.SIGTERM)
@@ -601,26 +822,28 @@ def stop(config: dict):
     except ProcessLookupError:
         print("Was not running (stale PID removed).")
         PID_FILE.unlink(missing_ok=True)
+    except PermissionError:
+        print(f"Aerodrome is running as another account (PID {pid}); this account "
+              f"can't stop it. Use: sudo systemctl stop aerodrome")
+
+
+def _runs_as_another_account(pid: int) -> bool:
+    """True when `pid` is alive but this account may not signal it."""
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return False
 
 
 def status(config: dict):
     import requests
 
-    running = False
-    pid = None
-    if PID_FILE.exists():
-        # v2.41.9: defensive parse — tolerate empty/garbage PID files.
-        try:
-            pid_text = PID_FILE.read_text().strip()
-            pid = int(pid_text) if pid_text else None
-        except (OSError, ValueError):
-            pid = None
-        if pid:
-            try:
-                os.kill(pid, 0)
-                running = True
-            except ProcessLookupError:
-                pass
+    pid = _running_instance_pid()
+    running = pid is not None
+    other_account = running and _runs_as_another_account(pid)
 
     receiver = config["receiver"]
     url = f"http://{receiver['ip']}:{receiver['port']}{receiver['path']}"
@@ -654,7 +877,8 @@ def status(config: dict):
     RST = '\033[0m'
     r = config["retention"]
 
-    print(f"\n  Tracker:    {G+'running'+RST+f' (PID {pid})' if running else R+'not running'+RST}")
+    who = ", another account" if other_account else ""
+    print(f"\n  Tracker:    {G+'running'+RST+f' (PID {pid}{who})' if running else R+'not running'+RST}")
     print(f"  Receiver:   {G+'reachable'+RST if receiver_ok else R+'unreachable'+RST}  ({url})")
     print(f"  Database:   {G+'exists'+RST if db_exists else R+'missing'+RST}  ({db_path})")
     print(f"  Retention:  military {r['military_days']}d / watchlist {r['watchlist_days']}d / all {r['all_days']}d")
@@ -678,9 +902,14 @@ def main():
     elif args.command == "status":
         status(config)
     elif args.command == "restart":
+        # Stop, then start in a FRESH process (same PID) so this start gets
+        # the update guard and an empty in-memory state like any other.
         stop(config)
-        time.sleep(1)
-        start(config)
+        # execv replaces the process without flushing Python's buffers: under
+        # systemd, nohup or a log file stop()'s lines would be lost.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os.execv(sys.executable, [sys.executable, str(BASE_DIR / "main.py"), "start"])
 
 
 if __name__ == "__main__":

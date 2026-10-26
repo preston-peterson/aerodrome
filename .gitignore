@@ -57,10 +57,12 @@ config.yaml
 config.yaml.bak.*
 
 # --- Install backup snapshots ---
-# The /api/updates/local/apply flow snapshots the live install to
-# .backups/<timestamp>/ before swapping in a new release. These are
-# host-specific recovery state, not source.
+# A confirmed in-app update keeps the previous release in
+# .backups/<timestamp>/. These are host-specific recovery state, not source.
 .backups/
+# The in-app updater's own state: .update-staging-/-old-/-failed-<ts>/ and
+# its journal / last-result files. Local to one install.
+.update-*
 
 # --- Update staging ---
 # update/ is the staging area for the in-app updater. The folder itself is

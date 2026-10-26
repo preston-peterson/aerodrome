@@ -1,4 +1,4 @@
-<!-- Version: 3.4.146 -->
+<!-- Version: 3.4.147 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -7584,14 +7584,9 @@ async function _pollSystemStatus(){
     const banner = document.getElementById('systemBanner');
     const text = document.getElementById('systemBannerText');
     if (!banner || !text) return;
-    if (rollupState && rollupState.phase === 'running') {
-        const total = rollupState.rows_total
-            ? Number(rollupState.rows_total).toLocaleString() : '';
-        text.textContent = total
-            ? `First-time setup: optimizing your existing data (~${total} sightings to process). This runs once and may take a few minutes.`
-            : 'First-time setup: optimizing your existing data. This runs once and may take a few minutes.';
-        banner.style.display = 'block';
-    } else if (rollupState && rollupState.phase === 'error') {
+    // v3.4.147: the one-time rollup build now finishes before the web UI
+    // starts, so there is no "running" state to show — only an error.
+    if (rollupState && rollupState.phase === 'error') {
         text.textContent = 'Setup encountered an error optimizing your data. Performance may be reduced. Check Logs for details.';
         banner.style.display = 'block';
     } else {

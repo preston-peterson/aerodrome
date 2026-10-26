@@ -698,10 +698,11 @@ No SSH, no downloads, no terminal.
    - Verifies the SHA256 checksum (refuses to proceed if it doesn't
      match).
    - Stages the zip into the update directory and runs the same apply
-     flow as a local-zip upload: backs up the current install,
-     overwrites files (preserving config and data), reinstalls
-     dependencies, and restarts the service.
-   - Your browser reconnects automatically after ~6 seconds.
+     flow as a local-zip upload (Option 2 below): unpacks and test-loads
+     the new version to the side, switches it in, restarts the service,
+     and puts the previous version back on its own if the new one
+     doesn't start.
+   - Your browser reconnects automatically after a few seconds.
 
 4. **You can also configure notification surfaces** so you don't have
    to visit the Updates page to know there's something to apply.
@@ -743,16 +744,20 @@ release. No SSH required.
 4. If the staged version is newer than what's running, click **Apply
    X.Y.Z & restart**. The server will:
 
-   - Back up the current install to `.backups/<timestamp>/`
-   - Copy new files over the install, preserving `config.yaml`,
-     `aircraft_history.db*`, `logs/`, `venv/`, `.tracker.pid`,
-     `.backups/`, and `update/`
-   - Run `venv/bin/pip install -r requirements.txt` to pick up any
-     new dependencies
-   - Clear the `update/` folder (except its README) so it's ready for
-     next time
-   - Restart the service via `systemctl`
-   - Your browser will reconnect automatically after ~6 seconds
+   - Copy the release to the side (`.update-staging-<timestamp>/`).
+     `config.yaml`, `aircraft_history.db*`, `logs/`, `venv/`,
+     `.tracker.pid`, `.backups/` and `update/` are never part of it.
+   - If the release's `requirements.txt` lists different packages,
+     install them into `venv/` (`pip install -r requirements.txt`)
+   - Test-load the new version in a fresh Python process. If it can't
+     load, the update stops here with the reason and nothing of
+     Aerodrome's own changes (see below)
+   - Switch the new files in all at once, clear the `update/` folder
+     (except its README) and restart the service via `systemctl`
+   - Your browser will reconnect automatically after a few seconds.
+     About 30 seconds after the new version answers, the update is
+     confirmed and the previous version is kept in
+     `.backups/<timestamp>/`
 
 That's it. If you'd rather stage updates from the command line (handy
 for scripted workflows or quick dev iteration), you can drop the
@@ -791,6 +796,53 @@ Single-line version for terminals that mangle line continuations:
 rsync -av --exclude='aircraft_history.db' --exclude='logs' --exclude='venv' --exclude='.tracker.pid' --exclude='config.yaml' --exclude='.backups' --exclude='update' aerodrome/ user@your-server:/opt/aerodrome/
 ```
 
+### What an in-app update does when something is wrong
+
+Options 1 and 2 check the new version before they change anything:
+
+- **Applying takes a few seconds longer** than it used to: the new
+  version is unpacked and test-loaded to the side first.
+- **A release that can't load is refused** with the reason (the file and
+  line of a syntax error, or the package that's missing). Aerodrome's
+  files are left as they were and the release stays staged, so you can
+  fix the cause and press Apply again.
+- **Python packages.** If the new release changes its requirements, the
+  packages are installed before the test-load — and they stay installed
+  even if the update is then refused or later rolled back (Aerodrome's
+  Python environment is shared by every version). If installing them
+  fails but the new version still loads, the update goes ahead; the
+  Updates page says so, with the installer's message under Details (it
+  is logged too).
+  If the version you're running no longer loads with the new packages,
+  the log says so, because going back to it would then fail too.
+- **The first start after a big upgrade can take several minutes** (a
+  one-time rebuild of data summaries, then the database upgrade). After
+  4 minutes the Updates page says it is still starting and keeps
+  checking; you can also watch `sudo journalctl -u aerodrome -f`. If you
+  restart Aerodrome twice while that first start is still running, the
+  update counts as failed and is rolled back — apply it again and let it
+  finish.
+- **The same version, or an older one,** is refused (409). Re-installing
+  or going back is possible through the API only:
+  `POST /api/updates/local/apply?allow_reinstall=true` or
+  `?allow_downgrade=true`. Going back to a release older than 3.4.147
+  (which can't confirm or roll back an update) makes the switch final at
+  once: there is no automatic rollback to the version you left, and its
+  files are kept in `.backups/<timestamp>/`.
+- **One maintenance task at a time.** While an update, restore,
+  server-side backup or config import is running, the others are refused
+  with what's running and when it started.
+
+### Updates need a restart permission
+
+An in-app update restarts Aerodrome through the sudo rule that
+`install.sh` sets up. Without it — an install made by hand, a rule that
+was removed, or Aerodrome started outside systemd — an update is refused
+before anything changes: "The update was not applied: Aerodrome can't
+restart itself on this install". Put the rule back with the command in
+*Applying sudoers updates* below (or re-run `install.sh`), or update by
+hand (Option 3).
+
 ### Config auto-migration (all paths)
 
 Regardless of which update path you use, Aerodrome handles config
@@ -812,23 +864,68 @@ comments), drop the `--exclude='config.yaml'` from the rsync command.
 
 ## Rolling back
 
-If an update breaks something, each update leaves a snapshot of the
-previous source files in `.backups/<timestamp>/`. To roll back:
+**Automatically.** If a release applied in the app (Options 1 and 2)
+fails to start twice, Aerodrome puts the previous version back on its
+own — at once, without counting, if the disk is too full to record the
+attempt — and records which version was put back and why in
+`.update-last-result.json` and the service log
+(`GET /api/maintenance/status` returns it). The Updates page shows it
+in a banner, with the reason under Details, until you dismiss it.
+
+- The previous version's files wait in `.update-old-<timestamp>/` until
+  the new version has answered for about 30 seconds; then they move to
+  `.backups/<timestamp>/`. That folder is what a rollback puts back: if
+  it is deleted before then, there is nothing to put back, and Aerodrome
+  keeps the new version (and says so in the service log) instead of
+  rolling back.
+- A release that was rolled back is kept in `.update-failed-<timestamp>/`
+  (the newest two) in case you want to look at it. (On a full disk that
+  doesn't support hard links, some of its files may be missing there.)
+- `config.yaml` goes back to the copy taken just before the update (a new
+  version may add settings to it on its first start). A setting changed
+  in the half-minute between the new version's first answer and its
+  confirmation is undone too if that version then fails and is rolled
+  back. (A restart you ask for from the new version's own pages confirms
+  the update first, so it never causes a rollback.)
+- Changes the newer version made to the database stay. Every release
+  keeps the database readable and writable by the release before it, so
+  the previous version works with it.
+
+**By hand.** To go back to the version before a confirmed update, use
+the snapshot in `.backups/<timestamp>/`. It holds the older version's
+copies of the files the newer release replaced — not a full release.
+Move aside the files the snapshot doesn't have first, so none of the
+newer release's are left behind:
 
 ```bash
 ssh user@your-server
 cd /opt/aerodrome
-# List available snapshots
-ls -1 .backups/
-# Restore (replace TIMESTAMP with the folder name)
-cp -r .backups/TIMESTAMP/* ./
-sudo systemctl restart aerodrome
+ls -1 .backups/            # pick the snapshot (a YYYYMMDD-HHMMSS folder)
+TS=TIMESTAMP               # replace with the folder name
+sudo systemctl stop aerodrome
+# 1. List the entries the snapshot doesn't have (your own files are
+#    skipped). These are what the newer release added — plus any file the
+#    newer release stopped shipping, which the older version may still need.
+for f in *; do
+  case "$f" in config.yaml*|*.db|*.db-wal|*.db-shm|*.pre-restore|logs|venv|update) continue ;; esac
+  [ -e ".backups/$TS/$f" ] || echo "$f"
+done
+# 2. Check that list and move those entries aside (don't delete them):
+mkdir -p ".rollback-$TS" && mv -- NAME1 NAME2 ".rollback-$TS/"
+# 3. Put the older version's files back and start it:
+cp -a ".backups/$TS/." ./
+sudo systemctl start aerodrome
 ```
 
-Note that `.backups/` holds source files only — your `config.yaml` and
-database were never touched, so they don't need restoring. Aerodrome
-keeps the 5 most recent snapshots here; older ones are pruned
-automatically when a new one is created.
+If the older version then fails to start because a file is missing,
+move that file back from `.rollback-$TS/` and start it again.
+
+`.backups/<timestamp>/` holds the release's own files only — your
+`config.yaml` and database aren't in it and don't need restoring (if you
+opted in to a database snapshot, it's there as `<database>.snapshot`;
+delete the copy `cp` put in the install folder, or use it to restore the
+database too). Aerodrome keeps the 5 most recent snapshots; older ones
+are pruned automatically.
 
 ## Applying sudoers updates
 

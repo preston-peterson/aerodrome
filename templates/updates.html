@@ -1,4 +1,4 @@
-<!-- Version: 3.4.146 -->
+<!-- Version: 3.4.147 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -97,6 +97,14 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
 .status-msg.ready { background:rgba(34,197,94,.08); border:1px solid rgba(34,197,94,.3); color:var(--green); }
 .status-msg.warn { background:rgba(245,158,11,.08); border:1px solid rgba(245,158,11,.3); color:var(--amber); }
 .status-msg.err { background:rgba(239,68,68,.08); border:1px solid rgba(239,68,68,.3); color:var(--red); }
+/* v3.4.147: refusal / rollback detail, collapsed by default */
+.maint-details { margin-top:8px; font-size:12px; }
+.maint-details summary { cursor:pointer; color:var(--t2); }
+.maint-details pre { margin:6px 0 0; padding:8px 10px; background:var(--bg0); border:1px solid var(--bdr);
+    border-radius:4px; color:var(--t1); font-family:var(--mono); font-size:11px; white-space:pre-wrap;
+    word-break:break-word; max-height:240px; overflow:auto; }
+.maint-actions { margin-top:8px; display:flex; gap:8px; }
+.upload-zone.disabled { opacity:.5; pointer-events:none; }
 
 /* v2.41.7: zip upload drop zone. Visual state transitions:
    idle → hover (dragging over) → uploading → done (green status msg below). */
@@ -303,6 +311,10 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
     <div class="page-title">Updates</div>
     <div class="page-sub">Apply new releases of Aerodrome from GitHub or a local folder.</div>
 
+    <!-- v3.4.147: what happened to the last update (rolled back, being
+         confirmed), from /api/maintenance/status. -->
+    <div id="maintBanner" style="display:none"></div>
+
     <!-- v3.4.38: pre-apply settings strip. (A) doc note explaining what
          the auto-backup actually contains — code + templates, NOT the
          database. (B) opt-in checkbox to also snapshot the live DB via
@@ -396,6 +408,8 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
             <input type="file" id="uploadInput" accept=".zip,application/zip"
                    onchange="handleUploadFile(this.files[0])">
         </div>
+
+        <div id="localNote"></div>
 
         <div id="localDetails" style="display:none">
             <div class="info-grid">
@@ -701,6 +715,177 @@ function showSudoersRequiredModal(opts){
     });
 }
 
+// =========================================================================
+// v3.4.147: maintenance status — staged updates, automatic rollback,
+// one maintenance task at a time. Fed by GET /api/maintenance/status.
+// =========================================================================
+let _maint = null;
+let _runningVersion = null;
+const _UPDATE_OPS = ['an update', 'an update download', 'an update upload'];
+
+async function fetchMaintenance(){
+    try {
+        const r = await fetch('/api/maintenance/status');
+        if (!r.ok) return null;
+        const j = await r.json();
+        return (j && typeof j === 'object') ? j : null;
+    } catch (_) { return null; }
+}
+
+function _ago(sec){
+    sec = Math.max(0, Math.floor(Number(sec) || 0));
+    if (sec < 60) return 'just now';
+    if (sec < 3600) return `${Math.floor(sec / 60)} min ago`;
+    return `${Math.floor(sec / 3600)} h ${Math.floor((sec % 3600) / 60)} min ago`;
+}
+
+function _busyText(b){
+    if (!b || !b.op) return '';
+    const op = String(b.op);
+    if (b.parked) return `Aerodrome is ${op} — try again in a minute.`;
+    return `${op.charAt(0).toUpperCase()}${op.slice(1)} is running (started ${_ago(b.age_sec)}).`;
+}
+
+function _detailsBlock(detail, label){
+    if (!detail) return '';
+    return `<details class="maint-details"><summary>${_esc(label || 'Details')}</summary>` +
+           `<pre>${_esc(detail)}</pre></details>`;
+}
+
+function renderMaintBanner(m){
+    const el = document.getElementById('maintBanner');
+    if (!el) return;
+    const res = (m && m.update) || null;
+    const pend = (m && m.update_pending) || null;
+    let html = '';
+    if (res && res.result === 'rolled_back' && !res.acknowledged) {
+        const n = Number(res.failed_starts) || 0;
+        const what = n > 0
+            ? `Aerodrome ${_esc(res.to_version)} didn't start (${n} attempt${n === 1 ? '' : 's'}), so ${_esc(res.from_version)} was put back.`
+            : `Aerodrome ${_esc(res.to_version)} couldn't be switched in, so ${_esc(res.from_version)} was put back.`;
+        const schema = (res.schema_before != null && res.schema_after != null
+                        && Number(res.schema_after) > Number(res.schema_before))
+            ? `<div style="margin-top:6px">${_esc(res.to_version)} already upgraded the database ` +
+              `(v${_esc(res.schema_before)} → v${_esc(res.schema_after)}); ${_esc(res.from_version)} works with it.</div>`
+            : '';
+        html = `<div class="status-msg warn" id="maintRolledBack">⚠ <strong>${what}</strong>${schema}` +
+               _detailsBlock(res.reason, 'Details') +
+               `<div class="maint-actions"><button class="btn" id="maintDismiss" onclick="ackUpdateResult()">Dismiss</button></div></div>`;
+    } else if (pend && pend.state === 'pending_first_boot' && _runningVersion
+               && _runningVersion === pend.to_version) {
+        html = `<div class="status-msg info" id="maintConfirming"><span class="spinner"></span>` +
+               `Running ${_esc(pend.to_version)} — confirming it started cleanly (about 30 s).</div>`;
+    } else if (pend && pend.waiting_for_restart) {
+        html = `<div class="status-msg info" id="maintWaiting">Aerodrome hasn't restarted yet to finish ` +
+               `the update to ${_esc(pend.to_version)}.</div>`;
+    }
+    el.innerHTML = html;
+    el.style.display = html ? 'block' : 'none';
+}
+
+// Disable the apply/upload controls while another maintenance task runs.
+function applyMaintBusy(m){
+    // A pending update blocks update operations too (the server answers
+    // 409 update_pending until it is confirmed or rolled back), though
+    // nothing holds the lock in the restarted process.
+    const busy = (m && m.busy)
+        || (m && m.update_pending ? {op: 'confirming the last update', parked: true} : null);
+    const txt = _busyText(busy);
+    const zone = document.getElementById('uploadZone');
+    if (zone) zone.classList.toggle('disabled', !!busy);
+    for (const id of ['btnApply', 'ghApplyBtn']) {
+        const b = document.getElementById(id);
+        if (!b) continue;
+        if (busy) { b.disabled = true; b.title = txt; }
+        else if (!b.dataset.preflightBlocked) { b.disabled = false; b.removeAttribute('title'); }
+    }
+    let line = document.getElementById('maintBusy');
+    if (busy) {
+        if (!line) {
+            line = document.createElement('div');
+            line.id = 'maintBusy';
+            line.className = 'status-msg warn';
+            const note = document.getElementById('localNote');
+            if (note) note.parentNode.insertBefore(line, note);
+        }
+        line.textContent = txt;
+    } else if (line) {
+        line.remove();
+    }
+}
+
+async function refreshMaintenance(){
+    const m = await fetchMaintenance();
+    _maint = m;
+    renderMaintBanner(m);
+    applyMaintBusy(m);
+    if (m && (m.busy || m.update_pending)) setTimeout(refreshMaintenance, 5000);
+    return m;
+}
+
+async function initMaintenance(){
+    try {
+        const r = await fetch('/api/version');
+        if (r.ok) _runningVersion = ((await r.json()) || {}).version || null;
+    } catch (_) { /* fine */ }
+    await refreshMaintenance();
+}
+
+async function ackUpdateResult(){
+    try {
+        await fetch('/api/maintenance/ack', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({kind: 'update'}),
+        });
+    } catch (_) { /* fine: the banner comes back on the next load */ }
+    if (_maint && _maint.update) _maint.update.acknowledged = true;
+    renderMaintBanner(_maint);
+}
+
+// A refused update: what the server said, its detail, and what to do next.
+function renderApplyRefusal(j, render){
+    render = render || renderStatus;
+    const msg = (j && (j.message || j.error)) || 'unknown error';
+    if (j && j.code === 'restart_failed') {
+        render(`<strong>${_esc(msg)}</strong>` + _detailsBlock(j.detail, 'Details'), 'err');
+        return;
+    }
+    if (j && j.code && j.code !== 'update_in_progress' && j.code !== 'update_pending' && j.code !== 'busy') {
+        render(`<strong>${_esc(msg)}</strong>` + _detailsBlock(j.detail, 'Details') +
+               `<div style="margin-top:6px">The update is still staged — fix the cause and press Apply again.</div>`, 'err');
+        return;
+    }
+    render(`Update not applied: ${_esc(msg)}`, 'err');
+}
+
+function renderPipWarning(text, container){
+    const el = container || document.getElementById('localNote');
+    if (!el || !text) return;
+    el.innerHTML = `<div class="status-msg warn" id="pipWarning">Installing Python packages reported a problem; ` +
+                   `the new version loaded anyway.` + _detailsBlock(text, 'Details') + `</div>`;
+}
+
+// The apply request got no readable answer (network error, a proxy's 502/504):
+// it may still be running. Watch /api/maintenance/status until it finishes.
+async function waitForApplyOutcome(clickedAt, render){
+    const deadline = Date.now() + 15 * 60 * 1000;
+    while (Date.now() < deadline) {
+        const m = await fetchMaintenance();
+        if (!m) return {restarting: true};             // the service is going down: restart path
+        if (m.busy && _UPDATE_OPS.includes(m.busy.op)) {
+            render('<span class="spinner"></span>Applying…', 'info');
+        } else {
+            const u = m.update;
+            if (u && u.result === 'refused' && Number(u.at) >= clickedAt - 5) {
+                return {refused: {code: u.code, message: u.message, error: u.message, detail: u.detail}};
+            }
+            return {};
+        }
+        await new Promise(r => setTimeout(r, 2000));
+    }
+    return {};
+}
+
 function setBadge(text, cls){
     const b = document.getElementById('localBadge');
     b.textContent = text;
@@ -772,8 +957,20 @@ async function checkLocal(){
                 setBadge('refresh needed', 'warn');
             }
 
+            // v3.4.147: an apply would fail on folders it can't replace.
+            let preflightBanner = '';
+            const pf = j.preflight || null;
+            if (pf && pf.ok === false && Array.isArray(pf.problems) && pf.problems.length) {
+                const paths = pf.problems.map(p => `<code>${_esc(p)}</code>`).join(', ');
+                preflightBanner =
+                    `<div class="status-msg warn" id="preflightBanner" style="margin-bottom:8px">` +
+                    `⚠ <strong>Updates can't be applied yet:</strong> ${paths} ` +
+                    `${pf.problems.length === 1 ? "isn't" : "aren't"} writable by the account Aerodrome runs as. ` +
+                    `Fix with: <code>${_esc(pf.fix_command || '')}</code></div>`;
+            }
+
             renderStatus(
-                sudoersBanner +
+                preflightBanner + sudoersBanner +
                 `<a href="#" onclick="showUpdateChangelog('${v}'); return false;" class="release-link"><strong>${v}</strong></a> ` +
                 `is staged and ready to apply. ` +
                 `<a href="#" onclick="showUpdateChangelog('${v}'); return false;" class="release-link">See what's new</a>. ` +
@@ -788,6 +985,13 @@ async function checkLocal(){
                 <button class="btn" onclick="showUpdateChangelog('${v}')">What's new?</button>
                 <button class="btn" onclick="checkLocal()">Check again</button>
             `;
+            if (preflightBanner) {
+                const b = document.getElementById('btnApply');
+                b.disabled = true;
+                b.dataset.preflightBlocked = '1';
+                b.title = 'Fix the folder permissions above first';
+            }
+            applyMaintBusy(_maint);
             document.getElementById('localInstructions').style.display = 'none';
         } else {
             // v2.41.2: even when there's no update to apply, surface sudoers
@@ -957,7 +1161,11 @@ async function applyLocal(version){
         // file), we'll hit the server-side 409 guard below.
     }
 
-    if (!confirm(`Apply local update to ${version}?\n\nThis will:\n• Back up the current install to .backups/<timestamp>/\n• Copy new files over the install (preserving config, database, logs)\n• Reinstall Python dependencies\n• Clear the update/ folder\n• Restart the service\n\nThe dashboard will briefly disconnect during restart.`)) {
+    if (!confirm(`Apply local update to ${version}?\n\n` +
+                 `Unpack to the side and test-load the new version → switch it in → restart → ` +
+                 `if it doesn't start, put this version back automatically. ` +
+                 `Your settings, database and logs are not touched.\n\n` +
+                 `The dashboard will briefly disconnect during the restart.`)) {
         return;
     }
 
@@ -988,6 +1196,8 @@ async function applyLocal(version){
     // through because the service went away. Either way we proceed
     // to the polling loop.
     let applyError = null;
+    const clickedAt = Date.now() / 1000;
+    let r = null, j = null;
     try {
         // v3.4.38: read the opt-in DB-snapshot checkbox state (set on
         // the page-header card above) and append it as a query param.
@@ -996,8 +1206,24 @@ async function applyLocal(version){
         // pre-v3.4.38 behavior.
         const snapshot = getSnapshotDbFlag();
         const applyUrl = '/api/updates/local/apply' + (snapshot ? '?snapshot_db=true' : '');
-        const r = await fetch(applyUrl, { method: 'POST' });
-        const j = await r.json();
+        r = await fetch(applyUrl, { method: 'POST' });
+        try { j = await r.json(); } catch (_e) { j = null; }
+    } catch (e) {
+        applyError = e;
+        r = null;
+    }
+    // v3.4.147: no readable answer (network error, a proxy's 502/504):
+    // the apply may still be running — watch it instead of guessing.
+    if (!r || !j || r.status === 502 || r.status === 504) {
+        const out = await waitForApplyOutcome(clickedAt, renderStatus);
+        if (out.refused) {
+            setBadge('error', '');
+            renderApplyRefusal(out.refused);
+            btn.disabled = false;
+            btn.textContent = `Apply ${version} & restart`;
+            return;
+        }
+    } else {
         if (!r.ok || !j.ok) {
             // Server returned a definitive error before restarting (e.g.
             // sudoers drift). No service restart will happen — surface
@@ -1017,20 +1243,14 @@ async function applyLocal(version){
                 checkLocal();
                 return;
             }
-            renderStatus(`Update failed: ${j.error || 'unknown error'}`, 'err');
+            renderApplyRefusal(j);
             btn.disabled = false;
             btn.textContent = `Apply ${version} & restart`;
             return;
         }
-        // Apply accepted — fall through to the polling loop. We don't
-        // bother to render j.message because the user is about to see
-        // a much more meaningful "restarting…" UI from the loop.
-    } catch (e) {
-        // Fetch threw — almost certainly because the service restarted
-        // mid-request (the common, expected case). Save the error in
-        // case the polling loop later concludes we never got a real
-        // restart, but otherwise just proceed with polling.
-        applyError = e;
+        // Apply accepted — fall through to the polling loop. The pip
+        // warning goes in its own slot so the poll doesn't overwrite it.
+        if (j.pip_warning) renderPipWarning(j.pip_warning);
     }
 
     // v3.4.23: hand off to the shared readiness-poll-and-reload state
@@ -1117,23 +1337,23 @@ async function pollReadyAndReload(opts){
     const TIMEOUT_MS = 240_000;
     const REQUIRED_CONSECUTIVE_READY = 2;
     const startTime = Date.now();
+    const startedAt = startTime / 1000;
     let pollCount = 0;
     let consecutiveReady = 0;
+    let timedOut = false;
+    // v3.4.147: past TIMEOUT_MS this keeps checking (a big first start can
+    // take minutes) and says so; it stops when the update was rolled back.
+    const stillStarting = () =>
+        `<span class="spinner"></span>Still starting — the first start after a big ` +
+        `upgrade can take several minutes. This page keeps checking.`;
 
     while (true) {
         const elapsed = Date.now() - startTime;
-        if (elapsed >= TIMEOUT_MS) {
-            render(
-                `<span style="color:var(--red)">⚠</span> ` +
-                `Update timed out after ${Math.round(TIMEOUT_MS/1000)}s. ` +
-                `The service didn't come back up running ${_esc(targetVersion)}. ` +
-                `Check <code>sudo journalctl -u aerodrome -n 100</code> ` +
-                `for what happened, then reload this page.`,
-                'err'
-            );
+        if (elapsed >= TIMEOUT_MS && !timedOut) {
+            timedOut = true;
+            render(stillStarting(), 'warn');
             if (setBadge) setBadge('timeout');
             if (onTimeout) onTimeout();
-            return;
         }
 
         let ready = false;
@@ -1182,6 +1402,19 @@ async function pollReadyAndReload(opts){
             // Service answered, but with the OLD version. Reset
             // consecutive-ready counter — old version doesn't count.
             consecutiveReady = 0;
+            // v3.4.147: the old version is back because the update was
+            // rolled back? Then say so and stop waiting.
+            const m = await fetchMaintenance();
+            if (m && m.update && m.update.result === 'rolled_back'
+                    && Number(m.update.at) >= startedAt - 5) {
+                _maint = m;
+                renderMaintBanner(m);
+                render(`The update to ${_esc(targetVersion)} was rolled back — see above.`, 'warn');
+                if (setBadge) setBadge('timeout');
+                if (onTimeout) onTimeout();
+                return;
+            }
+            if (timedOut) { render(stillStarting(), 'warn'); await new Promise(r => setTimeout(r, POLL_INTERVAL_MS)); continue; }
             render(
                 `<span class="spinner"></span>` +
                 `Service is up but still on ${_esc(oldVersion)}. ` +
@@ -1237,6 +1470,7 @@ async function pollReadyAndReload(opts){
 }
 
 // Initial check on page load
+initMaintenance();
 checkLocal();
 loadChangelog();
 checkNtfyUpdate();
@@ -1792,9 +2026,9 @@ async function checkGithubUpdate(force){
             <strong>${escapeHtml(j.latest_known)}</strong> is available
             — you're on <strong>${escapeHtml(j.running_version)}</strong>.
             Click <strong>Apply update</strong> to download, verify the
-            checksum, and install. Your <code>config.yaml</code>, database,
-            logs, and venv are preserved; the previous install is backed up
-            to <code>.backups/&lt;timestamp&gt;/</code>.
+            checksum, test-load and install. Your <code>config.yaml</code>, database,
+            logs, and venv are not touched; if the new version doesn't start, this
+            one is put back automatically.
         </div>`;
 
         // v3.0.1: Apply button (primary). Downloads + verifies + stages +
@@ -1809,9 +2043,11 @@ async function checkGithubUpdate(force){
         // from the secondary one.
         const applyBtn = document.createElement('button');
         applyBtn.className = 'btn btn-primary';
+        applyBtn.id = 'ghApplyBtn';
         applyBtn.textContent = `Apply update (${j.latest_known})`;
         applyBtn.onclick = () => applyGithubUpdate(j.latest_known);
         actions.appendChild(applyBtn);
+        applyMaintBusy(_maint);
 
         const viewBtn = document.createElement('a');
         viewBtn.className = 'btn';
@@ -1853,12 +2089,10 @@ async function applyGithubUpdate(tag){
     // to gate against accidental Enter-key presses on a focused button.
     const ok = confirm(
         `Apply ${tag} from GitHub?\n\n` +
-        `Aerodrome will:\n` +
-        `  • Download the release zip + SHA256 from GitHub\n` +
-        `  • Verify the checksum\n` +
-        `  • Back up the current install to .backups/<timestamp>/\n` +
-        `  • Copy new files over (preserving config.yaml, database, logs, venv)\n` +
-        `  • Restart the service\n\n` +
+        `Download the release and verify its checksum → unpack to the side and ` +
+        `test-load the new version → switch it in → restart → if it doesn't start, ` +
+        `put this version back automatically. Your settings, database and logs ` +
+        `are not touched.\n\n` +
         `Continue?`
     );
     if(!ok) return;
@@ -1872,13 +2106,31 @@ async function applyGithubUpdate(tag){
     </div>`;
 
     let j;
+    const ghRender = (html, cls) => { status.innerHTML = `<div class="status-msg ${cls}">${html}</div>`; };
+    const clickedAt = Date.now() / 1000;
     try {
         // v3.4.38: same opt-in DB snapshot threading as the local apply.
         const snapshot = getSnapshotDbFlag();
         const applyUrl = '/api/updates/github/apply' + (snapshot ? '?snapshot_db=true' : '');
         const r = await fetch(applyUrl, { method: 'POST' });
+        if (r.status === 502 || r.status === 504) throw new Error(`HTTP ${r.status}`);
         j = await readJsonOrThrow(r);
     } catch(e){
+        // v3.4.147: no readable answer — the download/apply may still be
+        // running behind a proxy. Watch it before reporting anything.
+        const out = await waitForApplyOutcome(clickedAt, ghRender);
+        if (out.refused) {
+            _ghBadge('error', 'err');
+            renderApplyRefusal(out.refused, ghRender);
+            return;
+        }
+        if (out.restarting || out.refused === undefined) {
+            // It went ahead (or the service is restarting): the ready poll decides.
+            _ghBadge('applied', 'ready');
+            await pollReadyAndReload({ oldVersion: null, targetVersion: tag, render: ghRender,
+                setBadge: (state) => state === 'ok' ? _ghBadge('applied', 'ready') : _ghBadge('timeout', 'err') });
+            return;
+        }
         _ghBadge('error', 'err');
         status.innerHTML = `<div class="status-msg err">
             Apply failed: ${escapeHtml(e.message)}
@@ -2003,9 +2255,7 @@ async function applyGithubUpdate(tag){
             // single clear next action.
             return;
         } else {
-            status.innerHTML = `<div class="status-msg err">
-                <strong>Apply failed:</strong> ${escapeHtml(j.error || 'unknown error')}
-            </div>`;
+            renderApplyRefusal(j, ghRender);
         }
         const retryBtn = document.createElement('button');
         retryBtn.className = 'btn';
@@ -2029,19 +2279,12 @@ async function applyGithubUpdate(tag){
 
     // The poll loop owns #githubUpdateStatus from here on (it renders
     // live "restarting… / finishing post-restart work…" progress, the
-    // same as the local-update card). If pip reported a warning, surface
-    // it in the actions row instead — that survives the poll's takeover
-    // of the status area; rendering it into status would just flash and
-    // vanish on the first poll.
-    if (!j.pip_ok) {
+    // same as the local-update card). v3.4.147: a pip warning (the new
+    // version loaded anyway) goes in the actions row, which survives it.
+    if (j.pip_warning) {
         const pipWarn = document.createElement('div');
-        pipWarn.className = 'status-msg warn';
-        pipWarn.style.marginTop = '8px';
-        pipWarn.innerHTML =
-            `<strong>Note:</strong> pip install on the new requirements.txt ` +
-            `reported a warning: <code>${escapeHtml(j.pip_msg || '(no message)')}</code>. ` +
-            `The service restart should still succeed — if it doesn't, check the logs.`;
         actions.appendChild(pipWarn);
+        renderPipWarning(j.pip_warning, pipWarn);
     }
 
     await pollReadyAndReload({
