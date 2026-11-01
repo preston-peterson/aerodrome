@@ -969,9 +969,9 @@ def _build_fetch_stub() -> str:
         'perf':          PERF_DIAG,
         'search':        SEARCH_RESPONSE,
         # v3.4.147: nothing running, no update result, nothing pending;
-        # v3.4.148: no startup config recovery.
+        # v3.4.148: no startup config recovery; v3.4.149: no restore.
         'maintenance_status': {"busy": None, "update": None, "update_pending": None,
-                               "config": None},
+                               "config": None, "restore": None},
     }
     return f"""<script>
 window.fetch = async (url) => {{

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.4.148
+# Version: 3.4.149
 # =============================================================================
 # Aerodrome — Uninstall Script
 # =============================================================================
@@ -19,8 +19,10 @@
 #
 # What you're asked about (--purge removes all of it, --keep none of it):
 #   - Database (data.db_file from config.yaml, default aircraft_history.db),
-#     its -wal/-shm files, its .pre-restore safety copies, and the
-#     daily-summary state file kept next to it
+#     its -wal/-shm files, its .pre-restore safety copies, the files a
+#     restore keeps next to it (a staged copy, a restored database set
+#     aside, an unfinished copy), and the daily-summary state file kept
+#     next to it
 #   - Backups & update snapshots (.backups/: pre-update snapshots, database
 #     snapshots, and backup zips you made from the web UI — copy any backup
 #     you want to keep out of .backups/ first)
@@ -380,9 +382,18 @@ elif [ -e "$DB_FILE" ] && ! _inside_install "$DB_FILE" \
         && [ "$(head -c 15 -- "$DB_FILE" 2>/dev/null)" != "SQLite format 3" ]; then
     echo -e "  ${RED}!${RESET} Database: ${DB_FILE} is outside ${INSTALL_DIR} and is not a SQLite database — left in place (check data.db_file in config.yaml)"
 else
+    # (v3.4.149) A restore's own files beside the database: its staged copy,
+    # a restored database set aside when it couldn't be rolled back, and a
+    # pre-restore copy cut short. Inside the install they also go with the
+    # printed rm -rf; beside a database elsewhere only by name, here.
+    _DBN="$(basename "$DB_FILE")"
     remove_or_keep "Database (aircraft history)" \
         "$DB_FILE" "${DB_FILE}-wal" "${DB_FILE}-shm" \
         "${DB_FILE}".bak.*.pre-restore \
+        "${DATA_DIR}/.${_DBN}.restore-staged" "${DATA_DIR}/.${_DBN}.restore-staged-wal" \
+        "${DATA_DIR}/.${_DBN}.restore-staged-shm" "${DATA_DIR}/.${_DBN}.restore-staged-journal" \
+        "${DB_FILE}".restore-failed.* \
+        "${DATA_DIR}/.${_DBN}".bak.*.pre-restore.tmp* \
         "${DATA_DIR}/.daily-summary-state.json" || true
 fi
 remove_or_keep "Backups & update snapshots" "${INSTALL_DIR}/.backups" || true

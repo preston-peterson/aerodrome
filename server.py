@@ -1,4 +1,4 @@
-# Version: 3.4.148
+# Version: 3.4.149
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -55,6 +55,9 @@ import atomic_io
 # v3.4.148: every config.yaml write goes through config_io (all or nothing,
 # under CONFIG_LOCK).
 import config_io
+# v3.4.149: a full-backup restore is checked and staged here, and switched
+# in at the next start (restore_io).
+import restore_io
 
 logger = logging.getLogger("adsb.server")
 
@@ -462,6 +465,16 @@ class _SingleRun:
             h.update(op=op, parked=True, until_mono=time.monotonic() + seconds)
             return True
 
+    def unpark(self, tok) -> bool:
+        """Free a parked hold early: the restart it waited for was refused
+        (v3.4.149: a restore's restart runs after its response is sent)."""
+        with self._mu:
+            h = self._h
+            if h is None or h["tok"] != tok or not h["parked"]:
+                return False
+            self._h = None
+            return True
+
     def holder(self):
         """{op, since, age_sec, parked} of the active hold, or None."""
         now = time.monotonic()
@@ -550,8 +563,53 @@ def _busy_message(busy: dict) -> str:
             f"Try again when it finishes.")
 
 
+# v3.4.149: what settings writes and maintenance answer while a restore waits
+# for its restart (the restart would otherwise put the backup's settings over
+# a change made meanwhile, without a word).
+RESTORE_WAITING_MESSAGE = ("A restore is waiting for the restart — restart Aerodrome to "
+                           "finish it, or cancel it in Settings.")
+
+
+def _restore_waiting():
+    """The marker of a restore waiting for its restart, else None (one that
+    waited too long no longer counts). Never drops anything: an expired
+    restore is dropped only with the maintenance lock held (_maintenance,
+    the status poll) — a caller without it could otherwise drop a NEW
+    restore staged meanwhile under the same file names. Never raises."""
+    try:
+        return restore_io.pending(_install_dir())
+    except Exception as e:
+        logger.warning(f"Could not read the restore marker: {e}")
+        return None
+
+
+def _drop_expired_restore():
+    """Drop a staged restore past its hour. Only with the maintenance lock
+    held (or from startup). Never raises."""
+    try:
+        restore_io.discard_if_expired(_install_dir(), log=logger.warning)
+    except Exception as e:
+        logger.warning(f"Could not drop an expired restore: {e}")
+
+
+def _restore_waiting_busy() -> "_Busy":
+    return _Busy({"op": "a restore waiting for the restart", "since": None, "age_sec": 0,
+                  "parked": True}, code="restore_pending", message=RESTORE_WAITING_MESSAGE)
+
+
+def _restore_waiting_response(field_errors: bool = False) -> Optional[JSONResponse]:
+    """409 for a settings write while a restore waits for its restart.
+    field_errors: also as Settings' path-less save error
+    (errors: [{path: "", message}]), the shape its save handler reads."""
+    if _restore_waiting() is None:
+        return None
+    extra = {"errors": [{"path": "", "message": RESTORE_WAITING_MESSAGE}]} if field_errors else {}
+    return _busy_response(_restore_waiting_busy(), **extra)
+
+
 @contextmanager
-def _maintenance(op: str, update_op: bool = False):
+def _maintenance(op: str, update_op: bool = False, restore_op: bool = False,
+                 allow_restore_pending: bool = False):
     """Hold the maintenance lock for one operation, or raise _Busy.
 
     update_op: an update upload/apply/download is also refused while the
@@ -562,8 +620,16 @@ def _maintenance(op: str, update_op: bool = False):
     pre-update copy, so a settings change or config import made in that
     window would be undone if the new version then crashed (database
     changes are kept). A restart the new version's own UI asks for in that
-    window commits first (_restart_service), so it can't cause one."""
-    if update_op:
+    window commits first (_restart_service), so it can't cause one.
+
+    restore_op (v3.4.149): a restore is refused in that window too — the
+    two would meet at the same start (the update goes first; a rolled-back
+    update must find the data it knows).
+
+    Every operation is refused while a restore waits for its restart
+    (it would land under, or be undone by, the swap) — except the one that
+    is the way out: allow_restore_pending (cancelling it)."""
+    if update_op or restore_op:
         j = updater.pending(_install_dir())
         if j:
             if j.get("state") in ("swapping", "rolling_back"):
@@ -579,6 +645,9 @@ def _maintenance(op: str, update_op: bool = False):
         raise _Busy(_MAINT.holder() or {"op": "another maintenance task"},
                     code="update_in_progress" if update_op else "busy")
     try:
+        _drop_expired_restore()
+        if not allow_restore_pending and _restore_waiting() is not None:
+            raise _restore_waiting_busy()
         yield tok
     finally:
         _MAINT.release(tok)
@@ -663,49 +732,113 @@ def _pre_restore_db_name() -> str:
     return Path(db_file).name
 
 
+def _pre_restore_db_configured() -> Path:
+    """The live database as configured (data.db_file; a relative name is in
+    the install), not resolved."""
+    db = Path((CONFIG.get("data") or {}).get("db_file", "aircraft_history.db"))
+    return db if db.is_absolute() else _pre_restore_install_dir() / db
+
+
+def _pre_restore_db_path() -> Path:
+    """The live database, resolved: with data.db_file a symlink to another
+    disk, its copies are made beside the real file (v3.4.149)."""
+    return Path(os.path.realpath(str(_pre_restore_db_configured())))
+
+
+def _pre_restore_db_copy(ts: str) -> Path:
+    """The database copy from restore `ts`: beside the real database, or —
+    made by a release before 3.4.149 with data.db_file a symlink — beside
+    the link. (The first that exists; else the first.)"""
+    real = restore_io.db_snapshot_path(_pre_restore_db_path(), ts)
+    if not real.is_file():
+        old = restore_io.db_snapshot_path(_pre_restore_db_configured(), ts)
+        if old.is_file():
+            return old
+    return real
+
+
+def _pre_restore_sources() -> List[tuple]:
+    """(directory, glob, kind) of each kind of pre-restore copy. v3.4.149:
+    each copy lives beside the file it copies, on that file's own
+    filesystem — the database's beside the database (data.db_file may be
+    outside the install: those copies used to pile up unlisted and
+    unpruned), config.yaml's beside config.yaml. With data.db_file a
+    symlink, the copies releases before 3.4.149 made beside the LINK are
+    looked for there too (listed, pruned, purged and put back like any)."""
+    db = _pre_restore_db_path()
+    out = [(db.parent, f"{db.name}.bak.*.pre-restore", "database")]
+    link = _pre_restore_db_configured()
+    if (os.path.realpath(str(link.parent)), link.name) != (str(db.parent), db.name):
+        out.append((link.parent, f"{link.name}.bak.*.pre-restore", "database"))
+    cfg_dir = Path(CONFIG_PATH).parent if CONFIG_PATH else _pre_restore_install_dir()
+    out.append((cfg_dir, "config.yaml.bak.*.pre-restore", "config"))
+    return out
+
+
 def _pre_restore_globs() -> List[str]:
     """Glob patterns covering both flavors of pre-restore snapshot."""
-    return [
-        f"{_pre_restore_db_name()}.bak.*.pre-restore",
-        "config.yaml.bak.*.pre-restore",
-    ]
+    return [pat for _d, pat, _k in _pre_restore_sources()]
+
+
+def _pre_restore_files():
+    """[(path, kind, ts, stat)] of every pre-restore copy, each looked for
+    in its own directory."""
+    out = []
+    seen = set()
+    for d, pat, kind in _pre_restore_sources():
+        try:
+            found = list(d.glob(pat))
+        except OSError:
+            continue
+        for p in found:
+            key = os.path.realpath(str(p))
+            if key in seen or not p.is_file():
+                continue
+            seen.add(key)
+            m = _PRE_RESTORE_TS_RE.search(p.name)
+            if not m:
+                continue
+            try:
+                st = p.stat()
+            except OSError:
+                continue
+            out.append((p, kind, m.group(1), st))
+    return out
+
+
+def _pre_restore_protected() -> set:
+    """The real paths of the files a restore marker names (never pruned,
+    purged or put back while it is there)."""
+    return {os.path.realpath(p)
+            for p in restore_io.protected_paths(_pre_restore_install_dir())}
 
 
 def _list_pre_restore_snapshots() -> List[Dict[str, Any]]:
     """Return pre-restore snapshots paired by timestamp, newest first.
     Each entry: {timestamp, files: [{name, kind, size_bytes, mtime}, ...],
-    total_bytes, mtime}."""
-    install_dir = _pre_restore_install_dir()
-    db_name = _pre_restore_db_name()
-
+    total_bytes, mtime, in_use}. v3.4.149: `in_use` — a restore waiting for
+    its restart (or being switched in) puts this pair back if it fails, so
+    it can't be put back, purged or pruned now."""
+    protected = _pre_restore_protected()
     by_ts: Dict[str, Dict[str, Any]] = {}
-    for pat in _pre_restore_globs():
-        for p in install_dir.glob(pat):
-            if not p.is_file():
-                continue
-            m = _PRE_RESTORE_TS_RE.search(p.name)
-            if not m:
-                continue
-            ts = m.group(1)
-            try:
-                st = p.stat()
-            except OSError:
-                continue
-            kind = "database" if p.name.startswith(db_name + ".bak.") else "config"
-            entry = by_ts.setdefault(ts, {
-                "timestamp": ts,
-                "files": [],
-                "total_bytes": 0,
-                "mtime": 0,
-            })
-            entry["files"].append({
-                "name": p.name,
-                "kind": kind,
-                "size_bytes": st.st_size,
-                "mtime": int(st.st_mtime),
-            })
-            entry["total_bytes"] += st.st_size
-            entry["mtime"] = max(entry["mtime"], int(st.st_mtime))
+    for p, kind, ts, st in _pre_restore_files():
+        entry = by_ts.setdefault(ts, {
+            "timestamp": ts,
+            "files": [],
+            "total_bytes": 0,
+            "mtime": 0,
+            "in_use": False,
+        })
+        entry["files"].append({
+            "name": p.name,
+            "kind": kind,
+            "size_bytes": st.st_size,
+            "mtime": int(st.st_mtime),
+        })
+        entry["total_bytes"] += st.st_size
+        entry["mtime"] = max(entry["mtime"], int(st.st_mtime))
+        if os.path.realpath(str(p)) in protected:
+            entry["in_use"] = True
 
     snapshots = list(by_ts.values())
     # Newest first. Timestamp strings are YYYYMMDD-HHMMSS so lexical sort
@@ -715,29 +848,30 @@ def _list_pre_restore_snapshots() -> List[Dict[str, Any]]:
 
 
 def _prune_pre_restore_snapshots(keep: int = _PRE_RESTORE_KEEP):
-    """Delete pre-restore files beyond the most-recent `keep` per glob.
-    The two patterns (DB and config) are pruned independently, so a
+    """Delete pre-restore files beyond the most-recent `keep` per kind.
+    The two kinds (DB and config) are pruned independently, so a
     missing or mismatched pair (e.g. a config that was written when the
     DB write failed, or vice versa) doesn't block trimming the other.
+    v3.4.149: each kind in its own directory, and never a file the restore
+    marker names (the copy a pending restore would put back) — not even
+    when keep is 0 (the purge).
 
     Returns (deleted_count, freed_bytes). Errors on individual files are
     logged but never raised — pruning is best-effort housekeeping."""
-    install_dir = _pre_restore_install_dir()
+    protected = _pre_restore_protected()
     deleted_count = 0
     freed_bytes = 0
-    for pat in _pre_restore_globs():
-        files = []
-        for p in install_dir.glob(pat):
-            if not p.is_file():
-                continue
-            try:
-                st = p.stat()
-            except OSError:
-                continue
-            files.append((p, st.st_size))
-        # Newest first by name (timestamps sort chronologically)
-        files.sort(key=lambda t: t[0].name, reverse=True)
-        for p, size in files[keep:]:
+    by_kind: Dict[str, list] = {}
+    for p, kind, ts, st in _pre_restore_files():
+        if os.path.realpath(str(p)) in protected:
+            continue
+        by_kind.setdefault(kind, []).append((ts, p, st.st_size))
+    for files in by_kind.values():
+        # Newest first by timestamp (YYYYMMDD-HHMMSS sorts chronologically;
+        # the names of one kind can differ: beside a symlinked database and
+        # beside its target)
+        files.sort(key=lambda t: (t[0], t[1].name), reverse=True)
+        for _ts, p, size in files[keep:]:
             try:
                 p.unlink()
                 deleted_count += 1
@@ -751,6 +885,7 @@ def _prune_pre_restore_snapshots(keep: int = _PRE_RESTORE_KEEP):
 def _purge_all_pre_restore_snapshots():
     """Delete every pre-restore snapshot. Used by the manual purge endpoint
     when the keep-N retention is more conservative than the user wants.
+    The copies a pending restore names are kept (see the prune).
 
     Returns (deleted_count, freed_bytes)."""
     return _prune_pre_restore_snapshots(keep=0)
@@ -850,11 +985,15 @@ _LEGACY_TMP_RE = re.compile(r"^tmp[a-z0-9_]{8}\.(zip|db)(-journal|-wal|-shm)?$")
 # the top of the install, ...
 _CONFIG_STAGE_RE = re.compile(
     r"^\.config\.yaml(\.bak\.[0-9]{8}-[0-9]{6}(\.pre-restore)?)?\.[a-z0-9_]{8}\.tmp\Z")
-# ... and last-good, the recovery notice, a broken copy and a backup's
-# sha256 sidecar in .backups/.
+# ... and last-good, the recovery notice, a broken copy, a backup's sha256
+# sidecar, and (v3.4.149) the restore marker and result in .backups/. (The
+# files a restore stages — beside the database and config.yaml — and the
+# marker itself are never swept here: restore_io.sweep_orphans removes
+# staged leftovers, and only when no marker names them.)
 _BACKUPS_STAGE_RE = re.compile(
     r"^\.(config\.yaml\.last-good|config-recovery\.json"
     r"|config\.yaml\.broken\.[0-9]{8}-[0-9]{6}(-[0-9]+)?"
+    r"|pending-restore\.json|restore-result\.json"
     r"|aerodrome-backup-[0-9]{8}-[0-9]{6}(-[0-9]+)?\.zip\.sha256)\.[a-z0-9_]{8}\.tmp\Z")
 
 
@@ -1778,7 +1917,7 @@ def _no_space_message(need: int, free: int) -> str:
 
 def _upload_space_need(path: str, size: int) -> int:
     """Free space (before headroom) an upload of `size` bytes to `path`
-    needs. A restore upload: its spool, the staged copy in .backups/.uploads
+    needs. A restore upload: its spool, the staged copy in .backups/.tmp
     and the room the restore checks for (its size again plus the
     database's). An update upload: its spool."""
     if path != _BACKUP_UPLOAD_PATH:
@@ -1902,6 +2041,12 @@ class _BodySizeLimitMiddleware:
             b = _Busy(holder)
             return 409, _refusal_body(b.code, str(b), busy={
                 k: holder.get(k) for k in ("op", "since", "age_sec", "parked")})
+        # v3.4.149: a restore waits for its restart — the endpoint would
+        # refuse anyway, after the whole upload was spooled.
+        if _restore_waiting() is not None:
+            b = _restore_waiting_busy()
+            return 409, _refusal_body(b.code, str(b), busy={
+                k: b.busy.get(k) for k in ("op", "since", "age_sec", "parked")})
         if path == _UPDATE_UPLOAD_PATH:
             try:
                 pending = updater.pending(_install_dir())
@@ -3153,6 +3298,11 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         # is saved (all or nothing) BEFORE the running config changes — a
         # failed save leaves both as they were and says why.
         with config_io.CONFIG_LOCK:
+            # v3.4.149: not while a restore waits for its restart (it would
+            # put the backup's watchlist over this one without a word).
+            waiting = _restore_waiting_response()
+            if waiting is not None:
+                return waiting
             watchlist = list(CONFIG.get("watchlist") or [])
             # Duplicate check — compare case-insensitively across all identifier types
             for existing in watchlist:
@@ -3185,6 +3335,9 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         # v3.4.148: same locked save-then-swap as add (the history delete
         # below stays outside the lock).
         with config_io.CONFIG_LOCK:
+            waiting = _restore_waiting_response()       # v3.4.149 (see add)
+            if waiting is not None:
+                return waiting
             watchlist = CONFIG.get("watchlist") or []
             # Find the matching entry first so we can grab its label for the
             # optional history delete. If delete_history is false we'll just
@@ -7676,6 +7829,11 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         # running config exactly as they were, and says why. update() before
         # pop() so a reader never sees a required section missing.
         with config_io.CONFIG_LOCK:
+            # v3.4.149: not while a restore waits for its restart — the
+            # restart would put the backup's settings over this save.
+            waiting = _restore_waiting_response(field_errors=True)
+            if waiting is not None:
+                return waiting
             try:
                 _save_config(new_cfg)
             except (config_io.ConfigWriteError, ValueError) as e:
@@ -7771,30 +7929,6 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     def _do_restart():
         """Trigger a systemd restart. Returns (ok, note). See _restart_service."""
         return _restart_service()
-
-    def _do_restart_after_response(delay_seconds=0.75):
-        """v3.4.2: deferred restart used by destructive endpoints.
-
-        The bug this fixes: even with `systemctl restart --no-block`,
-        the SIGTERM from systemd can land before the FastAPI response
-        bytes have been flushed from the kernel's TCP send buffer to
-        the client. The client then sees a connection-reset
-        NetworkError mid-response and reports "Restore failed" even
-        though the work succeeded server-side.
-
-        The fix: wrap this helper in FastAPI's BackgroundTasks. The
-        ASGI machinery runs background tasks AFTER the response has
-        been fully sent to the client. We then sleep briefly to let
-        TCP fully drain (more headroom for slow client links), then
-        call _do_restart() normally.
-
-        delay_seconds is conservative — 750 ms is plenty for any
-        LAN/wifi client and well within the user's expectation of
-        "service restarting".
-        """
-        import time as _time
-        _time.sleep(delay_seconds)
-        _do_restart()
 
     def _list_config_backups():
         """Return sorted list of backup metadata (newest first)."""
@@ -8077,6 +8211,14 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                     return JSONResponse(status_code=413, content={
                         "ok": False, "error": err, "message": err})
                 text = raw.decode("utf-8", errors="replace")
+                # v3.4.149: nested YAML aliases expand to billions of nodes
+                # once compared or shown — refused (Aerodrome never writes them).
+                try:
+                    config_io.refuse_aliases(text)
+                except ValueError as e:
+                    msg = f"This config can't be imported: {e}."
+                    return JSONResponse(status_code=400, content={
+                        "ok": False, "error": msg, "message": msg})
 
                 ok, payload = _apply_config_from_text(text, f"upload {file.filename!r}")
                 if not ok:
@@ -8387,406 +8529,113 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             await form.close()
 
     @app.post("/api/backup/import")
-    async def backup_import(file=Depends(_one_backup_file),
-                            background_tasks: BackgroundTasks = None):
+    def backup_import(file=Depends(_one_backup_file), keep_current_config: bool = False,
+                      background_tasks: BackgroundTasks = None):
         """Restore from a zip produced by /api/backup/export (see
-        _backup_import_locked). v3.4.147: one maintenance operation at a
-        time; the lock is kept for a while once the restart is scheduled."""
+        _restore_from_local_zip). v3.4.147: one maintenance operation at a
+        time; the lock is kept for a while once the restart is scheduled.
+
+        v3.4.149: a plain def (the copy and the checks run in the
+        threadpool, never on the event loop). keep_current_config — a query
+        parameter, since the form holds exactly one file part: restore the
+        database only and keep this machine's settings (the answer to a 422
+        about the backup's settings)."""
         if isinstance(file, str):
             return JSONResponse(status_code=400, content={
                 "ok": False, "code": "bad_upload", "error": file, "message": file})
         if isinstance(file, JSONResponse):
             return file
         try:
-            with _maintenance("a restore") as tok:
-                result = await _backup_import_locked(file, background_tasks)
-                if isinstance(result, dict) and result.get("ok") and not result.get("restart_note"):
-                    _MAINT.park(tok, "restarting after a restore", _RESTART_HOLD_SEC)
-                return result
+            with _maintenance("a restore", restore_op=True) as tok:
+                return _backup_import_locked(file, background_tasks, keep_current_config, tok)
         except _Busy as b:
             return _busy_response(b)
 
-    async def _backup_import_locked(file: UploadFile, background_tasks):
-        """Restore from a zip produced by /api/backup/export. Destructive:
-        replaces config.yaml, aerodrome.db, and ntfy server.yml (when present).
-        Backs up the existing versions of each file first, then triggers a
-        service restart so the new DB/config take effect.
+    def _backup_import_locked(file: UploadFile, background_tasks, keep_current_config, tok):
+        """Copy the upload to a private file and restore from it.
 
-        v3.4.0: streams the upload to a temp file on disk rather than
-        buffering it in RAM (could OOM on Pi-class hosts at multi-GB
-        backups).
-
-        v3.4.1: enforces a 2 GB cap on the browser-upload transport.
-        The cap is a UX guard — past this size browser uploads become
-        unreliable regardless of memory or disk (network timeouts,
-        browser memory pressure, intermediate proxy limits, network
-        interruptions over long transfers). Above the cap, users get
-        a clear rejection message pointing them at the server-side
-        flow (scp the file into .backups/, then restore via the
-        Existing server-side backups list).
-        """
-        import io, json, zipfile, tempfile, shutil
-
+        v3.4.0: streamed to a file on disk, never buffered in RAM (a
+        multi-GB backup OOM-killed Pi-class hosts). v3.4.1: browser uploads
+        stop at 2 GB (past that, use the server-side flow: scp the zip into
+        .backups/, then restore it from the Existing server-side backups
+        list). v3.4.149: the copy is .backups/.tmp/upload-<random>.zip
+        (0600, in the 0700 spool folder, swept at startup) and is removed
+        when the request ends, whatever the outcome — a refused restore no
+        longer leaves it behind."""
+        import uuid
         install_dir = _install_dir()
-
-        # v3.4.0: stream upload to a temp file. Use .backups/.uploads/
-        # so the temp shares filesystem with the eventual restore target
-        # (avoids cross-fs rename later).
-        uploads_dir = install_dir / ".backups" / ".uploads"
         try:
-            # v3.4.148: .backups/ and .uploads/ are created 0700, the staged
-            # upload 0600 (a backup holds the config and the database).
-            atomic_io.ensure_private_dir(install_dir / ".backups")
-            atomic_io.ensure_private_dir(uploads_dir)
+            tmp_dir = _backup_tmp_dir(install_dir)
         except OSError as e:
+            msg = f"Could not create the upload staging folder: {e}"
             return JSONResponse(status_code=500, content={
-                "ok": False,
-                "message": f"Could not create upload staging dir: {e}",
-            })
-
-        # v3.4.1: hard cap at 2 GB. The streaming refactor handles
-        # arbitrarily large bytes-on-disk, but the browser-network
-        # transport doesn't — and there's no good UX recovery from a
-        # mid-upload network timeout. Above this size, users go
-        # through the server-side flow which uses scp/rsync as the
-        # transport. The cap is checked progressively during the
-        # stream so we abort early rather than after fully receiving
-        # a 50 GB upload that's going to be rejected anyway.
-        MAX_UPLOAD_BYTES = BACKUP_UPLOAD_MAX_BYTES  # 2 GB (the middleware's cap too)
-
-        upload_tmp = uploads_dir / f"upload-{int(time.time()*1000)}-{os.getpid()}.zip"
+                "ok": False, "error": msg, "message": msg})
+        upload_tmp = tmp_dir / f"upload-{uuid.uuid4().hex}.zip"
         bytes_written = 0
         try:
             try:
                 with atomic_io.open_private(upload_tmp) as out:
                     while True:
-                        chunk = await file.read(1024 * 1024)  # 1 MB chunks
+                        chunk = file.file.read(1024 * 1024)  # 1 MB chunks
                         if not chunk:
                             break
                         out.write(chunk)
                         bytes_written += len(chunk)
-                        # v3.4.1: progressive cap check — abort early
-                        if bytes_written > MAX_UPLOAD_BYTES:
-                            # Close out cleanly before delete
+                        if bytes_written > BACKUP_UPLOAD_MAX_BYTES:
                             break
             except OSError as e:
                 if not atomic_io.is_disk_full(e):
                     raise
                 # v3.4.148: the disk filled while the upload was staged.
-                try: upload_tmp.unlink()
-                except OSError: pass
                 return _upload_disk_filled_response()
 
-            if bytes_written > MAX_UPLOAD_BYTES:
-                try: upload_tmp.unlink()
-                except OSError: pass
+            if bytes_written > BACKUP_UPLOAD_MAX_BYTES:
+                msg = ("Backup is too large for browser upload (>2 GB). "
+                       "Above this size, browser uploads become unreliable "
+                       "(network timeouts, memory pressure, proxy limits). "
+                       "Use the server-side restore flow instead: copy this "
+                       "file into <install_dir>/.backups/ via scp or rsync, "
+                       "then use the Existing server-side backups list "
+                       "below — your backup will appear after clicking "
+                       "Rescan. No browser upload needed.")
                 return JSONResponse(status_code=413, content={
-                    "ok": False,
-                    "message": (
-                        "Backup is too large for browser upload (>2 GB). "
-                        "Above this size, browser uploads become unreliable "
-                        "(network timeouts, memory pressure, proxy limits). "
-                        "Use the server-side restore flow instead: copy this "
-                        "file into <install_dir>/.backups/ via scp or rsync, "
-                        "then use the Existing server-side backups list "
-                        "below — your backup will appear after clicking "
-                        "Rescan. No browser upload needed."
-                    ),
-                })
+                    "ok": False, "code": "too_large", "error": msg, "message": msg})
 
             if bytes_written == 0:
-                try: upload_tmp.unlink()
-                except OSError: pass
+                msg = "Uploaded file is empty"
                 return JSONResponse(status_code=400, content={
-                    "ok": False, "message": "Uploaded file is empty"
-                })
+                    "ok": False, "code": "bad_upload", "error": msg, "message": msg})
 
-            # v3.4.0: disk-space pre-check. We'll create a .pre-restore
-            # snapshot of the current DB + replace it from the upload,
-            # so we need roughly (upload_size + current_db_size) free.
-            db_path = Path(CONFIG.get("data", {}).get("db_file", "aircraft_history.db"))
-            if not db_path.is_absolute():
-                db_path = install_dir / db_path
-            current_db_size = db_path.stat().st_size if db_path.is_file() else 0
-            free_bytes = shutil.disk_usage(str(install_dir)).free
-            need_bytes = bytes_written + current_db_size + (256 * 1024 * 1024)  # +256MB headroom
-            if free_bytes < need_bytes:
-                try: upload_tmp.unlink()
-                except OSError: pass
-                return JSONResponse(status_code=507, content={
-                    "ok": False,
-                    "message": (
-                        f"Not enough free disk space for restore. "
-                        f"Need ~{need_bytes // (1024*1024)} MB free, "
-                        f"have {free_bytes // (1024*1024)} MB. "
-                        f"Free up space and retry."
-                    ),
-                })
-
-            # Now process the staged file with the existing restore logic.
-            # Pass the path; the helper opens it as a zipfile and reads
-            # entries one at a time (streamed, no whole-file-in-memory).
-            return await _restore_from_local_zip(upload_tmp, install_dir,
-                                                  source_label="upload",
-                                                  cleanup_source_on_success=True,
-                                                  background_tasks=background_tasks)
+            return _restore_from_local_zip(upload_tmp, source_label="upload",
+                                           background_tasks=background_tasks,
+                                           keep_current_config=keep_current_config, tok=tok)
         except Exception as e:
-            try: upload_tmp.unlink()
-            except OSError: pass
+            logger.error(f"Restore upload failed: {e}", exc_info=True)
+            msg = f"Upload failed: {e}"
             return JSONResponse(status_code=500, content={
-                "ok": False, "message": f"Upload failed: {e}",
-            })
-
-    async def _restore_from_local_zip(zip_path, install_dir,
-                                       source_label="local",
-                                       cleanup_source_on_success=False,
-                                       background_tasks=None):
-        """v3.4.0 shared restore logic. Reads a backup zip from a local
-        filesystem path (no buffering in memory) and applies it. Used
-        by both /api/backup/import (streams upload to temp first, then
-        calls us) and /api/backup/restore-from-path (admin-supplied
-        path on disk).
-
-        Returns a JSONResponse. cleanup_source_on_success controls
-        whether to delete the source zip after a successful restore —
-        true for uploads (the staged temp file is no longer needed),
-        false for server-side restore-from-path (user's backup file
-        should survive).
-        """
-        import io, json, zipfile
-
-        try:
-            zf = zipfile.ZipFile(str(zip_path), "r")
-        except zipfile.BadZipFile:
-            if cleanup_source_on_success:
-                try: Path(zip_path).unlink()
-                except OSError: pass
-            return JSONResponse(status_code=400, content={
-                "ok": False, "message": "Not a valid zip file"
-            })
-
-        # v2.49.8: detect a single wrapper folder around the backup contents.
-        # Aerodrome's own backup writer puts files at the zip root, but cloud
-        # sync tools (Synology Drive, Google Drive, OneDrive) sometimes
-        # re-package downloaded zip contents under a folder named after the
-        # backup. The result is entries like "aerodrome-backup-20260427-191125/manifest.json"
-        # instead of just "manifest.json". When that happens we want to
-        # accept the backup rather than fail with a confusing "missing
-        # manifest" error — the file IS in the archive, just one level
-        # deeper than expected.
-        #
-        # Strategy: find manifest.json wherever it is in the archive. If
-        # it has a directory prefix, use that prefix for all subsequent
-        # reads. If we find more than one manifest.json, that's a malformed
-        # archive and we refuse it. If we find none at any depth, that's
-        # a real "missing manifest" condition.
-        manifest_candidates = [
-            n for n in zf.namelist()
-            if n == "manifest.json" or n.endswith("/manifest.json")
-        ]
-        if len(manifest_candidates) == 0:
-            return JSONResponse(status_code=400, content={
-                "ok": False,
-                "message": "Missing manifest.json: archive does not contain a manifest at any depth.",
-            })
-        if len(manifest_candidates) > 1:
-            return JSONResponse(status_code=400, content={
-                "ok": False,
-                "message": f"Ambiguous backup: multiple manifest.json files found at "
-                           f"{manifest_candidates}. Aerodrome can only restore from a "
-                           f"single-backup archive.",
-            })
-        manifest_path = manifest_candidates[0]
-        # Derive the prefix (everything before "manifest.json") so we can
-        # apply it to every other read. Empty string when manifest is at root.
-        prefix = manifest_path[: -len("manifest.json")]
-        if prefix:
-            logger.info(f"Backup archive has wrapper folder prefix: {prefix!r}")
-
-        # Read + validate manifest first — we refuse to apply a backup
-        # from a wildly different manifest version we don't understand.
-        try:
-            # v3.4.9: defense-in-depth size check on the zip entry
-            # before zf.read(). ZipInfo.file_size is free metadata
-            # from the zip's central directory — bounding manifest.json
-            # at 64 KB catches the "small outer zip containing a giant
-            # inner entry" zip-bomb pattern. The restore upload itself
-            # is already capped at 2 GB (v3.4.0/v3.4.1) so this is
-            # belt-and-suspenders, but the cost is one if-statement
-            # and the upside is no OOM path through this route.
-            manifest_info = zf.getinfo(manifest_path)
-            if manifest_info.file_size > 64 * 1024:
-                return JSONResponse(status_code=400, content={
-                    "ok": False,
-                    "message": (f"manifest.json is improbably large "
-                                f"({manifest_info.file_size} bytes; "
-                                f"expected <64 KB). Refusing to read."),
-                })
-            manifest_bytes = zf.read(manifest_path)
-            manifest = json.loads(manifest_bytes.decode("utf-8"))
-        except (KeyError, json.JSONDecodeError, UnicodeDecodeError) as e:
-            return JSONResponse(status_code=400, content={
-                "ok": False,
-                "message": f"Missing or invalid manifest.json: {e}",
-            })
-
-        if manifest.get("manifest_version") != 1:
-            return JSONResponse(status_code=400, content={
-                "ok": False,
-                "message": f"Unsupported manifest version "
-                           f"{manifest.get('manifest_version')}. "
-                           f"This Aerodrome only handles version 1 backups.",
-            })
-
-        install_dir = Path(__file__).parent
-        db_path = Path(CONFIG.get("data", {}).get("db_file", "aircraft_history.db"))
-        if not db_path.is_absolute():
-            db_path = install_dir / db_path
-
-        restored: Dict[str, Any] = {}
-        skipped: List[Dict[str, Any]] = []
-        warnings: List[str] = []
-        ts = time.strftime("%Y%m%d-%H%M%S")
-
-        # --- 1. config.yaml ---
-        try:
-            # v3.4.9: defense-in-depth size check on zip entry.
-            # Same 256 KB limit as /api/config/import accepts on upload.
-            cfg_info = zf.getinfo(prefix + "config.yaml")
-            if cfg_info.file_size > 256 * 1024:
-                skipped.append({
-                    "file": "config.yaml",
-                    "reason": (f"improbably large ({cfg_info.file_size} bytes; "
-                               f"expected <256 KB); skipped to avoid OOM"),
-                })
-                raise KeyError("config.yaml size exceeds limit")
-            cfg_bytes = zf.read(prefix + "config.yaml")
-            cfg_text = cfg_bytes.decode("utf-8")
-            # Back up the current config before overwriting
-            cfg_backup_name = f"config.yaml.bak.{ts}.pre-restore"
-            cfg_backup_path = Path(CONFIG_PATH).with_name(cfg_backup_name)
-            # v3.4.148: both writes all or nothing, 0600, under CONFIG_LOCK —
-            # in the threadpool, so the event loop never waits for the lock
-            # (the collector may hold it across a `sudo tee`).
-            def _write_restored_config():
-                with config_io.CONFIG_LOCK:
-                    if Path(CONFIG_PATH).is_file():
-                        config_io.write_text(cfg_backup_path,
-                                             Path(CONFIG_PATH).read_text(encoding="utf-8"),
-                                             check=False)
-                    config_io.write_text(CONFIG_PATH, cfg_text, check=False)
-            from starlette.concurrency import run_in_threadpool
-            await run_in_threadpool(_write_restored_config)
-            # Reload in-memory CONFIG so subsequent calls see new values
-            # (restart picks it up properly, but this keeps the next few
-            # API calls coherent while restart is queued)
+                "ok": False, "error": msg, "message": msg})
+        finally:
             try:
-                parsed = yaml.safe_load(cfg_text) or {}
-                if isinstance(parsed, dict):
-                    for k in list(CONFIG.keys()):
-                        CONFIG.pop(k, None)
-                    CONFIG.update(parsed)
-            except Exception:
+                upload_tmp.unlink()
+            except OSError:
                 pass
-            restored["config"] = {"ok": True, "bytes": len(cfg_bytes),
-                                  "previous_backed_up_as": cfg_backup_name}
-        except KeyError:
-            skipped.append({"file": "config.yaml", "reason": "not in backup"})
-        except Exception as e:
-            skipped.append({"file": "config.yaml", "reason": f"error: {e}"})
 
-        # --- 2. aerodrome.db ---
-        # v3.4.2: stream-extract via copyfileobj. Previous versions
-        # called zf.read() which loaded the entire DB into a Python
-        # bytes object — fine for KB-sized files, catastrophic for
-        # GB-sized databases. A 5 GB DB triggered an OOM-kill or
-        # MemoryError, the process died mid-restore, systemd
-        # restarted it, and the user saw a NetworkError with no
-        # data restored. The fix is structural: zip entries get
-        # streamed to disk in 1 MB chunks regardless of size.
-        try:
-            try:
-                db_info = zf.getinfo(prefix + "aerodrome.db")
-            except KeyError:
-                skipped.append({"file": "aerodrome.db", "reason": "not in backup"})
-                db_info = None
+    def _restore_db_path() -> Path:
+        """The live database as configured (data.db_file; a relative name is
+        in the install). restore_io.prepare resolves it: a data.db_file
+        symlinked onto another disk keeps its link — the staged file, the
+        copy and the swap are all on the real file's filesystem, and the
+        marker records both paths (v3.4.149)."""
+        db = Path(CONFIG.get("data", {}).get("db_file", "aircraft_history.db"))
+        return db if db.is_absolute() else _install_dir() / db
 
-            if db_info is not None:
-                uncompressed_size = db_info.file_size
-
-                # Disk-space pre-check against the UNCOMPRESSED size.
-                # Need: uncompressed_size (new DB written) + current DB
-                # size (the .pre-restore snapshot still on disk) + a
-                # safety margin. Refuse with HTTP 507-equivalent BEFORE
-                # destructive work if insufficient.
-                current_db_size = db_path.stat().st_size if db_path.is_file() else 0
-                free_bytes = shutil.disk_usage(str(install_dir)).free
-                need_bytes = uncompressed_size + current_db_size + (256 * 1024 * 1024)
-                if free_bytes < need_bytes:
-                    zf.close()
-                    if cleanup_source_on_success:
-                        try: Path(zip_path).unlink()
-                        except OSError: pass
-                    return JSONResponse(status_code=507, content={
-                        "ok": False,
-                        "message": (
-                            f"Not enough free disk space to restore database. "
-                            f"Database will be {uncompressed_size // (1024*1024)} MB, "
-                            f"need ~{need_bytes // (1024*1024)} MB free, "
-                            f"have {free_bytes // (1024*1024)} MB. "
-                            f"Free up space and retry."
-                        ),
-                    })
-
-                # Back up current DB before overwriting (.pre-restore
-                # safety snapshot). Same as v3.4.x behavior.
-                db_backup_path = None
-                if db_path.is_file():
-                    db_backup_path = db_path.with_name(
-                        f"{db_path.name}.bak.{ts}.pre-restore")
-                    shutil.copy2(db_path, db_backup_path)
-
-                # Move stale WAL/SHM aside so SQLite doesn't mix old
-                # journal state into the restored DB.
-                for suffix in ("-wal", "-shm"):
-                    sidecar = db_path.with_name(db_path.name + suffix)
-                    if sidecar.is_file():
-                        try:
-                            sidecar.unlink()
-                        except OSError:
-                            pass
-
-                # Stream-extract via copyfileobj. 1 MB buffer keeps
-                # memory bounded regardless of entry size. Verify
-                # bytes_written matches expected at the end so partial
-                # writes don't pass silently.
-                bytes_written = 0
-                BUF_SIZE = 1024 * 1024  # 1 MB
-                with zf.open(prefix + "aerodrome.db") as src, open(db_path, "wb") as dst:
-                    while True:
-                        chunk = src.read(BUF_SIZE)
-                        if not chunk:
-                            break
-                        dst.write(chunk)
-                        bytes_written += len(chunk)
-
-                if bytes_written != uncompressed_size:
-                    # Partial write — surface it loud, leave the
-                    # .pre-restore snapshot in place for recovery.
-                    raise IOError(
-                        f"Partial DB extract: wrote {bytes_written} bytes "
-                        f"but zip entry was {uncompressed_size}. The "
-                        f"previous DB is preserved at "
-                        f"{db_backup_path.name if db_backup_path else '(no prior DB)'}."
-                    )
-
-                restored["database"] = {
-                    "ok": True, "bytes": bytes_written,
-                    "previous_backed_up_as": (db_backup_path.name if db_backup_path else None),
-                }
-        except Exception as e:
-            skipped.append({"file": "aerodrome.db", "reason": f"error: {e}"})
-
+    def _restore_ntfy_part(zf, prefix, ts, install_dir, restored, skipped, warnings):
+        """The backup's notification-server settings (ntfy/server.yml),
+        moved here unchanged from the restore of v3.4.146 (B5's rework of
+        it plugs in here). v3.4.149: called only once every check of the
+        backup passed and the restore is recorded — and it is the one part
+        of a restore that takes effect at once, not at the restart: ntfy is
+        its own service, and a rollback of Aerodrome's data doesn't undo it."""
         # --- 3. ntfy/server.yml ---
         # v3.4.146: the backup's server.yml is never written as-is. Only the
         # settings Aerodrome manages (address, port, listen address, iPhone
@@ -8939,60 +8788,213 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         except KeyError:
             pass  # not in backup, not a problem
 
-        # v2.50.6: this restore just created a fresh pre-restore pair. Trim
-        # older snapshots so they don't accumulate forever — at scale the DB
-        # snapshot alone can be hundreds of MB to GB per restore. Best-effort:
-        # any errors are logged but never block the success response.
+    def _prepare_restore(zip_path, source_label, keep_current_config):
+        """The blocking half of a restore (threadpool, maintenance lock held):
+        open the zip; check the settings (or keep this machine's); check
+        the disk space on the database's filesystem; stage the database
+        beside the live one and check it; stage the settings; keep
+        pre-restore copies of the live database and config.yaml; record the
+        restore (the marker); then the notification server's part. Raises
+        restore_io.RestoreError with nothing changed and everything it made
+        removed. The live database, config.yaml and the running settings are
+        never touched here — the swap is the next start's
+        (restore_io.apply_pending_restore)."""
+        from config_validator import validate_config
+        from schema_migrations import CURRENT_SCHEMA_VERSION
+        install_dir = _install_dir()
+        db_path = _restore_db_path()
+        cfg_path = Path(CONFIG_PATH)
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        restored: Dict[str, Any] = {}
+        skipped: List[Dict[str, Any]] = []
+        warnings: List[str] = []
+        notes: List[str] = []
+
+        zf, prefix, manifest = restore_io.open_backup(zip_path)
+        marker = None
+        try:
+            if prefix:
+                # v2.49.8: cloud sync tools re-package a backup under a folder
+                # named after it; its entries are read through that prefix.
+                logger.info(f"Backup archive has wrapper folder prefix: {prefix!r}")
+            db_info = restore_io.member(zf, prefix + "aerodrome.db")
+            cfg_info = restore_io.member(zf, prefix + "config.yaml")
+            ntfy_info = restore_io.member(zf, prefix + "ntfy/server.yml")
+
+            # 1. settings — checked the way startup reads them, this machine's
+            #    address, port, database and log locations kept (Decision 4)
+            cfg_text = None
+            if keep_current_config:
+                if cfg_info is not None:
+                    skipped.append({"file": "config.yaml",
+                                    "reason": "kept this machine's settings (database-only "
+                                              "restore)"})
+                # A database-only restore keeps this machine's notification
+                # server as well: it never installs, widens or re-points it.
+                if ntfy_info is not None:
+                    skipped.append({"file": "ntfy/server.yml",
+                                    "reason": "kept this machine's notification server "
+                                              "(database-only restore)"})
+                    ntfy_info = None
+            elif cfg_info is None:
+                skipped.append({"file": "config.yaml", "reason": "not in backup"})
+            else:
+                try:
+                    raw = restore_io.read_config_member(zf, cfg_info)
+                    cfg_text, cfg_notes = restore_io.prepare_config(
+                        raw, CONFIG, validate_config, hosts_of=_configured_hosts)
+                except restore_io.RestoreError as e:
+                    e.database_only = db_info is not None
+                    raise
+                notes += cfg_notes
+            if db_info is None:
+                skipped.append({"file": "aerodrome.db", "reason": "not in backup"})
+
+            if cfg_text is None and db_info is None:
+                if keep_current_config:
+                    raise restore_io.RestoreError(
+                        "Nothing to restore: a database-only restore needs a database, and "
+                        "this backup holds none. Nothing was changed.",
+                        code="nothing_to_restore")
+                if ntfy_info is None:
+                    raise restore_io.RestoreError(
+                        "Nothing to restore: this backup holds neither settings nor a "
+                        "database. Nothing was changed.", code="nothing_to_restore")
+                # Only the notification server's settings: they apply now,
+                # and there is nothing for a restart to switch.
+                _run_ntfy_part(zf, prefix, ts, install_dir, restored, skipped, warnings)
+                return {"manifest": manifest, "restored": restored, "skipped": skipped,
+                        "warnings": warnings, "notes": notes, "staged": False}
+
+            # 2-7. space, stage + check the database, stage the settings, the
+            #      pre-restore copies, the marker (restore_io.prepare)
+            marker, info = restore_io.prepare(
+                install_dir, db_live=db_path, config_live=cfg_path, source=source_label,
+                manifest=manifest, notes=notes, cfg_text=cfg_text,
+                db_writer=((lambda dest, mode: restore_io.stage_database(zf, db_info, dest, mode))
+                           if db_info is not None else None),
+                db_size=db_info.file_size if db_info is not None else 0,
+                current_schema=CURRENT_SCHEMA_VERSION,
+                keep_current_config=keep_current_config, ts=ts)
+            restored.update(info)
+            # 8. the notification server — after everything above passed
+            #    (not for a database-only restore: skipped above)
+            if ntfy_info is not None:
+                n_warn = len(warnings)
+                _run_ntfy_part(zf, prefix, ts, install_dir, restored, skipped, warnings)
+                # (the part adds a warning whenever it wrote or installed
+                # something) — a cancel or an expiry must then not say
+                # "nothing was changed"
+                if restored.get("ntfy_config") or len(warnings) > n_warn:
+                    restore_io.note_ntfy_applied(install_dir)
+        finally:
+            zf.close()
+
+        # v2.50.6: trim older pre-restore copies so they don't accumulate
+        # (never the pair this restore just made, nor any the marker names).
         try:
             pruned_count, pruned_bytes = _prune_pre_restore_snapshots()
             if pruned_count:
-                logger.info(
-                    f"Pruned {pruned_count} older pre-restore snapshot(s), "
-                    f"freed {pruned_bytes} bytes"
-                )
+                logger.info(f"Pruned {pruned_count} older pre-restore snapshot(s), "
+                            f"freed {pruned_bytes} bytes")
         except Exception as e:
-            logger.warning(
-                f"Could not prune older pre-restore snapshots: {e}"
-            )
+            logger.warning(f"Could not prune older pre-restore snapshots: {e}")
+        return {"manifest": manifest, "restored": restored, "skipped": skipped,
+                "warnings": warnings, "notes": notes, "staged": True, "marker": marker}
 
-        # --- 4. Trigger restart ---
-        # v3.4.2: defer the restart so it runs AFTER the response is
-        # flushed to the client. Without this deferral, systemd's
-        # SIGTERM can land before the FastAPI response bytes have left
-        # the kernel send buffer, and the client sees a NetworkError
-        # mid-response despite the work succeeding server-side. With
-        # BackgroundTasks the restart fires only after the response
-        # is fully sent, with an additional 750ms cushion.
-        restart_ok = True
-        restart_note = ""
+    def _run_ntfy_part(zf, prefix, ts, install_dir, restored, skipped, warnings):
+        """_restore_ntfy_part, which must never fail a restore that is
+        already recorded: anything it raises becomes a `skipped` line."""
+        try:
+            _restore_ntfy_part(zf, prefix, ts, install_dir, restored, skipped, warnings)
+        except Exception as e:
+            logger.warning(f"Restoring the notification server's settings failed: {e}")
+            skipped.append({"file": "ntfy/server.yml", "reason": f"error: {e}"})
+
+    def _restart_after_restore(tok, delay_seconds=0.75):
+        """The restart that switches to a staged restore, run by
+        BackgroundTasks AFTER the response is sent (v3.4.2: otherwise
+        systemd's SIGTERM could land before the response left the kernel's
+        send buffer, and the page reported a failed restore that had
+        worked), after a short pause for slow links. v3.4.149: when the
+        restart is refused (e.g. no sudo rule), the marker records why — the
+        Settings page shows the restore as staged and waiting, with Cancel —
+        and the maintenance lock is freed at once."""
+        time.sleep(delay_seconds)
+        ok, note = _do_restart()
+        if not ok:
+            note = note or "the restart call failed"
+            logger.warning(f"Aerodrome couldn't restart itself after a restore ({note}). "
+                           f"The restore is staged and applies at the next start within the "
+                           f"hour, or can be cancelled in Settings.")
+            restore_io.note_restart_failed(_install_dir(), note)
+            _MAINT.unpark(tok)
+
+    _DATABASE_ONLY_HINT = ("You can restore just the database and keep this machine's "
+                           "settings.")
+
+    def _restore_refused(e, source_label):
+        logger.warning(f"Restore refused ({source_label}): {e.message}")
+        body = e.payload()
+        if e.status == 422 and getattr(e, "database_only", False):
+            body["database_only"] = True
+            if _DATABASE_ONLY_HINT not in body["message"]:
+                body["message"] = body["error"] = f"{body['message']} {_DATABASE_ONLY_HINT}"
+        return JSONResponse(status_code=e.status, content=body)
+
+    def _restore_staged_response(outcome, background_tasks, tok, message=None):
+        """The answer to a restore that passed every check: restart to switch
+        to it (after the response, when BackgroundTasks is there), keep the
+        maintenance lock meanwhile."""
+        base = {"manifest": outcome.get("manifest"), "restored": outcome.get("restored") or {},
+                "skipped": outcome.get("skipped") or [],
+                "warnings": outcome.get("warnings") or [], "notes": outcome.get("notes") or []}
+        if not outcome.get("staged"):
+            msg = ("The backup held only the notification server's settings; they were "
+                   "restored. It had no Aerodrome settings or database, so nothing else "
+                   "changed and no restart is needed.")
+            return {"ok": True, "staged": False, "message": msg, "restart_note": None, **base}
+        restart_note = None
         if background_tasks is not None:
-            background_tasks.add_task(_do_restart_after_response)
+            background_tasks.add_task(_restart_after_restore, tok)
+            restart_ok = True
         else:
-            # Backward compat: no BackgroundTasks supplied (e.g. called
-            # from a non-endpoint code path) — fall back to inline
-            # restart, accepting the response-race risk.
-            restart_ok, restart_note = _do_restart()
-            if not restart_ok and restart_note:
-                warnings.append(
-                    f"Restore applied but restart failed: {restart_note}. "
-                    "Restart manually with `sudo systemctl restart aerodrome`.")
+            restart_ok, note = _do_restart()
+            if not restart_ok:
+                note = note or "the restart call failed"
+                restore_io.note_restart_failed(_install_dir(), note)
+                restart_note = (f"Aerodrome couldn't restart itself ({note}). The restore is "
+                                f"staged and applies the next time Aerodrome starts within the "
+                                f"hour — or cancel it in Settings.")
+        if restart_ok and tok is not None:
+            _MAINT.park(tok, "restarting after a restore", _RESTART_HOLD_SEC)
+        msg = message or ("Backup checked — Aerodrome is restarting to switch to it. If the "
+                          "restored data won't load, your current data is put back "
+                          "automatically.")
+        return {"ok": True, "staged": True, "changed": False, "message": msg,
+                "restart_note": restart_note, **base}
 
-        # v3.4.0: clean up source zip if requested (upload case).
-        # Server-side restore-from-path leaves the user's backup file
-        # alone — only ephemeral uploads get cleaned.
-        if cleanup_source_on_success:
-            try: Path(zip_path).unlink()
-            except OSError: pass
-
-        return {
-            "ok": True,
-            "message": "Restore completed. Service is restarting.",
-            "manifest": manifest,
-            "restored": restored,
-            "skipped": skipped,
-            "warnings": warnings,
-            "restart_note": restart_note if not restart_ok else None,
-        }
+    def _restore_from_local_zip(zip_path, source_label="local", background_tasks=None,
+                                keep_current_config=False, tok=None):
+        """v3.4.0 shared restore logic for /api/backup/import (the upload,
+        copied to disk first) and /api/backup/restore-from-path (a backup
+        already on disk). v3.4.149: the backup is checked and staged
+        (_prepare_restore); nothing live changes until the restart, which
+        switches to it — or puts the current data back if it won't load.
+        A refusal (damaged backup, full disk, settings that wouldn't work,
+        a backup from a newer Aerodrome) changes nothing and restarts
+        nothing. Runs in the threadpool, maintenance lock (tok) held."""
+        try:
+            outcome = _prepare_restore(zip_path, source_label, keep_current_config)
+        except restore_io.RestoreError as e:
+            return _restore_refused(e, source_label)
+        except Exception as e:
+            logger.error(f"Restore failed before anything was changed: {e}", exc_info=True)
+            msg = f"The restore failed before anything was changed: {e}"
+            return JSONResponse(status_code=500, content={
+                "ok": False, "code": "restore_failed", "error": msg, "message": msg,
+                "changed": False})
+        return _restore_staged_response(outcome, background_tasks, tok)
 
     # --- v3.4.0: server-side backup + restore ---
     # The browser-mediated /api/backup/export and /api/backup/import
@@ -9182,28 +9184,28 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
     class RestoreFromPathPayload(BaseModel):
         path: str
+        keep_current_config: bool = False
 
     @app.post("/api/backup/restore-from-path")
-    async def restore_from_path(payload: RestoreFromPathPayload,
-                                background_tasks: BackgroundTasks = None):
+    def restore_from_path(payload: RestoreFromPathPayload,
+                          background_tasks: BackgroundTasks = None):
         """Restore from a backup file already on disk (see
         _restore_from_path_locked). v3.4.147: one maintenance operation at a
-        time; the lock is kept for a while once the restart is scheduled."""
+        time; the lock is kept for a while once the restart is scheduled.
+        v3.4.149: a plain def (threadpool); keep_current_config restores the
+        database only."""
         try:
-            with _maintenance("a restore") as tok:
-                result = await _restore_from_path_locked(payload, background_tasks)
-                if isinstance(result, dict) and result.get("ok") and not result.get("restart_note"):
-                    _MAINT.park(tok, "restarting after a restore", _RESTART_HOLD_SEC)
-                return result
+            with _maintenance("a restore", restore_op=True) as tok:
+                return _restore_from_path_locked(payload, background_tasks, tok)
         except _Busy as b:
             return _busy_response(b)
 
-    async def _restore_from_path_locked(payload, background_tasks):
+    def _restore_from_path_locked(payload, background_tasks, tok):
         """v3.4.0: restore from a backup file already on disk. Useful
         when the file is too large for the browser-upload path. The
-        path must be within <install_dir>/.backups/ unless the admin
-        scp'd it elsewhere; in that case it must be readable by the
-        Aerodrome process.
+        path must be within <install_dir>/.backups/ (scp the zip there
+        first) — but never one of Aerodrome's own temporary files in
+        .backups/.tmp or .backups/.uploads (v3.4.149).
 
         Source file is NOT deleted on success — the user explicitly
         chose to keep this backup on disk by using server-side
@@ -9215,18 +9217,15 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         try:
             src = Path(payload.path).resolve(strict=False)
         except Exception as e:
+            msg = f"Invalid path: {e}"
             return JSONResponse(status_code=400, content={
-                "ok": False, "message": f"Invalid path: {e}",
-            })
-
-        if not src.is_file():
-            return JSONResponse(status_code=404, content={
-                "ok": False, "message": f"Backup file not found: {src}",
-            })
+                "ok": False, "error": msg, "message": msg})
 
         # Default scoping: must be within .backups/. This blocks the
         # naive "user pastes /etc/passwd" footgun. Admin can drop the
         # backup zip into .backups/ to restore from a remote source.
+        # v3.4.149: checked BEFORE whether the file exists, so the answer
+        # (403 vs 404) never says which files exist elsewhere on the box.
         try:
             src.relative_to(backups_dir)
             within_scope = True
@@ -9234,44 +9233,159 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             within_scope = False
 
         if not within_scope:
+            msg = (f"Path is outside the allowed restore scope "
+                   f"({backups_dir}). Move the backup zip into "
+                   f".backups/ first (e.g. via scp), then retry.")
             return JSONResponse(status_code=403, content={
-                "ok": False,
-                "message": (
-                    f"Path is outside the allowed restore scope "
-                    f"({backups_dir}). Move the backup zip into "
-                    f".backups/ first (e.g. via scp), then retry."
-                ),
-            })
+                "ok": False, "error": msg, "message": msg})
 
-        # Disk-space pre-check — same shape as the upload path.
+        for sub in (_BACKUP_TMP_NAME, ".uploads"):
+            try:
+                src.relative_to(backups_dir / sub)
+            except ValueError:
+                continue
+            msg = ("That file is one of Aerodrome's own temporary files, not a backup. "
+                   "Pick a backup from the Existing server-side backups list.")
+            return JSONResponse(status_code=403, content={
+                "ok": False, "code": "not_a_backup", "error": msg, "message": msg})
+
+        if not src.is_file():
+            msg = f"Backup file not found: {src}"
+            return JSONResponse(status_code=404, content={
+                "ok": False, "error": msg, "message": msg})
+
+        return _restore_from_local_zip(
+            src, source_label="server-side-path", background_tasks=background_tasks,
+            keep_current_config=payload.keep_current_config, tok=tok)
+
+    @app.post("/api/backup/staged-restore/cancel")
+    def cancel_staged_restore():
+        """v3.4.149: cancel a restore that is staged and waits for its
+        restart (e.g. Aerodrome couldn't restart itself): the staged files
+        and the marker go, nothing live was changed — the pre-restore copies
+        it took stay listed. The way out, so it runs while a restore waits;
+        409 while another maintenance operation runs (or the restart is
+        under way)."""
         try:
-            src_size = src.stat().st_size
-        except OSError as e:
-            return JSONResponse(status_code=500, content={
-                "ok": False, "message": f"Could not stat backup: {e}",
-            })
-        db_path = Path(CONFIG.get("data", {}).get("db_file", "aircraft_history.db"))
-        if not db_path.is_absolute():
-            db_path = install_dir / db_path
-        current_db_size = db_path.stat().st_size if db_path.is_file() else 0
-        free_bytes = shutil.disk_usage(str(install_dir)).free
-        need_bytes = src_size + current_db_size + (256 * 1024 * 1024)
-        if free_bytes < need_bytes:
-            return JSONResponse(status_code=507, content={
-                "ok": False,
-                "message": (
-                    f"Not enough free disk space for restore. "
-                    f"Need ~{need_bytes // (1024*1024)} MB free, "
-                    f"have {free_bytes // (1024*1024)} MB."
-                ),
-            })
+            with _maintenance("a restore cancel", allow_restore_pending=True):
+                try:
+                    m = restore_io.cancel_pending_restore(_install_dir(), log=logger.info)
+                except ValueError:
+                    msg = ("This restore is already being switched in, so it can't be "
+                           "cancelled.")
+                    return JSONResponse(status_code=409, content={
+                        "ok": False, "code": "restore_switching", "error": msg, "message": msg})
+                except OSError as e:
+                    msg = f"Could not cancel the restore: {e}"
+                    return JSONResponse(status_code=507 if atomic_io.is_disk_full(e) else 500,
+                                        content={"ok": False, "error": msg, "message": msg})
+                if m is None:
+                    return {"ok": True, "cancelled": False,
+                            "message": "No restore is waiting for a restart."}
+                return {"ok": True, "cancelled": True,
+                        "ntfy_applied": bool(m.get("ntfy_applied")),
+                        "message": "The staged restore was cancelled. "
+                                   + (restore_io.NTFY_KEPT_NOTE if m.get("ntfy_applied")
+                                      else "Nothing was changed.")}
+        except _Busy as b:
+            return _busy_response(b)
 
-        return await _restore_from_local_zip(
-            src, install_dir,
-            source_label="server-side-path",
-            cleanup_source_on_success=False,
-            background_tasks=background_tasks,
-        )
+    @app.post("/api/backup/pre-restore/{ts}/restore")
+    def put_back_pre_restore(ts: str, keep_current_config: bool = False,
+                             background_tasks: BackgroundTasks = None):
+        """v3.4.149 (Decision 5a): "Put this back" — switch back to a pair of
+        pre-restore copies (the database and config.yaml as they were
+        before an earlier restore). It is a restore like any other: the copy
+        is checked, staged and switched in at the restart (this machine's
+        address, port and database location kept), a copy of the CURRENT
+        data is kept first (so this can be undone the same way), and the
+        copy put back stays listed. keep_current_config: the database only."""
+        if not re.fullmatch(r"[0-9]{8}-[0-9]{6}", ts or ""):
+            msg = "Invalid snapshot name."
+            return JSONResponse(status_code=400, content={
+                "ok": False, "error": msg, "message": msg})
+        try:
+            with _maintenance("a restore", restore_op=True) as tok:
+                return _put_back_locked(ts, keep_current_config, background_tasks, tok)
+        except _Busy as b:
+            return _busy_response(b)
+
+    def _put_back_locked(ts, keep_current_config, background_tasks, tok):
+        from config_validator import validate_config
+        from schema_migrations import CURRENT_SCHEMA_VERSION
+        install_dir = _install_dir()
+        db_path = _restore_db_path()
+        cfg_path = Path(CONFIG_PATH)
+        # the copies sit beside the REAL database (data.db_file may be a
+        # link; a release before 3.4.149 made them beside the link)
+        db_snap = _pre_restore_db_copy(ts)
+        cfg_snap = restore_io.config_snapshot_path(cfg_path, ts)
+        has_db, has_cfg = db_snap.is_file(), cfg_snap.is_file()
+        if not has_db and not has_cfg:
+            msg = f"There is no pre-restore copy from {ts}."
+            return JSONResponse(status_code=404, content={
+                "ok": False, "code": "not_found", "error": msg, "message": msg})
+        try:
+            when = time.mktime(time.strptime(ts, "%Y%m%d-%H%M%S"))
+            when_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(when))
+        except (ValueError, OverflowError):
+            when_iso = None
+        skipped: List[Dict[str, Any]] = []
+        notes: List[str] = []
+        label = f"pre-restore {ts}"
+        try:
+            cfg_text = None
+            if has_cfg and keep_current_config:
+                skipped.append({"file": cfg_snap.name,
+                                "reason": "kept this machine's settings (database-only)"})
+            elif has_cfg:
+                try:
+                    if cfg_snap.stat().st_size > restore_io.MAX_CONFIG_BYTES:
+                        raise restore_io.RestoreError(
+                            f"{cfg_snap.name} is improbably large, so it wasn't read. "
+                            "Nothing was changed.", 422)
+                    try:
+                        raw = cfg_snap.read_text(encoding="utf-8")
+                    except (OSError, UnicodeDecodeError) as e:
+                        raise restore_io.RestoreError(f"{cfg_snap.name} can't be read ({e}). "
+                                                      "Nothing was changed.", 422)
+                    cfg_text, cfg_notes = restore_io.prepare_config(
+                        raw, CONFIG, validate_config, hosts_of=_configured_hosts)
+                except restore_io.RestoreError as e:
+                    e.database_only = has_db
+                    raise
+                notes += cfg_notes
+            elif has_db and not keep_current_config:
+                # The settings half of this pair is gone (deleted by hand, or
+                # pruned): only the database is put back — say so.
+                skipped.append({"file": cfg_snap.name,
+                                "reason": "no settings copy from then; this machine's "
+                                          "settings are kept"})
+            if not has_db:
+                skipped.append({"file": db_snap.name, "reason": "no database copy from then"})
+            marker, info = restore_io.prepare(
+                install_dir, db_live=db_path, config_live=cfg_path, source=label,
+                manifest={"created_at_iso": when_iso}, notes=notes, cfg_text=cfg_text,
+                db_writer=((lambda dest, mode: restore_io.copy_database(db_snap, dest, mode))
+                           if has_db else None),
+                db_size=db_snap.stat().st_size if has_db else 0,
+                current_schema=CURRENT_SCHEMA_VERSION,
+                keep_current_config=keep_current_config, kind="put_back")
+        except restore_io.RestoreError as e:
+            return _restore_refused(e, label)
+        except Exception as e:
+            logger.error(f"Put-back failed before anything was changed: {e}", exc_info=True)
+            msg = f"Putting the copy back failed before anything was changed: {e}"
+            return JSONResponse(status_code=500, content={
+                "ok": False, "code": "restore_failed", "error": msg, "message": msg,
+                "changed": False})
+        return _restore_staged_response(
+            {"manifest": {"created_at_iso": when_iso}, "restored": info, "skipped": skipped,
+             "warnings": [], "notes": notes, "staged": True},
+            background_tasks, tok,
+            message=("The copy from before that restore was checked — Aerodrome is "
+                     "restarting to put it back. A copy of your current data was kept "
+                     "first, so this can be undone the same way."))
 
     @app.delete("/api/backup/server-side/{filename}")
     def delete_server_side_backup(filename: str):
@@ -9323,11 +9437,13 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             })
 
     # --- Pre-restore safety snapshots (v2.50.6) ---
-    # Each Restore through /api/backup/import drops a copy of the previous
-    # config.yaml and aircraft_history.db into the install dir with a
-    # ".pre-restore" suffix as a one-click undo target. Auto-pruning keeps
-    # the most recent _PRE_RESTORE_KEEP per kind; these endpoints back the
-    # UI that surfaces the snapshots and lets the user purge them all.
+    # Each restore keeps a copy of the previous config.yaml beside
+    # config.yaml and of the database beside the database (each on its own
+    # file's filesystem; v3.4.149), named <file>.bak.<ts>.pre-restore. A
+    # restore whose data won't load is rolled back from them, and "Put this
+    # back" stages a pair as a restore (Decision 5a). Auto-pruning keeps the
+    # most recent _PRE_RESTORE_KEEP per kind — never the pair a waiting
+    # restore needs; these endpoints list, put back and purge them.
 
     @app.get("/api/backup/pre-restore")
     def list_pre_restore():
@@ -10433,7 +10549,13 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         being confirmed right now, or null. v3.4.148 `config`: what the last
         startup did when config.yaml couldn't be used (config-recovery.json:
         kind "unreadable" or "bind", reason, source, source_date, web_host,
-        web_port, broken_copy, acknowledged), or null."""
+        web_port, broken_copy, acknowledged), or null. v3.4.149 `restore`:
+        {pending, result} — pending: a restore staged and waiting for its
+        restart (staged_at, expires_at, restart_failed, waiting_for_restart,
+        source, backup_created_at_iso, keep_current_config, notes, kind), or
+        null; result: what the last restore did at its start
+        (restore-result.json: ok + notes, or rolled_back + error, or
+        missing + manual, or expired / cancelled), or null."""
         inst = _install_dir()
         j = updater.pending(inst)
         pend = None
@@ -10443,9 +10565,18 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             # The process that applied it is still the one answering: its
             # restart call returned OK but no restart has come (yet).
             pend["waiting_for_restart"] = j.get("applier_pid") == os.getpid()
+        # A staged restore past its hour is dropped here — only when the
+        # maintenance lock is free (a restore being staged right now holds it).
+        _tok = _MAINT.try_acquire("dropping an expired restore")
+        if _tok is not None:
+            try:
+                _drop_expired_restore()
+            finally:
+                _MAINT.release(_tok)
         return {"busy": _MAINT.holder(), "update": updater.last_result(inst),
                 "update_pending": pend,
-                "config": config_io.read_recovery_notice(CONFIG_PATH)}
+                "config": config_io.read_recovery_notice(CONFIG_PATH),
+                "restore": restore_io.status(inst)}
 
     class MaintenanceAck(BaseModel):
         kind: str
@@ -10453,10 +10584,11 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     @app.post("/api/maintenance/ack")
     def maintenance_ack(body: MaintenanceAck):
         """v3.4.147: dismiss a shown result (kind "update"; v3.4.148 also
-        "config")."""
-        if body.kind == "config":
+        "config"; v3.4.149 "restore")."""
+        if body.kind in ("config", "restore"):
             try:
-                done = config_io.ack_recovery_notice(CONFIG_PATH)
+                done = (config_io.ack_recovery_notice(CONFIG_PATH) if body.kind == "config"
+                        else restore_io.ack_result(_install_dir()))
             except OSError as e:
                 msg = f"Could not record that: {e}"
                 return JSONResponse(status_code=507 if atomic_io.is_disk_full(e) else 500,

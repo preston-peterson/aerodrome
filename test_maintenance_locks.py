@@ -207,12 +207,13 @@ class TestApplyHeldMidStage(_LockCase):
         uo.assert_not_called()
         self.assertEqual(_status(r), 409)
         # restores, config import/restore, switch-to-real, purge, delete, restart
-        r = asyncio.run(self.ep("/api/backup/import")(file=_upload(b"PK\x05\x06" + b"\0" * 18),
-                                                      background_tasks=None))
+        # (v3.4.149: plain def handlers — called directly)
+        r = self.ep("/api/backup/import")(file=_upload(b"PK\x05\x06" + b"\0" * 18),
+                                          background_tasks=None)
         self.assertEqual(_status(r), 409)
         model = _model(self.app, "/api/backup/restore-from-path")
-        r = asyncio.run(self.ep("/api/backup/restore-from-path")(
-            model(path=str(self.inst / ".backups" / "x.zip")), background_tasks=None))
+        r = self.ep("/api/backup/restore-from-path")(
+            model(path=str(self.inst / ".backups" / "x.zip")), background_tasks=None)
         self.assertEqual(_status(r), 409)
         r = self.ep("/api/config/import")(file=_upload(b"web: {}\n", "config.yaml"))
         self.assertEqual(_status(r), 409)
@@ -411,8 +412,8 @@ class TestRestoreConfigWriteOffTheLoop(_LockCase):
             return real(path, text, check=check)
         model = _model(self.app, "/api/backup/restore-from-path")
         with mock.patch.object(config_io, "write_text", side_effect=spy):
-            r = asyncio.run(self.ep("/api/backup/restore-from-path")(
-                model(path=b["path"]), background_tasks=None))
+            r = self.ep("/api/backup/restore-from-path")(   # v3.4.149: a plain def
+                model(path=b["path"]), background_tasks=None)
         self.assertTrue(_body(r).get("ok"), _body(r))
         self.assertTrue(where)
         self.assertEqual(set(where), {"thread"})

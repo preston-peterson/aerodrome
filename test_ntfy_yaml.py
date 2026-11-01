@@ -1906,7 +1906,10 @@ class Restore(_AppCase):
             zf.writestr("ntfy/server.yml", server_yml + "#" * size_pad)
         ep = _endpoint(self.app, "/api/backup/restore-from-path", "POST")
         payload = ep.__annotations__["payload"](path=str(zp))
-        out = _out(asyncio.run(ep(payload, background_tasks=mock.Mock())))
+        out = ep(payload, background_tasks=mock.Mock())
+        if asyncio.iscoroutine(out):          # an async handler before v3.4.149
+            out = asyncio.run(out)
+        out = _out(out)
         # v3.4.147: a restore keeps the maintenance lock until its restart
         # lands; the (mocked) restart has "happened" before the next one.
         server._MAINT = server._SingleRun()

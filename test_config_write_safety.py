@@ -1684,13 +1684,13 @@ class TestPrivateFileModes(_AppCase):
         import zipfile
 
         def spy(path, *a, **kw):
-            if str(path).endswith(".zip") and ".uploads" in str(path):
+            if str(path).endswith(".zip") and "/.tmp/upload-" in str(path):
                 seen["mode"] = _mode(path)
                 seen["dir"] = _mode(Path(path).parent)
             raise zipfile.BadZipFile("stop here")
         up = UploadFile(file=io.BytesIO(b"PK" + b"\0" * 64), filename="b.zip")
         with mock.patch.object(zipfile, "ZipFile", side_effect=spy):
-            asyncio.run(self.ep("/api/backup/import")(file=up, background_tasks=None))
+            self.ep("/api/backup/import")(file=up, background_tasks=None)   # v3.4.149: def
         self.assertEqual(seen, {"mode": 0o600, "dir": 0o700})
 
 

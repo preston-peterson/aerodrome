@@ -327,6 +327,29 @@ class Purge(_Case):
         self.assertEqual(rc, 0, out)
         self.assertEqual(sorted(p.name for p in o.iterdir()), ["unrelated"], out)
 
+    RESTORE_FILES = (".a.db.restore-staged", ".a.db.restore-staged-wal",
+                     ".a.db.restore-staged-shm", ".a.db.restore-staged-journal",
+                     "a.db.restore-failed.20261022-120000",
+                     "a.db.restore-failed.20261022-120000-wal",
+                     ".a.db.bak.20261022-115901.pre-restore.tmp",
+                     ".a.db.bak.20261022-115901.pre-restore.tmp-wal")
+
+    def test_n_a_restores_files_beside_an_outside_db(self):
+        # v3.4.149: a restore keeps a staged copy (database-sized while one
+        # waits), a set-aside restored database or an unfinished copy beside
+        # the database — wherever it lives.
+        o = self.tmp / "data"
+        db = sqlite_file(o / "a.db")
+        for f in self.RESTORE_FILES:
+            (o / f).write_text("x\n")
+        (o / "unrelated").write_text("keep\n")
+        (o / "a.db.restore-staged").write_text("not ours: no leading dot\n")
+        self.config(db=f'  db_file: "{db}"')
+        rc, out = self.run_un("--purge")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(sorted(p.name for p in o.iterdir()),
+                         ["a.db.restore-staged", "unrelated"], out)
+
 
 @GUARD
 @NEEDS
@@ -348,6 +371,17 @@ class KeepAndInteractive(_Case):
         self.assertIn("Your data, settings and the", out)
         self.assertNotIn("Aerodrome has been removed from this system", out)
         self.assertFalse((self.fr / "etc/systemd/system/aerodrome.service").exists())
+
+    def test_keep_keeps_a_restores_files_beside_an_outside_db(self):
+        o = self.tmp / "data"
+        db = sqlite_file(o / "a.db")
+        for f in Purge.RESTORE_FILES:
+            (o / f).write_text("x\n")
+        self.config(db=f'  db_file: "{db}"')
+        rc, out = self.run_un("--keep")
+        self.assertEqual(rc, 0, out)
+        for f in Purge.RESTORE_FILES:
+            self.assertTrue((o / f).exists(), f)
 
     def test_no_terminal_interactive_run_cancels_cleanly(self):
         rc, out = self.run_un()                      # stdin empty: "Are you sure?" -> no

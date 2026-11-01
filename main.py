@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Version: 3.4.148
+# Version: 3.4.149
 """
 main.py — Aerodrome ADS-B Tracker
 
@@ -38,6 +38,7 @@ import yaml
 import uvicorn
 
 import config_io
+import restore_io
 from collector import (init_db, build_watchlist_lookup, fetch_and_store,
                        set_db_path, _open_db_conn, set_db_tuning_profile,
                        set_receiver_location, check_capacity_alerts,
@@ -75,11 +76,17 @@ CONFIG_BACKUP_KEEP = 5
 
 def _prune_config_backups():
     """Keep only the CONFIG_BACKUP_KEEP most-recent config.yaml.bak.* files
-    in the config's directory. Silently ignores filesystem errors."""
+    in the config's directory. Silently ignores filesystem errors.
+    v3.4.149: never a restore's pre-restore copy (config.yaml.bak.<ts>.pre-restore
+    — kept and pruned with its database copy as a pair, server.py) nor a
+    file a waiting restore names."""
     try:
         parent = CONFIG_PATH.parent
+        protected = restore_io.protected_paths(BASE_DIR)
         backups = sorted(
-            parent.glob("config.yaml.bak.*"),
+            (p for p in parent.glob("config.yaml.bak.*")
+             if not p.name.endswith(restore_io.PRE_RESTORE_SUFFIX)
+             and os.path.abspath(str(p)) not in protected),
             # Sort by the timestamp suffix when possible; fall back to mtime
             key=lambda p: p.name,
             reverse=True,
@@ -329,6 +336,17 @@ def load_config(command: str = "start") -> dict:
     if _running_instance_pid():
         return config
 
+    # v3.4.149: a start was cut short part-way through switching to a
+    # restore: config.yaml may already be the restored one, and the swap's
+    # replay (start → apply_pending_restore) checks it is exactly the staged
+    # text. Migrating it first made that check fail and a good restore was
+    # rolled back. The start re-reads (and migrates) it once switched.
+    try:
+        if restore_io.swap_in_progress(BASE_DIR):
+            return config
+    except OSError:
+        pass
+
     # Auto-merge any new keys from the shipped example (handles upgrades)
     config = migrate_config(config)
 
@@ -342,6 +360,23 @@ def _recover_config(err) -> dict:
         print(f"ERROR: {CONFIG_PATH.name} couldn't be read ({err}). Another Aerodrome "
               f"(PID {other}) is using this install, so nothing was changed.")
         sys.exit(1)
+    # v3.4.149: a start cut short while writing a restore's settings in
+    # place (config.yaml a mix of old and new): the complete staged copy is
+    # right beside it — finish that write instead of recovering an older
+    # copy (or, without last-good, exiting on every start).
+    try:
+        if restore_io.finish_config_swap(BASE_DIR, log=print):
+            return config_io.check_loadable(CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        err = e
+    # v3.4.149: a config.yaml a restore just switched in that won't load is
+    # the restore's failure: put the data from before it back (database AND
+    # config.yaml), not just last-good's settings over the restored data.
+    if _rollback_restored_config(err):
+        try:
+            return config_io.check_loadable(CONFIG_PATH.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            err = e
     cfg, _info = config_io.recover(CONFIG_PATH, err, log=print,
                                    last_good_by_date=_last_good_untrusted())
     if cfg is None:
@@ -354,17 +389,33 @@ def _recover_config(err) -> dict:
 
 
 def setup_logging(config: dict):
-    log_dir = BASE_DIR / config["logging"]["dir"]
-    log_dir.mkdir(exist_ok=True)
-    level = getattr(logging, config["logging"]["level"].upper(), logging.INFO)
+    """The log file in logging.dir, and the journal (stdout). v3.4.149: a
+    log folder that can't be created or written (a path from another
+    machine, a disk not mounted) falls back to <install>/logs, then to the
+    journal alone — every start, and `main.py stop` (systemd's ExecStop),
+    used to fail on it before doing anything."""
+    level = getattr(logging, str((config.get("logging") or {}).get("level") or "INFO").upper(),
+                    logging.INFO)
+    handlers = [logging.StreamHandler()]
+    wanted = BASE_DIR / str((config.get("logging") or {}).get("dir") or "logs")
+    problem = None
+    for log_dir in dict.fromkeys((wanted, BASE_DIR / "logs")):
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            handlers.insert(0, logging.FileHandler(log_dir / "tracker.log", mode="a"))
+            break
+        except OSError as e:
+            problem = problem or f"{log_dir}: {e}"
     logging.basicConfig(
         level=level,
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-        handlers=[
-            logging.FileHandler(log_dir / "tracker.log", mode="a"),
-            logging.StreamHandler(),
-        ],
+        handlers=handlers,
     )
+    if problem:
+        logging.getLogger("adsb.main").warning(
+            f"The log folder in config.yaml (logging.dir) can't be used ({problem}); "
+            + ("logging to " + str(handlers[0].baseFilename) if len(handlers) > 1
+               else "logging to the journal only") + ".")
 
 
 def run_collector(config: dict, stop_event: threading.Event):
@@ -642,6 +693,116 @@ def _exec_start():
     os.execv(sys.executable, [sys.executable, str(BASE_DIR / "main.py"), "start"])
 
 
+# --- A restore staged by the web UI (v3.4.149, restore_io) ---
+
+def _rollback_restored_config(error) -> bool:
+    """load_config() couldn't read a config.yaml a restore switched in (the
+    restore marker is `swapped`, or a rollback was already asked for): put
+    the data from before the restore back — database and config.yaml —
+    instead of recovering just the settings. Never while another Aerodrome
+    owns the install. True when it rolled back."""
+    m = restore_io.read_marker(BASE_DIR)
+    if not m or m.get("phase") not in ("swapped", "rollback"):
+        return False
+    if _running_instance_pid():
+        return False
+    restore_io.rollback_pending_restore(
+        BASE_DIR, m, f"the restored config.yaml couldn't be read: {error}", log=print)
+    return True
+
+
+def _apply_staged_restore(config: dict, logger):
+    """main.start, once this process owns the install and before any
+    database connection: switch to a restore the web UI staged (or put the
+    previous data back, or drop an expired one). Returns (config, pending):
+    the config to run with (re-read when files changed) and the marker of a
+    restore that must still prove it loads (None otherwise)."""
+    journal = None
+    if _updater is not None:
+        try:
+            journal = _updater.pending(BASE_DIR)
+        except Exception:
+            journal = None
+    try:
+        state, marker = restore_io.apply_pending_restore(
+            BASE_DIR, log=logger.warning, update_pending=bool(journal))
+    except Exception as e:
+        logger.error(f"Switching to the restored backup failed ({e}); putting the "
+                     f"previous data back.")
+        m = restore_io.read_marker(BASE_DIR)
+        if m:
+            try:
+                restore_io.rollback_pending_restore(
+                    BASE_DIR, m, f"switching to the restored files failed: {e}",
+                    log=logger.error)
+            except Exception as e2:
+                # Never crash every start on it (a restart loop with the web
+                # UI gone): set the marker aside and run on what is there.
+                logger.error(f"Putting the previous data back failed too ({e2}); the "
+                             f"restore marker is set aside and Aerodrome starts on the "
+                             f"files as they are.")
+                restore_io.set_aside_marker(BASE_DIR, log=logger.error)
+                m = None
+        state, marker = "rolled_back", m
+    if state == "none":
+        db = Path(config["data"]["db_file"])
+        restore_io.sweep_orphans(BASE_DIR, db if db.is_absolute() else BASE_DIR / db,
+                                 CONFIG_PATH, log=logger.info)
+    if state in ("applied", "retry", "rolled_back"):
+        # The files changed under us (or a start before this one changed
+        # them): run with what is on disk now — migrated to this release's
+        # keys like any config.yaml.
+        config = load_config("start")
+        if state != "rolled_back":
+            m = restore_io.read_marker(BASE_DIR)
+            if not m or m.get("phase") != "swapped":
+                return config, None      # the restored config.yaml didn't load: rolled back
+            marker = m
+    return config, (marker if state in ("applied", "retry") else None)
+
+
+def _restore_moved_the_address(pending: dict, host, port) -> bool:
+    """The web address that can't be used could be the restore's doing: it
+    switched config.yaml, and the settings from before it (its pre-restore
+    copy) listened somewhere else. Under Decision 4 a restore keeps this
+    machine's web.host and web.port, so they normally match — the exception
+    is a hand edit of config.yaml that was never loaded (the restore kept
+    the RUNNING address)."""
+    cfg = (pending or {}).get("config") or {}
+    snap = cfg.get("snapshot")
+    if not cfg.get("staged") or not snap:
+        return False
+    try:
+        before = config_io.check_loadable(Path(snap).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    web = before.get("web") or {}
+    return (str(web.get("host")), str(web.get("port"))) != (str(host), str(port))
+
+
+def _restore_failed(pending: dict, error: str, logger, stop=None):
+    """The restored data didn't load. This process may already hold
+    connections to the restored database (threads, -wal), so it doesn't move
+    files under them: it records the rollback and starts again; the next
+    start's apply_pending_restore puts the previous data back before any
+    connection exists. `stop`: called first (stops the collector thread)."""
+    logger.error(f"The restored backup didn't load ({error}); putting the previous data "
+                 f"back.")
+    if stop is not None:
+        try:
+            stop()
+        except Exception:
+            pass
+    try:
+        restore_io.request_rollback(BASE_DIR, pending, error)
+    except OSError as e:
+        # Can't record it (disk full): the marker still says `swapped`, so
+        # the next start counts this one, or rolls back when it can't count.
+        logger.error(f"Could not record the rollback ({e}); the next start puts the "
+                     f"previous data back.")
+    _exec_start()
+
+
 # The first release that keeps .backups/config.yaml.last-good up to date.
 _LAST_GOOD_SINCE = (3, 4, 148)
 
@@ -735,6 +896,13 @@ def start(config: dict):
     PID_FILE.unlink(missing_ok=True)
     PID_FILE.write_text(str(os.getpid()))
     _prepare_install_files(PID_FILE.parent)
+    # v3.4.149: a restore staged by the web UI is switched in here — after
+    # the housekeeping above (which never touches its files), before any
+    # database connection — and every step below that fails on the restored
+    # data puts the previous data back (_restore_failed) instead of exiting.
+    # (Not the bind check: a restore keeps this machine's web address, so a
+    # restored backup can't be why it is unusable — see there.)
+    config, _restore = _apply_staged_restore(config, logger)
     # v2.50.13: set the SQLite tuning profile BEFORE init_db so the
     # init connection itself uses the right cache_size/mmap_size/temp_store.
     # init_db's connection mostly does schema setup so cache benefit is
@@ -744,7 +912,13 @@ def start(config: dict):
     set_db_tuning_profile(tuning_cfg.get("profile") or "auto")
     # init_db also runs the one-time rollup backfills, synchronously, before
     # the migrations below (migrations v1, v5 and v16 read those rollups).
-    init_db(config["data"]["db_file"])
+    try:
+        init_db(config["data"]["db_file"])
+    except Exception as e:
+        if _restore:
+            _restore_failed(_restore, f"the restored database couldn't be opened: {e}",
+                            logger)
+        raise
 
     # Migration gate: if a rollup backfill didn't finish (e.g. disk full)
     # and migrations are pending, migrating now would stamp the database as
@@ -761,6 +935,10 @@ def start(config: dict):
             "was applied, so nothing was changed. If the disk is full, free space; "
             "Aerodrome retries on the next start.",
             ", ".join(_missing), _rollup_errors())
+        if _restore:
+            # An older backup just restored: put the previous data back.
+            _restore_failed(_restore, f"the one-time rollup build on the restored database "
+                                      f"didn't finish ({_rollup_errors()})", logger)
         sys.exit(1)
 
     # v2.51.0: apply any pending schema migrations. init_db is idempotent
@@ -813,6 +991,12 @@ def start(config: dict):
                     "DB is unchanged (transaction rolled back). Restore from "
                     "backup if needed, or report this issue with the error above."
                 )
+            if _restore:
+                _mconn.close()
+                _restore_failed(_restore, f"the restored database couldn't be upgraded "
+                                          f"(schema migration at version "
+                                          f"{_mres['starting_version']}: {_mres.get('error')})",
+                                logger)
             sys.exit(1)
         if _mres["applied"]:
             for _entry in _mres["applied"]:
@@ -922,6 +1106,26 @@ def start(config: dict):
             f"to listen on all interfaces (recommended), or to a value "
             f"that matches an actual IP on this machine. Then restart."
         )
+        if _restore:
+            def _stop_collector():
+                stop_event.set()
+                collector_thread.join(timeout=15)
+            # v3.4.149: a restore keeps this machine's web.host and web.port
+            # (Decision 4), so an address that can't be used is normally not
+            # the restore's doing (an interface up late at boot, the port
+            # busy for a moment) — putting the previous data back wouldn't
+            # make it usable, and would throw a good restore away. Only when
+            # the settings from before the restore listened elsewhere is it
+            # rolled back.
+            if _restore_moved_the_address(_restore, host, port):
+                _restore_failed(_restore, f"the web UI couldn't listen on {host}:{port} "
+                                          f"({_bind_err})", logger, stop=_stop_collector)
+            logger.error(f"The restored backup stays switched in: Aerodrome finishes "
+                         f"starting on it once {host}:{port} can be used (this start "
+                         f"doesn't count against it).")
+            restore_io.note_bind_wait(BASE_DIR, _restore, log=logger.warning)
+            _stop_collector()
+            sys.exit(2)
         # v3.4.148: when the last settings that worked listen somewhere else
         # that IS free, start on those instead (the unusable file is kept in
         # .backups/ and the Settings page says so) rather than exiting into
@@ -931,6 +1135,13 @@ def start(config: dict):
             collector_thread.join(timeout=15)
             _exec_start()
         sys.exit(2)
+
+    # v3.4.149: the restored data has opened, upgraded and the web address
+    # is free: the restore is done (recorded for the Settings page; the
+    # marker goes, so the restored config can become last-good just below).
+    if _restore:
+        restore_io.finish_pending_restore(BASE_DIR, _restore, log=logger.info)
+        _restore = None
 
     # This config started: remember it as the last one that worked. Not
     # while an update or restore is still pending — the step that confirms

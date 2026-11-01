@@ -1570,7 +1570,8 @@ class TestApplyEndpoint(_EndpointCase):
     def test_maintenance_status_and_ack(self):
         status = self.ep("/api/maintenance/status", "GET")
         self.assertEqual(status(), {"busy": None, "update": None, "update_pending": None,
-                                    "config": None})
+                                    "config": None,
+                                    "restore": {"pending": None, "result": None}})
         self.assertTrue(_body(self.apply())["ok"])
         s = status()
         self.assertEqual(s["busy"]["op"], "restarting after an update")

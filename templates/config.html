@@ -1,4 +1,4 @@
-<!-- Version: 3.4.148 -->
+<!-- Version: 3.4.149 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -96,6 +96,17 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
 }
 .banner .btn-dismiss:hover { background:rgba(245,158,11,.12); }
 .busy-note { font-size:11px; color:var(--amber); font-family:var(--mono); margin:-8px 0 14px; }
+/* v3.4.149: the restore notice — amber like the others; a restore that put
+   the previous data back is red, one that worked green. */
+.banner.notice-banner.ok { background:rgba(16,185,129,.08); border-color:rgba(16,185,129,.3); }
+.banner.notice-banner.bad { background:rgba(239,68,68,.08); border-color:rgba(239,68,68,.35); }
+.banner .notice-actions { display:flex; gap:8px; flex-wrap:wrap; flex-shrink:0; }
+.banner .notice-sub { display:block; margin-top:4px; color:var(--t2); font-size:12px; }
+/* the 422 list of the backup's settings problems */
+.restore-problems { margin:8px 0 0; padding-left:18px; font-family:var(--mono); font-size:12px; }
+.restore-problems li { margin:2px 0; overflow-wrap:anywhere; }
+.br-item .pr-actions { display:flex; gap:8px; align-items:center; flex-shrink:0; }
+.br-item .pr-inuse { font-size:11px; color:var(--amber); font-family:var(--mono); }
 
 /* Tab bar — horizontal, matches the main dashboard's style */
 /* v2.41.32: tab-bar scroll affordances.
@@ -376,6 +387,8 @@ input[disabled] { opacity:.5; cursor:not-allowed; }
     color:var(--bg0); cursor:pointer;
 }
 .alert-modal .modal-btn:hover { filter:brightness(1.15); }
+.alert-modal .modal-btn:not(.modal-btn-primary) { background:var(--bg1); border-color:var(--bdr); color:var(--t2); }
+.alert-modal .modal-btn:not(.modal-btn-primary):hover { filter:none; border-color:var(--cyan); color:var(--cyan); }
 
 </style>
 </head>
@@ -435,6 +448,16 @@ input[disabled] { opacity:.5; cursor:not-allowed; }
         <span class="icon">⚠</span>
         <div class="text" id="configRecoveryText"></div>
         <button class="btn-dismiss" id="configRecoveryDismiss" onclick="dismissConfigRecovery()">Dismiss</button>
+    </div>
+
+    <div class="banner notice-banner" id="restoreNotice" role="status">
+        <span class="icon" id="restoreNoticeIcon">⚠</span>
+        <div class="text" id="restoreNoticeText"></div>
+        <div class="notice-actions">
+            <button class="btn-dismiss" id="restoreCancelBtn" onclick="cancelStagedRestore(this)"
+                    style="display:none">Cancel restore</button>
+            <button class="btn-dismiss" id="restoreDismissBtn" onclick="dismissRestoreNotice()">Dismiss</button>
+        </div>
     </div>
 
     <div id="content">
@@ -4799,10 +4822,11 @@ function sectionBackupRestore() {
                     Restore from a full backup
                 </div>
                 <div style="font-size:11px;color:var(--t3);font-family:var(--mono);margin-bottom:10px;">
-                    Upload a <code>aerodrome-backup-*.zip</code> file. This is destructive —
-                    current <code>config.yaml</code>, database, and ntfy config will be
-                    replaced. The previous versions are backed up with a
-                    <code>.pre-restore</code> suffix. The service will restart.
+                    Upload an <code>aerodrome-backup-*.zip</code> file. It is checked first;
+                    then Aerodrome restarts and switches to it. This machine's address, port,
+                    database location and log folder are kept. Your current <code>config.yaml</code> and
+                    database are kept with a <code>.pre-restore</code> suffix — if the restored
+                    data doesn't load, they are put back automatically.
                 </div>
                 <input type="file" id="fbRestoreFile" class="br-file-input" accept=".zip"
                        onchange="onFullRestoreFileChosen(this)">
@@ -4883,9 +4907,10 @@ function sectionBackupRestore() {
 
         <div style="padding:14px;background:var(--bg1);border:1px solid var(--bdr);border-radius:6px;">
             <div style="font-size:11px;color:var(--t3);line-height:1.6;margin-bottom:12px">
-                Each Full-backup Restore copies the current <code>config.yaml</code> and
-                database aside with a <code>.pre-restore</code> suffix as a one-click undo
-                target before overwriting them. Aerodrome auto-keeps the
+                Each restore keeps the current <code>config.yaml</code> and database aside
+                with a <code>.pre-restore</code> suffix. <strong>Put this back</strong>
+                switches back to one: like a restore, it is checked, applied when Aerodrome
+                restarts, and your current data is kept aside first. Aerodrome auto-keeps the
                 <span id="prKeep">3</span> most-recent snapshots and prunes the rest after
                 every restore and at service startup. Use <strong>Purge all</strong> to
                 reclaim every byte right now — the next restore will create a fresh
@@ -5099,11 +5124,19 @@ function _renderPreRestoreItem(s){
     const parts = (s.files || []).map(f =>
         `<span style="opacity:0.85">${escapeAttr(f.kind)}</span>: ${_fmtBytes(f.size_bytes)}`
     ).join(' · ');
+    // v3.4.149: Put this back (a restore of this pair). Not for the pair a
+    // waiting restore would put back if it fails.
+    const ts = /^[0-9]{8}-[0-9]{6}$/.test(s.timestamp || '') ? s.timestamp : '';
+    const action = s.in_use
+        ? `<span class="pr-inuse" title="A restore waiting for its restart puts this copy back if it fails">in use by the waiting restore</span>`
+        : (ts ? `<button class="btn btn-ghost pr-putback" style="font-size:11px"
+                   onclick="putBackPreRestore('${ts}', this)">Put this back</button>` : '');
     return `<div class="br-item" style="cursor:default">
         <div>
             <span class="br-item-name">${escapeAttr(when)}</span>
             <span class="br-item-meta">${_fmtBytes(s.total_bytes)} total · ${parts}</span>
         </div>
+        <div class="pr-actions">${action}</div>
     </div>`;
 }
 
@@ -5131,6 +5164,7 @@ async function loadPreRestoreList(){
         summary.textContent = `${snaps.length} ${noun} on disk · ${total} total`;
         list.innerHTML = snaps.map(_renderPreRestoreItem).join('');
         btn.disabled = false;
+        renderPutBackButtons();         // v3.4.149 (after: it may disable Purge all)
     } catch(e) {
         summary.textContent = 'Failed to load: ' + e;
     }
@@ -5276,50 +5310,20 @@ async function fullRestore() {
         return;
     }
 
-    if (!confirm(
-        `Restore from "${file.name}"?\n\n` +
-        `This is DESTRUCTIVE. The following will be replaced:\n` +
-        `  • config.yaml\n` +
-        `  • aircraft history database\n` +
-        `  • ntfy server.yml (if ntfy is Aerodrome-managed)\n\n` +
-        `Current versions are backed up with .pre-restore suffix.\n` +
-        `The service will restart to pick up the restored state.`
-    )) return;
+    if (!confirm(RESTORE_CONFIRM(`"${file.name}"`))) return;
 
     const btn = document.getElementById('fbRestoreBtn');
     btn.disabled = true;
-    btn.textContent = 'Restoring…';
+    btn.textContent = 'Checking backup…';
 
     try {
-        const fd = new FormData();
-        fd.append('file', file);
-        const r = await fetch('/api/backup/import', {method: 'POST', body: fd});
-        const j = await r.json().catch(() => ({}));
-        if (!j.ok) {
-            await alertModal('Restore failed',
-                j.message || j.error || j.detail || 'Unknown error. Check logs for details.',
-                'error');
-            return;
-        }
-
-        // Build a rich result summary — restored files, skipped files, warnings
-        const restoredLines = Object.entries(j.restored || {}).map(([k, v]) =>
-            `✓ ${k}: ${v.bytes ? _fmtBytes(v.bytes) : 'ok'}` +
-            (v.previous_backed_up_as ? ` (prior saved as ${v.previous_backed_up_as})` : '')
-        );
-        const skippedLines = (j.skipped || []).map(s =>
-            `· ${s.file}: ${s.reason}`
-        );
-        const warningLines = (j.warnings || []).map(w => `⚠ ${w}`);
-        const allLines = [...restoredLines, ...skippedLines, ...warningLines];
-
-        await alertModal('Restore complete — service restarting',
-            'The backup has been applied. The page will reload in a few seconds.\n\n' +
-            allLines.join('\n'),
-            'success');
-
-        // Wait a bit for the restart to take effect, then reload
-        setTimeout(() => window.location.reload(), 5000);
+        // v3.4.149: checked and staged; the 422 offers "database only".
+        await _restoreRequest(dbOnly => {
+            const fd = new FormData();
+            fd.append('file', file);
+            return fetch('/api/backup/import' + (dbOnly ? '?keep_current_config=true' : ''),
+                         {method: 'POST', body: fd});
+        });
     } catch (e) {
         // v3.4.2: race tolerance — same pattern as the server-side
         // restore. A response cut off by the post-restore SIGTERM
@@ -5478,40 +5482,19 @@ function copyScpCommand(filename) {
 // always re-enable the button in the finally block — fixes the
 // stuck-button bug where a failed restore left "Restoring…" disabled.
 async function restoreFromServerSideBackup(path, btnEl) {
-    if (!confirm(
-        `Restore from this backup?\n\n${path}\n\n` +
-        `This is DESTRUCTIVE — current config.yaml, database, and ntfy config will be replaced. ` +
-        `A .pre-restore safety snapshot will be created first. The service will restart and the page will reload automatically.`
-    )) return;
+    if (!confirm(RESTORE_CONFIRM(`this backup?\n\n${path}`))) return;
 
     const originalText = btnEl.textContent;
     btnEl.disabled = true;
-    btnEl.textContent = 'Restoring…';
+    btnEl.textContent = 'Checking backup…';
 
     try {
-        const r = await fetch('/api/backup/restore-from-path', {
+        // v3.4.149: checked and staged; the 422 offers "database only".
+        await _restoreRequest(dbOnly => fetch('/api/backup/restore-from-path', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({path: path}),
-        });
-        const j = await r.json();
-        if (!r.ok || !j.ok) {
-            await alertModal('Restore failed',
-                j.message || 'Server returned an error.', 'error');
-            return;
-        }
-
-        const restoredLines = Object.entries(j.restored || {}).map(([k, v]) =>
-            `✓ ${k}: ${v.bytes ? (v.bytes/1024).toFixed(1) + ' KB' : 'restored'}` +
-            (v.prior_backup ? ` (prior saved as ${v.prior_backup})` : ''));
-        const skippedLines = (j.skipped || []).map(s => `· ${s.file}: ${s.reason}`);
-        const warningLines = (j.warnings || []).map(w => `⚠ ${w}`);
-        const allLines = [...restoredLines, ...skippedLines, ...warningLines];
-
-        await alertModal('Restore complete — service restarting',
-            'The backup has been applied. The page will reload in a few seconds.\n\n' +
-            allLines.join('\n'), 'success');
-        setTimeout(() => window.location.reload(), 5000);
+            body: JSON.stringify({path: path, keep_current_config: !!dbOnly}),
+        }));
     } catch (e) {
         // v3.4.2: race tolerance. A long-running restore that triggers
         // systemctl restart can have its response cut off by the
@@ -5883,6 +5866,7 @@ async function loadMaintenanceStatus() {
         return null;
     }
     renderConfigRecovery();
+    renderRestoreNotice();          // v3.4.149
     renderBackupBusy();
     return _maint;
 }
@@ -5936,6 +5920,275 @@ async function dismissConfigRecovery() {
             body: JSON.stringify({kind: 'config'}),
         });
     } catch (e) { /* shown again on the next load: harmless */ }
+}
+
+// =============================================================================
+// Restores (v3.4.149): checked and staged by the server, switched in when
+// Aerodrome restarts, put back automatically if the restored data doesn't
+// load. The outcome — and a restore that waits for its restart — comes
+// from GET /api/maintenance/status → restore.
+// =============================================================================
+function RESTORE_CONFIRM(what) {
+    return `Restore from ${what}\n\n` +
+        `Aerodrome checks the backup first, then restarts to switch to it:\n` +
+        `  • config.yaml (this machine's address, port, database location and log folder are kept)\n` +
+        `  • aircraft history database\n` +
+        `  • ntfy server settings (if ntfy is Aerodrome-managed; applied right away, and not by a database-only restore)\n\n` +
+        `Your current config.yaml and database are kept with a .pre-restore suffix. ` +
+        `If the restored data doesn't load, they are put back automatically.`;
+}
+
+// A modal with a list and a choice of buttons. Resolves with the chosen
+// button's value (null when dismissed).
+function choiceModal(title, message, items, buttons, kind) {
+    const a = {error: 'var(--red)', warning: 'var(--amber)', success: 'var(--green)',
+               info: 'var(--cyan)'}[kind || 'warning'];
+    return new Promise(resolve => {
+        const bg = document.createElement('div');
+        bg.className = 'modal-bg on alert-modal-bg choice-modal-bg';
+        bg.style.zIndex = 2000;
+        const modal = document.createElement('div');
+        modal.className = 'modal alert-modal choice-modal';
+        modal.style.borderTop = `3px solid ${a}`;
+        modal.style.maxWidth = '540px';
+        const list = (items && items.length)
+            ? `<ul class="restore-problems">${items.map(i => `<li>${_escHtmlCfg(i)}</li>`).join('')}</ul>` : '';
+        modal.innerHTML = `
+            <div class="modal-title" style="color:${a};margin-bottom:10px">${_escHtmlCfg(title)}</div>
+            <div class="alert-modal-body" style="font-size:13px;line-height:1.6;color:var(--t1);white-space:pre-wrap">${_escHtmlCfg(message)}</div>
+            ${list}
+            <div class="modal-actions" style="margin-top:16px;flex-wrap:wrap">
+                ${buttons.map((b, i) => `<button class="modal-btn${b.primary ? ' modal-btn-primary' : ''}" data-i="${i}">${_escHtmlCfg(b.label)}</button>`).join('')}
+            </div>`;
+        bg.appendChild(modal);
+        document.body.appendChild(bg);
+        function done(v) {
+            document.removeEventListener('keydown', onKey);
+            if (bg.parentNode) bg.parentNode.removeChild(bg);
+            resolve(v);
+        }
+        function onKey(e) { if (e.key === 'Escape') done(null); }
+        document.addEventListener('keydown', onKey);
+        bg.onclick = e => { if (e.target === bg) done(null); };
+        modal.querySelectorAll('button[data-i]').forEach(btn => {
+            btn.onclick = () => done(buttons[+btn.dataset.i].value);
+        });
+        const primary = modal.querySelector('.modal-btn-primary');
+        if (primary) primary.focus();
+    });
+}
+
+// Send a restore (send(dbOnly) → fetch promise) and show its outcome. A 422
+// about the backup's settings lists the problems and offers the database
+// alone; a check that passed shows the success modal and reloads.
+async function _restoreRequest(send, dbOnly) {
+    const r = await send(!!dbOnly);
+    const j = await r.json().catch(() => ({}));
+    if (r.status === 422 && j.database_only && !dbOnly) {
+        const items = (j.errors || []).map(e => `${e.path || 'config.yaml'} — ${e.message}`);
+        const choice = await choiceModal("The backup's settings can't be used here",
+            (j.message || j.error || '') , items,
+            [{label: 'Cancel', value: null},
+             {label: "Restore database only (keep this machine's settings)", value: 'db',
+              primary: true}], 'warning');
+        if (choice === 'db') return _restoreRequest(send, true);
+        return;
+    }
+    if (!r.ok || !j.ok) {
+        await alertModal('Restore not started',
+            j.message || j.error || j.detail || 'Unknown error. Check logs for details.',
+            'error');
+        return;
+    }
+    await _restoreStagedModal(j);
+}
+
+async function _restoreStagedModal(j) {
+    const notes = (j.notes || []).map(n => `• ${n}`);
+    const skipped = (j.skipped || []).map(s => `· ${s.file}: ${s.reason}`);
+    const warns = (j.warnings || []).map(w => `⚠ ${w}`);
+    const lines = [...notes, ...skipped, ...warns];
+    if (j.staged === false) {      // only the notification server's settings
+        await alertModal('Restored', (j.message || '') + (lines.length ? '\n\n' + lines.join('\n') : ''),
+                         'success');
+        loadMaintenanceStatus();
+        return;
+    }
+    if (j.restart_note) {
+        await alertModal('Backup checked — waiting for a restart',
+            j.restart_note + (lines.length ? '\n\n' + lines.join('\n') : ''), 'warning');
+        loadMaintenanceStatus();
+        return;
+    }
+    await alertModal('Backup checked — restarting to switch to it',
+        'If the restored data doesn\'t load, your current data is put back automatically. ' +
+        'The page reloads in a few seconds.' + (lines.length ? '\n\n' + lines.join('\n') : ''),
+        'success');
+    setTimeout(() => window.location.reload(), 5000);
+}
+
+async function putBackPreRestore(ts, btn) {
+    const when = _fmtPreRestoreTimestamp(ts);
+    if (!confirm(`Put back the copy from ${when}?\n\n` +
+                 `Aerodrome checks it, then restarts to switch to it (this machine's address, ` +
+                 `port, database location and log folder are kept). Your current config.yaml and database ` +
+                 `are kept aside first, so this can be undone the same way.`)) return;
+    const label = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = 'Checking…'; }
+    try {
+        await _restoreRequest(dbOnly => fetch(
+            `/api/backup/pre-restore/${encodeURIComponent(ts)}/restore` +
+            (dbOnly ? '?keep_current_config=true' : ''), {method: 'POST'}));
+    } catch (e) {
+        await _handleRestoreFetchError(e, btn || document.createElement('button'));
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = label; }
+    }
+}
+
+function _isoText(iso) {
+    if (!iso) return 'an unknown date';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return 'an unknown date';
+    try { return formatDateTime(d); } catch (e) { return d.toLocaleString(); }
+}
+
+// The backup's notification-server settings are applied when a restore is
+// staged (ntfy is its own service): a cancel or an expiry doesn't undo them.
+function _ntfyKeptSub(res) {
+    return res && res.ntfy_applied
+        ? `<span class="notice-sub">The notification server's settings from the backup were ` +
+          `already applied and stay; nothing else was changed.</span>` : '';
+}
+
+function renderRestoreNotice() {
+    const el = document.getElementById('restoreNotice');
+    if (!el) return;
+    const st = (_maint && _maint.restore) || {};
+    const p = st.pending, res = st.result;
+    const cancel = document.getElementById('restoreCancelBtn');
+    const dismiss = document.getElementById('restoreDismissBtn');
+    const icon = document.getElementById('restoreNoticeIcon');
+    el.classList.remove('ok', 'bad');
+    let msg = null;
+    if (p) {
+        const why = p.restart_failed
+            ? ` (Aerodrome couldn't restart itself: ${escapeAttr(p.restart_failed)})` : '';
+        const until = p.expires_at ? ` If Aerodrome hasn't restarted by ` +
+            `${escapeAttr(_whenText(p.expires_at))}, the restore is dropped.` : '';
+        msg = `A restore is staged and waits for a restart${why}. ` +
+              `Settings can't be changed until then.${until}`;
+        cancel.style.display = '';
+        dismiss.style.display = 'none';
+        icon.textContent = '⏳';
+    } else if (res && !res.acknowledged) {
+        const what = res.kind === 'put_back'
+            ? `the copy from ${escapeAttr(_isoText(res.backup_created_at_iso))}`
+            : `the backup from ${escapeAttr(_isoText(res.backup_created_at_iso))}`;
+        if (res.ok) {
+            msg = `Restored ${what}.`;
+            const notes = (res.notes || []).map(n => escapeAttr(n));
+            if (notes.length) msg += `<span class="notice-sub">${notes.join('<br>')}</span>`;
+            el.classList.add('ok');
+            icon.textContent = '✓';
+        } else if (res.rolled_back && (res.kept_current || []).length) {
+            msg = `The restored backup wasn't switched in (${escapeAttr(res.error)}). ` +
+                  `Your current data was kept as it was.`;
+            el.classList.add('bad');
+            icon.textContent = '⚠';
+        } else if (res.rolled_back) {
+            msg = `The restored backup didn't load (${escapeAttr(res.error)}). ` +
+                  `Your previous data was put back.`;
+            el.classList.add('bad');
+            icon.textContent = '⚠';
+        } else if (res.missing) {
+            msg = `The restored backup didn't load (${escapeAttr(res.error)}), and the copy ` +
+                  `taken before the restore is gone, so the previous data could not be put ` +
+                  `back. <span class="notice-sub">${escapeAttr(res.manual || '')}</span>`;
+            el.classList.add('bad');
+            icon.textContent = '⚠';
+        } else if (res.expired) {
+            msg = `A restore staged at ${escapeAttr(_whenText(res.staged_at))} wasn't applied ` +
+                  `because Aerodrome didn't restart within an hour. Restore again if you ` +
+                  `still want it.` + _ntfyKeptSub(res);
+            icon.textContent = '⚠';
+        } else if (res.cancelled) {
+            msg = res.ntfy_applied
+                ? `The staged restore was cancelled.` + _ntfyKeptSub(res)
+                : `The staged restore was cancelled. Nothing was changed.`;
+            icon.textContent = 'i';
+        }
+        cancel.style.display = 'none';
+        dismiss.style.display = '';
+    }
+    renderPutBackButtons();
+    if (!msg) { el.classList.remove('show'); return; }
+    document.getElementById('restoreNoticeText').innerHTML = msg;
+    el.classList.add('show');
+}
+
+async function dismissRestoreNotice() {
+    document.getElementById('restoreNotice').classList.remove('show');
+    try {
+        await fetch('/api/maintenance/ack', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({kind: 'restore'}),
+        });
+    } catch (e) { /* shown again on the next load: harmless */ }
+}
+
+async function cancelStagedRestore(btn) {
+    const p = (_maint && _maint.restore && _maint.restore.pending) || {};
+    if (!confirm('Cancel the restore that waits for a restart?\n\n' +
+                 (p.ntfy_applied
+                  ? 'The notification server\'s settings from the backup were already applied ' +
+                    'and stay; nothing else has been changed, and the rest of the backup ' +
+                    'won\'t be applied.'
+                  : 'Nothing has been changed yet; the backup simply won\'t be applied.'))) return;
+    if (btn) btn.disabled = true;
+    try {
+        const r = await fetch('/api/backup/staged-restore/cancel', {method: 'POST'});
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || !j.ok) {
+            toast(j.message || j.error || 'Could not cancel the restore', 'err');
+        } else {
+            toast(j.message || 'The staged restore was cancelled.', 'ok');
+            try {
+                await fetch('/api/maintenance/ack', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({kind: 'restore'}),
+                });
+            } catch (e) { /* the notice shows the cancel once more: harmless */ }
+        }
+    } catch (e) {
+        toast('Could not cancel the restore: ' + e.message, 'err');
+    } finally {
+        if (btn) btn.disabled = false;
+        loadMaintenanceStatus();
+        loadPreRestoreList();
+    }
+}
+
+// Put this back and Purge all are refused while a restore waits for its
+// restart: say so on the buttons instead of answering each click with a 409.
+function renderPutBackButtons() {
+    const waiting = !!(_maint && _maint.restore && _maint.restore.pending);
+    const why = 'A restore is waiting for the restart — let it finish or cancel it first';
+    document.querySelectorAll('.pr-putback').forEach(b => {
+        b.disabled = waiting;
+        b.title = waiting ? why : '';
+    });
+    const purge = document.getElementById('prPurgeBtn');
+    if (!purge) return;
+    if (waiting) {
+        purge.disabled = true;
+        purge.title = why;
+        purge.dataset.restoreWait = '1';
+    } else if (purge.dataset.restoreWait) {
+        delete purge.dataset.restoreWait;
+        purge.title = '';
+        purge.disabled = !document.querySelector('#prList .br-item');
+    }
 }
 
 function renderBackupBusy() {

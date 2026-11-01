@@ -46,7 +46,8 @@ The collector thread polls your local ADS-B receiver every N seconds (default 60
 | `ntfy_installer.py` | Self-hosted ntfy server install/upgrade helper; validates and renders its `server.yml` | ~1,300 lines |
 | `updater.py` | In-app update: staged apply, test-load, switch-in, and the boot-time guard that rolls a release back (stdlib only; imports no app module) | ~1,100 lines |
 | `atomic_io.py` | Crash-safe small-file writes: temp file + fsync + rename + directory fsync, disk-full detection, private (0600/0700) files and folders (stdlib only) | ~150 lines |
-| `config_io.py` | The one way `config.yaml` is written (all or nothing, under one lock), the last config that worked, and startup recovery of an unreadable `config.yaml` | ~580 lines |
+| `config_io.py` | The one way `config.yaml` is written (all or nothing, under one lock), the last config that worked, and startup recovery of an unreadable `config.yaml` | ~620 lines |
+| `restore_io.py` | Full-backup restore: check and stage it (server), switch it in at the next start before any database connection, roll it back from the pre-restore copies if it doesn't load (main) | ~1,650 lines |
 | `templates/*.html` | 11 admin pages — vanilla HTML/CSS/JS, no framework | ~13,500 lines |
 | `static/theme.css`, `static/theme.js` | Shared theme system across all templates | ~660 lines |
 
@@ -60,7 +61,7 @@ The consequence is that each module can be read in isolation. You don't need to 
 
 ## Startup sequence
 
-What `python3 main.py start` does, in order (v3.4.148):
+What `python3 main.py start` does, in order (v3.4.149):
 
 ```
 main.py import   update guard (before any third-party import): updater.on_boot()
@@ -75,33 +76,66 @@ main.py import   update guard (before any third-party import): updater.on_boot()
                  import yaml, uvicorn, collector, server
 main()           restart = stop, then exec a fresh `main.py start`
                  load_config: config.yaml can't be read (empty, cut short, a YAML
-                   mistake) → the last copy that worked (.backups/config.yaml.last-good,
+                   mistake) — a start cut short while writing a restore's
+                   settings in place (the marker says the switch began) →
+                   the complete staged copy finishes that write (a file
+                   broken by hand while a restore waits is recovered as
+                   below); one a restore just switched in → that restore is
+                   rolled back (database and config.yaml) instead; otherwise
+                   the last copy that worked (.backups/config.yaml.last-good,
                    else a config.yaml.bak.<date> whose database exists; never a
                    .pre-restore copy; on the first start of an update from a release
                    older than 3.4.148 last-good takes its place among them by date)
                    is put in its place, the unreadable file kept as
                    .backups/config.yaml.broken.<date>, the WARNING and a notice for
                    Settings written first; then the migration to this release's
-                   keys (all or nothing). While another Aerodrome owns the install
-                   neither runs: an unreadable file → exit 1, nothing changed; a
-                   readable one is used as it is, unmigrated.
+                   keys (all or nothing) — not while a restore's swap that a
+                   killed start began is unfinished (start() finishes it, then
+                   re-reads and migrates). While another Aerodrome owns the
+                   install neither runs: an unreadable file → exit 1, nothing
+                   changed; a readable one is used as it is, unmigrated.
                    stop / status only read it.
+                 setup_logging: logging.dir can't be created or written → logs
+                   go to <install>/logs (else the journal only), never exit
 start()          another live Aerodrome on this install (identity-checked) → exit 1
                  .backups/.tmp (0700) emptied of leftovers and made the temp dir;
                    once (.backups/.private-modes-applied), not while an update or
                    a restore is pending: files earlier versions left readable by
                    others made private
+                 a restore the web UI staged (.backups/pending-restore.json),
+                   before any database connection (restore_io):
+                   - staged → `swap_started` recorded in the marker, the old
+                     database's -wal/-shm/-journal removed, the staged
+                     database and config.yaml moved into place, marker
+                     `swapped`; config re-read
+                   - staged over an hour ago (nothing moved yet) → dropped,
+                     nothing changed
+                   - staged while an update is still being confirmed, nothing
+                     moved yet → left staged: the update goes first (a swap a
+                     killed start began is always finished)
+                   - swapped (a start that died before finishing) → one retry,
+                     then rolled back (a start that only waited for its web
+                     address isn't counted); `rollback` → the pre-restore copies moved
+                     back (consumed), marker removed, result kept for Settings
+                   - no marker → a restore's leftovers swept
                  init_db(): creates the schema, then the one-time rollup backfills,
                    synchronously (migrations v1, v5 and v16 read those rollups)
                  gate: a backfill didn't finish AND migrations are pending → exit 1,
                    nothing changed (the next start retries)
                  apply_schema_migrations()  (BEGIN IMMEDIATE, 60 s busy timeout)
+                   — with a restore just switched in, a failure in init_db, the
+                   gate or the migrations records `rollback` and execs a fresh
+                   `main.py start` (which puts the copies back); the bind
+                   pre-flight doesn't (a restore keeps this machine's address):
+                   exit 2, that start not counted against the restore
                  collector thread, get_app(), bind pre-flight — can't listen on
                    config.yaml's address but last-good's works → last-good put in
                    place (file kept, notice) and a fresh `main.py start` exec'd;
                    never when last-good listens more widely (all addresses, or a
                    network address instead of loopback) or may be stale — exit 2,
                    systemd retries
+                 a restore just switched in has loaded: result recorded, marker
+                   removed
                  config.yaml → .backups/config.yaml.last-good ("this config
                    started"; while an update is pending, the confirm thread
                    writes this same text after the commit — not config.yaml as
@@ -115,6 +149,8 @@ start()          another live Aerodrome on this install (identity-checked) → e
 ```
 
 `updater.py` is boot-critical: `main.py` imports it before anything else, inside a block that can never stop startup. It is stdlib-only and imports no other Aerodrome module, so it loads from any half-switched tree.
+
+A restore and an update never meet at the same start: a restore is refused while an update is being confirmed, and every update operation is refused while a restore waits for its restart. (Should both exist anyway, the update guard runs first and the restore waits.)
 
 ## The threading model
 
@@ -204,12 +240,13 @@ A few invariants worth knowing because violating them breaks things in non-obvio
 
 - **Nothing in the collector thread makes long blocking calls.** The poll loop has a budget — it must finish before the next interval tick. If you add a network call, it gets a timeout.
 - **No new config keys without updating `config_validator.py` and `config.yaml.example`.** The full validator (`validate_config`) runs on every Settings save, config import and config restore; it checks types and ranges strictly and ignores keys it doesn't know (so an unlisted key is simply never checked). `main.py` never runs it: at startup only the five required sections are checked (`config_io.check_loadable`), and a `config.yaml` that can't be read falls back to the last config that worked. See `CONTRIBUTING.md` for the doc-update rules.
-- **Every `config.yaml` write goes through `config_io`, under `config_io.CONFIG_LOCK`.** Render → check it loads the way startup reads it → temp file beside it → fsync → rename → fsync the directory, so the file is the old one or the new one, never a mix; a failed write raises and changes nothing (the running config is only swapped after the file is saved). Hold the lock across the whole read-modify-write. It may be taken while the maintenance lock is held, never the other way round. No call that writes, copies, moves or renames onto a config path except through `config_io` — a static (AST) test forbids it in `server.py`, `collector.py` and `main.py`. A `config.yaml` symlinked into a folder the service can't write, or owned by another account that lets it write, is written in place; one it can't write is refused. `.backups/config.yaml.last-good` is the last config that *started*: refreshed by a start that got past the bind check and by the update-confirm step (with the text that start read), never by a save, never while an update or a restore is pending.
+- **Every `config.yaml` write goes through `config_io`, under `config_io.CONFIG_LOCK`.** Render → check it loads the way startup reads it → temp file beside it → fsync → rename → fsync the directory, so the file is the old one or the new one, never a mix; a failed write raises and changes nothing (the running config is only swapped after the file is saved). Hold the lock across the whole read-modify-write. It may be taken while the maintenance lock is held, never the other way round. No call that writes, copies, moves or renames onto a config path except through `config_io` — a static (AST) test forbids it in `server.py`, `collector.py`, `main.py` and `restore_io.py`. A `config.yaml` symlinked into a folder the service can't write, or owned by another account that lets it write, is written in place; one it can't write is refused. `.backups/config.yaml.last-good` is the last config that *started*: refreshed by a start that got past the bind check and by the update-confirm step (with the text that start read), never by a save, never while an update or a restore is pending.
 - **Temporary files live in `.backups/.tmp` (0700), never the system temp dir**, and `main.start` empties it — a crash or an abandoned download never leaves a large file behind. Nothing that must survive a restart belongs there. Backups, uploads and `config.yaml` are created readable by the service account only (0600, in 0700 folders).
 - **Template changes need matching screenshot updates under some rules.** See CONTRIBUTING.md.
 - **The schema migration path is versioned.** New schema changes for existing installs go through `schema_migrations.py`, which runs versioned `_migration_NN_*` functions in order against the `schema_version` table. Each migration step must be idempotent (safe to re-run) and forward-only (never drop a column; add a new one). `init_db()` in `collector.py` handles fresh installs by creating the current schema directly. Together they must be safe to run against any prior database version and a fresh empty file. Pre-v2.50.x changes were handled inline in `init_db()` via `CREATE TABLE IF NOT EXISTS` / `ALTER TABLE ADD COLUMN` inside try/except — that path is preserved for the migrations already there, but new schema changes go through the versioned framework.
 - **Rollup backfills run before migrations, synchronously, and a failed one blocks them.** `init_db()` finishes the one-time rollup backfills before it returns; `main.start()` refuses to migrate (exit 1, nothing changed) while a backfill flag is unset and migrations are pending, because migrations v1, v5 and v16 compute from those rollups and nothing recomputes them afterwards.
 - **One maintenance operation at a time.** Every endpoint that rewrites the install or the database (update upload/apply/download, restores, server-side backup create/delete, the pre-restore purge, config import/restore, switch-to-real) holds `server._MAINT`. It is try-only (refuses with 409, never waits), kept for a couple of minutes after a restart is requested, and freed at once if the restart call fails.
+- **A restore never changes a live file while Aerodrome runs** (`restore_io`). It is checked and staged beside the live files, each staged file and pre-restore copy on the same filesystem as the file it replaces (so the swap and the rollback are renames: no free space needed, no EXDEV half-way), and switched in at the next start before any database connection exists. Every step at startup can be repeated after a kill at any point (the marker records each path and inode), and a rollback consumes the pre-restore copies — never a hard link to the live file. While a restore waits for its restart, settings writes and maintenance are refused, and the copies it would put back are never pruned or purged. The one exception to "nothing live changes before the restart": the backup's ntfy settings, applied at once (ntfy is its own service).
 - **Maintenance handlers are plain `def`, and nothing awaits a plain function.** A blocking `async def` handler freezes every other request. The few `async def` route handlers are an explicit allowlist in `test_request_limits_offload.py`, which also fails on `await <plain function>(…)` (v3.4.51 shipped one and broke every GitHub apply).
 - **`updater.py` imports no Aerodrome module, and the update guard stays above every third-party import in `main.py`.** Static tests enforce both.
 - **N-1 compatibility: whatever a release changes must still let the release before it run.** Automatic rollback puts the previous release back on the same database and install, so: every schema migration leaves the database readable and writable by the previous release; an install-level change (systemd unit, sudoers rule, a config key rename, an EnvironmentFile) keeps the old one working for one release; Python requirements only rise to versions the previous release still imports and runs with (the venv is shared: a rollback, and a refused update, both leave the new packages installed — the apply reports `previous_loads: false` when the running version no longer loads with them); and the update journal (`.update-pending.json`) and `.update-last-result.json` only ever gain fields — their state set {swapping, pending_first_boot, rolling_back, committing} is frozen, and a newer updater reads every older journal (`test_update_apply.py` keeps frozen copies of them; add one, never edit one). Note that the rollback of a release is done by that release's OWN `updater.py` (it is swapped in with the release).

@@ -1522,10 +1522,12 @@ complete disaster-recovery zip in one click. It contains:
 
 To restore to a fresh Aerodrome install: install the target version
 on the new host, open the Configuration page, scroll to Full backup
-→ **Restore from backup**, and upload the zip. The server stops the
-collector, replaces the relevant files, and restarts. Your history
-and config come back exactly as they were; a local ntfy server's
-settings come back as described next.
+→ **Restore from backup**, and upload the zip. Aerodrome checks the
+backup, then restarts and switches to it (see *What a restore checks*
+below). Your history and settings come back as they were — except
+this machine's web address, port, database location and log folder,
+which are kept — and a local ntfy server's settings come back as
+described next.
 
 For a local ntfy server, restore carries over only the settings
 Aerodrome manages — address, port, listen address and the iPhone
@@ -1542,7 +1544,8 @@ The zip is portable across hosts — you can back up on a Raspberry Pi
 and restore onto an x86 box (or vice versa), as long as the target
 is running the same Aerodrome version or a newer one. Different
 Aerodrome versions handle config auto-migration the same way they
-do on an in-place upgrade.
+do on an in-place upgrade, and an older backup's database is upgraded
+at the restart like any older database.
 
 **Disk space.** Building a backup needs about twice the database's
 size free (a consistent copy of the database plus the zip), plus
@@ -1583,6 +1586,98 @@ purpose — say, so a backup job running as another account can read the
 zips — it is kept. Files that belong to another account, a `.backups/`
 that is a link to another folder, and the database files are left as
 they are.
+
+### What a restore checks, and undoing one (v3.4.149)
+
+**Checked first, switched at the restart.** Before anything changes, the
+backup's database is unpacked next to your current one and checked (a
+SQLite integrity check, the tables Aerodrome needs, and that it isn't
+from a newer Aerodrome), and its `config.yaml` must load and pass the
+same checks as a Settings save. Copies of your current database and
+`config.yaml` are kept as `.pre-restore` copies (the database's next to
+the database, `config.yaml`'s next to `config.yaml`). Nothing you're
+running changes until Aerodrome restarts: it then switches to the
+restored files before it opens the database, logs the outcome
+(`journalctl -u aerodrome`), and shows it in Settings until you dismiss
+it. A check that fails is reported with the reason, and nothing changes:
+
+- a damaged or incomplete backup, one that isn't an Aerodrome backup, or
+  one a tool re-packed with a compression method (or encryption)
+  Aerodrome backups never use — zip it again with standard compression;
+- a backup made by a newer Aerodrome — update Aerodrome first, then
+  restore;
+- not enough free disk space for the restored database, a copy of your
+  current one and 256 MB of headroom on the database's disk;
+- settings that wouldn't work here (they don't load, aren't UTF-8, are
+  improbably large, use YAML anchors or aliases, or fail a Settings
+  check). The refusal lists the problems. To restore just the history
+  and keep this machine's settings — and its notification server, which
+  a database-only restore never changes — choose **Restore database
+  only** there.
+
+**This machine's address, port, database location and log folder are
+kept.** The backup's `web.host`, `web.port`, `data.db_file` and
+`logging.dir` are replaced by this machine's (the restore lists which
+ones differed), so a backup from another machine can't leave Aerodrome
+listening on an address that doesn't exist here, reading an empty
+database somewhere else, or failing to start over a log folder this
+machine can't create. Change the port afterwards in Settings if you
+want the old one. A `data.db_file` that is a symbolic link to another
+disk stays a link: the restore works on the file it points to, on that
+disk. If the backup lets the web UI answer to hostnames this machine's
+settings didn't (`web.allowed_hosts`, or the host of
+`notifications.public_url`), the restore names them.
+
+**If the restored data doesn't load, your previous data comes back.**
+When the restored database won't open or can't be upgraded, or
+Aerodrome doesn't finish starting twice in a row, it puts the
+`.pre-restore` copies back on its own, starts on your previous data and
+logs why. (A web address that can't be listened on isn't the restored
+data's doing — a restore keeps this machine's address and port — so
+that start waits for it like any other start, and the restore finishes
+once it can listen.) The copies are *moved* back, so after such
+a rollback they no longer appear in the list. Sightings collected
+between the restore and the restart aren't in the copies, so they don't
+come back. In the rare case that a copy was deleted by hand before the
+rollback, Aerodrome logs that it couldn't put the previous data back,
+moves the restored database aside (as
+`<database>.restore-failed.<date>`) and starts on an empty one, so the
+web UI stays up to restore another backup.
+
+**If Aerodrome can't restart itself** (no sudo rule, or a manual run),
+the restore stays staged and applies at the next start within an hour:
+restart Aerodrome the way you run it — `sudo systemctl restart
+aerodrome` on a service install, or `python3 main.py restart` (or stop
+and start it) for a manual run. Until
+then, saving settings, the watchlist and other maintenance are refused
+with "A restore is waiting for the restart", because the restart would
+put the backup's settings over them. After an hour the restore is
+dropped and nothing changes; restore again if you still want it.
+Settings shows the restore as waiting meanwhile; to drop it sooner, use
+**Cancel restore** there.
+
+**The notification server's settings** from the backup are applied
+right away, once every check has passed, not at the restart (ntfy is
+its own service); a rollback, a cancel or the hour running out doesn't
+undo them (a cancel says so). A database-only restore leaves this
+machine's notification server as it is.
+
+**Undo a restore.** Each pair of `.pre-restore` copies (listed under
+**Restore safety snapshots**, by date) can be put back with its **Put
+this back** button. It is a restore of those copies —
+checked, switched in at the restart, rolled back if it doesn't load —
+and a copy of your current data is kept first, so it can be undone the
+same way. Putting a copy back doesn't use it up; like every pre-restore
+copy, it is kept until three newer ones exist. The pair a waiting
+restore would need is never pruned or purged. If `data.db_file` is a
+symbolic link, the database's copies are made next to the file it points
+to; those earlier versions made next to the link are still listed, put
+back, pruned and purged. If your database is kept
+outside the install folder, older `.pre-restore` copies next to it —
+which versions before 3.4.149 never listed or removed — now appear
+under **Restore safety snapshots**, and the first start of 3.4.149
+keeps only the newest three (even if that update is later rolled
+back).
 
 ### Server-side backup (v3.4.0)
 
@@ -1625,10 +1720,13 @@ host's `.backups/` directory (via scp or `cp` if it's already on the
 machine), then in the UI use Configuration → Backup & Restore →
 Server-side backup → click **Rescan** so the new file appears in the
 Existing server-side backups list, then click **Restore from this**
-on its row. The destructive-confirm modal shows what will be replaced
-and a `.pre-restore` safety snapshot is created first, same as any
-other restore. Browser uploads above 2 GB are rejected with a message
+on its row. The backup is checked, `.pre-restore` copies of your
+current data are kept, and Aerodrome restarts to switch to it, same as
+any other restore. Browser uploads above 2 GB are rejected with a message
 pointing here — for large backups, this is the only working transport.
+A restore reads the whole database once to check it: for a multi-GB
+database on an SD card that takes a few minutes, and the web UI stays
+usable meanwhile.
 
 **Which flow to use:**
 

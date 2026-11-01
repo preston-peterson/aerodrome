@@ -167,8 +167,9 @@ def check_screenshot_mock_contract(report: DriftReport, verbose: bool = False):
         'perf':      [],  # diagnostic dump, shape-stable but keys vary by OS
         'wl_entries': ['entries'],
         # v3.4.147: the Updates page reads the first three (null when idle);
-        # v3.4.148: the Settings page reads `config` (null: no recovery).
-        'maintenance_status': ['busy', 'update', 'update_pending', 'config'],
+        # v3.4.148: the Settings page reads `config` (null: no recovery);
+        # v3.4.149: and `restore` ({pending, result}; null in the mock).
+        'maintenance_status': ['busy', 'update', 'update_pending', 'config', 'restore'],
     }
 
     source = screenshot_py.read_text()

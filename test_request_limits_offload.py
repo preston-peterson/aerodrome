@@ -32,11 +32,11 @@ from test_update_apply import (NEW, REPO, _EndpointCase, _release_files, _status
 setUpModule, tearDownModule = repo_guard()
 
 # The only route handlers allowed to be `async def`. Each either awaits real
-# async I/O or is a thin shell that stays on the loop on purpose; B4c removes
-# backup_import and restore_from_path.
+# async I/O or is a thin shell that stays on the loop on purpose. (v3.4.149:
+# backup_import and restore_from_path are plain defs now.)
 ASYNC_HANDLER_ALLOWLIST = {
     "get_resolve_tail", "enrich_aircraft_registry", "get_callsign_route",
-    "get_aircraft_photo", "switch_to_real_execute", "backup_import", "restore_from_path",
+    "get_aircraft_photo", "switch_to_real_execute",
 }
 
 
@@ -770,7 +770,7 @@ class TestRestoreUploadSpace(_LimitCase):
             return Full()
         up = UploadFile(file=io.BytesIO(b"PK" + b"\0" * 4096), filename="b.zip")
         with mock.patch.object(atomic_io, "open_private", side_effect=open_full):
-            r = asyncio.run(self.ep("/api/backup/import")(file=up, background_tasks=None))
+            r = self.ep("/api/backup/import")(file=up, background_tasks=None)   # a plain def
         self.assertEqual(r.status_code, 507)
         b = json.loads(r.body)
         self.assertEqual(b["code"], "no_space")

@@ -19,6 +19,34 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.149] — 2026-11-01
+
+### Fixed
+- **Restoring a backup checks it first and can no longer leave Aerodrome unable to start.** The backup's database is unpacked next to your current one and checked, and its settings must load and pass the same checks as a Settings save — all while Aerodrome keeps running on your current data, which doesn't change until Aerodrome restarts to switch to the backup. A damaged or incomplete backup, one made by a newer version of Aerodrome ("update Aerodrome first"), or one that wouldn't fit on the disk is refused with the reason, and nothing changes. Before, a restore wrote over the live files while Aerodrome was using them, so a bad backup or a full disk could leave it restarting over and over with the web page gone.
+- **If the restored data won't load, Aerodrome puts your previous data back on its own.** When the restored database won't open or can't be upgraded, or Aerodrome doesn't finish starting on it, it switches back to the copy of your data it kept before the restore, starts on it, and records why. A web address that can't be used at that moment (a network that comes up late at boot) doesn't throw a good restore away: Aerodrome waits for it like any start. If the switch itself fails before your database was replaced, your current database is simply kept. The Settings page says what happened — restored, put back, or (if that copy was deleted by hand) that it couldn't be put back and what to do — until you dismiss it.
+- **Moving to a new machine works.** Restoring a backup from another machine keeps this machine's web address, port, database location and log folder, and says which ones it kept — and names any extra hostnames the backup's settings would let the web page answer to. Before, a different address, database location or log folder in the backup could leave Aerodrome restarting forever, or starting on an empty history. A backup whose settings wouldn't work here — including one whose `config.yaml` isn't readable text — is refused with the reason, and you can restore just its database and keep this machine's settings and notification server. The refusal lists the problems and offers **Restore database only**.
+- **A database kept on another disk through a symbolic link stays there.** Restoring onto it now works on the file the link points to, on that disk; before, the restored history replaced the link and landed on the install's own (often smaller) disk. The copies earlier versions kept next to the link still appear under **Restore safety snapshots** — database and settings together — and are pruned, purged and put back like any other.
+- **The copy kept before a restore is now complete** even while Aerodrome is collecting — it includes the newest sightings, which a plain file copy could miss — and copies kept beside a database outside the install folder are now listed and pruned too. **Put this back** on each copy switches back to it the same safe way.
+- **Restoring a backup is hardened against crafted files.**
+- **A refused restore upload no longer leaves its file behind**, and the page stays responsive while a restore is checked — even a large one.
+
+### Operational notes
+- A restore now reads the whole database once to check it. For a multi-GB database on an SD card that takes a few minutes; the page stays usable meanwhile.
+- If Aerodrome can't restart itself after a restore (no sudo rule, or a manual run), the restore waits up to an hour for the next start — restart Aerodrome the way you run it: `sudo systemctl restart aerodrome` on a service install, or `python3 main.py restart` (or stop and start it) for a manual run — and is then dropped with nothing changed. Saving settings, the watchlist and other maintenance are refused while it waits, because the restart would put the backup's settings over them. The Settings page shows it as waiting, with **Cancel restore**.
+- If a restore is rolled back, the copy kept before it is what was put back, so it no longer appears in the list. Sightings collected between the restore and the restart are not in that copy.
+- The notification server's settings from a backup are applied right away, once every check has passed, not at the restart; a rollback, a cancel or the hour running out doesn't undo them (a cancel says so). A database-only restore leaves this machine's notification server alone. A backup with only those settings no longer restarts Aerodrome.
+- If your database is kept outside the install folder, older `.pre-restore` copies next to it — which earlier versions never listed or removed — now appear under **Restore safety snapshots**, and the first start of this version keeps only the newest three (even if the update is later rolled back).
+- A log folder in `config.yaml` that can't be created or written no longer stops Aerodrome from starting (or stopping): it logs to `logs/` in the install folder instead and says why.
+- Don't downgrade to 3.4.148 or earlier while a restore waits for its restart — cancel it first.
+- `uninstall.sh --purge` also removes the files a restore keeps beside a database outside the install folder (a staged copy, a set-aside restored database).
+- A restore is refused while the last update is still being confirmed (try again a minute later), and updates are refused while a restore waits for its restart.
+
+### Behind the scenes
+- New `restore_io.py`: a restore is staged next to the live files and recorded in `.backups/pending-restore.json`; the next start switches the files in before it opens the database, and rolls back by moving the pre-restore copies back. Each staged file and copy is kept on the same filesystem as the file it replaces (the database's beside the database, `config.yaml`'s beside `config.yaml`), so switching and rolling back are renames — no free space needed — and every step can be repeated after an interruption at any point; tests interrupt each one at every rename and delete — including whole starts, settings migration included — on one filesystem and across two.
+- The restore's settings are written through `config_io` like every other `config.yaml` write, and the restore endpoints run off the event loop.
+- Before it moves any file, the start that switches to a restore records that it began, so the next start can tell a switch it must finish (cut short while writing the settings) from a settings file broken by hand while the restore waited — which goes to the usual recovery instead.
+- New `GET /api/maintenance/status` field `restore`, `POST /api/maintenance/ack {"kind": "restore"}`, `POST /api/backup/staged-restore/cancel` and `POST /api/backup/pre-restore/<date>/restore`; the restore endpoints take `keep_current_config`. See API.md.
+
 ## [3.4.148] — 2026-10-26
 
 ### Fixed

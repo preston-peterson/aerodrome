@@ -1,5 +1,5 @@
 # Aerodrome
-<!-- Version: 3.4.148 -->
+<!-- Version: 3.4.149 -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -127,6 +127,7 @@ aerodrome/
 ├── updater.py                    update guard: staged apply, swap, automatic rollback (stdlib only)
 ├── atomic_io.py                  crash-safe small-file writes (temp + fsync + rename)
 ├── config_io.py                  all-or-nothing config.yaml writes, last-good, startup recovery
+├── restore_io.py                 full-backup restore: checked and staged, switched in at startup, rolled back if it won't load
 ├── collector.py                  ADS-B polling, classification, hexdb enrichment, SQLite writes
 ├── server.py                     FastAPI app — dashboard routes + ~80 JSON endpoints
 ├── notifier.py                   ntfy push notifications with cooldowns
@@ -170,12 +171,14 @@ aerodrome/
 │       └── backfill.py           generate historical sightings for testing
 ├── docs/                         user-facing documentation, screenshots, PDF
 ├── .github/                      issue templates, PR template, repo-setup guide
+├── test_backup_restore.py        unit tests — staged restore, startup switch + rollback, kill points
 ├── test_bootstrap.py             installer tests — bootstrap.sh in a stub sandbox
 ├── test_bump_version.py          release tests — bump-version.sh gates, check, re-run, PDF
 ├── test_categorize.py            unit tests — military/civil classification
 ├── test_check_installers.py      release tests — installer-consistency gate
 ├── test_check_release_zip.py     release tests — zip checker, package + publish scripts
 ├── test_config_page_b4b.py       unit tests — Settings-page recovery notice, save and upload refusals (static)
+├── test_config_page_b4c.py       unit tests — Backup & restore page: problem list, restore notices, Cancel, Put this back (static)
 ├── test_config_write_safety.py   unit tests — all-or-nothing config writes, recovery, private files
 ├── test_designators.py           unit tests — aircraft type and operator decoders
 ├── test_destructive_endpoints.py unit tests — switch-to-real + watchlist-history deletes

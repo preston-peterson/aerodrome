@@ -146,12 +146,33 @@ def check_loadable(text):
         data = yaml.safe_load(text)
     except yaml.YAMLError as e:
         raise ValueError(_yaml_reason(e)) from None
+    except RecursionError:
+        raise ValueError("it is nested too deeply to be read as YAML") from None
     if not isinstance(data, dict):
         raise ValueError("it isn't a YAML mapping of settings")
     missing = [s for s in REQUIRED_SECTIONS if not isinstance(data.get(s), dict)]
     if missing:
         raise ValueError("missing section(s): " + ", ".join(missing))
     return data
+
+
+def refuse_aliases(text):
+    """Raise ValueError when `text` uses YAML anchors or aliases (&a / *a).
+    Aerodrome never writes them; in a config that comes from outside (a
+    restored backup, an imported file) a few hundred bytes of nested aliases
+    expand to billions of nodes once the settings are compared or shown.
+    Walks the parser's events — linear in the text, no tree is built. Only
+    for incoming text: a hand-edited live config.yaml that uses them still
+    starts (main.py never calls this)."""
+    try:
+        for ev in yaml.parse(text, Loader=yaml.SafeLoader):
+            if isinstance(ev, yaml.AliasEvent) or getattr(ev, "anchor", None):
+                raise ValueError("it uses YAML anchors or aliases (& or *), which Aerodrome "
+                                 "doesn't accept in a restored or imported config")
+    except yaml.YAMLError as e:
+        raise ValueError(_yaml_reason(e)) from None
+    except RecursionError:
+        raise ValueError("it is nested too deeply to be read as YAML") from None
 
 
 def _as_write_error(e, name):
@@ -324,6 +345,49 @@ def discard(tmp):
 def write_text(path, text, check=True):
     """Replace `path` with `text`, all or nothing (0600)."""
     commit(stage_text(path, text, check=check), path)
+
+
+def move_into_place(src, path):
+    """Put the complete file `src` — a restore's staged settings, or the copy
+    of config.yaml taken before a restore — in place of config.yaml
+    (`path`), and remove `src`.
+
+    A rename when it can be one (no free space needed, nothing copied):
+    `src` must then be on the same filesystem as config.yaml's real file and
+    that layout written atomically. Otherwise — another filesystem (a
+    config.yaml symlinked elsewhere, a bind mount), an in-place layout — its
+    text is written through write_text, then `src` is removed. Either way
+    config.yaml is the old file or the new one, never a mix, and `src` is
+    only removed once its text is in place: a repeat after a kill at any
+    point finishes the job. Returns "renamed" or "written". Raises
+    FileNotFoundError when `src` is gone, ConfigWriteError (config.yaml and
+    `src` unchanged) when it can't be written. Unlike commit(), never
+    deletes `src` on a failure: it may be the only copy."""
+    src = Path(src)
+    name = Path(path).name
+    with CONFIG_LOCK:
+        if not os.path.lexists(str(src)):
+            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(src))
+        if _write_mode(path) == "atomic":
+            target = _target(path)
+            try:
+                os.replace(str(src), str(target))
+            except OSError as e:
+                if e.errno != errno.EXDEV:
+                    if e.errno == errno.ENOENT and not os.path.lexists(str(src)):
+                        raise
+                    raise _as_write_error(e, name) from e
+            else:
+                atomic_io.fsync_dir(target.parent)
+                return "renamed"
+        text = src.read_text(encoding="utf-8")
+        write_text(path, text, check=False)
+        try:
+            os.unlink(str(src))
+        except FileNotFoundError:
+            pass
+        atomic_io.fsync_dir(src.parent)
+        return "written"
 
 
 def _render_preserving_comments(path, cfg):

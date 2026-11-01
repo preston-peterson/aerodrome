@@ -1,4 +1,4 @@
-# Version: 3.4.148
+# Version: 3.4.149
 """
 collector.py — ADS-B data fetcher and classifier.
 
@@ -328,6 +328,17 @@ def _demo_port_recovery_write(config, unit_path, current_unit, new_unit, cfg_pat
     until it is committed; the caller discards whatever is left in it.
     Returns the new port (the caller restarts the feeder), or None."""
     import config_io
+    # v3.4.149: not while a restore waits for its restart — the restart
+    # switches config.yaml to the backup's (and the feeder unit would then
+    # disagree with it). The next poll after the restart tries again.
+    try:
+        import restore_io
+        if restore_io.pending(config_io.install_dir_of(cfg_path)) is not None:
+            logger.warning("Auto-recovery: a restore is waiting for the restart, so the "
+                           "receiver port isn't changed now; it is retried after it.")
+            return None
+    except Exception:
+        pass
     try:
         cfg_text = cfg_path.read_text()
     except Exception as e:
