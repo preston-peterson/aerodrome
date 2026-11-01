@@ -21,6 +21,7 @@ something specific, the table of contents below has direct links.
 - [Updating](#updating)
 - [Rolling back](#rolling-back)
 - [Applying sudoers updates](#applying-sudoers-updates)
+  - [System permissions](#system-permissions)
   - [Moving Aerodrome to another account](#moving-aerodrome-to-another-account)
 - [Uninstalling](#uninstalling)
 - [Configuration](#configuration)
@@ -43,8 +44,8 @@ something specific, the table of contents below has direct links.
 - An ADS-B receiver on your network serving an `aircraft.json` endpoint
   (readsb, dump1090-fa, tar1090, PiAware, or any compatible).
 - A Linux server with systemd and a supported package manager. As of v3.2.0,
-  Aerodrome supports four distro families as tier-1 (tested before each
-  release):
+  Aerodrome supports four distro families as tier-1 (see *Multi-distro
+  support* below for what is tested on each release):
     - **Debian-family** — Ubuntu 22.04+, Debian 12+, Raspberry Pi OS, Linux Mint, Pop!_OS
     - **Fedora-family** — Fedora 40+, RHEL 9+, Rocky 9+, AlmaLinux 9+
     - **Arch-family** — Arch Linux (rolling), Manjaro, EndeavourOS
@@ -53,6 +54,11 @@ something specific, the table of contents below has direct links.
   install (the bootstrap warns and asks before proceeding; `--force` skips
   the question); see *Multi-distro support* below for details.
 - Python 3.10+ (installed automatically by the install script if missing).
+  Aerodrome's system helper (see *System permissions*) also needs a
+  **system** Python 3.10 or newer in `/usr/bin`. RHEL 9 and its rebuilds
+  (`python3` is 3.9) and openSUSE Leap 15 (`python3` is 3.6) need their
+  newer Python package first: `sudo dnf install python3.11` /
+  `sudo zypper install python311`. The installer tells you if this applies.
 
 ## Hardware sizing
 
@@ -209,9 +215,10 @@ That's it. The bootstrap walks through eight steps:
    `--prefix`), patches `config.yaml` with the prompted values, and
    hands off to the bundled `install.sh`.
 8. **install.sh runs** — creates a Python venv, installs dependencies,
-   writes the systemd unit, installs a scoped `sudoers.d` rule for the
-   in-UI restart button (checked with `visudo` before it takes effect),
-   and starts the service. On firewalld-managed hosts (Fedora, openSUSE)
+   writes the systemd unit, installs Aerodrome's system permissions — a
+   small root-owned helper and the `sudoers.d` rule that names it, checked
+   with `visudo` before it takes effect (see *System permissions*) — and
+   starts the service. On firewalld-managed hosts (Fedora, openSUSE)
    the bootstrap then opens port 8000 (see *Firewall handling*).
 
 When complete, open `http://your-host:8000/` and visit the gear menu →
@@ -454,9 +461,21 @@ no special demo-mode uninstall flag is needed.
 
 ## Multi-distro support (v3.2.0)
 
-Aerodrome supports four Linux distro families as tier-1 (tested by the
-maintainer before each release), and best-effort support for any other
-systemd-based distro with one of the recognized package managers.
+Aerodrome supports four Linux distro families as tier-1, and best-effort
+support for any other systemd-based distro with one of the recognized
+package managers.
+
+**What is tested.** Every release runs on the maintainer's own install
+before it is published. Releases that change how Aerodrome is installed on
+each distribution (packages, paths, the bootstrap) are also tested on
+Ubuntu 24.04, Debian, Fedora, Arch and openSUSE Tumbleweed virtual
+machines; releases that change Aerodrome's system permissions (the helper
+and its sudoers rules) on Ubuntu 24.04 and on Ubuntu 26.04 (whose `sudo`
+is sudo-rs) — on other distributions those are checked by tests that
+imitate them. The other distributions and versions listed above are
+expected to work but aren't tested on each release. RHEL 9, Rocky 9, AlmaLinux 9 and openSUSE Leap 15 ship a `python3`
+older than 3.10: install `python3.11` (dnf) or `python311` (zypper) first —
+Aerodrome's system helper runs under it (see *System permissions*).
 
 ### Tier-1 families
 
@@ -837,7 +856,7 @@ Options 1 and 2 check the new version before they change anything:
 ### Updates need a restart permission
 
 An in-app update restarts Aerodrome through the sudo rule that
-`install.sh` sets up. Without it — an install made by hand, a rule that
+`install.sh` sets up (see *System permissions*). Without it — an install made by hand, a rule that
 was removed, or Aerodrome started outside systemd — an update is refused
 before anything changes: "The update was not applied: Aerodrome can't
 restart itself on this install". Put the rule back with the command in
@@ -958,9 +977,12 @@ sudo bash /opt/aerodrome/update/scripts/recover-sudoers.sh --install-dir /opt/ae
 This only refreshes Aerodrome's system permissions. The script runs
 whichever copy of `install.sh` — the staged one or the installed one —
 carries the newest permission rules, in a mode (`--privileges-only`) that
-rewrites only `/etc/sudoers.d/aerodrome`: the new rules are checked with
-`visudo` first and swapped in all at once, so a failed check leaves the
-old file exactly as it was. It doesn't reinstall, restart or change
+installs Aerodrome's system helper and rewrites `/etc/sudoers.d/aerodrome`
+(see *System permissions*): the new rules are checked with `visudo` first
+and swapped in all at once, after the helper they name, so a failed check
+leaves the old file exactly as it was. If Aerodrome manages a local
+notification server, the refresh then moves it to its restricted setup
+(see *Notifications*). It doesn't reinstall or restart Aerodrome or change
 anything else (your config, database, logs and venv are untouched), it
 keeps the account Aerodrome runs as, and it never replaces newer
 permission rules with older ones. You don't need to stop the service
@@ -987,7 +1009,49 @@ After a deliberate rollback to an older release (v3.4.145 or later), a
 re-run of its installer keeps the newer rules it finds (it says so, and
 prints the command to use the older rules on purpose):
 `sudo bash /opt/aerodrome/install.sh --privileges-only --allow-privilege-downgrade`.
-Installers older than v3.4.145 don't check, and write their own rules.
+Installers older than v3.4.145 don't check, and write their own rules —
+the older, wider ones — so don't re-run one of those after rolling back.
+The newer rules keep the older release working (it restarts, re-checks and
+switches from demo mode as before); only its notification-server buttons
+stop working until you update again, while notifications keep being sent.
+
+**Run the command right after staging the update yourself.** It runs files
+from the install folder and `update/`, which Aerodrome's own account can
+write: run it when you have just staged the update, not for an update you
+don't recognize.
+
+### System permissions
+
+Aerodrome runs as an ordinary account. The few things it does as root go
+through `/etc/sudoers.d/aerodrome` (v3.4.150, rules version 6), which lets
+that account run exactly:
+
+- **Aerodrome's system helper**, `/usr/local/libexec/aerodrome/aerodrome-helper`
+  — a small root-owned program (`root:root`, mode 0755) with a fixed set of
+  checked actions: install, configure, upgrade or remove the local ntfy
+  server, and move or remove the demo feeder. It checks every argument
+  itself, writes only its own files (never through a symlink, never in a
+  folder the account could write), and refuses anything else;
+- **`systemctl restart aerodrome`** (the "Restart now" button and the
+  restart after an update);
+- **`cat /etc/sudoers.d/aerodrome`** (so the Updates page can compare rule
+  versions);
+- the demo feeder's stop, disable and unit-removal commands, and
+  `systemctl daemon-reload`, which the previous release's "switch to a
+  real receiver" uses (kept for one release so going back stays possible).
+
+Nothing else: no file writes (that removal of the demo feeder's unit
+aside), no other units. `install.sh` installs the
+helper with the system Python it finds in `/usr/bin` (3.10 or newer; it
+picks `/usr/bin/python3` when that is new enough, else the newest
+`python3.1x`) and names that interpreter in the helper's first line, run in
+isolated mode (`-IS`). The helper never runs from the install folder, and
+the folder it lives in must be root's alone, or the installer stops. If no
+suitable Python is found, the installer stops before changing anything and
+names the package to install.
+
+To see what is granted: `sudo -l -U <service account>`. To ask the helper
+its version: `sudo /usr/local/libexec/aerodrome/aerodrome-helper version`.
 
 **Which releases need this?** Most don't. The banner only appears
 when a release genuinely changed the sudoers file — you'll see it in
@@ -1040,9 +1104,10 @@ folder and its size. If you want to skip the questions:
 ./uninstall.sh --keep    # Remove only the service and venv, keep all data
 ```
 
-It always removes the systemd service(s), the sudoers rule, the Python
-virtual environment, runtime files (`.tracker.pid`, `__pycache__`) and
-staged updates (`update/`). `--purge` also removes:
+It always removes the systemd service(s), the sudoers rule and Aerodrome's
+system helper, the Python virtual environment, runtime files
+(`.tracker.pid`, `__pycache__`) and staged updates (`update/`). `--purge`
+also removes:
 
 - the database (wherever `data.db_file` points), its `-wal`/`-shm` files,
   its `.pre-restore` safety copies and the daily-summary state file;
@@ -1052,7 +1117,11 @@ staged updates (`update/`). `--purge` also removes:
 - the logs;
 - `config.yaml` and its backups (`config.yaml.bak.*`,
   `ntfy-server.yml.from-backup.*`);
-- a local ntfy server Aerodrome installed, with its cached messages.
+- a local ntfy server Aerodrome installed, with its cached messages (in
+  `/var/lib/aerodrome-ntfy`, and in `/var/lib/ntfy` from before v3.4.150)
+  and `/etc/ntfy/server.yml.pre-v6`, the copy of your config kept when it
+  moved to its restricted setup. `/var/cache/ntfy` belongs to ntfy's own
+  package and is never purged.
 
 A database or log folder you keep *outside* the install folder is handled
 file by file: from a log folder elsewhere only Aerodrome's own
@@ -1089,9 +1158,8 @@ restart-required settings (receiver IP, web port, etc.) show an amber
 banner with a "Restart now" button.
 
 The install script sets up a targeted `sudoers.d` rule so the
-"Restart now" button works without a password. This rule only permits
-restarting the `aerodrome` service — nothing else. It's removed
-automatically on uninstall.
+"Restart now" button works without a password (see *System permissions*
+for everything it allows). It's removed automatically on uninstall.
 
 **Option 2 — Edit the YAML directly**
 
@@ -1383,7 +1451,27 @@ notifications:
    port 2586, bind 0.0.0.0 so your phone on the same LAN can
    subscribe directly. For remote access, use
    [an overlay network](#remote-access-optional) rather than
-   port-forwarding.
+   port-forwarding. The one-click install and upgrade need direct
+   internet access from the server: they don't use a proxy.
+
+**The local ntfy server's setup (v3.4.150).** Aerodrome's ntfy runs as an
+unprivileged, sandboxed service: a temporary system account of its own
+(systemd's `DynamicUser`), a read-only view of the system, and its message
+cache in its own private folder, `/var/lib/aerodrome-ntfy` (only root and
+ntfy can see it). Its unit and `server.yml` are written together by
+Aerodrome's system helper, which checks after each restart that ntfy
+answers again: when a settings change or the move fails that check, it
+puts the previous files back (an upgrade or a first install that fails it
+is reported, and keeps its files). A change cut off part-way — the helper
+stopped, or Aerodrome restarted meanwhile — is settled the next time the
+helper acts on the server (a save, Upgrade, the permissions refresh): kept
+once ntfy answers on it, put back when it doesn't (a first install keeps
+its files). An install made before v3.4.150 moves to this
+setup when the permissions refresh for that release runs, or the next
+time you save its settings in the Notifications tab; until then it keeps
+running as root on its older setup (where the helper upgrades it only to
+the latest ntfy release). Messages it had cached before the move aren't
+carried over.
 
 **How it works: Android vs iOS**
 
@@ -1440,7 +1528,13 @@ empty with a note under it; enter the address again.
 listen address and the iPhone relay) whenever you change the address
 or the relay. If you've added your own settings to that file — an
 `auth-file`, say — saving from the Notifications tab names them and
-asks before removing them; if you cancel, nothing changes.
+asks before removing them; if you cancel, nothing changes. The
+permissions refresh doesn't remove them either: it leaves such a server on
+its previous setup and prints the one command that finishes the move,
+naming the settings it would remove, for example
+`sudo /usr/local/libexec/aerodrome/aerodrome-helper ntfy-migrate --drop-custom-keys auth-file`.
+Your file is kept as `/etc/ntfy/server.yml.pre-v6` (readable by root only)
+whenever a move removes settings.
 Aerodrome keeps the listen address only as `0.0.0.0:PORT`,
 `127.0.0.1:PORT` or `:PORT`; if you set another one by hand, the
 Notifications tab says so when you save — put it back to one of those
@@ -1754,7 +1848,8 @@ aerodrome/
 ├── server.py               # FastAPI web server and API
 ├── config_validator.py     # Strict field validation for config updates
 ├── notifier.py             # Push notification dispatch (ntfy)
-├── ntfy_installer.py       # One-click local ntfy install/upgrade/uninstall
+├── ntfy_installer.py       # One-click local ntfy install/upgrade/uninstall (through the helper)
+├── privhelper.py           # The one module that runs sudo: the system helper, restart, rules read
 ├── designators.py          # ICAO airline + aircraft-type code → friendly name
 ├── config.yaml             # All settings
 ├── config.yaml.example     # Reference defaults (used for auto-merging new keys on upgrade)
@@ -1779,7 +1874,9 @@ aerodrome/
 │   ├── SEARCH_SYNTAX.md    # Search parser tokens reference
 │   ├── Aerodrome_Overview.pdf  # Shareable project overview
 │   └── screenshot-*.png    # UI screenshots
-├── scripts/                # Developer tooling (not run at service runtime)
+├── scripts/                # Developer tooling (not run at service runtime), plus:
+│   ├── aerodrome-helper    # The system helper install.sh installs to /usr/local/libexec/aerodrome/
+│   ├── recover-sudoers.sh  # Refreshes Aerodrome's system permissions (hands off to install.sh)
 │   ├── README.md           # What's in here and how to run it
 │   ├── screenshots.py      # Regenerates docs/screenshot-*.png from the templates
 │   ├── build_overview_pdf.py  # Regenerates docs/Aerodrome_Overview.pdf
@@ -1813,7 +1910,8 @@ permission rule are still registered. Remove them, then re-run the installer
 
 ```bash
 sudo systemctl disable --now aerodrome
-sudo rm -f /etc/systemd/system/aerodrome.service /etc/sudoers.d/aerodrome
+sudo rm -f /etc/systemd/system/aerodrome.service /etc/sudoers.d/aerodrome \
+           /usr/local/libexec/aerodrome/aerodrome-helper
 sudo systemctl daemon-reload
 ```
 

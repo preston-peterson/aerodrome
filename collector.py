@@ -1,4 +1,4 @@
-# Version: 3.4.149
+# Version: 3.4.150
 """
 collector.py — ADS-B data fetcher and classifier.
 
@@ -25,6 +25,8 @@ from distance import haversine as _dist_haversine
 # v3.4.138: the shared hex→tail resolver queue. Imports nothing from this
 # module at load time (its worker imports collector lazily), so no cycle.
 import hexdb_resolver
+# v3.4.150: the feeder's port is moved by Aerodrome's system helper.
+import privhelper
 
 logger = logging.getLogger("adsb.collector")
 
@@ -204,9 +206,10 @@ def _port_in_use(port: int) -> bool:
 
 def _attempt_demo_port_recovery(config: dict):
     """Once-per-process attempt to recover from the v3.4.40 non-ADS-B
-    wedge state by walking the feeder-port fallback chain, rewriting
-    the feeder unit file + config.yaml, mutating in-memory config, and
-    restarting the feeder service.
+    wedge state by walking the feeder-port fallback chain, moving the
+    feeder to the free port (the system helper's feeder-set-port: the
+    unit's --port, a daemon-reload and a feeder restart), then writing
+    config.yaml and mutating in-memory config.
 
     Preconditions checked here (so callers can fire the trigger
     indiscriminately):
@@ -219,9 +222,9 @@ def _attempt_demo_port_recovery(config: dict):
     updated so a future restart picks up the same port.
 
     Returns the new port on success, or None if recovery failed for
-    any reason (preconditions, all ports taken, sudo failure, write
-    failure, etc). Logging is verbose so journal log shows what was
-    attempted and why if anything didn't work.
+    any reason (preconditions, all ports taken, a helper failure, a
+    write failure, etc). Logging is verbose so journal log shows what
+    was attempted and why if anything didn't work.
 
     The once-per-process guard is set regardless of outcome, so we
     don't keep retrying a failing recovery in tight loop. A service
@@ -271,62 +274,48 @@ def _attempt_demo_port_recovery(config: dict):
 
     logger.info("Auto-recovery: selected port %d", new_port)
 
-    # v3.4.43: validate-all-then-write ordering. Compute both new file
-    # contents up front; if EITHER computation fails, abort BEFORE any
-    # disk writes happen. The old v3.4.42 ordering wrote the unit file
-    # first, then validated the yaml edit — if the yaml edit failed, we
-    # left the install with a unit-file-and-config disagreement that
-    # was worse than the pre-recovery state.
-
-    # Read the existing feeder unit content (world-readable; no sudo
-    # needed for read) and substitute the --port flag value. Bounded
-    # regex — only changes existing `--port N` patterns.
-    try:
-        current_unit = unit_path.read_text()
-    except Exception as e:
-        logger.error("Auto-recovery: could not read feeder unit: %s", e)
-        return None
-    new_unit = re.sub(r"--port\s+\d+", f"--port {new_port}", current_unit)
-    if new_unit == current_unit:
-        logger.warning(
-            "Auto-recovery: feeder unit had no --port flag to replace; "
-            "skipping unit-file edit. The feeder will continue using "
-            "whatever port its current ExecStart specifies."
-        )
-
     # Read + compute the config.yaml edit. If the structure can't be
-    # found (malformed YAML, flow style, etc), abort — the unit file
-    # hasn't been touched yet, so the install is still in the
-    # pre-recovery state (consistent with itself, just wedged).
+    # found (malformed YAML, flow style, etc), abort — the feeder hasn't
+    # been touched yet, so the install is still in the pre-recovery state
+    # (consistent with itself, just wedged).
     cfg_path = pathlib.Path(config["data"].get("config_path") or "config.yaml")
     if not cfg_path.is_absolute():
         cfg_path = pathlib.Path(__file__).parent / cfg_path
     # v3.4.148: the config.yaml read-modify-write holds config_io's
     # CONFIG_LOCK (Settings saves run on other threads), and the new file is
-    # staged before the unit file is touched (see _demo_port_recovery_write).
-    # The feeder restart (up to 25 s) runs after the lock is released.
+    # staged before the feeder is touched (see _demo_port_recovery_write).
     import config_io
     staged = []
     with config_io.CONFIG_LOCK:
         try:
-            port = _demo_port_recovery_write(config, unit_path, current_unit, new_unit,
-                                             cfg_path, new_port, staged)
+            port = _demo_port_recovery_write(config, cfg_path, new_port, staged)
         finally:
             for tmp in staged:            # not committed: drop the staged file
                 config_io.discard(tmp)
-    if port is None:
-        return None
-    return _restart_demo_feeder(config, port)
+    if port is not None:
+        logger.info(
+            "Auto-recovery: feeder moved to port %d. Next poll will use "
+            "http://%s:%d%s — Status card should clear within ~%ds.",
+            port, config["receiver"]["ip"], port,
+            config["receiver"]["path"], config["receiver"]["poll_interval"],
+        )
+    return port
 
 
-def _demo_port_recovery_write(config, unit_path, current_unit, new_unit, cfg_path,
-                              new_port, staged):
+def _demo_port_recovery_write(config, cfg_path, new_port, staged):
     """The writes of _attempt_demo_port_recovery, under CONFIG_LOCK. Order:
-    stage config.yaml (every step that can fail for lack of space) → write
-    the unit file → commit config.yaml (a rename) — so a full disk aborts
-    before the unit file is touched. `staged` holds a staged temp file
-    until it is committed; the caller discards whatever is left in it.
-    Returns the new port (the caller restarts the feeder), or None."""
+    stage config.yaml (every step that can fail for lack of space) → the
+    helper moves the feeder (unit, daemon-reload, restart; it puts the old
+    port back if the feeder doesn't restart) → commit config.yaml (a
+    rename) — so config.yaml changes only after the feeder moved, and a
+    full disk aborts before the feeder is touched. `staged` holds a staged
+    temp file until it is committed; the caller discards whatever is left
+    in it. Returns the new port, or None.
+
+    If the run stops between the helper and the commit, config.yaml keeps
+    the old port while the feeder serves the new one; the next recovery
+    run (the next start) finds that port busy too, picks the next free
+    one and leaves the two in step again."""
     import config_io
     # v3.4.149: not while a restore waits for its restart — the restart
     # switches config.yaml to the backup's (and the feeder unit would then
@@ -360,28 +349,18 @@ def _demo_port_recovery_write(config, unit_path, current_unit, new_unit, cfg_pat
                      "BEFORE any writes; the install is unchanged.", e)
         return None
 
-    # Both contents validated. Now do the writes.
-    # Write the unit file via `sudo tee` (the v3.4.42 sudoers rule
-    # grants exactly this one path). tee reads from stdin, writes to
-    # argv[1]; stdout is captured-and-discarded so we don't echo the
-    # unit file to the log.
+    # config.yaml is staged. Now move the feeder: the helper checks the
+    # unit is root's and has exactly one --port, swaps the number, reloads
+    # systemd and restarts the feeder.
     try:
-        result = subprocess.run(
-            ["sudo", "tee", str(unit_path)],
-            input=new_unit, capture_output=True, text=True, timeout=10,
-        )
-        if result.returncode != 0:
-            logger.error(
-                "Auto-recovery: sudo tee failed (rc=%d). Stderr: %s. If "
-                "you see 'sudo: a password is required', run the command "
-                "shown on Aerodrome's Updates page, or `sudo bash "
-                "<install>/scripts/recover-sudoers.sh`, on this server — it "
-                "refreshes Aerodrome's system permissions only.",
-                result.returncode, (result.stderr or "").strip(),
-            )
-            return None
-    except Exception as e:
-        logger.error("Auto-recovery: unit-file write raised: %s", e)
+        privhelper.run_helper("feeder-set-port", str(new_port))
+    except privhelper.HelperError as e:
+        hint = ""
+        if isinstance(e, privhelper.HelperUnavailable):
+            hint = (f" Run `{e.command}` on this server (the command Aerodrome's Updates "
+                    f"page shows) — it refreshes Aerodrome's system permissions only.")
+        logger.error("Auto-recovery: couldn't move the demo feeder to port %d: %s.%s "
+                     "config.yaml was left unchanged.", new_port, e, hint)
         return None
 
     # Write config.yaml. Pre-validated above, so this should succeed
@@ -390,13 +369,10 @@ def _demo_port_recovery_write(config, unit_path, current_unit, new_unit, cfg_pat
         config_io.commit(staged.pop(), cfg_path)
     except Exception as e:
         logger.error(
-            "Auto-recovery: config.yaml write failed AFTER unit-file "
-            "write succeeded. Install is now in a half-edited state. "
-            "Manual recovery: re-run the auto-recovery's intended edit "
-            "by setting receiver.port to %d in /opt/aerodrome/config.yaml "
-            "and running 'sudo systemctl restart aerodrome'. Underlying "
-            "error: %s",
-            new_port, e,
+            "Auto-recovery: config.yaml write failed AFTER the feeder moved to "
+            "port %d. Manual recovery: set receiver.port to %d in config.yaml "
+            "and run 'sudo systemctl restart aerodrome'. Underlying error: %s",
+            new_port, new_port, e,
         )
         return None
 
@@ -408,33 +384,6 @@ def _demo_port_recovery_write(config, unit_path, current_unit, new_unit, cfg_pat
     config["receiver"]["port"] = new_port
     return new_port
 
-
-def _restart_demo_feeder(config, new_port):
-    """After _demo_port_recovery_write (and outside CONFIG_LOCK): pick up
-    the new unit file and restart the feeder. Returns new_port, or None."""
-    # daemon-reload to pick up the new unit file, then restart the feeder.
-    # NOT restarting aerodrome itself — the in-memory config mutation
-    # above means the next poll uses the new URL, no process restart
-    # needed. (Restarting aerodrome from inside aerodrome's own process
-    # would kill the current poll mid-execution; in-memory mutation
-    # avoids that entire class of problem.)
-    try:
-        subprocess.run(["sudo", "systemctl", "daemon-reload"],
-                       check=True, timeout=10)
-        subprocess.run(["sudo", "systemctl", "restart",
-                        "aerodrome-synthetic-feeder"],
-                       check=True, timeout=15)
-    except Exception as e:
-        logger.error("Auto-recovery: systemctl restart failed: %s", e)
-        return None
-
-    logger.info(
-        "Auto-recovery: feeder moved to port %d. Next poll will use "
-        "http://%s:%d%s — Status card should clear within ~%ds.",
-        new_port, config["receiver"]["ip"], new_port,
-        config["receiver"]["path"], config["receiver"]["poll_interval"],
-    )
-    return new_port
 
 # v2.50.31: capacity-alert state machine. Updated by check_capacity_alerts()
 # at most once every CAPACITY_CHECK_INTERVAL_SEC seconds (60s by default).

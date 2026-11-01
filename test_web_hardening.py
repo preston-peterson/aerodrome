@@ -12,7 +12,7 @@ from starlette.requests import Request
 import collector
 import photo_resolver
 import server
-from config_validator import validate_config, LIVE_KEYS, requires_restart
+from config_validator import _validate_outbound_url, validate_config, LIVE_KEYS, requires_restart
 
 REPO = Path(__file__).resolve().parent
 
@@ -23,6 +23,42 @@ def _req(host, accept="application/json", server_addr=("192.0.2.10", 8000)):
         headers.append((b"host", host.encode()))
     return Request({"type": "http", "method": "GET", "path": "/", "headers": headers,
                     "query_string": b"", "server": server_addr})
+
+
+class TestOutboundUrlGuard(unittest.TestCase):
+    """The notification URL's address check. Loopback stays allowed even where
+    localhost also resolves to ::1, which Python's ipaddress calls reserved."""
+
+    @staticmethod
+    def _resolves_to(*addrs):
+        return mock.patch("config_validator.socket.getaddrinfo", return_value=[
+            (0, 0, 0, "", (a, 0)) for a in addrs])
+
+    def test_localhost_with_both_loopback_addresses_is_allowed(self):
+        with self._resolves_to("127.0.0.1", "::1"):
+            self.assertEqual(_validate_outbound_url("http://localhost:2586/t", "u"), [])
+
+    def test_localhost_with_only_ipv6_loopback_is_allowed(self):
+        with self._resolves_to("::1"):
+            self.assertEqual(_validate_outbound_url("http://localhost:2586/t", "u"), [])
+
+    def test_the_save_accepts_it_where_localhost_is_also_ipv6(self):
+        with self._resolves_to("127.0.0.1", "::1"):
+            errors = validate_config({"notifications": {"url": "http://localhost:2586/t"}})
+        self.assertFalse([e for e in errors if e[0] == "notifications.url"], errors)
+
+    def test_blocked_addresses_stay_blocked(self):
+        for addr in ("169.254.169.254", "fe80::1", "224.0.0.1", "ff02::1", "0.0.0.0", "::", "240.0.0.1"):
+            with self.subTest(addr=addr), self._resolves_to(addr):
+                self.assertTrue(_validate_outbound_url("http://h.example.com/t", "u"))
+
+    def test_loopback_doesnt_excuse_a_blocked_address_beside_it(self):
+        with self._resolves_to("::1", "169.254.169.254"):
+            self.assertTrue(_validate_outbound_url("http://h.example.com/t", "u"))
+
+    def test_ordinary_addresses_stay_allowed(self):
+        with self._resolves_to("192.0.2.10", "198.51.100.7"):
+            self.assertEqual(_validate_outbound_url("http://h.example.com/t", "u"), [])
 
 
 class TestHostAllowed(unittest.TestCase):

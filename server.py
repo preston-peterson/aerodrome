@@ -1,4 +1,4 @@
-# Version: 3.4.149
+# Version: 3.4.150
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -58,6 +58,9 @@ import config_io
 # v3.4.149: a full-backup restore is checked and staged here, and switched
 # in at the next start (restore_io).
 import restore_io
+# v3.4.150: the one module that runs sudo (the system helper, the restart
+# and the sudoers read).
+import privhelper
 
 logger = logging.getLogger("adsb.server")
 
@@ -491,6 +494,13 @@ class _SingleRun:
 # with a fresh one (one app per process in production).
 _MAINT = _SingleRun()
 
+# What ends the newest app's background schedulers (the daily summary and
+# the update check). get_app() sets the one before it, so the schedulers of
+# an app a newer one replaced (a test run builds many in one process;
+# production builds one) end instead of waking to act on the newer app's
+# settings and database.
+_SCHEDULERS_STOP: Optional[threading.Event] = None
+
 # How long an operation that requested a restart keeps the lock.
 _RESTART_HOLD_SEC = 120
 
@@ -693,13 +703,13 @@ def _restart_service():
     import subprocess
     _confirm_update_before_restart()
     cmds = [
-        ["sudo", "-n", "systemctl", "restart", "--no-block", "aerodrome"],
-        ["sudo", "-n", "systemctl", "restart", "aerodrome"],
+        ["systemctl", "restart", "--no-block", "aerodrome"],
+        ["systemctl", "restart", "aerodrome"],
     ]
     last_note = ""
     for cmd in cmds:
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            result = privhelper.run_sudo(cmd, timeout=10)
             if result.returncode == 0:
                 return True, ""
             err = (result.stderr or "").strip()
@@ -2267,14 +2277,16 @@ def _sudoers_recovery_command(update_root: Path,
 def _live_recovery_command(install_dir: Optional[Path] = None) -> str:
     """The command that refreshes the permissions of the INSTALLED release
     (no update staged): its own scripts/recover-sudoers.sh. It also picks up a
-    staged update's newer rules, if one is staged. Path is shell-quoted."""
-    import shlex
-    inst = install_dir or Path(__file__).resolve().parent
-    return f"sudo bash {shlex.quote(str(inst / 'scripts' / 'recover-sudoers.sh'))}"
+    staged update's newer rules, if one is staged. Path is shell-quoted.
+    (privhelper.live_recovery_command, for this file's install.)"""
+    return privhelper.live_recovery_command(install_dir or Path(__file__).resolve().parent)
 
 
 def get_app(config: dict, config_path: str) -> FastAPI:
-    global CONFIG, CONFIG_PATH, _RESOLVED_WATCHLIST_TAILS, _MAINT
+    global CONFIG, CONFIG_PATH, _RESOLVED_WATCHLIST_TAILS, _MAINT, _SCHEDULERS_STOP
+    if _SCHEDULERS_STOP is not None:
+        _SCHEDULERS_STOP.set()    # the replaced app's schedulers end at their wait
+    _SCHEDULERS_STOP = schedulers_stop = threading.Event()
     CONFIG = config
     CONFIG_PATH = config_path
     _MAINT = _SingleRun()     # v3.4.147: one maintenance lock per app
@@ -3594,11 +3606,13 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         return ok, "sent" if ok else "suppressed (check notifications log)"
 
     def _daily_summary_scheduler():
-        """Background thread body — ticks every 60s."""
+        """Background thread body — ticks every 60s, until a newer
+        get_app() replaces this app (schedulers_stop)."""
         import time as _t
         # First tick: sleep a moment so we don't fire in the middle of
         # a config reload / service restart.
-        _t.sleep(10.0)
+        if schedulers_stop.wait(10.0):
+            return
         logger.info("Daily-summary scheduler started")
 
         while True:
@@ -3635,7 +3649,8 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
             # Tick once a minute. HH:MM has minute resolution; no point
             # checking more often.
-            _t.sleep(60.0)
+            if schedulers_stop.wait(60.0):
+                return
 
     _daily_summary_thread = _threading.Thread(
         target=_daily_summary_scheduler,
@@ -3706,6 +3721,14 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             return False
         return l > r
 
+    def _update_state_db():
+        """The sightings database, for the update check's state row — opened
+        without creating it: a check that runs while the file is gone
+        (switch-to-real deletes it before its restart) must not leave an
+        empty database in its place."""
+        uri = Path(CONFIG["data"]["db_file"]).resolve().as_uri() + "?mode=rw"
+        return _open_db_conn(uri, uri=True)
+
     def _get_update_state() -> dict:
         """Read the single-row update_state from SQLite. Returns dict with
         all five state fields; all may be None when the table is empty
@@ -3718,8 +3741,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             "last_known_latest_ts": None,
         }
         try:
-            db_path = CONFIG["data"]["db_file"]
-            conn = _open_db_conn(db_path)
+            conn = _update_state_db()
             row = conn.execute(
                 "SELECT last_check_ts, last_check_result, last_check_error, "
                 "last_known_latest, last_known_latest_ts "
@@ -3753,8 +3775,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         successful check: N hours ago' alongside the error message."""
         now = int(time.time())
         try:
-            db_path = CONFIG["data"]["db_file"]
-            conn = _open_db_conn(db_path)
+            conn = _update_state_db()
             if result == "success":
                 conn.execute(
                     "INSERT OR REPLACE INTO update_state "
@@ -3946,10 +3967,11 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         _perform_github_check() when the interval has elapsed and updates
         are enabled. Modeled on _daily_summary_scheduler. Always starts
         regardless of enabled flag so enabling at runtime via config edit
-        works without service restart."""
-        import time as _t
+        works without service restart. Ends when a newer get_app()
+        replaces this app (schedulers_stop)."""
         # Settle delay: avoid firing in the middle of a service restart
-        _t.sleep(15.0)
+        if schedulers_stop.wait(15.0):
+            return
         logger.info("Update-check scheduler started")
 
         while True:
@@ -3959,7 +3981,8 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                     _perform_github_check()
             except Exception as e:
                 logger.warning(f"Update-check scheduler tick failed: {e}")
-            _t.sleep(_seconds_until_next_check())
+            if schedulers_stop.wait(_seconds_until_next_check()):
+                return
 
     _update_check_thread = _threading.Thread(
         target=_update_check_scheduler,
@@ -10334,8 +10357,23 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
     # --- ntfy installer ---
     # Endpoints for the "Install local ntfy" affordance in the Notifications
-    # tab. The server calls into ntfy_installer.py which shells out to sudo
-    # for privileged operations (install.sh sets up the sudoers rule).
+    # tab. The server calls into ntfy_installer.py, whose every system change
+    # is one call to Aerodrome's root-owned helper (privhelper.run_helper;
+    # install.sh installs it and the sudoers rule that names it).
+
+    def _ntfy_reply(result):
+        """An ntfy_installer result as the response: as is when ok; a
+        refusal or failure by its code (v3.4.150 adds the helper's): 409
+        custom_keys / busy, 202 still_running (the helper may still be at
+        it; check the status again), 500 helper_unavailable (with the
+        refresh command), else 400. Both error and message are set."""
+        if result.get("ok"):
+            return result
+        content = dict(result)
+        content.setdefault("error", content.get("message"))
+        code = {"custom_keys": 409, "busy": 409, "still_running": 202,
+                "helper_unavailable": 500}.get(result.get("code"), 400)
+        return JSONResponse(status_code=code, content=content)
 
     @app.get("/api/ntfy/status")
     def ntfy_status():
@@ -10383,6 +10421,14 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                     "detected_lan_ip": lan_ip,
                     "detected_lan_ip_error": lan_ip_err,
                 }
+                # v3.4.150: still on the older root-run unit (status.legacy_unit):
+                # the command that finishes the move (saving in the tab does too).
+                if status.get("legacy_unit"):
+                    import shlex
+                    drop = cls.get("custom") or []
+                    current_config["migrate_command"] = (
+                        f"sudo {privhelper.HELPER} ntfy-migrate"
+                        + (f" --drop-custom-keys {shlex.quote(','.join(drop))}" if drop else ""))
             except Exception:
                 pass
         elif status.get("state") == "not_installed":
@@ -10438,11 +10484,8 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 validate_base_url(body.base_url)
             except ValueError as e:
                 return refuse(str(e))
-        result = install(port=body.port, bind=body.bind, topic=body.topic,
-                         base_url=body.base_url, upstream_relay=body.upstream_relay)
-        if not result.get("ok"):
-            return JSONResponse(status_code=400, content=result)
-        return result
+        return _ntfy_reply(install(port=body.port, bind=body.bind, topic=body.topic,
+                                   base_url=body.base_url, upstream_relay=body.upstream_relay))
 
     class NtfyConfigBody(BaseModel):
         # v2.40.5: partial-update semantics — None means "keep current value."
@@ -10478,15 +10521,9 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             except ValueError as e:
                 return JSONResponse(status_code=400, content={
                     "ok": False, "error": str(e), "message": str(e)})
-        result = update_config(base_url=body.base_url,
-                               upstream_relay=body.upstream_relay,
-                               drop_custom_keys=body.drop_custom_keys)
-        if not result.get("ok"):
-            content = dict(result)
-            content.setdefault("error", content.get("message"))
-            code = 409 if result.get("code") == "custom_keys" else 400
-            return JSONResponse(status_code=code, content=content)
-        return result
+        return _ntfy_reply(update_config(base_url=body.base_url,
+                                         upstream_relay=body.upstream_relay,
+                                         drop_custom_keys=body.drop_custom_keys))
 
     @app.post("/api/ntfy/upgrade")
     def ntfy_upgrade():
@@ -10498,10 +10535,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             return JSONResponse(status_code=500, content={
                 "ok": False, "error": f"ntfy_installer module unavailable: {e}"
             })
-        result = upgrade()
-        if not result.get("ok"):
-            return JSONResponse(status_code=400, content=result)
-        return result
+        return _ntfy_reply(upgrade())
 
     class NtfyUninstallBody(BaseModel):
         purge_data: bool = False
@@ -10511,18 +10545,15 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         """Remove a local aerodrome-managed ntfy install. Refuses to touch
         external (user-managed) installs.
 
-        v2.41.0: optional purge_data flag wipes /var/lib/ntfy/cache.db
-        and related files. Default False so reinstalls preserve history."""
+        v2.41.0: optional purge_data flag deletes ntfy's cached messages.
+        Default False so reinstalls preserve history."""
         try:
             from ntfy_installer import uninstall
         except Exception as e:
             return JSONResponse(status_code=500, content={
                 "ok": False, "error": f"ntfy_installer module unavailable: {e}"
             })
-        result = uninstall(purge_data=body.purge_data)
-        if not result.get("ok"):
-            return JSONResponse(status_code=400, content=result)
-        return result
+        return _ntfy_reply(uninstall(purge_data=body.purge_data))
 
     @app.post("/api/restart")
     def restart_service():
@@ -11073,11 +11104,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             # the caller will treat this as "can't verify, allow apply" so
             # we don't lock users out forever.
             try:
-                import subprocess
-                result = subprocess.run(
-                    ["sudo", "-n", "cat", str(path)],
-                    capture_output=True, text=True, timeout=5,
-                )
+                result = privhelper.run_sudo(["cat", str(path)], timeout=5)
                 if result.returncode != 0:
                     return None
                 for line in result.stdout.splitlines():
@@ -11090,6 +11117,47 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         except Exception:
             return None
 
+    def _sudoers_state():
+        """(v3.4.150) The live drop-in: ("absent", None) when it is known
+        not to be there, ("unreadable", None) when it can't be read (sudo
+        refused the cat, or /etc/sudoers.d isn't searchable for this
+        account), ("ok", N) with its SUDOERS_VERSION.
+        Where /etc/sudoers.d isn't searchable for this account (Fedora/RHEL
+        ship it 0750), a missing drop-in looks unreadable too: when sudo
+        won't show it and there is no helper either, it counts as absent.
+        (A drop-in sudo won't let this account read is one from before
+        v2.40.1, which never ran on those distros: they came in v3.2.0.)"""
+        try:
+            os.stat(SUDOERS_DROPIN)
+            hidden = False
+        except FileNotFoundError:
+            return "absent", None
+        except OSError:
+            hidden = True
+        n = _read_sudoers_version(SUDOERS_DROPIN)
+        if n is None and hidden and not os.path.lexists(privhelper.HELPER):
+            return "absent", None
+        return ("unreadable", None) if n is None else ("ok", n)
+
+    def _effective_rules_version(n: int):
+        """(version the live rules really give, helper version or None).
+        From version 6 the rules name Aerodrome's system helper, so they are
+        only as new as the helper they name (its line 2, read without sudo;
+        0 when it's missing)."""
+        if n < 6:
+            return n, None
+        helper = privhelper.helper_file_version()
+        return min(n, helper), helper
+
+    def _rules_reason(wanted: int, rules: int, helper: Optional[int], what: str) -> str:
+        if helper is not None and helper < rules:
+            have = "is missing" if helper == 0 else f"is at version {helper}"
+            return (f"{what} requires sudoers version {wanted}; /etc/sudoers.d/aerodrome is "
+                    f"at version {rules}, but Aerodrome's system helper {have}. "
+                    f"Run the command below on the server, then press Re-check.")
+        return (f"{what} requires sudoers version {wanted}, but "
+                f"/etc/sudoers.d/aerodrome is at version {rules}. "
+                f"Run the command below on the server, then press Re-check.")
 
     def _check_sudoers_drift(update_root: Path) -> dict:
         """Compare the SUDOERS_VERSION in the staged release's install.sh
@@ -11103,9 +11171,14 @@ def get_app(config: dict, config_path: str) -> FastAPI:
               assume fine (pre-v2.40.1 deployments where the aerodrome user
               has no sudoers grant to read it; we don't want to lock users
               out forever on first upgrade)
+          needs_refresh=False, can_verify=False, managed=False — (v3.4.150)
+              no drop-in at all: Aerodrome doesn't manage this host's
+              permissions (a manual install, no sudo); never blocks
+        v3.4.150: live rules of version 6 or later count only as far as the
+        system helper they name (_effective_rules_version): live_version is
+        that effective version; rules_version / helper_version the parts.
         """
         staged_installer = update_root / "install.sh"
-        live_sudoers = SUDOERS_DROPIN
 
         staged_ver = _read_sudoers_version(staged_installer)
         if staged_ver is None:
@@ -11130,8 +11203,17 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 "live_version": None,
             }
 
-        live_ver = _read_sudoers_version(live_sudoers)
-        if live_ver is None:
+        state, rules_ver = _sudoers_state()
+        if state == "absent":
+            return {
+                "can_verify": False,
+                "needs_refresh": False,
+                "managed": False,
+                "reason": "Aerodrome doesn't manage system permissions on this host.",
+                "staged_version": staged_ver,
+                "live_version": None,
+            }
+        if state == "unreadable":
             # Couldn't read the live file at all. Most common reason:
             # pre-v2.40.1 sudoers grant doesn't include a rule letting us
             # sudo-cat this file. We don't want to hard-block the upgrade
@@ -11147,6 +11229,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 "live_version": None,
             }
 
+        live_ver, helper_ver = _effective_rules_version(rules_ver)
         if live_ver < staged_ver:
             # v3.4.44: recovery_command points at the STAGED release, not
             # the live one — /opt/aerodrome/install.sh is the LIVE install.sh,
@@ -11159,13 +11242,11 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             return {
                 "can_verify": True,
                 "needs_refresh": True,
-                "reason": (
-                    f"Staged release requires sudoers version {staged_ver}, "
-                    f"but /etc/sudoers.d/aerodrome is at version {live_ver}. "
-                    f"Run the command below on the server, then press Re-check."
-                ),
+                "reason": _rules_reason(staged_ver, rules_ver, helper_ver, "Staged release"),
                 "staged_version": staged_ver,
                 "live_version": live_ver,
+                "rules_version": rules_ver,
+                "helper_version": helper_ver,
                 "recovery_command": _sudoers_recovery_command(update_root),
             }
 
@@ -11177,6 +11258,8 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             "reason": "Sudoers version matches.",
             "staged_version": staged_ver,
             "live_version": live_ver,
+            "rules_version": rules_ver,
+            "helper_version": helper_ver,
         }
 
     # v2.41.1 regression guard: at server startup, verify _read_sudoers_version
@@ -11212,9 +11295,15 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     def _check_live_sudoers_drift() -> dict:
         """Compare /etc/sudoers.d/aerodrome against the currently-installed
         install.sh. Same return shape as _check_sudoers_drift for consistency
-        with the existing applyLocal frontend code."""
+        with the existing applyLocal frontend code.
+
+        v3.4.150: no drop-in at all → can_verify False (no banner: a manual
+        install, or no sudo). An unreadable one, while this release expects
+        version 6 or later → ask the helper itself (`version`, through sudo):
+        an answer of the expected version is fine, anything else raises the
+        banner with the refresh command. Readable rules count only as far as
+        the helper they name (_effective_rules_version)."""
         installed = Path(__file__).parent / "install.sh"
-        live_sudoers = SUDOERS_DROPIN
         recovery_command = _live_recovery_command()
         expected_ver = _read_sudoers_version(installed)
         if expected_ver is None or expected_ver == 0:
@@ -11227,29 +11316,54 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 "install_dir": str(installed.parent),
                 "recovery_command": recovery_command,
             }
-        live_ver = _read_sudoers_version(live_sudoers)
-        if live_ver is None:
+        state, rules_ver = _sudoers_state()
+        if state == "absent":
             return {
                 "can_verify": False,
                 "needs_refresh": False,
-                "reason": "Cannot read /etc/sudoers.d/aerodrome. "
-                          "Run the command below on the server to set up the permission check.",
+                "managed": False,
+                "reason": "Aerodrome doesn't manage system permissions on this host.",
                 "expected_version": expected_ver,
                 "live_version": None,
                 "install_dir": str(installed.parent),
                 "recovery_command": recovery_command,
             }
+        helper_ver = None
+        if state == "unreadable":
+            if expected_ver < 6:
+                return {
+                    "can_verify": False,
+                    "needs_refresh": False,
+                    "reason": "Cannot read /etc/sudoers.d/aerodrome. "
+                              "Run the command below on the server to set up the permission check.",
+                    "expected_version": expected_ver,
+                    "live_version": None,
+                    "install_dir": str(installed.parent),
+                    "recovery_command": recovery_command,
+                }
+            try:
+                probe = privhelper.run_helper("version")
+                live_ver = rules_ver = helper_ver = int(probe.get("version") or 0)
+            except (privhelper.HelperError, ValueError, TypeError):
+                live_ver = rules_ver = helper_ver = 0
+        else:
+            live_ver, helper_ver = _effective_rules_version(rules_ver)
         if live_ver < expected_ver:
+            if state == "unreadable":
+                reason = ("Cannot read /etc/sudoers.d/aerodrome, and Aerodrome's system helper "
+                          + ("didn't answer" if not live_ver else f"is at version {live_ver}")
+                          + f" (this release expects version {expected_ver}). "
+                          "Run the command below on the server, then press Re-check.")
+            else:
+                reason = _rules_reason(expected_ver, rules_ver, helper_ver, "Installed Aerodrome")
             return {
                 "can_verify": True,
                 "needs_refresh": True,
-                "reason": (
-                    f"Installed Aerodrome expects sudoers version {expected_ver}, "
-                    f"but /etc/sudoers.d/aerodrome is at version {live_ver}. "
-                    f"Run the command below on the server, then press Re-check."
-                ),
+                "reason": reason,
                 "expected_version": expected_ver,
                 "live_version": live_ver,
+                "rules_version": rules_ver,
+                "helper_version": helper_ver,
                 "install_dir": str(installed.parent),
                 "recovery_command": recovery_command,
             }
@@ -11259,6 +11373,8 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             "reason": "Sudoers version matches installed Aerodrome.",
             "expected_version": expected_ver,
             "live_version": live_ver,
+            "rules_version": rules_ver,
+            "helper_version": helper_ver,
             "install_dir": str(installed.parent),
             "recovery_command": recovery_command,
         }
@@ -12297,7 +12413,11 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             abort without touching anything (defends against typo'd IPs
             taking the install offline). The new config is then built and
             validated — also before anything is touched.
-        Step 1 — stop + disable + remove the synthetic-feeder service.
+        Step 1 — stop + disable + remove the synthetic-feeder service
+            (v3.4.150: the system helper's feeder-remove). If the helper
+            can't do it, the step is marked failed with the command that
+            finishes it and the switch carries on: the feeder only
+            listens on 127.0.0.1, so a leftover one is harmless.
         Step 2 — nuke aircraft_history.db (+ -wal, -shm) to clear demo
             sightings from stats forever.
         Step 3 — update config.yaml: watchlist=[], receiver.* to the
@@ -12314,7 +12434,6 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         nothing touched.
         """
         import os as _os
-        import subprocess as _subprocess
         import requests as _req
         import yaml as _yaml
 
@@ -12421,25 +12540,21 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             return {"ok": False, "error": msg, "steps": steps}
 
         # ----- Step 1: stop + disable + remove the feeder service -----
-        feeder_unit = "aerodrome-synthetic-feeder"
+        # v3.4.150: one helper call. A failure doesn't stop the switch (see
+        # the docstring); the step says how to finish it by hand.
+        feeder_warning = None
         try:
-            _subprocess.run(["sudo", "-n", "systemctl", "stop", feeder_unit],
-                            check=False, capture_output=True, timeout=15)
-            _subprocess.run(["sudo", "-n", "systemctl", "disable", feeder_unit],
-                            check=False, capture_output=True, timeout=15)
-            _subprocess.run(["sudo", "-n", "rm", "-f",
-                             f"/etc/systemd/system/{feeder_unit}.service"],
-                            check=False, capture_output=True, timeout=15)
-            _subprocess.run(["sudo", "-n", "systemctl", "daemon-reload"],
-                            check=False, capture_output=True, timeout=15)
+            privhelper.run_helper("feeder-remove")
             _step("stop_feeder_service", True,
                   "Synthetic feeder stopped, disabled, and removed.")
-        except Exception as e:
-            _step("stop_feeder_service", False, str(e))
-            config_io.discard(_staged_cfg)
-            return {"ok": False,
-                    "error": "Failed to remove feeder service.",
-                    "steps": steps}
+        except privhelper.HelperError as e:
+            remove = f"sudo {privhelper.HELPER} feeder-remove"
+            how = (f"run `{e.command}` on the server, then `{remove}`"
+                   if isinstance(e, privhelper.HelperUnavailable) else f"run `{remove}` on the server")
+            feeder_warning = (f"The demo feeder couldn't be removed ({e}). It is harmless — it "
+                              f"only listens on 127.0.0.1. To remove it, {how}.")
+            logger.warning("switch-to-real: %s", feeder_warning)
+            _step("stop_feeder_service", False, feeder_warning)
 
         # ----- Step 2: nuke the demo aircraft_history database -----
         # Per design: option A (nuke). The demo DB is full of synthetic
@@ -12489,10 +12604,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         # the pre-switch config.yaml after the demo database is gone.
         _confirm_update_before_restart()
         try:
-            _subprocess.run(
-                ["sudo", "-n", "systemctl", "restart", "--no-block", "aerodrome"],
-                check=False, capture_output=True, timeout=15,
-            )
+            privhelper.run_sudo(["systemctl", "restart", "--no-block", "aerodrome"], timeout=15)
             _step("restart_aerodrome", True,
                   "Aerodrome service restart requested.")
         except Exception as e:
@@ -12502,7 +12614,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                               "Run `sudo systemctl restart aerodrome` manually."),
                     "steps": steps}
 
-        return {"ok": True, "error": None, "steps": steps}
+        return {"ok": True, "error": None, "warning": feeder_warning, "steps": steps}
 
     # v2.53.0: dedicated aircraft detail page. URL pattern is path-based
     # (`/aircraft/{ICAO}`) so it's bookmarkable and shareable. Inline

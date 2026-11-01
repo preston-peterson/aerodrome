@@ -570,7 +570,8 @@ with mock.patch("subprocess.run", run):
         res["told"] = told(out)
         res["memory_unchanged"] = json.loads(json.dumps(server.CONFIG)) == before_cfg
 res["tee_or_restart_called"] = any(
-    c.args and any(x in ("tee", "restart") for x in c.args[0]) for c in run.call_args_list)
+    c.args and any(x in ("tee", "restart", "feeder-set-port", "feeder-remove") for x in c.args[0])
+    for c in run.call_args_list)
 print("RESULT " + json.dumps(res))
 '''
 
@@ -683,11 +684,12 @@ class TestWritersOnAFullDisk(_ChildCase):
 
 class TestDemoPortRecoveryLockHold(unittest.TestCase):
     """CONFIG_LOCK is held for the config.yaml read-modify-write and the
-    `sudo tee` between staging and committing it — not across the
-    daemon-reload and the feeder restart (up to 25 s more), during which
-    every Settings save (and a restore, on the event loop) waited."""
+    move of the feeder between staging and committing it. v3.4.150: the move
+    is one system-helper call (the unit's port, daemon-reload and the feeder
+    restart together), so the lock covers the restart too — a Settings save
+    made in between would otherwise be overwritten by the staged copy."""
 
-    def test_the_feeder_restart_runs_without_the_lock(self):
+    def test_the_feeder_moves_under_the_lock(self):
         import collector
         work = _tmpdir(self)
         cfgp = work / "config.yaml"
@@ -708,8 +710,8 @@ class TestDemoPortRecoveryLockHold(unittest.TestCase):
             return got[0]
 
         def run(argv, *a, **kw):
-            held[argv[1] if argv[1] != "systemctl" else argv[2]] = not free_from_another_thread()
-            return mock.Mock(returncode=0, stderr="", stdout="")
+            held[argv[3]] = not free_from_another_thread()
+            return mock.Mock(returncode=0, stderr="", stdout='{"ok": true, "port": 8080}\n')
         with mock.patch.object(collector, "_FEEDER_UNIT_PATH", str(work / "feeder.service")), \
                 mock.patch.object(collector, "_demo_recovery_attempted", False), \
                 mock.patch.object(collector, "_port_in_use", return_value=False), \
@@ -717,7 +719,7 @@ class TestDemoPortRecoveryLockHold(unittest.TestCase):
             port = collector._attempt_demo_port_recovery(cfg)
         self.assertIsNotNone(port)
         self.assertEqual(yaml.safe_load(cfgp.read_text())["receiver"]["port"], port)
-        self.assertEqual(held, {"tee": True, "daemon-reload": False, "restart": False})
+        self.assertEqual(held, {"feeder-set-port": True})
 
 
 # ===========================================================================

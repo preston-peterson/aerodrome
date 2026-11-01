@@ -10,6 +10,11 @@ carries the installed release's command in every reply shape. A missing or
 unreadable drop-in never blocks an apply (installs without the read grant
 must still be able to update).
 
+v3.4.150 (rules version 6): live rules of version 6 or later count only as
+far as the system helper they name (line 2 of the helper file, read without
+sudo); with no drop-in at all there is no banner; an unreadable one makes
+the banner ask the helper itself (`version`).
+
 Later releases that rework apply must keep this file green.
 
 Runs a COPY of this release's Python files from a temp install dir (one with
@@ -32,6 +37,7 @@ from unittest import mock
 import yaml
 
 import collector
+import privhelper
 from schema_migrations import apply_schema_migrations
 
 REPO = Path(__file__).resolve().parent
@@ -63,11 +69,13 @@ _REAL_RUN = subprocess.run
 
 
 class _Recorder:
-    """subprocess.run stand-in. `sudo -n cat <drop-in>` is answered per mode.
-    Anything that isn't sudo (an update's test-load, since v3.4.147) runs."""
+    """subprocess.run stand-in. `sudo -n cat <drop-in>` is answered per mode;
+    so is the helper's `version` (helper_reply: its stdout, None = sudo
+    refuses). Anything that isn't sudo (an update's test-load, since
+    v3.4.147) runs."""
 
     def __init__(self):
-        self.calls, self.cat_reply = [], None
+        self.calls, self.cat_reply, self.helper_reply = [], None, None
 
     def __call__(self, argv, *a, **k):
         argv = list(argv)
@@ -78,6 +86,10 @@ class _Recorder:
             if self.cat_reply is None:
                 return subprocess.CompletedProcess(argv, 1, "", "sudo: a password is required\n")
             return subprocess.CompletedProcess(argv, 0, self.cat_reply, "")
+        if argv[:3] == ["sudo", "-n", str(privhelper.HELPER)]:
+            if self.helper_reply is None:
+                return subprocess.CompletedProcess(argv, 1, "", "sudo: a password is required\n")
+            return subprocess.CompletedProcess(argv, 0, self.helper_reply, "")
         return subprocess.CompletedProcess(argv, 0, "", "")
 
 
@@ -117,7 +129,10 @@ class _GateCase(unittest.TestCase):
         cfg["watchlist"] = []
         cfgp = self.tmp / "config.yaml"
         cfgp.write_text(yaml.safe_dump(cfg))
+        self.helper = self.tmp / "fake-libexec" / "aerodrome-helper"
+        self.set_helper(None)
         for p in (mock.patch.object(self.srv, "SUDOERS_DROPIN", self.dropin),
+                  mock.patch.object(privhelper, "HELPER", self.helper),
                   mock.patch("subprocess.run", self.rec)):
             p.start()
             self.addCleanup(p.stop)
@@ -135,6 +150,13 @@ class _GateCase(unittest.TestCase):
         if text is not None:
             self.dropin.write_text(text)
             self.dropin.chmod(mode)
+
+    def set_helper(self, version):
+        """The installed helper file: line 2 carries its version (None: no helper)."""
+        self.helper.parent.mkdir(exist_ok=True)
+        self.helper.unlink(missing_ok=True)
+        if version is not None:
+            self.helper.write_text(f"#!/usr/bin/python3 -IS\n# PRIV_VERSION = {version}\n")
 
     def clear_update(self):
         upd = self.root / "update"
@@ -179,7 +201,7 @@ class StagedGate(_GateCase):
                 j = self.check()
                 s = j["sudoers"]
                 self.assertTrue(s["can_verify"] and s["needs_refresh"], s)
-                self.assertEqual((s["staged_version"], s["live_version"]), (5, 4))
+                self.assertEqual((s["staged_version"], s["live_version"]), (6, 4))
                 self.assertEqual(s["recovery_command"], want)
                 self.assertNotIn("Re-run install.sh", s["reason"])
                 r = self.apply()
@@ -202,10 +224,41 @@ class StagedGate(_GateCase):
 
     def test_same_rules_version_applies(self):
         self.stage("flat")
-        self.set_live("# SUDOERS_VERSION: 5\n")
+        self.set_live("# SUDOERS_VERSION: 6\n")
+        self.set_helper(6)
         j = self.check()
         self.assertFalse(j["sudoers"]["needs_refresh"])
         self.assertNotIn("recovery_command", j["sudoers"])
+
+    def test_rules_6_without_their_helper_still_gate(self):
+        """The rules name a helper that isn't there (or is older): they give
+        nothing, so a staged 6 is refused until the refresh installs it."""
+        st = self.stage("flat")
+        self.set_live("# SUDOERS_VERSION: 6\n")
+        for helper in (None, 5):
+            with self.subTest(helper=helper):
+                self.set_helper(helper)
+                j = self.check()
+                s = j["sudoers"]
+                self.assertTrue(s["can_verify"] and s["needs_refresh"], s)
+                self.assertEqual((s["rules_version"], s["helper_version"], s["live_version"]),
+                                 (6, helper or 0, helper or 0))
+                self.assertIn("system helper", s["reason"])
+                r = self.apply()
+                self.assertEqual(r.status_code, 409)
+                self.assertEqual(self.body(r)["sudoers"]["recovery_command"],
+                                 self.staged_command(st))
+
+    def test_a_newer_staged_release_gates_against_live_6(self):
+        st = self.stage("flat")
+        (st / "install.sh").write_text((REPO / "install.sh").read_text().replace(
+            "# SUDOERS_VERSION: 6", "# SUDOERS_VERSION: 7", 1))
+        self.set_live("# SUDOERS_VERSION: 6\n")
+        self.set_helper(6)
+        r = self.apply()
+        self.assertEqual(r.status_code, 409)
+        s = self.body(r)["sudoers"]
+        self.assertEqual((s["staged_version"], s["live_version"]), (7, 6))
 
 
 class ApplyNeverBlockedByAnUnreadableDropin(_GateCase):
@@ -224,6 +277,8 @@ class ApplyNeverBlockedByAnUnreadableDropin(_GateCase):
     def test_missing_dropin_allows_apply(self):
         self.stage("flat")
         self.set_live(None)
+        s = self.check()["sudoers"]
+        self.assertEqual((s["can_verify"], s["needs_refresh"], s["managed"]), (False, False, False))
         self.assert_applied()
 
     @unittest.skipIf(IS_ROOT, "root can read a 000 file")
@@ -247,23 +302,69 @@ class LiveStatusShapes(_GateCase):
         self.assert_command(j)
 
     def test_matching_rules(self):
-        self.set_live("# SUDOERS_VERSION: 5\n")
+        self.set_live("# SUDOERS_VERSION: 6\n")
+        self.set_helper(6)
         j = self.status()
         self.assertTrue(j["can_verify"] and not j["needs_refresh"], j)
         self.assert_command(j)
 
+    def test_matching_rules_without_their_helper(self):
+        self.set_live("# SUDOERS_VERSION: 6\n")
+        j = self.status()
+        self.assertTrue(j["can_verify"] and j["needs_refresh"], j)
+        self.assertEqual((j["live_version"], j["helper_version"]), (0, 0))
+        self.assertIn("system helper is missing", j["reason"])
+        self.assert_command(j)
+
     def test_missing_dropin(self):
+        """No drop-in at all (a manual install, no sudo): no banner."""
         self.set_live(None)
         j = self.status()
         self.assertFalse(j["can_verify"])
+        self.assertFalse(j["needs_refresh"])
+        self.assertFalse(j["managed"])
         self.assert_command(j)
+        self.assertNotIn(["sudo", "-n", str(self.helper), "version"], self.rec.calls)
 
     @unittest.skipIf(IS_ROOT, "root can read a 000 file")
-    def test_unreadable_dropin(self):
+    def test_unreadable_dropin_asks_the_helper(self):
         self.set_live("# SUDOERS_VERSION: 4\n", mode=0o000)
+        self.rec.helper_reply = '{"ok": true, "version": 6, "ntfy_unit": "absent", "ntfy_cache": false}\n'
         j = self.status()
-        self.assertFalse(j["can_verify"])
+        self.assertTrue(j["can_verify"] and not j["needs_refresh"], j)
+        self.assertEqual(j["live_version"], 6)
+        self.assertIn(["sudo", "-n", str(self.helper), "version"], self.rec.calls)
         self.assert_command(j)
+        for reply in (None, '{"ok": true, "version": 5}\n'):
+            with self.subTest(reply=reply):
+                self.rec.helper_reply = reply
+                j = self.status()
+                self.assertTrue(j["can_verify"] and j["needs_refresh"], j)
+                self.assertIn("Cannot read /etc/sudoers.d/aerodrome", j["reason"])
+                self.assert_command(j)
+
+    @unittest.skipIf(IS_ROOT, "root searches any folder")
+    def test_a_sudoers_d_this_account_cant_search(self):
+        """Fedora/RHEL ship /etc/sudoers.d 0750 root:root. With no drop-in
+        there, sudo won't show one and there is no helper: no banner (as with
+        a searchable folder). With a drop-in sudo won't show and a helper
+        that doesn't answer: the banner, as before."""
+        self.set_live(None)
+        self.dropin.parent.chmod(0o600)
+        self.addCleanup(self.dropin.parent.chmod, 0o755)
+        j = self.status()
+        self.assertEqual((j["can_verify"], j["needs_refresh"], j.get("managed")),
+                         (False, False, False), j)
+        self.assertNotIn(["sudo", "-n", str(self.helper), "version"], self.rec.calls)
+        self.assert_command(j)
+        self.set_helper(5)                          # rules sudo won't show, an older helper
+        j = self.status()
+        self.assertTrue(j["can_verify"] and j["needs_refresh"], j)
+        self.assertIn(["sudo", "-n", str(self.helper), "version"], self.rec.calls)
+        self.rec.cat_reply = "# SUDOERS_VERSION: 6\n"     # rules sudo shows (v6 grants the cat)
+        self.set_helper(6)
+        j = self.status()
+        self.assertTrue(j["can_verify"] and not j["needs_refresh"], j)
 
     def test_installed_install_sh_unreadable(self):
         inst = self.root / "install.sh"

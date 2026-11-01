@@ -80,7 +80,7 @@ The `?icaos=` query string is comma-separated. The response is `{hex: registrati
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/status` | Comprehensive health check — collector, web server, database, receiver, hexdb resolver, system info |
-| GET | `/api/sudoers/status` | Check if /etc/sudoers.d/aerodrome matches the expected version; every reply carries `recovery_command`, the permissions-refresh command to run on the server |
+| GET | `/api/sudoers/status` | Check if /etc/sudoers.d/aerodrome matches the expected version; every reply carries `recovery_command`, the permissions-refresh command to run on the server. From rules version 6, `live_version` counts only as far as the system helper the rules name (`rules_version`, `helper_version`); with no rules file at all, `can_verify` and `managed` are false and nothing needs doing (also where Aerodrome's account can't look inside `/etc/sudoers.d`, as on Fedora/RHEL, sudo won't show it a rules file and there is no system helper); with one Aerodrome can't read, it asks the helper itself |
 
 `/api/status` is used both by the Status page and by external health-check tooling. The response shape is documented in the comment block above the handler. It's the most stable endpoint in the API — deliberately kept backward-compatible.
 
@@ -168,9 +168,18 @@ For users running a self-hosted ntfy server via Aerodrome's installer helper.
 | POST | `/api/ntfy/install` | Install ntfy to a user-specified directory |
 | POST | `/api/ntfy/config` | Change the local ntfy server's address (`base_url`) or iPhone relay (`upstream_relay`) |
 | POST | `/api/ntfy/upgrade` | Upgrade ntfy to a newer version |
-| POST | `/api/ntfy/uninstall` | Remove the self-hosted ntfy install; `{"purge_data": true}` also deletes its cached messages (`/var/lib/ntfy/cache.db` and its `-wal`/`-shm`; a `cache-file` set by hand in server.yml is left in place, and `message` says so) |
+| POST | `/api/ntfy/uninstall` | Remove the self-hosted ntfy install; `{"purge_data": true}` also deletes its cached messages (the local server's cache and SQLite's `-wal`/`-shm`, in `/var/lib/aerodrome-ntfy` and, from before v3.4.150, `/var/lib/ntfy`; a `cache-file` set by hand in server.yml is left in place, and `message` says so). With nothing installed it deletes a cache an earlier install left |
 
-These endpoints delegate to `ntfy_installer.py`. Requires sudoers entries — see install.sh.
+These endpoints delegate to `ntfy_installer.py`, which uses Aerodrome's system helper (see INSTALL.md → *System permissions*). When the helper can't do something, the reply has `ok: false`, the reason in `error` and `message`, and a `code`:
+
+| Status | `code` | Meaning |
+|---|---|---|
+| 500 | `helper_unavailable` | No helper answered: this server's system permissions need a refresh first. `command` is the command to run on the server; `message` includes it. Nothing was changed. |
+| 202 | `still_running` | The call took too long (a download can take minutes); the helper may still be at it. Check `GET /api/ntfy/status` again in a minute, and try again if nothing has changed (a helper stopped part-way — Aerodrome restarting stops one it started — has its change settled by the next ntfy action: kept when ntfy answers on it, put back when it doesn't). |
+| 409 | `busy` | Another Aerodrome system task is still running. Try again in a minute. |
+| 409 | `custom_keys` | As for `/api/ntfy/config` below — also from `/api/ntfy/install` when a server.yml with settings Aerodrome doesn't manage is in the way. |
+
+Anything else the helper refused or that failed is a `400` with its reason in `message` — for example, after a settings change ntfy didn't answer again, so its previous settings were put back.
 
 **Server address.** `/api/ntfy/install` and `/api/ntfy/config` accept only a plain web address in `base_url`: `http://` or `https://`, a host name, IPv4 address or `[IPv6]` address, an optional port (1–65535) and an optional path — no spaces, quotes, user name, query or fragment, at most 255 characters (for example `http://192.0.2.10:2586`). Anything else is a `400` with the same text in `error` and `message`, and nothing is changed.
 
@@ -183,7 +192,7 @@ These endpoints delegate to `ntfy_installer.py`. Requires sudoers entries — se
 
 Other 400s (`invalid`, `unreadable`, or a notification server Aerodrome doesn't manage) carry their reason in `message`.
 
-`GET /api/ntfy/status` reports the same picture in its `config` block: `base_url` (null when the saved address is no longer accepted), `upstream_relay`, `custom_keys` and `problems` (setting names only).
+`GET /api/ntfy/status` reports the same picture in its `config` block: `base_url` (null when the saved address is no longer accepted), `upstream_relay`, `custom_keys` and `problems` (setting names only). `status.legacy_unit` is `true` while an install made before v3.4.150 still runs on its older, root-run setup (saving its settings moves it); `config.migrate_command` is then the command that moves it from the server (with `--drop-custom-keys` and the names, when there are settings it would remove). `status.state` counts an official ntfy package (`/usr/bin/ntfy` or its unit) as `external`.
 
 ## Updates
 
@@ -221,7 +230,7 @@ Every refusal leaves Aerodrome's own files as they were and keeps the release st
 | 500 | `restart_failed` | Aerodrome can't restart itself on this install; the switch was undone |
 | 507 | `no_space` | Not enough free disk space to stage or switch in the release |
 
-Two refusals keep their older bodies, with no `code` and nothing recorded: `409 {ok: false, error: "sudoers_refresh_required", message, sudoers, install_dir}` when the release needs newer system permissions first (the command to run is `sudoers.recovery_command`), and `400 {ok: false, error: "No VERSION file in update/. Nothing to apply."}` when nothing is staged.
+Two refusals keep their older bodies, with no `code` and nothing recorded: `409 {ok: false, error: "sudoers_refresh_required", message, sudoers, install_dir}` when the release needs newer system permissions first (the command to run is `sudoers.recovery_command`; `GET /api/updates/local/check` reports the same `sudoers` block), and `400 {ok: false, error: "No VERSION file in update/. Nothing to apply."}` when nothing is staged. A server with no `/etc/sudoers.d/aerodrome` at all (`sudoers.managed: false`), or one Aerodrome can't read, is never refused by this permissions check (an apply still needs the restart rule: `restart_failed` above).
 
 **Upload** (`POST /api/updates/local/upload`, and the GitHub download) checks the zip before anything is unpacked or the staged release is replaced: `400` (`not_a_release`) for an entry compressed with anything but deflate (or stored), or encrypted — Aerodrome releases never are, and other methods could expand without limit; `413` (`too_large`) above 200 MB unpacked; `507` (`no_space`) when it wouldn't fit with 256 MB to spare. The release staged before is kept either way.
 

@@ -5,8 +5,12 @@ Runs the WORKING tree's install.sh / recover-sudoers.sh (copied into temp
 install dirs, one of them with a space in its path) with stub sudo, visudo,
 systemctl, apt-get/dnf/pacman/zypper, python3, pip, id, whoami, getent, stat,
 ss, ip, hostname, sleep and chown first on PATH. The sudo stub never escalates:
-it maps /etc, /var and /usr/local arguments into a fake root under the temp
-dir and runs the command as the current user. It can emulate sudo < 1.9.3 (a
+it maps /etc, /var, /run and /usr/local arguments into a fake root under the temp
+dir and runs the command as the current user. The stat stub reports the fake
+root (and the temp dir's own ancestors) as root's; the system Python the
+helper is installed for is a stand-in that runs this interpreter, except for
+the helper's ntfy-migrate, which answers from MIGRATE_RC / MIGRATE_OUT (the
+helper itself is tested in test_aerodrome_helper.py). It can emulate sudo < 1.9.3 (a
 malformed drop-in in the fake /etc/sudoers.d makes every later sudo call fail;
 dot-named files are skipped, as sudo and sudo-rs skip them) and can kill the
 whole run (`kill -KILL 0`) on the Nth call of a given command.
@@ -17,6 +21,9 @@ a space in the path; no Group=<username>. And the permissions carrier: the
 privileges-only refresh (from update/, update/aerodrome/, every recover command
 an Updates page has shown, piped), the service-account rules, the downgrade
 guard, the highest-marker hand-off in recover-sudoers.sh, and kill-points.
+And v3.4.150's system helper (install_privileged): its folder must be root's
+alone, the interpreter pick, no helper downgrade, visudo before the helper,
+the rules going live last, ntfy-migrate after them, and kill-points there.
 
 Skipped when AERODROME_SKIP_SLOW_TESTS=1, without bash, or as root.
 Account names and paths are invented (one test also runs the real id and
@@ -28,6 +35,7 @@ import pwd
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -35,6 +43,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent
 INSTALL_SH = REPO / "install.sh"
 RECOVER_SH = REPO / "scripts" / "recover-sudoers.sh"
+HELPER_SRC = REPO / "scripts" / "aerodrome-helper"
+HELPER = "/usr/local/libexec/aerodrome/aerodrome-helper"
 MARKER = re.compile(r"\s*#\s*SUDOERS_VERSION\s*:\s*(\d+)")  # == server._read_sudoers_version
 SKIP_SLOW = os.environ.get("AERODROME_SKIP_SLOW_TESTS") == "1"
 IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
@@ -70,8 +80,9 @@ fi
 args=()
 for a in "$@"; do
   case "$a" in
-    "$TEST_TMP"/*) args+=("$a") ;;
-    /etc/*|/var/*|/usr/local/*) args+=("$FAKE_ROOT$a") ;;
+    "$TEST_TMP"|"$TEST_TMP"/*) args+=("$a") ;;
+    /etc/*|/var/*|/usr/local/*|/run/*)    # (the test dir's own ancestors stay as they are)
+      if [[ "$TEST_TMP" == "$a"/* ]]; then args+=("$a"); else args+=("$FAKE_ROOT$a"); fi ;;
     *) args+=("$a") ;;
   esac
 done
@@ -140,13 +151,45 @@ STUBS = {
     "hostname": "#!/bin/sh\nexit 1\n",
     "id": '#!/bin/bash\ncase "$1" in\n  -u) echo "${FAKE_UID:-1000}" ;;\n'
           '  -un) echo "${FAKE_WHOAMI:-svc-a}" ;;\n  -gn) echo "${FAKE_GROUP:-svc-group}" ;;\n'
+          '  -G) echo "${FAKE_GIDS:-1000}" ;;\n'
           '  *) exec /usr/bin/id "$@" ;;\nesac\n',
     "whoami": '#!/bin/sh\necho "${FAKE_WHOAMI:-svc-a}"\n',
     "getent": '#!/bin/sh\n[ "$1" = passwd ] || exit 2\n'
               'case "$2" in svc-a|svc-c|admin-b|demo-user|svc.dotted|SvcUpper|jdoe@corp.example.com)\n'
               '  echo "$2:x:1000:1000::/home/$2:/bin/sh"; exit 0 ;; esac\nexit 2\n',
-    "stat": '#!/bin/bash\nif [ "$1 $2" = "-c %U" ]; then echo "${FAKE_OWNER:-svc-a}"; exit 0; fi\n'
-            'exec /usr/bin/stat "$@"\n',
+    "stat": r'''#!/bin/bash
+if [ "$1 $2" = "-c %U" ]; then echo "${FAKE_OWNER:-svc-a}"; exit 0; fi
+if [ "$1 $2" = "-c %u %g %a %F" ]; then
+  # Files in the test dir are "root's" (gid FAKE_DIR_GID, real mode), and
+  # so are the test dir's own ancestors (0755): the trust checks see a
+  # system laid out like a real one.
+  p="${@: -1}"
+  out="$(/usr/bin/stat -c '%u %g %a %F' -- "$p")" || exit $?
+  read -r u g m k <<< "$out"
+  if [ "$p" = "$TEST_TMP" ] || [[ "$p" == "$TEST_TMP"/* ]]; then
+    u=0; g="${FAKE_DIR_GID:-0}"
+  elif [[ "$TEST_TMP" == "${p%/}"/* ]]; then
+    u=0; g=0; m=755
+  fi
+  echo "$u $g $m $k"; exit 0
+fi
+exec /usr/bin/stat "$@"
+''',
+    "py3": r'''#!/bin/bash
+# The system Python stand-in: this test's interpreter, except for the
+# helper's ntfy-migrate (answered from MIGRATE_RC / MIGRATE_OUT).
+for a in "$@"; do
+  if [ "$a" = ntfy-migrate ]; then
+    echo "ntfy-migrate ${*: -2}" >> "$STUB_LOG"
+    printf '%s\n' "${MIGRATE_OUT:-$MIGRATE_OUT_DEFAULT}"
+    exit "${MIGRATE_RC:-0}"
+  fi
+done
+exec "$REAL_PYTHON" "$@"
+''',
+    # a system Python too old for the helper: fails the version probe, says 3.6
+    "oldpy": '#!/bin/bash\nif [ "$1 $2" = "-IS -c" ]; then\n'
+             '  case "$3" in *">= (3, 10)"*) exit 1 ;; *) echo 3.6; exit 0 ;; esac\nfi\nexit 1\n',
 }
 
 
@@ -198,7 +241,10 @@ class _Harness(unittest.TestCase):
              "FAKE_ROOT": str(self.fr), "STUB_LOG": str(self.log),
              "TEST_TMP": str(self.tmp), "UNIT_SHOW": str(self.unit_show),
              "KILL_COUNTER": str(self.tmp / "kill-counter"),
-             "AERODROME_BOOTSTRAP_OS_RELEASE": str(self.os_release)}
+             "AERODROME_BOOTSTRAP_OS_RELEASE": str(self.os_release),
+             "AERODROME_HELPER_PYTHONS": str(self.stubs / "py3"),
+             "REAL_PYTHON": sys.executable,
+             "MIGRATE_OUT_DEFAULT": '{"ok": true, "migrated": false}'}
         e.update({k: str(v) for k, v in kw.items()})
         return e
 
@@ -224,14 +270,29 @@ class _Harness(unittest.TestCase):
         self.live.write_text(text)
 
     def dot_temps(self):
-        return sorted(p.name for p in (self.fr / "etc" / "sudoers.d").iterdir()
-                      if p.name.startswith(".aerodrome."))
+        helper_dir = self.fr / "usr/local/libexec/aerodrome"
+        return sorted(p.name for d in (self.fr / "etc" / "sudoers.d", helper_dir)
+                      if d.is_dir() for p in d.iterdir() if p.name.startswith(".aerodrome"))
+
+    def helper(self):
+        return self.fr / HELPER.lstrip("/")
+
+    def assert_helper_installed(self, python=None):
+        """root's 0755 copy of the tree's helper, line 1 naming the picked
+        interpreter with -IS; it parses and answers `version`."""
+        h = self.helper()
+        self.assertTrue(h.is_file(), "no helper installed")
+        self.assertEqual(oct(h.stat().st_mode & 0o777), "0o755")
+        lines = h.read_text().splitlines(True)
+        self.assertEqual(lines[0], f"#!{python or self.stubs / 'py3'} -IS\n")
+        self.assertEqual(lines[1:], HELPER_SRC.read_text().splitlines(True)[1:])
 
     # -- layouts ----------------------------------------------------------------
     def make_tree(self, d, install_text=None, version="9.9.9", recover=True):
         d.mkdir(parents=True, exist_ok=True)
         (d / "scripts").mkdir(exist_ok=True)
         (d / "install.sh").write_text(install_text or INSTALL_SH.read_text())
+        shutil.copy2(HELPER_SRC, d / "scripts" / "aerodrome-helper")
         if recover:
             shutil.copy2(RECOVER_SH, d / "scripts" / "recover-sudoers.sh")
         (d / "VERSION").write_text(version + "\n")
@@ -359,8 +420,9 @@ class FullInstall(_Harness):
         r = self.run_install(d)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(oct(self.live.stat().st_mode & 0o777), "0o440")
-        self.assertEqual(first_marker(self.live.read_text()), 5)
-        self.assertIn("svc-a ALL=(ALL) NOPASSWD:", self.live.read_text())
+        self.assertEqual(first_marker(self.live.read_text()), 6)
+        self.assertIn("svc-a ALL=(root) NOPASSWD:", self.live.read_text())
+        self.assert_helper_installed()
         log = self.log_text()
         self.assertRegex(log, r"sudo\[valid\] mktemp /etc/sudoers\.d/\.aerodrome\.XXXXXX")
         self.assertRegex(log, r"sudo\[valid\] mv -f /etc/sudoers\.d/\.aerodrome\.\S+ /etc/sudoers\.d/aerodrome")
@@ -437,7 +499,7 @@ class FullInstall(_Harness):
         r = self.run_install(d, **self.as_root())
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("User=jdoe@corp.example.com\n", self.unit_file())
-        self.assertIn("jdoe@corp.example.com ALL=(ALL) NOPASSWD:", self.live.read_text())
+        self.assertIn("jdoe@corp.example.com ALL=(root) NOPASSWD:", self.live.read_text())
         self.assertNotIn("admin-b", self.live.read_text())
 
     def test_unit_account_that_cannot_be_looked_up_stops_the_rerun(self):
@@ -466,7 +528,7 @@ class FullInstall(_Harness):
         self.assertIn(f"Run as user:  {account}\n", r.stdout)
         self.assertIn(f"User={account}\n", self.unit_file())
         live = self.live.read_text()
-        self.assertIn(f"{account} ALL=(ALL) NOPASSWD:", live)
+        self.assertIn(f"{account} ALL=(root) NOPASSWD:", live)
         self.assertEqual({l.split()[0] for l in live.splitlines() if "ALL=(" in l}, {account})
         chowns = [l for l in self.log_text().splitlines() if l.startswith("chown ")]
         self.assertTrue(chowns)
@@ -485,7 +547,7 @@ class FullInstall(_Harness):
                                      FAKE_GROUP="shared-group")
                 self.assert_service_account(r, "demo-user", "shared-group")
                 self.assertNotIn("running via sudo", r.stdout)
-                self.assertNotIn(inherited, self.live.read_text())
+                self.assertNotIn(f"{inherited} ALL=", self.live.read_text())   # (v6 says "(root)")
 
     def test_inherited_sudo_user_is_ignored_with_the_real_id_and_whoami(self):
         # The stubs answer `id -un` and `whoami` from one variable; here both
@@ -563,17 +625,17 @@ class FullInstall(_Harness):
 
     # ---- downgrade guard, full mode ------------------------------------------------
     def test_full_mode_keeps_newer_live_rules(self):
-        newer = "# SUDOERS_VERSION: 6\nsvc-a ALL=(root) NOPASSWD: /usr/local/libexec/aerodrome/aerodrome-helper\n"
+        newer = "# SUDOERS_VERSION: 7\nsvc-a ALL=(root) NOPASSWD: /usr/local/libexec/aerodrome/aerodrome-helper\n"
         self.put_live(newer)
         d = self.make_install("plain")
         r = self.run_install(d)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("Kept the newer permission rules (version 6)", r.stdout)
+        self.assertIn("Kept the newer permission rules (version 7)", r.stdout)
         self.assertEqual(self.live.read_text(), newer)
         self.assertTrue((self.fr / "etc/systemd/system/aerodrome.service").exists())
 
     def test_full_mode_unreadable_live_rules_are_left_alone(self):
-        newer = "# SUDOERS_VERSION: 6\nsvc-a ALL=(root) NOPASSWD: /usr/local/libexec/aerodrome/aerodrome-helper\n"
+        newer = "# SUDOERS_VERSION: 7\nsvc-a ALL=(root) NOPASSWD: /usr/local/libexec/aerodrome/aerodrome-helper\n"
         self.put_live(newer)
         d = self.make_install("plain")
         r = self.run_install(d, SUDO_REFUSE="cat")         # the read is refused, the writes aren't
@@ -587,7 +649,7 @@ class FullInstall(_Harness):
         d = self.make_install("plain")
         r = self.run_install(d, SUDO_REFUSE="cat")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(first_marker(self.live.read_text()), 5)
+        self.assertEqual(first_marker(self.live.read_text()), 6)
 
     def test_full_mode_equal_or_absent_live_rules_are_written(self):
         for prev in (None, "# SUDOERS_VERSION: 5\nsvc-a ALL=(ALL) NOPASSWD: /bin/true\n"):
@@ -624,13 +686,15 @@ class PrivilegesOnly(_Harness):
         dst = self.root / "update" if layout == "flat" else self.root / "update" / "aerodrome"
         return self.make_tree(dst, install_text=text)
 
-    def assert_refreshed(self, r, want_marker=5, account="svc-a"):
+    def assert_refreshed(self, r, want_marker=6, account="svc-a"):
         out = r.stdout + r.stderr
         self.assertEqual(r.returncode, 0, out)
         self.assertIn("refreshing system permissions only", out)
         live = self.live.read_text()
         self.assertEqual(first_marker(live), want_marker)
-        self.assertIn(f"{account} ALL=(ALL) NOPASSWD: /bin/systemctl restart aerodrome", live)
+        self.assertIn(f"{account} ALL=(root) NOPASSWD: /bin/systemctl restart aerodrome", live)
+        self.assertIn(f"{account} ALL=(root) NOPASSWD: {HELPER}\n", live)
+        self.assert_helper_installed()
         self.assertNotIn("admin-b", live)              # not whoever typed sudo
         self.assertEqual(oct(self.live.stat().st_mode & 0o777), "0o440")
         self.assertEqual(self.unit.read_bytes(), self.unit_bytes, "a unit was rewritten")
@@ -774,7 +838,7 @@ class PrivilegesOnly(_Harness):
                 r = self.run_sh(["bash", str(self.root / "install.sh"), "--privileges-only"],
                                 **self.as_root())
                 self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-                self.assertIn(f"{acct} ALL=(ALL) NOPASSWD:", self.live.read_text())
+                self.assertIn(f"{acct} ALL=(root) NOPASSWD:", self.live.read_text())
 
     def test_account_missing_from_passwd_is_refused(self):
         self.set_unit(self.root, "ghost-acct")
@@ -819,19 +883,19 @@ class PrivilegesOnly(_Harness):
 
     # -- downgrade guard -----------------------------------------------------------
     def test_newer_live_rules_refused_then_allowed_explicitly(self):
-        newer = "# SUDOERS_VERSION: 6\nsvc-a ALL=(root) NOPASSWD: /usr/local/libexec/aerodrome/aerodrome-helper\n"
+        newer = "# SUDOERS_VERSION: 7\nsvc-a ALL=(root) NOPASSWD: /usr/local/libexec/aerodrome/aerodrome-helper\n"
         self.put_live(newer)
         self.live_bytes = self.live.read_bytes()
         r = self.run_sh(["bash", str(self.root / "scripts/recover-sudoers.sh")], **self.as_root())
         self.assert_untouched(r, rc=3)
-        self.assertIn("newer Aerodrome permission rules (version 6)", r.stderr)
+        self.assertIn("newer Aerodrome permission rules (version 7)", r.stderr)
         r = self.run_sh(["bash", str(self.root / "install.sh"), "--privileges-only",
                          "--allow-privilege-downgrade"], **self.as_root())
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(first_marker(self.live.read_text()), 5)
+        self.assertEqual(first_marker(self.live.read_text()), 6)
 
     def test_downgrade_hint_is_a_command_that_works(self):
-        newer = "# SUDOERS_VERSION: 6\nsvc-a ALL=(root) NOPASSWD: /usr/local/libexec/aerodrome/aerodrome-helper\n"
+        newer = "# SUDOERS_VERSION: 7\nsvc-a ALL=(root) NOPASSWD: /usr/local/libexec/aerodrome/aerodrome-helper\n"
         quoted = self.make_tree(self.tmp / "o'brien apps" / "aerodrome", version="3.4.145")
         for root in (self.root, quoted):
             with self.subTest(root=root.parent.name):
@@ -845,14 +909,14 @@ class PrivilegesOnly(_Harness):
                 self.assertTrue(hint[0].startswith("sudo bash "), hint)
                 r2 = self.run_sh(["bash", "-c", hint[0]], **self.as_root())
                 self.assertEqual(r2.returncode, 0, r2.stdout + r2.stderr)
-                self.assertEqual(first_marker(self.live.read_text()), 5)
+                self.assertEqual(first_marker(self.live.read_text()), 6)
                 r3 = self.run_sh(["bash", str(root / "scripts/recover-sudoers.sh"),
                                   "--allow-privilege-downgrade"], **self.as_root())
                 self.assertEqual(r3.returncode, 2, r3.stdout + r3.stderr)
                 self.assertIn("install.sh --privileges-only --allow-privilege-downgrade", r3.stderr)
 
     def test_unreadable_live_rules_are_never_replaced(self):
-        newer = "# SUDOERS_VERSION: 6\nsvc-a ALL=(root) NOPASSWD: /usr/local/libexec/aerodrome/aerodrome-helper\n"
+        newer = "# SUDOERS_VERSION: 7\nsvc-a ALL=(root) NOPASSWD: /usr/local/libexec/aerodrome/aerodrome-helper\n"
         self.put_live(newer)
         self.live_bytes = self.live.read_bytes()
         r = self.run_sh(["bash", str(self.root / "scripts/recover-sudoers.sh")],
@@ -861,7 +925,7 @@ class PrivilegesOnly(_Harness):
         self.assertIn("Couldn't read the current permission rules", r.stderr)
 
     def test_equal_or_absent_live_rules_are_refreshed(self):
-        for prev in ("# SUDOERS_VERSION: 5\nsvc-a ALL=(ALL) NOPASSWD: /bin/true\n", None):
+        for prev in ("# SUDOERS_VERSION: 6\nsvc-a ALL=(root) NOPASSWD: /bin/true\n", None):
             with self.subTest(prev=prev):
                 if prev is None:
                     self.live.unlink()
@@ -875,7 +939,7 @@ class PrivilegesOnly(_Harness):
     def test_exactly_one_marker_value_and_none_in_recover(self):
         text = INSTALL_SH.read_text()
         markers = [int(m.group(1)) for m in map(MARKER.match, text.splitlines()) if m]
-        self.assertEqual(markers, [5])
+        self.assertEqual(markers, [6])
         self.assertFalse([l for l in RECOVER_SH.read_text().splitlines() if MARKER.match(l)])
 
     def test_rendered_rules_pass_real_visudo_when_available(self):
@@ -1072,7 +1136,7 @@ class KillPoints(_Harness):
 
     def test_kill_then_rerun(self):
         final = self.final_rules()
-        self.assertEqual(first_marker(final), 5)
+        self.assertEqual(first_marker(final), 6)
         for k1 in self.STEPS:
             for k2 in (None,) + self.STEPS:
                 with self.subTest(first_killed=k1, rerun_killed=k2):
@@ -1087,6 +1151,288 @@ class KillPoints(_Harness):
                     r3 = self.run_cmd()
                     self.assertEqual(r3.returncode, 0, r3.stdout + r3.stderr)
                     self.assertEqual(self.live.read_text(), final)
+                    self.assertEqual(self.dot_temps(), [])
+
+
+class _HelperCase(_Harness):
+    """An install on the previous rules with a release staged in update/."""
+
+    LIVE_OLD = "# SUDOERS_VERSION: 5\nsvc-a ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart aerodrome\n"
+
+    def setUp(self):
+        super().setUp()
+        self.root = self.make_tree(self.tmp / "srv" / "aerodrome", version="3.4.149")
+        self.unit = self.fr / "etc/systemd/system/aerodrome.service"
+        self.unit.write_text(f"[Service]\nUser=svc-a\nWorkingDirectory={self.root}\n")
+        self.set_unit(self.root, "svc-a")
+        self.put_live(self.LIVE_OLD)
+        self.live_bytes = self.live.read_bytes()
+        self.staged = self.make_tree(self.root / "update")
+
+    def refresh(self, **kw):
+        return self.run_sh(["bash", str(self.staged / "install.sh")], **self.as_root(**kw))
+
+    def sudo_lines(self):
+        return [l for l in self.log_text().splitlines() if l.startswith("sudo[")]
+
+    def assert_unchanged(self, r, rc):
+        self.assertEqual(r.returncode, rc, r.stdout + r.stderr)
+        self.assertEqual(self.live.read_bytes(), self.live_bytes)
+        self.assertFalse(self.helper().exists())
+        self.assertEqual(self.dot_temps(), [])
+
+
+@GUARD
+@NEEDS
+class SystemHelper(_HelperCase):
+    """v3.4.150's install_privileged: the helper and the rules that name it,
+    then ntfy-migrate — from a refresh (update/) and from a full install."""
+
+    def test_the_refresh_changes_only_the_helper_and_the_rules_then_moves_ntfy(self):
+        r = self.refresh()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assert_helper_installed()
+        self.assertEqual(oct(self.live.stat().st_mode & 0o777), "0o440")
+        self.assertEqual(first_marker(self.live.read_text()), 6)
+        self.assertEqual(sorted(p.name for p in (self.fr / "etc/systemd/system").iterdir()),
+                         ["aerodrome.service"])
+        lines = self.sudo_lines()
+        order = [next(i for i, l in enumerate(lines) if pat in l) for pat in (
+            "visudo -cf /etc/sudoers.d/.aerodrome.",                 # 4: rules checked
+            f"mv -f /usr/local/libexec/aerodrome/.aerodrome-helper.",  # 5: helper in place
+            "mv -f /etc/sudoers.d/.aerodrome.",                       # 6: rules live
+            f"{HELPER} ntfy-migrate")]                                # 7
+        self.assertEqual(order, sorted(order), lines)
+        self.assertIn("Local notification server: nothing to move", r.stdout)
+        self.assertRegex(r.stdout, r"System permissions refreshed\S* \(rules version 6\)\.")
+
+    def test_a_visudo_failure_installs_no_helper(self):
+        self.assert_unchanged(self.refresh(VISUDO_FAIL=1), 1)
+        self.assertNotIn("ntfy-migrate", self.log_text())
+
+    def test_a_helper_folder_the_account_could_write_is_refused(self):
+        d = self.fr / "usr/local/libexec"
+        d.mkdir(parents=True)
+        d.chmod(0o775)
+        r = self.refresh(FAKE_DIR_GID=4242, FAKE_GIDS="1000 4242")
+        self.assert_unchanged(r, 1)
+        self.assertIn("isn't root's alone", r.stdout)
+        # the same folder, group-writable by a group the account isn't in: fine
+        r = self.refresh(FAKE_DIR_GID=4242, FAKE_GIDS="1000")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assert_helper_installed()
+
+    def test_a_symlinked_helper_folder_is_refused(self):
+        target = self.tmp / "elsewhere"
+        target.mkdir()
+        link = self.fr / "usr/local/libexec/aerodrome"
+        link.parent.mkdir(parents=True)
+        link.symlink_to(target)
+        r = self.refresh()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(self.live.read_bytes(), self.live_bytes)
+        self.assertEqual(list(target.iterdir()), [])
+
+    def test_a_new_helper_that_fails_its_version_check_never_goes_live(self):
+        """The new copy parses but answers `version` wrongly (another
+        version, or not at all): nothing is renamed into place — no helper,
+        the rules exactly as they were, no temp files."""
+        src = self.staged / "scripts" / "aerodrome-helper"
+        good = src.read_text()
+        for label, (old, new) in {
+                "another version": ("\nPRIV_VERSION = 6\n", "\nPRIV_VERSION = 5\n"),
+                "no answer": ('if __name__ == "__main__":\n    sys.exit(main())',
+                              'if __name__ == "__main__":\n    sys.exit(1)')}.items():
+            with self.subTest(label):
+                self.put_live(self.LIVE_OLD)
+                self.helper().unlink(missing_ok=True)
+                self.log.write_text("")
+                self.assertIn(old, good)
+                src.write_text(good.replace(old, new))
+                r = self.refresh()
+                self.assert_unchanged(r, 1)
+                self.assertIn("The new system helper didn't pass its check", r.stdout)
+                self.assertNotIn("ntfy-migrate", self.log_text())
+
+    def test_a_newer_installed_helper_is_kept(self):
+        h = self.helper()
+        h.parent.mkdir(parents=True)
+        newer = "#!/usr/bin/python3 -IS\n# PRIV_VERSION = 9\nprint('newer')\n"
+        h.write_text(newer)
+        r = self.refresh()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("Kept the newer system helper (version 9)", r.stdout)
+        self.assertEqual(h.read_text(), newer)
+
+    def test_ntfy_migrate_outcomes_never_fail_the_refresh(self):
+        cases = {
+            "moved": (0, '{"ok": true, "migrated": true, "restarted": true}',
+                      ["Local notification server moved to its restricted setup"]),
+            "custom keys": (3, '{"ok": false, "message": "m", "custom_keys": ["auth-file", "line 7"]}',
+                            ["settings Aerodrome doesn't manage (auth-file, line 7)",
+                             "/etc/ntfy/server.yml.pre-v6",
+                             f"sudo {HELPER} ntfy-migrate --drop-custom-keys auth-file\\,line\\ 7"]),
+            "already": (0, '{"ok": true, "migrated": false, "already": true}',
+                        ["Local notification server: already on its restricted setup"]),
+            "problems": (3, '{"ok": false, "message": "m", "problems": ["base-url"], "custom_keys": []}',
+                         ["values Aerodrome can't carry over (base-url)",
+                          "Once this version of Aerodrome is running", "Notifications tab",
+                          f"sudo {HELPER} ntfy-migrate\n"]),
+            # a save in the tab never rewrites a listen address it can't represent
+            "listen-http": (3, '{"ok": false, "message": "m", "problems": ["listen-http"], '
+                               '"custom_keys": []}',
+                            ["values Aerodrome can't carry over (listen-http)",
+                             "Correct them in /etc/ntfy/server.yml, then run:",
+                             f"sudo {HELPER} ntfy-migrate\n"]),
+            "problems and custom keys": (
+                3, '{"ok": false, "message": "m", "problems": ["base-url"], "custom_keys": ["auth-file"]}',
+                ["values Aerodrome can't carry over (base-url)",
+                 f"sudo {HELPER} ntfy-migrate --drop-custom-keys auth-file\n",
+                 "Moving it also removes the settings Aerodrome doesn't manage (auth-file)"]),
+            "failed": (1, '{"ok": false, "message": "ntfy didn\'t come up; put back"}',
+                       ["kept its previous setup: ntfy didn't come up; put back"]),
+            "no answer": (1, "", ["kept its previous setup: no answer from the system helper"]),
+        }
+        for label, (rc, out, wants) in cases.items():
+            with self.subTest(label):
+                self.put_live(self.LIVE_OLD)
+                r = self.refresh(MIGRATE_RC=rc, MIGRATE_OUT=out)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertEqual(first_marker(self.live.read_text()), 6)
+                for want in wants:
+                    self.assertIn(want, r.stdout)
+                if label == "listen-http":
+                    self.assertNotIn("Notifications tab", r.stdout)
+
+    def test_the_printed_drop_command_is_one_argument(self):
+        r = self.refresh(MIGRATE_RC=3, MIGRATE_OUT='{"ok": false, "custom_keys": ["auth-file", "line 7"]}')
+        cmd = next(l.strip() for l in r.stdout.splitlines() if "ntfy-migrate --drop-custom-keys" in l)
+        argv = subprocess.run(["bash", "-c", 'eval "set -- $0"; printf "%s\\0" "$@"', cmd],
+                              capture_output=True, text=True, stdin=subprocess.DEVNULL).stdout
+        self.assertEqual(argv.split("\0")[:5],
+                         ["sudo", HELPER, "ntfy-migrate", "--drop-custom-keys", "auth-file,line 7"])
+
+    def test_a_full_install_writes_the_helper_the_rules_and_the_units(self):
+        d = self.make_tree(self.tmp / "fresh" / "aerodrome")
+        self.unit_show.unlink()
+        self.live.unlink()
+        r = self.run_sh(["bash", str(d / "install.sh"), "--demo", "--feeder-port", "38080"],
+                        FAKE_WHOAMI="demo-user", FAKE_GROUP="users")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assert_helper_installed()
+        live = self.live.read_text()
+        self.assertEqual(first_marker(live), 6)
+        self.assertEqual({l.split()[0] for l in live.splitlines() if "ALL=(" in l}, {"demo-user"})
+        self.assertNotIn("users", live)                       # `useradd -g users`: no group anywhere
+        for name in ("aerodrome", "aerodrome-synthetic-feeder"):
+            self.assertIn("User=demo-user\n", self.unit_file(name))
+            self.assertNotRegex(self.unit_file(name), r"(?m)^Group=")
+        chowns = [l for l in self.log_text().splitlines() if l.startswith("chown ")]
+        self.assertTrue(chowns)
+        self.assertTrue(all("demo-user:users" in l for l in chowns), chowns)
+        self.assertIn("ntfy-migrate", self.log_text())
+
+    def test_the_full_installs_newer_rule_guard_leaves_the_helper_alone(self):
+        h = self.helper()
+        h.parent.mkdir(parents=True)
+        h.write_text("#!/usr/bin/python3 -IS\n# PRIV_VERSION = 7\n")
+        self.put_live("# SUDOERS_VERSION: 7\nsvc-a ALL=(root) NOPASSWD: " + HELPER + "\n")
+        r = self.run_sh(["bash", str(self.root / "install.sh")], **self.as_root())
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("Kept the newer permission rules (version 7)", r.stdout)
+        self.assertEqual(h.read_text(), "#!/usr/bin/python3 -IS\n# PRIV_VERSION = 7\n")
+
+
+@GUARD
+@NEEDS
+class InterpreterPick(_HelperCase):
+    """The helper runs under a system Python 3.10+ from a fixed list
+    (AERODROME_HELPER_PYTHONS stands in for it here), never the venv."""
+
+    def test_an_old_python3_is_passed_over(self):
+        pys = f"{self.stubs / 'oldpy'} {self.stubs / 'py3'}"
+        r = self.refresh(AERODROME_HELPER_PYTHONS=pys)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assert_helper_installed(self.stubs / "py3")
+
+    def test_a_group_writable_candidate_is_skipped_unrun(self):
+        bad = self.stubs / "py-gw"
+        bad.write_text('#!/bin/bash\necho RAN-UNTRUSTED >> "$STUB_LOG"\nexec "$REAL_PYTHON" "$@"\n')
+        bad.chmod(0o775)
+        r = self.refresh(AERODROME_HELPER_PYTHONS=f"{bad} {self.stubs / 'py3'}")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assert_helper_installed(self.stubs / "py3")
+        self.assertNotIn("RAN-UNTRUSTED", self.log_text())
+
+    def test_none_qualifies(self):
+        r = self.refresh(AERODROME_HELPER_PYTHONS=f"{self.stubs / 'oldpy'} {self.tmp / 'missing'}")
+        self.assert_unchanged(r, 1)
+        self.assertIn("needs a system Python 3.10 or newer in /usr/bin", r.stderr)
+        self.assertIn(f"{self.stubs / 'oldpy'} (3.6)", r.stderr)
+        self.assertIn("python3.11 (or newer) package", r.stderr)
+
+
+
+@GUARD
+@NEEDS
+class HelperKillPoints(_Harness):
+    """A refresh killed anywhere in install_privileged: the live rules are
+    the old ones or the new, never partial; the helper is absent, the old one
+    or the whole new one; running the command again finishes — also when
+    that run is killed too."""
+
+    OLD = "# SUDOERS_VERSION: 5\nsvc-a ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart aerodrome\n"
+    # (command, call number): step 0's leftover sweep, the sudoers temp and
+    # its visudo check (4), the helper temp, its write and chmod (5), its
+    # `version` check (the 2nd sudo'd system-Python run; the 1st parses it),
+    # its rename (P1), the rules' rename (6, P2), and ntfy-migrate (7)
+    KILLS = (("find", 1), ("mktemp", 1), ("visudo", 1), ("mktemp", 2), ("tee", 2), ("chmod", 2),
+             ("py3", 2), ("mv", 1), ("mv", 2), ("aerodrome-helper", 1))
+
+    def setUp(self):
+        super().setUp()
+        self.root = self.make_tree(self.tmp / "srv" / "aerodrome", version="3.4.149")
+        self.set_unit(self.root, "svc-a")
+        self.staged = self.make_tree(self.root / "update")
+        self.cmd = ["bash", str(self.staged / "scripts/recover-sudoers.sh"),
+                    "--install-dir", str(self.root)]
+
+    def run_cmd(self, kill=None):
+        (self.tmp / "kill-counter").unlink(missing_ok=True)
+        kw = self.as_root()
+        if kill:
+            kw.update(KILL_AT=kill[0], KILL_N=kill[1])
+        return self.run_sh(self.cmd, **kw)
+
+    def assert_consistent(self, final):
+        self.assertIn(self.live.read_text(), (self.OLD, final))
+        h = self.helper()
+        if h.exists():
+            r = subprocess.run([sys.executable, "-IS", str(h), "version"], capture_output=True,
+                               text=True, stdin=subprocess.DEVNULL)
+            self.assertIn('"version": 6', r.stdout, "a partial helper")
+
+    def test_kill_then_rerun(self):
+        self.put_live(self.OLD)
+        self.assertEqual(self.run_cmd().returncode, 0)
+        final = self.live.read_text()
+        self.assertEqual(first_marker(final), 6)
+        for k1 in self.KILLS:
+            for k2 in (None, ("find", 1), ("mktemp", 2), ("mv", 1)):
+                with self.subTest(first_killed=k1, rerun_killed=k2):
+                    self.put_live(self.OLD)
+                    self.helper().unlink(missing_ok=True)
+                    r1 = self.run_cmd(k1)
+                    self.assertEqual(r1.returncode, -9, r1.stdout + r1.stderr)
+                    self.assert_consistent(final)
+                    if k2:
+                        r2 = self.run_cmd(k2)
+                        self.assertEqual(r2.returncode, -9, r2.stdout + r2.stderr)
+                        self.assert_consistent(final)
+                    r3 = self.run_cmd()
+                    self.assertEqual(r3.returncode, 0, r3.stdout + r3.stderr)
+                    self.assertEqual(self.live.read_text(), final)
+                    self.assert_helper_installed()
                     self.assertEqual(self.dot_temps(), [])
 
 

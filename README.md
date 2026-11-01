@@ -1,5 +1,5 @@
 # Aerodrome
-<!-- Version: 3.4.149 -->
+<!-- Version: 3.4.150 -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -143,11 +143,12 @@ aerodrome/
 ├── route_resolver.py             callsign → flight-route lookup (adsb.lol client)
 ├── photo_resolver.py             aircraft photo lookup (planespotters.net client)
 ├── slow_query_log.py             query-timing instrumentation
-├── ntfy_installer.py             interactive ntfy onboarding helper
+├── ntfy_installer.py             local ntfy server status + install/configure/remove (through the helper)
+├── privhelper.py                 the one module that runs sudo (system helper, restart, rules read)
 ├── config.yaml.example           shipped template for config.yaml
 ├── requirements.txt              runtime dependencies (pinned compatible-with)
 ├── requirements-dev.txt          screenshot harness + PDF builder deps
-├── install.sh                    setup script (venv, systemd unit, sudoers rule; --privileges-only)
+├── install.sh                    setup script (venv, systemd unit, system helper + sudoers rule; --privileges-only)
 ├── uninstall.sh                  symmetric removal (--purge / --keep)
 ├── bump-version.sh               release tooling — version + CHANGELOG + PDF rebuild
 ├── VERSION                       single line, the canonical version string
@@ -155,6 +156,7 @@ aerodrome/
 ├── static/                       CSS, JS, fonts, theme assets
 ├── scripts/
 │   ├── bootstrap.sh              curl-installable one-line setup (see Install)
+│   ├── aerodrome-helper          root-owned system helper (install.sh installs it to /usr/local/libexec/aerodrome/)
 │   ├── recover-sudoers.sh        permissions refresh: hands off to install.sh --privileges-only
 │   ├── package-release.sh        produces release zip + .sha256 (self-verified; --verify)
 │   ├── publish-release.sh        publishes + verifies a GitHub Release (--check-only pre-push)
@@ -171,12 +173,14 @@ aerodrome/
 │       └── backfill.py           generate historical sightings for testing
 ├── docs/                         user-facing documentation, screenshots, PDF
 ├── .github/                      issue templates, PR template, repo-setup guide
+├── test_aerodrome_helper.py      unit tests — the system helper on a fake root (ntfy, feeder, kill points, health)
 ├── test_backup_restore.py        unit tests — staged restore, startup switch + rollback, kill points
 ├── test_bootstrap.py             installer tests — bootstrap.sh in a stub sandbox
 ├── test_bump_version.py          release tests — bump-version.sh gates, check, re-run, PDF
 ├── test_categorize.py            unit tests — military/civil classification
 ├── test_check_installers.py      release tests — installer-consistency gate
 ├── test_check_release_zip.py     release tests — zip checker, package + publish scripts
+├── test_collector_recovery.py    unit tests — demo feeder port recovery through the helper
 ├── test_config_page_b4b.py       unit tests — Settings-page recovery notice, save and upload refusals (static)
 ├── test_config_page_b4c.py       unit tests — Backup & restore page: problem list, restore notices, Cancel, Put this back (static)
 ├── test_config_write_safety.py   unit tests — all-or-nothing config writes, recovery, private files
@@ -187,20 +191,23 @@ aerodrome/
 ├── test_maintenance_locks.py     unit tests — one maintenance operation at a time, backups leave nothing behind
 ├── test_map_carto_key.py         unit tests — map.carto_api_key validation
 ├── test_migration_v7.py          unit tests — schema migration v7
+├── test_ntfy_installer_helper.py unit tests — every ntfy entry point goes through the helper
 ├── test_ntfy_yaml.py             unit tests — notification-server settings (validation, server.yml, restore, Notifications tab, message cache)
 ├── test_photo_resolver.py        unit tests — photo enrichment cache logic
 ├── test_poll_robustness.py       unit tests — collector poll resilience to bad records
 ├── test_preflight.py             unit tests — startup config validation
+├── test_privhelper.py            unit tests — the one sudo caller: argv, errors told apart in any language
 ├── test_request_limits_offload.py unit tests — request-size caps, the upload gate, handlers off the event loop
 ├── test_route_resolver.py        unit tests — route enrichment + current-leg inference
 ├── test_schema_migrations.py     unit tests — migration framework
 ├── test_search.py                unit tests — search query language
 ├── test_search_v2_91_tokens.py   unit tests — search token grammar (v2.91 additions)
-├── test_service_account.py       unit tests — the app's own account comes from its uid, not $LOGNAME/$USER
+├── test_service_account.py       unit tests — no privileged call names an account or a group
 ├── test_session_track.py         unit tests — session-aware track stitching
 ├── test_startup_rollup_backfill.py unit tests — rollup backfills before migrations, the gate
 ├── test_stats_drills.py          unit tests — Stats detail-panel drill queries
 ├── test_stats_most_seen.py       unit tests — all-time most-seen stats card
+├── test_sudoers_boundary.py      unit tests — what the v6 rules grant (sudo's matching) and deny
 ├── test_sudoers_gate_contract.py unit tests — Updates-page sudoers gate + refresh commands
 ├── test_type_code.py             unit tests — aircraft type code (feed vs hexdb fallback)
 ├── test_uninstall.py             installer tests — uninstall.sh removal rules

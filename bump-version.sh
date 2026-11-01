@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.4.149
+# Version: 3.4.150
 # =============================================================================
 # bump-version.sh — Bump Aerodrome version + auto-update CHANGELOG.md
 # =============================================================================
@@ -308,7 +308,9 @@ fi
 # syntax error in a lazily imported module (search.py, categorize.py,
 # photo_resolver.py, …), in main.py itself or in schema_migrations.py would
 # otherwise ship — and the service could not start. compile() writes no .pyc
-# (py_compile would), so `check` still writes nothing.
+# (py_compile would), so `check` still writes nothing. scripts/aerodrome-helper
+# (v3.4.150) is Python without a .py name, so it is listed by name: a syntax
+# error there would fail every permissions refresh.
 PY_SYNTAX_PY=$(cat <<'PYEOF'
 import os, subprocess, sys, warnings
 warnings.simplefilter('ignore', SyntaxWarning)   # e.g. an invalid "\/" escape: a warning, not an error
@@ -335,7 +337,8 @@ def py_files():
     return sorted(paths)
 
 bad, n = [], 0
-for path in py_files():
+EXTRA = ['scripts/aerodrome-helper']    # Python files without a .py name
+for path in py_files() + [p for p in EXTRA if os.path.exists(p)]:
     try:
         with open(path, 'rb') as f:
             src = f.read()

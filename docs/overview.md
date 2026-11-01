@@ -117,7 +117,7 @@ The notifier: optional. Dispatches push notifications via ntfy (self-hosted or t
 
 ## Runs as a systemd service
 
-Install produces a proper systemd unit that starts on boot, restarts on failure, and logs to `journalctl`. The included install script handles Python venv creation, dependency install, and a scoped `/etc/sudoers.d/aerodrome` rule that lets the web UI perform specific privileged operations (service restart, ntfy install) without giving the service account blanket root access.
+Install produces a proper systemd unit that starts on boot, restarts on failure, and logs to `journalctl`. The included install script handles Python venv creation, dependency install, and Aerodrome's system permissions: one small, root-owned helper with a fixed set of checked actions (installing and managing the local ntfy server, moving the demo feeder), plus a restart rule — the web UI gets exactly those, never blanket root access. The local ntfy server itself runs as an unprivileged, sandboxed service.
 
 # Push notifications
 

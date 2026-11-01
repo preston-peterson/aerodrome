@@ -1,56 +1,53 @@
-"""The app names its own account after the uid it runs as — never after an
-inherited $LOGNAME/$USER naming someone else (`sudo -iu`, `su` and friends
-can leave one behind). The one place it names itself: ntfy_installer.install()
-makes /var/cache/ntfy owned by it (the sudoers rule pins `install -d …
--o <service account>`, and the staged binary is written there without sudo).
+"""The app never names an account or a group in a privileged call
+(v3.4.150). Before, ntfy_installer.install() made /var/cache/ntfy owned by
+the account it runs as (`install -d … -o <name> -g <name>`), which failed for
+an account whose primary group isn't named after it (`useradd -g users`);
+now the system helper creates everything as root, and nothing on the system
+belongs to the service account. install.sh's own account handling (the
+unit's account, its primary group for chown) is covered in
+test_install_sh.py; the permission rules in test_sudoers_boundary.py.
 
-No network, no sudo, nothing written: install_status, latest_version and
-_sudo_run are stubbed, and the run stops at the first sudo call.
-Account names are invented.
+No network, no sudo: subprocess.run is recorded and the helper runs on a
+fake root. Account names are invented.
 """
 import os
-import pwd
+import shutil
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import ntfy_installer as ni
+import privhelper
+from test_aerodrome_helper import HelperHost, HelperSudo
 
 OTHER = "admin-b"
 
 
-class NtfyCacheDirOwner(unittest.TestCase):
+class NoAccountInPrivilegedCalls(unittest.TestCase):
 
-    def run_install_until_first_sudo(self, env):
-        calls = []
-
-        def fake_sudo(cmd, input_text=None):
-            calls.append(list(cmd))
-            raise RuntimeError("stub: stop at the first sudo call")
-
-        status = {"state": "not_installed", "arch": "amd64"}
+    def test_install_names_no_account_or_group_whatever_the_environment(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        host = HelperHost(tmp / "root")
+        sudo = HelperSudo(host, privhelper.HELPER)
+        status = {"state": "not_installed", "arch": "linux_amd64"}
+        env = {"LOGNAME": OTHER, "USER": OTHER, "LNAME": OTHER, "USERNAME": OTHER}
         with mock.patch.dict(os.environ, env), \
                 mock.patch.object(ni, "install_status", return_value=status), \
-                mock.patch.object(ni, "latest_version", return_value="9.9.9"), \
-                mock.patch.object(ni, "_sudo_run", side_effect=fake_sudo):
+                mock.patch.object(ni, "_detect_lan_ip", return_value=("192.0.2.10", None)), \
+                mock.patch("subprocess.run", side_effect=sudo):
             result = ni.install(topic="demo-topic")
-        return result, calls
-
-    def test_owner_is_the_running_account_not_an_inherited_name(self):
-        me = pwd.getpwuid(os.geteuid()).pw_name
-        self.assertNotEqual(me, OTHER)
-        result, calls = self.run_install_until_first_sudo(
-            {"LOGNAME": OTHER, "USER": OTHER, "LNAME": OTHER, "USERNAME": OTHER})
-        self.assertFalse(result["ok"])
-        self.assertEqual(calls, [["install", "-d", "-m", "0755", "-o", me, "-g", me,
-                                  str(ni.CACHE_DIR)]])
-
-    def test_falls_back_to_the_login_name_without_a_passwd_entry(self):
-        # Guard: a uid the system can't look up (directory offline) keeps the
-        # old login-name answer instead of an unhandled KeyError.
-        with mock.patch("pwd.getpwuid", side_effect=KeyError("uid not found")):
-            result, calls = self.run_install_until_first_sudo({"LOGNAME": "svc-a"})
-        self.assertFalse(result["ok"])
-        self.assertEqual(calls[0][4:8], ["-o", "svc-a", "-g", "svc-a"])
+        self.assertTrue(result["ok"], result)
+        calls = [c for c in sudo.calls if c[:1] == ["sudo"]]
+        self.assertEqual([c[3] for c in calls], ["ntfy-install"])
+        for c in calls:
+            for flag in ("-o", "-g", OTHER, "users"):
+                self.assertNotIn(flag, c)
+        self.assertFalse(host.f("/var/cache/ntfy").exists())     # no service-account folder
+        src = Path(ni.__file__).read_text()
+        self.assertNotIn("getpass", src)
+        self.assertNotIn("pwd.getpwuid", src)
 
 
 if __name__ == "__main__":

@@ -35,6 +35,17 @@ Aerodrome assumes the deployment posture of a **trusted local network**. The web
 
 If you expose Aerodrome to the public internet or an untrusted network, **that's a configuration choice you make as the operator**. In that case, you're responsible for providing authentication and access control upstream of Aerodrome — for example, a reverse proxy with HTTP basic auth, a VPN, or Tailscale. Issues that exist only because Aerodrome is exposed to the internet are out of scope for this project.
 
+### What the service account can do as root
+
+Aerodrome runs as an ordinary account. Through `/etc/sudoers.d/aerodrome` that account can restart Aerodrome, read that same file, and run Aerodrome's system helper (`/usr/local/libexec/aerodrome/aerodrome-helper`, root-owned), whose fixed set of checked actions installs, configures, upgrades and removes the local ntfy server and moves or removes the demo feeder. No rule lets it write a file or a systemd unit of its choosing, and the local ntfy server the helper sets up runs as its own unprivileged, sandboxed account. A finding that the account (or the web UI) can get anything more out of these is in scope. See `docs/INSTALL.md` → *System permissions*.
+
+Known limits of this boundary:
+
+- The permissions-refresh command (`sudo bash <install>/scripts/recover-sudoers.sh …`, or `sudo bash <install>/update/install.sh`) runs, as root, files in the install folder and its `update/` folder, which the service account can write. Run it right after staging an update yourself, not for an update you don't recognize.
+- Rolling back to a release older than v3.4.145 and re-running *its* installer puts its older, wider permission rules back. Releases from v3.4.145 on keep newer rules unless told otherwise.
+- By default the service account is the login account of the admin who installed Aerodrome, so whoever controls that account also has that admin's own rights.
+- A local ntfy server installed by a release before v3.4.150 keeps running as root, on its older setup, until it moves to the sandboxed one — at the permissions refresh, a save in the Notifications tab, or `sudo /usr/local/libexec/aerodrome/aerodrome-helper ntfy-migrate`. One whose config has settings Aerodrome doesn't manage, or whose move failed its health check, stays there until you move it. Until then the helper installs only the latest ntfy release on it, never a version the service account picks.
+
 ## Scope
 
 **In scope** (please report):

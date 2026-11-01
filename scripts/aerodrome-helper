@@ -1,0 +1,961 @@
+#!/usr/bin/python3 -IS
+# PRIV_VERSION = 6
+"""aerodrome-helper — the one program Aerodrome's service account may run as
+root: one sudoers line naming this file with no argument list, so every
+argument is checked here.
+
+install.sh installs it root:root 0755 at
+/usr/local/libexec/aerodrome/aerodrome-helper and rewrites line 1 to the
+system Python (3.10 or newer, from /usr/bin) it picked. It never runs from
+the install tree. Stdlib only, Python 3.10 syntax and APIs.
+
+Line 2 is read without sudo by the app and by install.sh: it stays exactly
+"# PRIV_VERSION = N", equal to PRIV_VERSION below and to install.sh's
+SUDOERS_VERSION. Any change to this file changes what root does, so it bumps
+all three (scripts/check_installers.py: priv-version, priv-bump).
+
+  version                       PRIV_VERSION and read-only ntfy facts
+  ntfy-install VERSION|latest [--port N --bind B --base-url U --upstream 0|1]
+                                a fresh install (needs the four settings), or
+                                a new binary for an install that has its unit
+                                and config (both left exactly as they are;
+                                on the older root-run unit: latest only)
+  ntfy-config --port N --bind B --base-url U --upstream 0|1 [--drop-custom-keys K1,K2]
+  ntfy-migrate [--drop-custom-keys K1,K2]
+  ntfy-uninstall [--purge]
+  feeder-set-port N
+  feeder-remove
+
+--drop-custom-keys names the settings Aerodrome doesn't manage that the
+caller agreed to remove; any other one found in server.yml refuses. Each
+ntfy action first settles a change an earlier run left unconfirmed (cut
+short: killed, interrupted, stopped with its service — _settle_cut_short):
+kept when ntfy answers on it, put back otherwise.
+Output: one JSON line, always (usage errors too).
+Exit: 0 ok · 1 failed · 2 bad usage · 3 refused (nothing written but that settling).
+"""
+import argparse
+import base64
+import fcntl
+import hashlib
+import io
+import json
+import os
+import platform
+import re
+import ssl
+import stat
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+import urllib.request
+
+PRIV_VERSION = 6
+
+# ---- test seams (module constants: a sudo caller can't change them) --------
+ROOT = "/"
+EXPECTED_OWNER_UID = 0
+HEALTH_TIMEOUT = 15.0       # seconds for ntfy to answer after a (re)start ...
+SETTLE = 3.0                # ... and then keep answering, with no restart
+LOCK_WAIT = 10.0
+
+
+def _geteuid():
+    return os.geteuid()
+
+
+def _run(argv, timeout=60):
+    """A system tool from a fixed path, with a fixed environment. Returns
+    (rc, text): stdout on success, otherwise stderr (or stdout)."""
+    exe = next((p for p in ("/usr/bin/" + argv[0], "/bin/" + argv[0])
+                if os.path.isfile(p)), None)
+    if exe is None:
+        return 127, argv[0] + " not found"
+    try:
+        r = subprocess.run([exe] + argv[1:], capture_output=True, text=True, timeout=timeout,
+                           stdin=subprocess.DEVNULL,
+                           env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C", "LC_ALL": "C"})
+    except subprocess.TimeoutExpired:
+        return 124, argv[0] + " timed out"
+    return r.returncode, ((r.stdout if r.returncode == 0 else r.stderr or r.stdout) or "").strip()
+
+
+# No proxy, ever: sudo drops the caller's environment, and a proxy would be
+# a new thing to trust. Downloads verify TLS.
+_NO_PROXY = urllib.request.ProxyHandler({})
+
+
+def _fetch(url, limit):
+    opener = urllib.request.build_opener(
+        _NO_PROXY, urllib.request.HTTPSHandler(context=ssl.create_default_context()))
+    req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json",
+                                               "User-Agent": "aerodrome-helper/%d" % PRIV_VERSION})
+    with opener.open(req, timeout=60) as r:
+        data = r.read(limit + 1)
+    if len(data) > limit:
+        raise HelperError(1, "download larger than %d bytes" % limit)
+    return data
+
+
+def _probe(port, timeout):
+    """ntfy itself answers on 127.0.0.1:port — its health endpoint, not just
+    an open port (something else holding the port accepts connections too)."""
+    try:
+        with urllib.request.build_opener(_NO_PROXY).open(
+                "http://127.0.0.1:%d/v1/health" % port, timeout=timeout) as r:
+            return r.status == 200 and json.loads(r.read(4096).decode()).get("healthy") is True
+    except Exception:                                       # noqa: BLE001 — any failure is "no"
+        return False
+
+
+RUN, FETCH, PROBE, SLEEP, CLOCK = _run, _fetch, _probe, time.sleep, time.monotonic
+
+FEEDER_UNIT = "aerodrome-synthetic-feeder.service"
+UNIT_DIR = "/etc/systemd/system"
+NTFY_BIN = "/usr/local/bin/ntfy"
+NTFY_CFG_DIR = "/etc/ntfy"
+NTFY_CFG = "/etc/ntfy/server.yml"
+NTFY_CFG_OLD = "/etc/ntfy/server.yml.pre-v6"     # the admin's copy (0600)
+NTFY_JOURNAL = "/etc/ntfy/.aerodrome-converge"   # a change not yet confirmed (0600): the pair it replaced
+NTFY_UNIT = "/etc/systemd/system/ntfy.service"
+NTFY_STAMP_DIR = "/var/lib/ntfy"
+NTFY_STAMP = "/var/lib/ntfy/aerodrome-installed"
+NTFY_STATE_DIR = "/var/lib/private/aerodrome-ntfy"   # the unit's StateDirectory (DynamicUser)
+NTFY_STATE_LINK = "/var/lib/aerodrome-ntfy"
+NTFY_STAGING = ("/var/cache/ntfy", "staging")      # the older setup's download folder
+# The message caches a purge deletes: the sandboxed unit's and the older
+# root-run unit's. Never /var/cache/ntfy/cache.db: the official package's.
+NTFY_PURGE_DIRS = ("/var/lib/private/aerodrome-ntfy", "/var/lib/ntfy")
+NTFY_CACHE_NAMES = ("cache.db", "cache.db-wal", "cache.db-shm")
+NTFY_REPO = "binwiederhier/ntfy"
+LOCK = "/run/aerodrome-helper.lock"
+FEEDER_MIN_PORT, MAX_PORT = 1024, 65535
+MAX_ARCHIVE, MAX_BINARY = 80 << 20, 160 << 20
+
+
+class HelperError(Exception):
+    def __init__(self, code, msg, **extra):
+        super().__init__(msg)
+        self.code, self.extra = code, extra
+
+
+# --- BEGIN shared ntfy-yml block (byte-identical in ntfy_installer.py and scripts/aerodrome-helper) ---
+# Stdlib only (re, json), Python 3.8 syntax and APIs, so a privileged helper
+# can run the same block under the system interpreter. A change here changes
+# what root writes.
+NTFY_MANAGED_VARIABLE = ("base-url", "listen-http", "upstream-base-url")
+NTFY_MANAGED_FIXED = {"cache-duration": "12h", "behind-proxy": False}
+NTFY_CACHE_FILES = ("/var/lib/ntfy/cache.db", "/var/lib/aerodrome-ntfy/cache.db")
+NTFY_UPSTREAM = "https://ntfy.sh"
+# The unit (v3.4.150): ntfy as an unprivileged, sandboxed service. Its
+# --cache-file wins over a cache-file line in server.yml, so a server.yml
+# written for the older root-run unit runs under this one, and the other way
+# round. Only the helper writes it; the app compares the live unit (0644)
+# with it to tell the older setup, without sudo.
+NTFY_UNIT_TEXT = """[Unit]
+Description=ntfy server (managed by Aerodrome)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/ntfy serve --config /etc/ntfy/server.yml --cache-file /var/lib/aerodrome-ntfy/cache.db
+DynamicUser=yes
+StateDirectory=aerodrome-ntfy
+ProtectSystem=strict
+ProtectHome=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+"""
+# Aerodrome's ntfy paths, then an official package's. Any of them without
+# Aerodrome's stamp is someone else's ntfy, never touched.
+NTFY_OWN_PATHS = ("/usr/local/bin/ntfy", "/etc/ntfy/server.yml",
+                  "/etc/systemd/system/ntfy.service")
+NTFY_VENDOR_PATHS = ("/usr/bin/ntfy", "/lib/systemd/system/ntfy.service",
+                     "/usr/lib/systemd/system/ntfy.service")
+_LABEL = r"[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?"
+_HOST = r"(?:" + _LABEL + r"(?:\." + _LABEL + r")*|\[[0-9A-Fa-f:.]{2,45}\])"
+_URL_RE = re.compile(r"\Ahttps?://" + _HOST + r"(?::([0-9]{1,5}))?(?:/[A-Za-z0-9._~/-]*)?\Z")
+_LISTEN_RE = re.compile(r"\A(0\.0\.0\.0|127\.0\.0\.1)?:([0-9]{1,5})\Z")
+# Plain scalars YAML would read as something other than a string: numbers in
+# any spelling (1.1 and 1.2), dates and timestamps, merge/value keys and the
+# 1.1 booleans. A superset of PyYAML's implicit resolvers; refused, not guessed.
+# No two quantifiers here can split the same run of characters, so a match
+# takes linear time on any input.
+_TYPED_RE = re.compile(
+    r"\A(?:[-+]?(?:[0-9_]+|(?:[0-9][0-9_]*)?\.[0-9_]+)(?:[eE][-+]?[0-9]+)?"
+    r"|[-+]?[0-9][0-9_]*\.[0-9_]*(?:[eE][-+]?[0-9]+)?"
+    r"|[-+]?0[xXoObB][0-9A-Fa-f_]+"
+    r"|[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+(?:\.[0-9_]*)?"
+    r"|[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN)"
+    r"|[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}(?:[Tt ].*)?"
+    r"|<<|="
+    r"|[Yy]|[Nn]|[Yy][Ee][Ss]|[Nn][Oo]|[Oo][Nn]|[Oo][Ff][Ff])\Z")
+_KEY_RE = re.compile(r"\A([A-Za-z0-9_][A-Za-z0-9_-]*) *:(?: +(.*))?\Z")
+_DOC_START_RE = re.compile(r"\A--- *(?: #.*)?\Z")
+_SCALAR_MAX = 1024      # longer than any value Aerodrome manages (base-url <= 255)
+
+
+def base_url_ok(s):
+    """True for http(s)://host[:port][/path] with nothing YAML or a shell
+    could misread: no quotes, spaces, control characters, query or fragment."""
+    if not isinstance(s, str) or len(s) > 255:
+        return False
+    m = _URL_RE.match(s)
+    return bool(m) and (m.group(1) is None or 1 <= int(m.group(1)) <= 65535)
+
+
+def _after_quoted(rest):
+    """What may follow a closing quote: nothing, or spaces and a comment."""
+    return rest.strip(" ") == "" or re.match(r" +#", rest) is not None
+
+
+def _yaml_scalar(raw):
+    """(ok, value) for one flat YAML scalar: "double", 'single' or plain,
+    with an optional trailing ' # comment'. Anything fancier is not ok."""
+    if len(raw) > _SCALAR_MAX or "\t" in raw:
+        return False, None              # over-long: not a managed value; tabs: YAML parsers disagree
+    s = raw.strip(" ")
+    if s[:1] == '"':
+        i = 1
+        while i < len(s) and s[i] != '"':
+            i += 2 if s[i] == "\\" else 1
+        if i >= len(s) or not _after_quoted(s[i + 1:]):
+            return False, None
+        try:
+            return True, json.loads(s[:i + 1])
+        except ValueError:
+            return False, None
+    if s[:1] == "'":
+        i = 1
+        while i < len(s):
+            if s[i] == "'":
+                if s[i + 1:i + 2] == "'":
+                    i += 2
+                    continue
+                break
+            i += 1
+        if i >= len(s) or not _after_quoted(s[i + 1:]):
+            return False, None
+        return True, s[1:i].replace("''", "'")
+    m = re.search(r" #", s)
+    if m:
+        s = s[:m.start()].rstrip(" ")
+    if s in ("", "~", "null", "Null", "NULL"):
+        return True, None
+    if s[0] in "!&*|>{}[]%@`,?-#'\"" or ": " in s or s.endswith(":"):
+        return False, None
+    if s in ("true", "True", "TRUE"):
+        return True, True
+    if s in ("false", "False", "FALSE"):
+        return True, False
+    if _TYPED_RE.match(s) or any(ord(c) < 32 or ord(c) == 127 for c in s):
+        return False, None              # numbers, dates, 1.1 booleans: a human decides
+    return True, s
+
+
+def classify_server_yml(text):
+    """Split an ntfy server.yml into what Aerodrome can carry over and what it
+    can't. Returns {port, bind, base_url, upstream, custom, problems}:
+    custom   = names of keys Aerodrome doesn't manage, or managed keys set to
+               something other than Aerodrome's value (dropping them changes
+               behaviour, so a human must agree);
+    problems = base-url / listen-http / upstream-base-url values that can't
+               be carried over (missing, malformed, duplicated, continued on
+               an indented line, or failing validation).
+    The same shapes on the fixed keys (cache-file, cache-duration,
+    behind-proxy) count as custom. Names only, never values.
+    As YAML does, a leading byte-order mark and a "---" before the first key
+    are skipped; a tab in a line's indentation (YAML refuses the file) makes
+    that line custom."""
+    managed = NTFY_MANAGED_VARIABLE + tuple(NTFY_MANAGED_FIXED) + ("cache-file",)
+    vals, custom, problems, seen, last = {}, [], [], set(), None
+    started = False
+    if text[:1] == "\ufeff":
+        text = text[1:]
+    for n, line in enumerate(text.splitlines(), 1):
+        if "\t" in line[:len(line) - len(line.lstrip())]:
+            custom.append("line %d" % n)     # even a blank or comment line
+            continue
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if not started and _DOC_START_RE.match(line):
+            started = True                   # one document start marker, before any key
+            continue
+        started = True
+        if line[0] in " \t":                 # nested under / continuing the previous key
+            if last in NTFY_MANAGED_VARIABLE:
+                problems.append(last)       # its value isn't the one-line scalar...
+                custom.append("line %d" % n)  # ...and the extra line is someone's edit
+            elif last in managed or last is None:
+                custom.append(last or "line %d" % n)
+            continue
+        m = _KEY_RE.match(line.rstrip(" "))
+        if not m:
+            custom.append("line %d" % n)
+            last = None
+            continue
+        key, last = m.group(1), m.group(1)
+        if key in seen:
+            (problems if key in NTFY_MANAGED_VARIABLE else custom).append(key)
+            continue
+        seen.add(key)
+        ok, val = _yaml_scalar(m.group(2) or "")
+        if key in NTFY_MANAGED_VARIABLE:
+            if not ok:
+                problems.append(key)
+            else:
+                vals[key] = val
+        elif key == "cache-file":
+            if not ok or val not in NTFY_CACHE_FILES:
+                custom.append(key)
+        elif key in NTFY_MANAGED_FIXED:
+            want = NTFY_MANAGED_FIXED[key]
+            if not ok or val != want or type(val) is not type(want):
+                custom.append(key)
+        else:
+            custom.append(key)
+    for key in problems:                     # a flagged value is never carried
+        vals.pop(key, None)
+    out = {"port": None, "bind": None, "base_url": None, "upstream": False}
+    if base_url_ok(vals.get("base-url")):
+        out["base_url"] = vals["base-url"]
+    else:
+        problems.append("base-url")
+    lm = _LISTEN_RE.match(vals["listen-http"]) if isinstance(vals.get("listen-http"), str) else None
+    if lm and 1 <= int(lm.group(2)) <= 65535:
+        out["port"], out["bind"] = int(lm.group(2)), lm.group(1) or "0.0.0.0"
+    else:
+        problems.append("listen-http")
+    if "upstream-base-url" in vals:
+        if vals["upstream-base-url"] == NTFY_UPSTREAM:
+            out["upstream"] = True
+        else:
+            custom.append("upstream-base-url")
+    out["custom"] = sorted(set(custom))
+    out["problems"] = sorted(set(problems))
+    return out
+
+
+def render_server_yml(port, bind, base_url, upstream, cache_file=None):
+    """The whole file, from validated values only. Every value is a
+    JSON-quoted scalar, so no input can start a new key."""
+    if type(port) is not int or not 1 <= port <= 65535 or bind not in ("0.0.0.0", "127.0.0.1"):
+        raise ValueError("bad port or bind")
+    if not base_url_ok(base_url) or (cache_file is not None and cache_file not in NTFY_CACHE_FILES):
+        raise ValueError("bad base-url or cache-file")
+    pairs = [("base-url", base_url), ("listen-http", "%s:%d" % (bind, port))]
+    if cache_file is not None:
+        pairs.append(("cache-file", cache_file))
+    pairs += [("cache-duration", "12h"), ("behind-proxy", False)]
+    if upstream:
+        pairs.append(("upstream-base-url", NTFY_UPSTREAM))
+    return "\n".join(
+        ["# Aerodrome-managed ntfy config. Saving in Aerodrome's Notifications tab rewrites",
+         "# this file; settings you add here are named there and never removed silently."]
+        + ["%s: %s" % (k, json.dumps(v)) for k, v in pairs]) + "\n"
+# --- END shared ntfy-yml block ---
+
+_VERSION_RE = re.compile(r"\A([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\Z")
+# classify_server_yml's names: a key, or "line N" for a line it can't read.
+_SETTING_NAME_RE = re.compile(r"\A(?:[A-Za-z0-9_][A-Za-z0-9_-]{0,127}|line [0-9]{1,7})\Z")
+
+
+def _port(s, lo):
+    if not re.fullmatch(r"[0-9]{1,5}", s or "") or not lo <= int(s) <= MAX_PORT:
+        raise argparse.ArgumentTypeError("port must be %d-%d" % (lo, MAX_PORT))
+    return int(s)
+
+
+def v_port(s):
+    return _port(s, FEEDER_MIN_PORT)
+
+
+def v_ntfy_port(s):
+    return _port(s, 1)
+
+
+def v_version(s):
+    if s == "latest" or _VERSION_RE.match(s or ""):
+        return s
+    raise argparse.ArgumentTypeError("version must be X.Y.Z or 'latest'")
+
+
+def v_base_url(s):
+    if not base_url_ok(s):
+        raise argparse.ArgumentTypeError("base-url must be http(s)://host[:port][/path]")
+    return s
+
+
+def v_setting_names(s):
+    names = s.split(",") if s else []
+    if len(s) > 4096 or not all(_SETTING_NAME_RE.match(n) for n in names):
+        raise argparse.ArgumentTypeError("setting names, comma-separated")
+    return frozenset(names)
+
+
+# ---- filesystem -------------------------------------------------------------
+def P(path):
+    return os.path.join(ROOT, path.lstrip("/"))
+
+
+def _caller_gids():
+    import pwd
+    try:
+        pw = pwd.getpwuid(int(os.environ.get("SUDO_UID", "")))
+        return set(os.getgrouplist(pw.pw_name, pw.pw_gid))
+    except (ValueError, KeyError):
+        return set()
+
+
+def _check_dir_trusted(d):
+    """d and every directory above it: a real directory, root's, and not
+    writable by everyone or by a group the sudo caller is in."""
+    if not stat.S_ISDIR(os.lstat(d).st_mode):
+        raise HelperError(1, "%s is not a directory (symlink?)" % d)
+    gids, top, p = _caller_gids(), os.path.realpath(ROOT), os.path.realpath(d)
+    while True:
+        st = os.stat(p)
+        if (st.st_uid != EXPECTED_OWNER_UID or st.st_mode & 0o002
+                or (st.st_mode & 0o020 and st.st_gid in gids)):
+            raise HelperError(1, "refusing to write under %s: writable by the caller" % p)
+        if p in (top, "/"):
+            break
+        p = os.path.dirname(p)
+
+
+def _ensure_dir(path):
+    d = P(path)
+    if not os.path.lexists(d):
+        os.mkdir(d, 0o755)
+    _check_dir_trusted(d)
+    return d
+
+
+def _atomic_write(path, data, mode=0o644, owner=None):
+    """temp file → fsync → rename, in a trusted directory. owner: (uid, gid)
+    to give it, else root's (the helper's own)."""
+    d = os.path.dirname(P(path))
+    _check_dir_trusted(d)
+    if isinstance(data, str):
+        data = data.encode()
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".aerodrome-helper.")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        if owner is not None:
+            os.chown(tmp, *owner)
+        os.chmod(tmp, mode)
+        os.replace(tmp, P(path))
+    except BaseException:
+        if os.path.lexists(tmp):
+            os.unlink(tmp)
+        raise
+    dfd = os.open(d, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
+
+
+def _rmtree_at(dfd, name):
+    """Remove name in the directory open as dfd, recursively, never following
+    a symlink (a planted link is unlinked itself). Returns whether it existed."""
+    try:
+        st = os.stat(name, dir_fd=dfd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISDIR(st.st_mode):
+        os.unlink(name, dir_fd=dfd)
+        return True
+    fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dfd)
+    try:
+        st2 = os.fstat(fd)
+        if (st2.st_dev, st2.st_ino) != (st.st_dev, st.st_ino):
+            raise HelperError(1, "%s changed while being removed" % name)
+        with os.scandir(fd) as it:
+            names = [e.name for e in it]
+        for n in names:
+            _rmtree_at(fd, n)
+    finally:
+        os.close(fd)
+    os.rmdir(name, dir_fd=dfd)
+    return True
+
+
+def _remove_in(dirpath, name):
+    try:
+        dfd = os.open(P(dirpath), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    try:
+        return _rmtree_at(dfd, name)
+    finally:
+        os.close(dfd)
+
+
+def _rmdir_quiet(path):
+    try:
+        os.rmdir(P(path))
+    except OSError:
+        pass
+
+
+def _read(path, limit=1 << 20):
+    try:
+        with open(P(path), "rb") as f:
+            return f.read(limit)
+    except FileNotFoundError:
+        return None
+
+
+def _systemctl(*args, check=True):
+    rc, out = RUN(["systemctl"] + list(args))
+    if check and rc != 0:
+        raise HelperError(1, "systemctl %s failed: %s" % (" ".join(args), out))
+    return rc == 0
+
+
+def _is_active():
+    return _systemctl("is-active", "--quiet", "ntfy", check=False)
+
+
+def _unit_props():
+    rc, out = RUN(["systemctl", "show", "-p", "ActiveState", "-p", "NRestarts", "ntfy"])
+    props = dict(l.split("=", 1) for l in out.splitlines() if "=" in l) if rc == 0 else {}
+    return props.get("ActiveState"), props.get("NRestarts")
+
+
+def _wait_healthy(port):
+    """ntfy answers its health check on port and keeps answering for SETTLE
+    seconds while the unit stays active with the same restart count. A
+    Type=simple unit reads active the moment it starts, even one that is
+    about to fail on a busy port and restart. HEALTH_TIMEOUT is wall-clock
+    time, slow probes included (a listener that never answers costs each
+    probe its whole timeout)."""
+    deadline, since, seen = CLOCK() + HEALTH_TIMEOUT, 0.0, None
+    while CLOCK() <= deadline:
+        props = _unit_props()
+        if props[0] == "active" and PROBE(port, min(2.0, max(deadline - CLOCK(), 0.1))):
+            now = CLOCK()
+            if props != seen:
+                since, seen = now, props
+            elif now - since >= SETTLE:
+                return True
+        else:
+            seen = None
+        SLEEP(0.5)
+    return False
+
+
+# ---- ntfy -------------------------------------------------------------------
+def _ntfy_state():
+    """The app's install_status() states (it also tells a stamped install
+    with files missing apart: 'partial', which is ours here)."""
+    if os.path.lexists(P(NTFY_STAMP)):
+        return "aerodrome_managed"
+    if any(os.path.lexists(P(p)) for p in NTFY_OWN_PATHS + NTFY_VENDOR_PATHS):
+        return "external"
+    return "not_installed"
+
+
+def _require_managed():
+    if _ntfy_state() != "aerodrome_managed":
+        raise HelperError(3, "ntfy on this system wasn't installed by Aerodrome")
+
+
+def _custom_keys(cfg):
+    return classify_server_yml(cfg.decode("utf-8", "replace"))["custom"] if cfg is not None else []
+
+
+def _arch():
+    return {"x86_64": "linux_amd64", "amd64": "linux_amd64", "aarch64": "linux_arm64",
+            "arm64": "linux_arm64", "armv7l": "linux_armv7"}.get(platform.machine().lower())
+
+
+def _download_ntfy(version, arch):
+    """(version, binary bytes): the release's sha256 digest from GitHub is
+    checked before the archive is opened, and only its ntfy_X_arch/ntfy
+    member is read — a regular file, an ELF binary, of bounded size."""
+    base = "https://api.github.com/repos/%s/releases" % NTFY_REPO
+    meta = json.loads(FETCH(base + ("/latest" if version == "latest" else "/tags/v" + version),
+                            2 << 20))
+    tag = str(meta.get("tag_name", ""))
+    m = _VERSION_RE.match(tag[1:] if tag.startswith("v") else tag)
+    if not m:
+        raise HelperError(1, "unexpected release tag")
+    ver = ".".join(m.groups())
+    if version != "latest" and ver != version:
+        raise HelperError(1, "release tag does not match %s" % version)
+    name = "ntfy_%s_%s.tar.gz" % (ver, arch)
+    digest = next((a.get("digest") or "" for a in meta.get("assets", [])
+                   if a.get("name") == name), "")
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+        raise HelperError(1, "no sha256 digest published for " + name)
+    blob = FETCH("https://github.com/%s/releases/download/v%s/%s" % (NTFY_REPO, ver, name),
+                 MAX_ARCHIVE)
+    if hashlib.sha256(blob).hexdigest() != digest[7:]:
+        raise HelperError(1, "checksum mismatch for " + name)
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tf:
+        want = "ntfy_%s_%s/ntfy" % (ver, arch)
+        mem = next((x for x in tf.getmembers() if x.name == want), None)
+        if mem is None or not mem.isreg() or mem.size > MAX_BINARY:
+            raise HelperError(1, want + " missing or not a regular file")
+        data = tf.extractfile(mem).read()
+    if not data.startswith(b"\x7fELF"):
+        raise HelperError(1, "downloaded ntfy is not an ELF binary")
+    return ver, data
+
+
+def _b64(data):
+    return None if data is None else base64.b64encode(data).decode()
+
+
+def _drop_journal():
+    _remove_in(NTFY_CFG_DIR, os.path.basename(NTFY_JOURNAL))
+
+
+def _put_back(j):
+    """The pair a change replaced (journal j), back as it was — the unit
+    first, then the config with its own mode and owner; a file that wasn't
+    there goes — and ntfy restarted if it was running. The journal goes last."""
+    unit, cfg = (None if j[k] is None else base64.b64decode(j[k]) for k in ("unit", "cfg"))
+    if unit is None:
+        _systemctl("disable", "--now", "ntfy", check=False)
+        _remove_in(UNIT_DIR, os.path.basename(NTFY_UNIT))
+    else:
+        _atomic_write(NTFY_UNIT, unit, 0o644)         # rollback kill-point R1
+    if cfg is None:
+        _remove_in(NTFY_CFG_DIR, os.path.basename(NTFY_CFG))
+    else:
+        _atomic_write(NTFY_CFG, cfg, j["cfg_mode"], j["cfg_owner"])   # rollback kill-point R2
+    _systemctl("daemon-reload", check=False)
+    if j["running"]:
+        _systemctl("restart", "ntfy", check=False)
+    _drop_journal()
+
+
+def _settle_cut_short():
+    """A change cut short — its run killed, interrupted, or stopped along
+    with the service that started it — left its journal. It is settled
+    first, the way that run would have ended: a complete new pair (the
+    sandboxed unit with a config it can run) is reloaded and restarted
+    (enabled first, for a run that was to start ntfy) as that run would
+    have, and kept once ntfy answers on it — a fresh install has nothing
+    to go back to and keeps its files either way. A pair still in between,
+    or one ntfy doesn't answer on, goes back to the pair the journal kept
+    (as the health check's rollback would have put it). This run then
+    starts from a setup that works."""
+    path = P(NTFY_JOURNAL)
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return
+    _check_dir_trusted(os.path.dirname(path))
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != EXPECTED_OWNER_UID or st.st_mode & 0o077:
+        raise HelperError(1, "%s isn't root's own file; remove it" % NTFY_JOURNAL)
+    j = json.loads(_read(NTFY_JOURNAL, 8 << 20))
+    cfg = _read(NTFY_CFG)
+    cls = classify_server_yml(cfg.decode("utf-8", "replace")) if cfg is not None else None
+    if (_read(NTFY_UNIT) == NTFY_UNIT_TEXT.encode() and cls is not None
+            and not cls["custom"] and not cls["problems"]):
+        _systemctl("daemon-reload")
+        if j.get("start"):
+            _systemctl("enable", "ntfy", check=False)
+        if j.get("start") or j["running"]:
+            _systemctl("restart", "ntfy", check=False)
+        if not j["running"] or j["unit"] is None or j["cfg"] is None or _wait_healthy(cls["port"]):
+            _drop_journal()
+            return
+    _put_back(j)
+
+
+def _converge(port, bind, base_url, upstream, drop, start=False):
+    """THE one writer of ntfy.service and server.yml: the pair is written
+    together or not at all. The config goes first, then the unit; a rollback
+    puts the unit back first, then the config. Every state in between starts:
+    the new unit passes --cache-file, and the old root-run unit runs any
+    config. The pair it replaces is kept in a journal until ntfy answers on
+    the new one (or it is put back), so the next run settles a run cut
+    short (_settle_cut_short). A unit written where there was none (or
+    start: the repair of a missing config) is enabled and restarted — a
+    restart starts a stopped ntfy and moves a running one onto the unit
+    just written, where a start would leave it as it was. drop: the names
+    of the settings Aerodrome doesn't manage that the caller agreed to
+    remove — any other one refuses, with nothing written."""
+    old_unit, old_cfg = _read(NTFY_UNIT), _read(NTFY_CFG)
+    custom = _custom_keys(old_cfg)
+    if set(custom) - drop:
+        raise HelperError(3, "server.yml has settings Aerodrome doesn't manage",
+                          custom_keys=custom)
+    new_cfg = render_server_yml(port, bind, base_url, upstream).encode()
+    new_unit = NTFY_UNIT_TEXT.encode()
+    start = start or old_unit is None
+    if old_unit == new_unit and old_cfg == new_cfg and not start:
+        return {"changed": False, "restarted": False}
+    _ensure_dir(NTFY_CFG_DIR)
+    if old_cfg is not None and (custom or (old_unit != new_unit and _read(NTFY_CFG_OLD) is None)):
+        _atomic_write(NTFY_CFG_OLD, old_cfg, 0o600)    # the file as it was: kept on every drop
+    was_active = _is_active()
+    st = os.stat(P(NTFY_CFG)) if old_cfg is not None else None
+    journal = {"unit": _b64(old_unit), "cfg": _b64(old_cfg), "running": was_active,
+               "start": start, "cfg_mode": stat.S_IMODE(st.st_mode) if st else None,
+               "cfg_owner": [st.st_uid, st.st_gid] if st else None}
+    _atomic_write(NTFY_JOURNAL, json.dumps(journal), 0o600)   # kill-point K0
+    _atomic_write(NTFY_CFG, new_cfg, 0o644)           # kill-point K1
+    _atomic_write(NTFY_UNIT, new_unit, 0o644)         # kill-point K2
+    _systemctl("daemon-reload")                       # kill-point K3
+    if start:
+        _systemctl("enable", "ntfy", check=False)
+    if start or was_active:
+        _systemctl("restart", "ntfy", check=False)
+    else:
+        _drop_journal()
+        return {"changed": True, "restarted": False}
+    if _wait_healthy(port):
+        _drop_journal()
+        return {"changed": True, "restarted": True}
+    if old_unit is None or old_cfg is None:           # a fresh install: nothing to go back to
+        _drop_journal()
+        raise HelperError(1, "ntfy was installed but isn't answering on port %d "
+                             "(see: journalctl -u ntfy)" % port)
+    _put_back(journal)
+    raise HelperError(1, "ntfy didn't come up with the new settings; its previous "
+                         "settings were put back (see: journalctl -u ntfy)")
+
+
+def cmd_ntfy_install(a):
+    state = _ntfy_state()
+    if state == "external":
+        raise HelperError(3, "an ntfy Aerodrome didn't install is on this system; "
+                             "manage it with its own tools")
+    arch = _arch()
+    if not arch:
+        raise HelperError(3, "no ntfy release for this architecture (%s)" % platform.machine())
+    _settle_cut_short()
+    old_cfg, unit = _read(NTFY_CFG), _read(NTFY_UNIT)
+    complete = state == "aerodrome_managed" and old_cfg is not None and unit is not None
+    if complete and a.version != "latest" and unit != NTFY_UNIT_TEXT.encode():
+        # The older unit runs ntfy as root: which build runs there isn't the
+        # caller's to pick.
+        raise HelperError(3, "ntfy still runs on its older, root-run setup: only the latest "
+                             "release goes there (move it first: ntfy-migrate)")
+    if not complete:
+        if None in (a.port, a.bind, a.base_url, a.upstream):
+            raise HelperError(2, "a fresh install needs --port --bind --base-url --upstream")
+        if _custom_keys(old_cfg):
+            raise HelperError(3, "server.yml has settings Aerodrome doesn't manage",
+                              custom_keys=_custom_keys(old_cfg))
+    ver, data = _download_ntfy(a.version, arch)
+    _ensure_dir(NTFY_STAMP_DIR)
+    if state == "not_installed":
+        _atomic_write(NTFY_STAMP, ver + "\n")         # ours from here on: a re-run repairs it
+    _ensure_dir("/usr/local/bin")
+    was_active = complete and _is_active()
+    _atomic_write(NTFY_BIN, data, 0o755)
+    _atomic_write(NTFY_STAMP, ver + "\n")
+    if not complete:
+        return dict(version=ver, **_converge(a.port, a.bind, a.base_url, a.upstream == "1",
+                                             frozenset(), start=True))
+    if not was_active:                                # unit and config are left as they are
+        return {"version": ver, "restarted": False}
+    _systemctl("restart", "ntfy", check=False)
+    port = classify_server_yml(old_cfg.decode("utf-8", "replace"))["port"]
+    if port is not None and not _wait_healthy(port):
+        raise HelperError(1, "ntfy %s was installed but isn't answering "
+                             "(see: journalctl -u ntfy)" % ver)
+    return {"version": ver, "restarted": True}
+
+
+def cmd_ntfy_config(a):
+    _require_managed()
+    _settle_cut_short()
+    return _converge(a.port, a.bind, a.base_url, a.upstream == "1", a.drop_custom_keys)
+
+
+def cmd_ntfy_migrate(a):
+    if _ntfy_state() != "aerodrome_managed":
+        return {"migrated": False}
+    _settle_cut_short()
+    cfg = _read(NTFY_CFG)
+    if cfg is None:
+        return {"migrated": False}
+    _remove_in(*NTFY_STAGING)                         # the service account's: never trusted
+    _rmdir_quiet(NTFY_STAGING[0])
+    if _read(NTFY_UNIT) == NTFY_UNIT_TEXT.encode():   # moved already: settings are the tab's
+        return {"migrated": False, "already": True}
+    cls = classify_server_yml(cfg.decode("utf-8", "replace"))
+    if cls["problems"]:
+        raise HelperError(3, "server.yml has values Aerodrome can't carry over",
+                          problems=cls["problems"], custom_keys=cls["custom"])
+    res = _converge(cls["port"], cls["bind"], cls["base_url"], cls["upstream"],
+                    a.drop_custom_keys)
+    return {"migrated": res["changed"], "restarted": res["restarted"]}
+
+
+def cmd_ntfy_uninstall(a):
+    state, removed = _ntfy_state(), []
+    if state == "external":
+        raise HelperError(3, "ntfy on this system wasn't installed by Aerodrome; "
+                             "remove it with its own tools")
+    if state == "aerodrome_managed":
+        _systemctl("disable", "--now", "ntfy", check=False)
+    if a.purge:                                       # before the stamp: a re-run finishes it
+        for d in NTFY_PURGE_DIRS:
+            for n in NTFY_CACHE_NAMES:
+                if _remove_in(d, n):
+                    removed.append(d + "/" + n)
+    _remove_in(*NTFY_STAGING)
+    if state == "aerodrome_managed":
+        for p in (NTFY_JOURNAL, NTFY_UNIT, NTFY_BIN, NTFY_CFG, NTFY_CFG_OLD, NTFY_STAMP):
+            if _remove_in(os.path.dirname(p), os.path.basename(p)):
+                removed.append(p)                     # the stamp last: until then a re-run resumes
+    for d in (NTFY_CFG_DIR, NTFY_STAMP_DIR, NTFY_STAGING[0], NTFY_STATE_DIR):
+        _rmdir_quiet(d)
+    link = P(NTFY_STATE_LINK)
+    if os.path.islink(link) and not os.path.exists(link):
+        os.unlink(link)                               # systemd's link to the state dir, now gone
+    _systemctl("daemon-reload", check=False)
+    return {"removed": removed}
+
+
+_FEEDER_PORT_RE = re.compile(r"(--port[ \t]+)([0-9]{1,5})(?=[ \t]*(?:\\?\n|\Z))")
+
+
+def cmd_feeder_set_port(a):
+    path = UNIT_DIR + "/" + FEEDER_UNIT
+    raw = _read(path)
+    if raw is None:
+        raise HelperError(3, "the demo feeder is not installed")
+    st = os.lstat(P(path))
+    if st.st_uid != EXPECTED_OWNER_UID or st.st_mode & 0o022 or not stat.S_ISREG(st.st_mode):
+        raise HelperError(1, "the feeder unit is not a root-owned regular file")
+    text = raw.decode()
+    if len(re.findall(r"--port\b", text)) != 1 or len(_FEEDER_PORT_RE.findall(text)) != 1:
+        raise HelperError(1, "the feeder unit does not have exactly one --port N")
+    _atomic_write(path, _FEEDER_PORT_RE.sub(lambda m: m.group(1) + str(a.port), text))
+    _systemctl("daemon-reload")
+    if _systemctl("restart", FEEDER_UNIT, check=False):
+        return {"port": a.port}
+    _atomic_write(path, raw)                          # the port it had, so config.yaml still matches
+    _systemctl("daemon-reload", check=False)
+    _systemctl("restart", FEEDER_UNIT, check=False)
+    raise HelperError(1, "the demo feeder didn't restart on port %d; its previous port "
+                         "was put back (see: journalctl -u %s)" % (a.port, FEEDER_UNIT))
+
+
+def cmd_feeder_remove(a):
+    _systemctl("disable", "--now", FEEDER_UNIT, check=False)
+    removed = _remove_in(UNIT_DIR, FEEDER_UNIT)
+    _systemctl("daemon-reload", check=False)
+    return {"removed": removed}
+
+
+def cmd_version(a):
+    """Read-only, and the one action that doesn't need root (install.sh runs
+    it on a new copy before putting it in place)."""
+    unit = _read(NTFY_UNIT)
+    return {"version": PRIV_VERSION,
+            "ntfy_unit": "absent" if unit is None else
+                         ("current" if unit == NTFY_UNIT_TEXT.encode() else "legacy"),
+            "ntfy_cache": any(os.path.lexists(P(d + "/" + n))
+                              for d in NTFY_PURGE_DIRS for n in NTFY_CACHE_NAMES)}
+
+
+class _Parser(argparse.ArgumentParser):
+    """Usage errors become the one JSON line (exit 2), not stderr text."""
+
+    def error(self, message):
+        raise HelperError(2, "%s: %s" % (self.prog, message))
+
+
+def build_parser():
+    p = _Parser(prog="aerodrome-helper", allow_abbrev=False, add_help=False,
+                fromfile_prefix_chars=None)
+    sub = p.add_subparsers(dest="cmd", required=True, parser_class=_Parser)
+
+    def add(name, fn, lock=True):
+        s = sub.add_parser(name, allow_abbrev=False, add_help=False, fromfile_prefix_chars=None)
+        s.set_defaults(fn=fn, lock=lock)
+        return s
+
+    def ntfy_settings(s, required):
+        s.add_argument("--port", type=v_ntfy_port, required=required)
+        s.add_argument("--bind", choices=("0.0.0.0", "127.0.0.1"), required=required)
+        s.add_argument("--base-url", type=v_base_url, required=required)
+        s.add_argument("--upstream", choices=("0", "1"), required=required)
+
+    add("version", cmd_version, lock=False)
+    s = add("ntfy-install", cmd_ntfy_install)
+    s.add_argument("version", type=v_version)
+    ntfy_settings(s, False)
+    s = add("ntfy-config", cmd_ntfy_config)
+    ntfy_settings(s, True)
+    s.add_argument("--drop-custom-keys", type=v_setting_names, default=frozenset())
+    s = add("ntfy-migrate", cmd_ntfy_migrate)
+    s.add_argument("--drop-custom-keys", type=v_setting_names, default=frozenset())
+    s = add("ntfy-uninstall", cmd_ntfy_uninstall)
+    s.add_argument("--purge", action="store_true")
+    s = add("feeder-set-port", cmd_feeder_set_port)
+    s.add_argument("port", type=v_port)
+    add("feeder-remove", cmd_feeder_remove)
+    return p
+
+
+def _lock():
+    fd = os.open(P(LOCK), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    deadline = CLOCK() + LOCK_WAIT
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except BlockingIOError:
+            if CLOCK() >= deadline:
+                os.close(fd)
+                raise HelperError(3, "another Aerodrome system task is still running; "
+                                     "try again in a minute", busy=True)
+            SLEEP(0.5)
+
+
+def main(argv=None, out=None):
+    out = out or sys.stdout
+
+    def emit(code, **reply):
+        print(json.dumps(reply), file=out)
+        return code
+    try:
+        a = build_parser().parse_args(argv)
+    except HelperError as e:
+        return emit(e.code, ok=False, message=str(e), **e.extra)
+    if a.cmd != "version" and _geteuid() != 0:
+        return emit(1, ok=False, message="must run as root (through sudo)")
+    os.umask(0o022)
+    lock_fd = None
+    try:
+        if a.lock:
+            lock_fd = _lock()
+        return emit(0, ok=True, **a.fn(a))
+    except HelperError as e:
+        return emit(e.code, ok=False, message=str(e), **e.extra)
+    except Exception as e:                                  # noqa: BLE001 — still one JSON line
+        return emit(1, ok=False, message="%s: %s" % (type(e).__name__, e))
+    finally:
+        if lock_fd is not None:
+            os.close(lock_fd)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

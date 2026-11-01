@@ -134,14 +134,55 @@ python3 scripts/check_installers.py --help
   let `awk` read to the end with a found-flag. `# pipefail-ok: <why>` marks a
   line that is safe anyway; heredoc bodies are skipped; `sed …q` is not
   covered;
-- **ntfy-cache** — the `cache-file:` path `ntfy_installer.py` writes into
-  ntfy's `server.yml` is removed by `uninstall.sh` (on a code line, not only
-  in a comment); a template it can't find is a finding, never a pass.
+- **ntfy-cache** — every message cache Aerodrome's ntfy has used is purged:
+  the helper's purge list holds the sandboxed unit's (its `--cache-file`, in
+  its `StateDirectory=`) and the older root-run unit's folder, with SQLite's
+  `-wal`/`-shm`; `uninstall.sh` runs the helper's `ntfy-uninstall`, and its
+  own purge branch (for a system without the helper) removes the same files
+  on code lines. A constant it can't find is a finding, never a pass;
+- **priv-version** (v3.4.150) — `scripts/aerodrome-helper`'s line 2
+  (`# PRIV_VERSION = N`), its `PRIV_VERSION` constant and `install.sh`'s
+  first `SUDOERS_VERSION` are one number;
+- **priv-bump** — against the last `vX.Y.Z` tag: when any byte of the helper
+  or any rule line `render_sudoers()` writes (comments aside) changed,
+  `SUDOERS_VERSION` is higher than the tag's (the only way a new helper or
+  new rules reach a system is the permissions refresh that a higher number
+  asks for). SKIPPED (with the reason) outside a git checkout and against a
+  tag older than v3.4.145;
+- **sudo-callsites** — only `privhelper.py` builds a sudo command line (a
+  list or tuple starting with `"sudo"`, test files aside);
+- **sudoers-boundary** — the rules grant exactly the commands listed in the
+  check (`SUDOERS_ALLOWED`: the helper, the restart and `cat` rules and the
+  compatibility line), each as root with `NOPASSWD`, on plain rule lines
+  only (no `Defaults`, aliases or includes) and with no wildcard, negation,
+  `ALL` or `sudoedit`. A command that writes files (`tee`, `install`, `rm`
+  but the compatibility line's, …) is named as such. Granting anything new
+  means changing the list here too;
+- **ntfy-yml-shared** — the shared ntfy-yml block (the `server.yml`
+  reader/renderer and the unit text) is byte-identical in
+  `ntfy_installer.py` and the helper;
+- **helper-api-floor** — the helper parses as Python 3.10, imports only the
+  standard library and uses none of a denylist of 3.11+ APIs, however it
+  spells them (`mod.X`, an `import mod as m` alias, `from mod import X`) —
+  a denylist, not a proof: its tests also run under 3.10;
+- **helper-not-stamped** — `bump-version.sh` never stamps a `# Version:`
+  line into the helper (line 2 is the `PRIV_VERSION` marker).
 
-Prints one ✓/✗ line per check with indented details; exit `0` = clean,
-`1` = findings, `2` = usage error (a `ROOT` that isn't a directory). A
-`ROOT` with no shell scripts at all is a finding, never a silent pass.
-`test_check_installers.py` imports its functions.
+Prints one ✓/✗ line per check (`– … SKIPPED: why` when it can't run there)
+with indented details; exit `0` = clean, `1` = findings, `2` = usage error (a
+`ROOT` that isn't a directory). A `ROOT` with no shell scripts at all is a
+finding, never a silent pass. `test_check_installers.py` imports its
+functions.
+
+## `aerodrome-helper`
+
+Not tooling: the root-owned system helper. `install.sh` installs it to
+`/usr/local/libexec/aerodrome/aerodrome-helper` (root:root 0755) with line 1
+rewritten to the system Python it picked (`#!/usr/bin/python3.x -IS`), and
+the sudoers rule names it without arguments. Any change to it changes what
+root does: raise `SUDOERS_VERSION` and its `PRIV_VERSION` together
+(priv-version / priv-bump above). Its tests (`test_aerodrome_helper.py`)
+load it as a module on a fake root; they also run under Python 3.10.
 
 ## `bootstrap.sh`
 
@@ -155,8 +196,8 @@ hooks: `AERODROME_BOOTSTRAP_OS_RELEASE`, `AERODROME_BOOTSTRAP_UNIT` and
 
 ## `recover-sudoers.sh`
 
-Refreshes Aerodrome's system permissions (the sudoers rule) only. It has no
-rules of its own: it runs the `install.sh` with the highest
+Refreshes Aerodrome's system permissions (the system helper and the sudoers
+rule) only. It has no rules of its own: it runs the `install.sh` with the highest
 `SUDOERS_VERSION` among its own tree, `<install>/update/`,
 `<install>/update/aerodrome/` and `<install>/` (those that support
 `--privileges-only`) as `install.sh --privileges-only --install-dir

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.4.149
+# Version: 3.4.150
 # =============================================================================
 # Aerodrome — Uninstall Script
 # =============================================================================
@@ -12,8 +12,9 @@
 #   ./uninstall.sh --keep    # Keep all data files, no prompts (service only)
 #
 # What gets removed (always):
-#   - systemd service(s) (stopped, disabled, unit files deleted) and the
-#     sudoers rule
+#   - systemd service(s) (stopped, disabled, unit files deleted), the
+#     sudoers rule and Aerodrome's system helper
+#     (/usr/local/libexec/aerodrome/aerodrome-helper)
 #   - Python virtual environment (./venv)
 #   - PID file (.tracker.pid) and staged updates (./update)
 #
@@ -30,8 +31,11 @@
 #   - Config file (config.yaml) and its backups (config.yaml.bak.*,
 #     ntfy-server.yml.from-backup.*)
 #   - Local ntfy server (if Aerodrome installed one via the Notifications
-#     tab — detected via /var/lib/ntfy/aerodrome-installed stamp) and its
-#     cached messages
+#     tab — detected via /var/lib/ntfy/aerodrome-installed stamp), with
+#     /etc/ntfy/server.yml.pre-v6 (the copy of its config kept when it moved
+#     to its restricted setup), and — a second question — its cached
+#     messages. /var/cache/ntfy belongs to ntfy's own package and is never
+#     purged.
 #   - Port 8000/tcp in firewalld — closed only if Aerodrome's installer
 #     recorded opening it (.aerodrome-firewalld-port); otherwise the close
 #     command is printed for you to run
@@ -70,6 +74,11 @@ RESET='\033[0m'
 _self="$(readlink -f -- "$0" 2>/dev/null || printf '%s\n' "$0")"
 INSTALL_DIR="$(cd "$(dirname "$_self")" && pwd)"
 SERVICE_NAME="aerodrome"
+# Aerodrome's system helper (install.sh puts it here). While it is there,
+# the local ntfy server and the demo feeder are removed through it — the
+# same checked steps the web UI uses; otherwise directly.
+HELPER_DIR="/usr/local/libexec/aerodrome"
+HELPER="${HELPER_DIR}/aerodrome-helper"
 
 PURGE=false
 KEEP=false
@@ -136,7 +145,8 @@ if _system_or_home_dir "$INSTALL_DIR"; then
     echo -e "${RED}✗${RESET} Aerodrome sits directly in ${INSTALL_DIR}, a system or home folder — nothing was changed." >&2
     echo "    Folders such as venv/, logs/ and .backups/ there may not be Aerodrome's, so remove it by hand:" >&2
     echo "      sudo systemctl disable --now aerodrome    (on a demo install: aerodrome-synthetic-feeder too)" >&2
-    echo "      sudo rm -f /etc/systemd/system/aerodrome.service /etc/sudoers.d/aerodrome" >&2
+    echo "      sudo rm -f /etc/systemd/system/aerodrome.service /etc/sudoers.d/aerodrome \\" >&2
+    echo "                 /usr/local/libexec/aerodrome/aerodrome-helper" >&2
     echo "      sudo systemctl daemon-reload" >&2
     echo "    then delete Aerodrome's own files from ${INSTALL_DIR} yourself." >&2
     exit 2
@@ -261,6 +271,8 @@ _unit_known() {
 }
 
 # --- Step 1: Stop and disable systemd service ---
+HAVE_HELPER=false
+sudo test -x "$HELPER" 2>/dev/null && HAVE_HELPER=true
 echo -e "${CYAN}[1/6]${RESET} Stopping and removing systemd service..."
 if _unit_known "${SERVICE_NAME}.service"; then
     sudo systemctl stop ${SERVICE_NAME} 2>/dev/null || true
@@ -280,15 +292,22 @@ fi
 # stop, disable, remove unit file, daemon-reload.
 FEEDER_SERVICE_NAME="aerodrome-synthetic-feeder"
 if _unit_known "${FEEDER_SERVICE_NAME}.service"; then
-    sudo systemctl stop ${FEEDER_SERVICE_NAME} 2>/dev/null || true
-    sudo systemctl disable ${FEEDER_SERVICE_NAME} 2>/dev/null || true
-    sudo rm -f /etc/systemd/system/${FEEDER_SERVICE_NAME}.service
-    sudo systemctl daemon-reload
+    if [ "$HAVE_HELPER" = true ] && sudo "$HELPER" feeder-remove > /dev/null 2>&1; then
+        :
+    else
+        sudo systemctl stop ${FEEDER_SERVICE_NAME} 2>/dev/null || true
+        sudo systemctl disable ${FEEDER_SERVICE_NAME} 2>/dev/null || true
+        sudo rm -f /etc/systemd/system/${FEEDER_SERVICE_NAME}.service
+        sudo systemctl daemon-reload
+    fi
     sudo systemctl reset-failed 2>/dev/null || true
     echo -e "  ${GREEN}✓${RESET} Synthetic-feeder service stopped, disabled, and removed (demo mode)"
 fi
 
-# Remove the sudoers rule (if present). Checked through sudo: on some
+# Remove the sudoers rule (if present) now, so a run that stops later never
+# leaves it behind. The system helper it names stays until step 5, which
+# uses it (this script runs it as root, needing no rule); without the rule,
+# Aerodrome's account can't run it as root. Checked through sudo: on some
 # distros /etc/sudoers.d isn't searchable by a normal user, so a plain
 # [ -f ] would never see the file.
 if sudo test -e /etc/sudoers.d/aerodrome; then
@@ -417,11 +436,17 @@ shopt -u nullglob
 # stamped at /var/lib/ntfy/aerodrome-installed. If that stamp exists, this
 # is an Aerodrome-managed ntfy install and we should remove it along with
 # Aerodrome. External (user-installed) ntfy is never touched — the stamp
-# is what distinguishes the two.
-echo -e "${CYAN}[5/6]${RESET} Local ntfy server..."
+# is what distinguishes the two. Checked through sudo: an official ntfy
+# package may have made /var/lib/ntfy unsearchable for a normal user.
+echo -e "${CYAN}[5/6]${RESET} Local ntfy server and system helper..."
 NTFY_STAMP="/var/lib/ntfy/aerodrome-installed"
-if [ -f "$NTFY_STAMP" ]; then
-    NTFY_VER=$(cat "$NTFY_STAMP" 2>/dev/null | tr -d '\n' || echo "?")
+# Its message caches: the restricted setup's (v3.4.150) and the older
+# root-run setup's, each with SQLite's -wal/-shm — the helper's purge list.
+NTFY_CACHES=(/var/lib/private/aerodrome-ntfy/cache.db /var/lib/private/aerodrome-ntfy/cache.db-wal
+             /var/lib/private/aerodrome-ntfy/cache.db-shm
+             /var/lib/ntfy/cache.db /var/lib/ntfy/cache.db-wal /var/lib/ntfy/cache.db-shm)
+if sudo test -f "$NTFY_STAMP"; then
+    NTFY_VER=$(sudo cat "$NTFY_STAMP" 2>/dev/null | tr -d '\n' || echo "?")
 
     should_remove_ntfy=false
     should_purge_ntfy_data=false
@@ -438,9 +463,8 @@ if [ -f "$NTFY_STAMP" ]; then
             should_remove_ntfy=true
             # Second prompt for the cache data — kept separate because some
             # users want to reinstall later and keep their topic history.
-            # server.yml (ntfy_installer.py) sets cache-file: /var/lib/ntfy/cache.db;
-            # the size is what the purge below would delete.
-            ntfy_cache_size=" ($(sudo du -shc /var/lib/ntfy/cache.db* 2>/dev/null | tail -1 | cut -f1))"
+            # The size is what the purge below would delete.
+            ntfy_cache_size=" ($(sudo du -shc -- "${NTFY_CACHES[@]}" 2>/dev/null | tail -1 | cut -f1))"
             read -p "    Also delete cached messages${ntfy_cache_size}? [y/N] " -n 1 -r || REPLY=""
             echo
             if [[ $REPLY =~ ^[Yy]$ ]]; then
@@ -451,33 +475,58 @@ if [ -f "$NTFY_STAMP" ]; then
         fi
     fi
 
-    if [ "$should_remove_ntfy" = true ]; then
-        # Stop + disable the service. Best-effort; ignore errors if the
-        # unit somehow got removed separately.
+    ntfy_direct=false
+    if [ "$should_remove_ntfy" = true ] && [ "$HAVE_HELPER" = true ]; then
+        # The helper's ntfy-uninstall: stop + disable, the purge (when asked),
+        # then unit, binary, config, the .pre-v6 copy and the stamp last — a
+        # run cut short is finished by running it again.
+        purge_flag=()
+        [ "$should_purge_ntfy_data" = true ] && purge_flag=(--purge)
+        # Busy: another helper run holds its lock and may be writing these
+        # very files — wait for it (the helper itself waits 10 s per try),
+        # never remove them alongside it. Any other failure: directly.
+        ntfy_tries=1
+        until ntfy_out="$(sudo "$HELPER" ntfy-uninstall "${purge_flag[@]}" 2>&1)"; do
+            if [[ "$ntfy_out" != *'"busy": true'* ]]; then
+                echo -e "    ${YELLOW}!${RESET} The system helper didn't remove the local ntfy server (${ntfy_out}) — removing it directly"
+                ntfy_direct=true
+                break
+            fi
+            if [ "$ntfy_tries" -ge 3 ]; then
+                echo -e "    ${RED}✗${RESET} Another Aerodrome system task is still running, so the local ntfy server"
+                echo "      was left as it is. Run uninstall.sh again in a minute to finish."
+                exit 1
+            fi
+            ntfy_tries=$((ntfy_tries + 1))
+            sleep 5
+        done
+        if [ "$ntfy_direct" = false ]; then
+            echo -e "    ${GREEN}✓${RESET} Local ntfy removed"
+            if [ "${#purge_flag[@]}" = 1 ]; then
+                echo -e "    ${GREEN}✓${RESET} Cached messages removed"
+            else
+                echo -e "    ${YELLOW}·${RESET} Cached messages (if any) kept"
+            fi
+        fi
+    elif [ "$should_remove_ntfy" = true ]; then
+        ntfy_direct=true
+    fi
+    if [ "$ntfy_direct" = true ]; then
+        # No helper (it was never installed here, or is gone), or it failed:
+        # the same steps directly, in the same order — the purge before the
+        # stamp, so a run cut short can be finished by running this again.
         sudo systemctl stop ntfy 2>/dev/null || true
         sudo systemctl disable ntfy 2>/dev/null || true
-        # Remove files
-        for p in /usr/local/bin/ntfy /etc/ntfy/server.yml \
-                 /etc/systemd/system/ntfy.service \
-                 /var/lib/ntfy/aerodrome-installed; do
-            if [ -e "$p" ]; then
-                sudo rm -f "$p"
-            fi
-        done
-        sudo systemctl daemon-reload 2>/dev/null || true
-        # The folder the app downloads the ntfy binary into (no messages).
-        sudo rm -rf /var/cache/ntfy/staging 2>/dev/null || true
-        echo -e "    ${GREEN}✓${RESET} Local ntfy removed"
-
-        # Purge cache if requested. Exactly the files the app's "Also delete
-        # cached messages" removes (ntfy_installer.ntfy_purge_argvs());
-        # check_installers.py ntfy-cache and test_check_installers.py keep the
-        # two in step. Nothing in /var/cache/ntfy: no Aerodrome release kept
-        # messages there, and ntfy's own package does. (This step runs only
-        # with the stamp; the app can also purge a cache left with no install.)
+        # Purge cache if requested: exactly the helper's purge list. Nothing
+        # in /var/cache/ntfy: no Aerodrome release kept messages there, and
+        # ntfy's own package does. (This step runs only with the stamp; the
+        # app can also purge a cache left with no install.)
         if [ "$should_purge_ntfy_data" = true ]; then
             ntfy_purge_left=""
-            for p in /var/lib/ntfy/cache.db \
+            for p in /var/lib/private/aerodrome-ntfy/cache.db \
+                     /var/lib/private/aerodrome-ntfy/cache.db-wal \
+                     /var/lib/private/aerodrome-ntfy/cache.db-shm \
+                     /var/lib/ntfy/cache.db \
                      /var/lib/ntfy/cache.db-wal \
                      /var/lib/ntfy/cache.db-shm; do
                 sudo rm -f "$p" 2>/dev/null || ntfy_purge_left="${ntfy_purge_left} $p"
@@ -488,17 +537,41 @@ if [ -f "$NTFY_STAMP" ]; then
                 echo -e "    ${YELLOW}!${RESET} Cached messages not removed:${ntfy_purge_left}"
             fi
         else
-            echo -e "    ${YELLOW}·${RESET} Cached messages (if any) kept at /var/lib/ntfy/"
+            echo -e "    ${YELLOW}·${RESET} Cached messages (if any) kept"
         fi
+        # The folder the app downloaded the ntfy binary into (no messages).
+        sudo rm -rf /var/cache/ntfy/staging 2>/dev/null || true
+        # Remove files — the stamp last, and only once the purge went through.
+        for p in /etc/ntfy/.aerodrome-converge /etc/systemd/system/ntfy.service \
+                 /usr/local/bin/ntfy /etc/ntfy/server.yml /etc/ntfy/server.yml.pre-v6; do
+            sudo rm -f "$p" 2>/dev/null || true
+        done
+        if [ -z "${ntfy_purge_left:-}" ]; then
+            sudo rm -f "$NTFY_STAMP" 2>/dev/null || true
+        fi
+        sudo systemctl daemon-reload 2>/dev/null || true
+        echo -e "    ${GREEN}✓${RESET} Local ntfy removed"
 
         # Clean up now-empty directories (best-effort; won't delete if non-empty)
-        for d in /etc/ntfy /var/cache/ntfy /var/lib/ntfy; do
+        for d in /etc/ntfy /var/cache/ntfy /var/lib/ntfy /var/lib/private/aerodrome-ntfy; do
             sudo rmdir --ignore-fail-on-non-empty "$d" 2>/dev/null || true
         done
     fi
 else
     echo -e "  ${YELLOW}·${RESET} No Aerodrome-managed ntfy install found"
 fi
+
+# The system helper (by name), its folder if empty, and its lock — after the
+# steps above, which use it (its sudoers rule went in step 1). Files only,
+# outside the install dir.
+if sudo test -e "$HELPER"; then
+    sudo rm -f "$HELPER"
+    echo -e "  ${GREEN}✓${RESET} System helper removed"
+fi
+# Temp files of an install.sh run that was killed mid-write (never run).
+sudo find "$HELPER_DIR" -maxdepth 1 -type f -name '.aerodrome-helper.*' -delete 2>/dev/null || true
+sudo rmdir "$HELPER_DIR" 2>/dev/null || true
+sudo rm -f /run/aerodrome-helper.lock 2>/dev/null || true
 
 # --- Step 6: Offer to remove the install directory itself ---
 echo -e "${CYAN}[6/6]${RESET} Project directory..."

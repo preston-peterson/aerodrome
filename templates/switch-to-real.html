@@ -1,4 +1,4 @@
-<!-- Version: 3.4.149 -->
+<!-- Version: 3.4.150 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -98,6 +98,9 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
              font-size:13px; line-height:1.5; }
 
 .hidden { display:none !important; }
+.warn-box { background:rgba(245,158,11,0.08); border:1px solid rgba(245,158,11,0.35);
+            border-radius:6px; padding:10px 12px; font-size:13px; line-height:1.6;
+            color:var(--t1); margin-bottom:14px; overflow-wrap:anywhere; }
 </style>
 </head>
 <body>
@@ -242,11 +245,15 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
         <div class="card-sub">Aerodrome is polling your real ADS-B receiver.</div>
 
         <p style="font-size:14px; line-height:1.7; color:var(--t1); margin-bottom:14px">
-            The synthetic feeder has been removed, the demo database has been cleared,
-            and Aerodrome is restarting with your real receiver address. The first
-            real aircraft should appear on the dashboard within about a minute (one
-            poll cycle).
+            <span id="feederRemoved">The synthetic feeder has been removed. </span>The demo
+            database has been cleared, and Aerodrome is restarting with your real receiver
+            address. The first real aircraft should appear on the dashboard within about a
+            minute (one poll cycle).
         </p>
+
+        <!-- v3.4.150: the demo feeder couldn't be removed (the switch went on: it only
+             listens on 127.0.0.1); how to remove it, from the server's reply -->
+        <div class="warn-box hidden" id="feederWarning"></div>
 
         <p style="font-size:13px; color:var(--t2); line-height:1.6; margin-bottom:18px">
             The yellow demo banner will disappear within ~30 seconds as the dashboard's
@@ -391,7 +398,13 @@ async function executeTransition() {
         }
     });
 
-    if (data.ok && !seenFailed) {
+    if (data.ok) {
+        // v3.4.150: a step can fail without failing the switch (the demo
+        // feeder the system helper couldn't remove): step 4 says so.
+        const warning = data.warning || '';
+        document.getElementById('feederWarning').textContent = warning;
+        document.getElementById('feederWarning').classList.toggle('hidden', !warning);
+        document.getElementById('feederRemoved').classList.toggle('hidden', !!warning);
         goToStep(4);
     } else {
         _showError(data.error || 'Transition failed at an unknown step.');

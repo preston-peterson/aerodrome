@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""scripts/check_installers.py — static consistency gate for the shell installers.
+"""scripts/check_installers.py — static consistency gate for the shell installers
+and Aerodrome's privilege boundary.
 
-Cheap, read-only checks on the parts of the installer scripts that must
-stay in step with each other. bump-version.sh runs this as a REQUIRED gate
+Cheap, read-only checks on the parts of the installer scripts, the system
+helper and the app that must stay in step with each other. bump-version.sh runs this as a REQUIRED gate
 (no skip flag), and package-release.sh runs it through `bump-version.sh
 check`; test_check_installers.py imports the functions and feeds them
 fixtures. Stdlib only.
@@ -49,14 +50,37 @@ fixtures. Stdlib only.
                     to the end with a found-flag. A line that is safe anyway
                     can say `# pipefail-ok: <why>`. Heredoc bodies are skipped.
                     Not covered: `sed …q` (too fuzzy to match reliably).
-  ntfy-cache        the message cache ntfy_installer.py's server.yml names (its
-                    SERVER_CACHE_FILE assignment, which the renderer takes it
-                    from) and SQLite's -wal/-shm beside it are each removed by
-                    uninstall.sh's purge branch (`if [ "$should_purge_ntfy_data"
-                    = true ]` … `else`/`fi`, code lines only — the size
-                    prompt's `du`, an echo or a comment elsewhere don't count),
-                    and install.sh's render_sudoers() grants `/bin/rm -f` for
-                    each, so the app's "Also delete cached messages" can too.
+  ntfy-cache        every message cache Aerodrome's ntfy has used is purged: the
+                    helper's NTFY_PURGE_DIRS × NTFY_CACHE_NAMES hold the
+                    sandboxed unit's (NTFY_UNIT_TEXT's --cache-file, in its
+                    StateDirectory=, under /var/lib/private) with SQLite's
+                    -wal/-shm, and the older root-run unit's folder; uninstall.sh
+                    runs the helper's ntfy-uninstall, and its own purge branch
+                    (`if [ "$should_purge_ntfy_data" = true ]` … `else`/`fi`,
+                    code lines only) removes every one of those files.
+  priv-version      scripts/aerodrome-helper's line 2 (`# PRIV_VERSION = N`), its
+                    PRIV_VERSION constant and install.sh's first SUDOERS_VERSION
+                    marker are one number.
+  priv-bump         against the last vX.Y.Z tag: when any byte of the helper or
+                    any rule line render_sudoers() writes (comments aside)
+                    changed, SUDOERS_VERSION is higher than the tag's. SKIPPED
+                    outside a git checkout and against a tag before v3.4.145.
+  sudo-callsites    only privhelper.py builds a sudo command line (a list or
+                    tuple starting with "sudo"; test files aside).
+  sudoers-boundary  the rules grant no file write: no tee, install, cp, mv, …,
+                    and no rm but the one compatibility line.
+  ntfy-yml-shared   the shared ntfy-yml block (server.yml reader/renderer, the
+                    unit text) is byte-identical in ntfy_installer.py and the
+                    helper.
+  helper-api-floor  the helper is Python 3.10 syntax, stdlib only, and uses no
+                    3.11+ API from a denylist (rmtree(dir_fd=), except*,
+                    ExceptionGroup, tomllib, TaskGroup, StrEnum, datetime.UTC,
+                    file_digest, contextlib.chdir, typing.Self, …) nor atomic
+                    groups / possessive quantifiers. A denylist, not a proof:
+                    its tests also run under 3.10.
+  helper-not-stamped  bump-version.sh's FILES doesn't list the helper (its line 2
+                    is the PRIV_VERSION marker; a stamp would change it every
+                    release).
 
 Usage:
   python3 scripts/check_installers.py [ROOT] [check,check,...]
@@ -64,12 +88,15 @@ Usage:
 
 ROOT defaults to the repo this file lives in. Exit 0 = clean, 1 = findings,
 2 = usage error (e.g. ROOT is not a directory). Prints one ✓/✗ line per
-check, with indented details.
+check (– SKIPPED with the reason when a check can't run here), with indented
+details.
 """
+import ast
 import difflib
 import re
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 # Same pattern server.py uses to read the installed rule's version; it takes
@@ -77,20 +104,32 @@ from pathlib import Path
 MARKER_RE = re.compile(r"\s*#\s*SUDOERS_VERSION\s*:\s*(\d+)")
 
 
-def tracked_sh(root):
-    """git-tracked *.sh under root when root is the top of a git checkout;
-    otherwise (an unpacked release, a scratch copy) a glob of the two dirs
-    that hold shell scripts."""
+def tracked(root, pattern, others=False):
+    """git-tracked files matching pattern under root when root is the top of
+    a git checkout (others: untracked, not ignored ones too — what could be
+    committed), else None (an unpacked release, a scratch copy)."""
     root = Path(root)
     try:
         top = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=root,
                              capture_output=True, check=True).stdout
         if Path(top.decode("utf-8", "surrogateescape").strip()).resolve() == root.resolve():
-            out = subprocess.run(["git", "ls-files", "-z", "--", "*.sh"], cwd=root,
+            out = subprocess.run(["git", "ls-files", "-z", "--cached"]
+                                 + (["--others", "--exclude-standard"] if others else [])
+                                 + ["--", pattern], cwd=root,
                                  capture_output=True, check=True).stdout
             return [root / p for p in out.decode("utf-8", "surrogateescape").split("\0") if p]
     except (OSError, subprocess.CalledProcessError):
         pass
+    return None
+
+
+def tracked_sh(root):
+    """git-tracked *.sh under root when root is the top of a git checkout;
+    otherwise a glob of the two dirs that hold shell scripts."""
+    root = Path(root)
+    files = tracked(root, "*.sh")
+    if files is not None:
+        return files
     return sorted(root.glob("*.sh")) + sorted((root / "scripts").glob("*.sh"))
 
 
@@ -477,9 +516,6 @@ def check_pipefail_readers(root):
     return errs
 
 
-SERVER_CACHE_RE = re.compile(r"^SERVER_CACHE_FILE\s*=\s*['\"](/[^\s'\"]+)['\"]", re.M)
-
-
 def _names_path(text, path):
     """True when `path` occurs in text as a whole path (cache.db must not be
     satisfied by cache.db-wal, nor by a glob such as cache.db*)."""
@@ -507,42 +543,369 @@ def ntfy_purge_block(text):
     return None
 
 
+UNIT_CACHE_RE = re.compile(r"--cache-file (/var/lib/([A-Za-z0-9_.-]+)/([^\s/]+))")
+
+
 def check_ntfy_cache(root):
+    """Every message cache Aerodrome's ntfy has used gets purged. The helper's
+    purge list (NTFY_PURGE_DIRS × NTFY_CACHE_NAMES) holds the sandboxed
+    unit's cache — NTFY_UNIT_TEXT's --cache-file, in its StateDirectory=,
+    which DynamicUser keeps under /var/lib/private — with SQLite's -wal/-shm,
+    and the older root-run unit's folder (the shared block's first
+    NTFY_CACHE_FILES entry); uninstall.sh runs the helper's ntfy-uninstall,
+    and its own purge (for a system without the helper) removes each of the
+    same files. Fails closed when a constant moved."""
     root = Path(root)
-    src, unin = _read(root / "ntfy_installer.py"), _read(root / "uninstall.sh")
-    inst = _read(root / "install.sh")
-    if src is None or unin is None or inst is None:
-        return ["ntfy_installer.py, uninstall.sh and/or install.sh not found"]
-    m = SERVER_CACHE_RE.search(src)
-    if not m:    # fail closed: a moved/renamed constant must be re-targeted, not pass
-        return ["ntfy_installer.py: no `SERVER_CACHE_FILE = \"/absolute/path\"` line "
-                "found (the server.yml renderer's cache path) — update this check "
-                "alongside it"]
-    files = [m.group(1) + side for side in ("", "-wal", "-shm")]
+    helper, unin = _read(root / HELPER_REL), _read(root / "uninstall.sh")
+    if helper is None or unin is None:
+        return [f"{HELPER_REL} and/or uninstall.sh not found"]
+    dirs, names = (_module_constant(helper, "NTFY_PURGE_DIRS"),
+                   _module_constant(helper, "NTFY_CACHE_NAMES"))
+    unit, files = (_module_constant(helper, "NTFY_UNIT_TEXT"),
+                   _module_constant(helper, "NTFY_CACHE_FILES"))
+    if not (isinstance(dirs, tuple) and isinstance(names, tuple) and isinstance(unit, str)
+            and isinstance(files, tuple) and files):
+        return [f"{HELPER_REL}: NTFY_PURGE_DIRS, NTFY_CACHE_NAMES, NTFY_UNIT_TEXT or "
+                f"NTFY_CACHE_FILES isn't a literal there any more — update this check alongside them"]
     errs = []
+    m = UNIT_CACHE_RE.search(unit)
+    state = re.search(r"(?m)^StateDirectory=(\S+)$", unit)
+    if not m or not state or m.group(2) != state.group(1):
+        errs.append(f"{HELPER_REL}: NTFY_UNIT_TEXT's --cache-file isn't in its StateDirectory=")
+    else:
+        for d in ("/var/lib/private/" + state.group(1), files[0].rsplit("/", 1)[0]):
+            if d not in dirs:
+                errs.append(f"{HELPER_REL}: NTFY_PURGE_DIRS lacks {d} (a cache Aerodrome's ntfy used)")
+        base = m.group(3)
+        for n in (base, base + "-wal", base + "-shm"):
+            if n not in names:
+                errs.append(f"{HELPER_REL}: NTFY_CACHE_NAMES lacks {n}")
+    if not any(re.search(r'"\$HELPER" ntfy-uninstall(?![\w-])', l) for l in code_lines(unin)):
+        errs.append('uninstall.sh never runs the helper\'s ntfy-uninstall ("$HELPER" ntfy-uninstall)')
     block = ntfy_purge_block(unin)
     if block is None:    # fail closed: a reworded branch must be re-targeted, not pass
         errs.append('uninstall.sh: no `if [ "$should_purge_ntfy_data" = true ]; then` '
-                    "… `else`/`fi` branch found to look for the cache purge in — update "
+                    "… `else`/`fi` branch found to look for its own purge in — update "
                     "this check alongside it")
     else:
-        for p in files:
-            if not _names_path(block, p):
-                errs.append(f"uninstall.sh never removes {p} (ntfy's message cache: "
-                            f"ntfy_installer.py's server.yml names {files[0]})")
-    span = func_span(inst, "render_sudoers")
-    body = heredoc(inst[span[0]:span[1]]) if span else None
-    if body is None:
-        errs.append("install.sh: no render_sudoers() << SUDOEOF heredoc to find the "
-                    "cache-purge rules in")
-        return errs
-    rules = [l for l in body.splitlines() if "ALL=(" in l and not l.lstrip().startswith("#")]
-    for p in files:
-        if not any(re.search(r"NOPASSWD:\s*/bin/rm -f " + re.escape(p) + r"\s*$", l)
-                   for l in rules):
-            errs.append(f"install.sh's sudoers rules have no `/bin/rm -f {p}` — the app's "
-                        f"\"Also delete cached messages\" can't remove it")
+        for d in dirs:
+            for n in names:
+                if not _names_path(block, f"{d}/{n}"):
+                    errs.append(f"uninstall.sh's own purge never removes {d}/{n} (the helper's does)")
     return errs
+
+
+HELPER_REL = "scripts/aerodrome-helper"
+SHARED_BEGIN = "# --- BEGIN shared ntfy-yml block"
+SHARED_END = "# --- END shared ntfy-yml block ---"
+PRIV_LINE_RE = re.compile(r"# PRIV_VERSION = (\d+)\Z")
+
+
+class Skipped(Exception):
+    """A check that can't run here (no git, no tag before it): main()
+    prints SKIPPED with the reason."""
+
+
+def _module_constant(src, name):
+    """The literal value of a module-level `name = <literal>` in src, or
+    None (not there, or not a literal)."""
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return None
+    for node in tree.body:
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name) and node.targets[0].id == name):
+            try:
+                return ast.literal_eval(node.value)
+            except ValueError:
+                return None
+    return None
+
+
+def check_priv_version(root):
+    """The helper's line 2 (`# PRIV_VERSION = N`, which the app and install.sh
+    read without running it), its PRIV_VERSION constant and install.sh's first
+    SUDOERS_VERSION marker are one number."""
+    root = Path(root)
+    helper, inst = _read(root / HELPER_REL), _read(root / "install.sh")
+    if helper is None or inst is None:
+        return [f"{HELPER_REL} and/or install.sh not found"]
+    lines = helper.splitlines()
+    m = PRIV_LINE_RE.match(lines[1]) if len(lines) > 1 else None
+    if not m:
+        return [f"{HELPER_REL}: line 2 must be exactly `# PRIV_VERSION = N`"]
+    const = _module_constant(helper, "PRIV_VERSION")
+    marker = first_marker(inst)
+    if not (str(const) == m.group(1) == marker):
+        return [f"{HELPER_REL} line 2 says {m.group(1)}, its PRIV_VERSION is {const} and "
+                f"install.sh's first SUDOERS_VERSION is {marker} — they must be one number"]
+    return []
+
+
+def _git(root, *args):
+    return subprocess.run(["git", *args], cwd=root, capture_output=True)
+
+
+def rendered_sudoers(install_text):
+    """What render_sudoers() writes for an invented account (example-svc),
+    from the function alone run in bash -c; None when it doesn't run."""
+    body = func_body(install_text, "render_sudoers")
+    if body is None:
+        return None
+    r = subprocess.run(["bash", "-c", body + 'render_sudoers example-svc\n'],
+                       capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    return None if r.returncode else r.stdout
+
+
+def rendered_rule_lines(install_text):
+    """The rule lines render_sudoers() writes for an invented account (comments
+    and blank lines left out)."""
+    out = rendered_sudoers(install_text)
+    if out is None:
+        return None
+    return [l for l in out.splitlines() if l.strip() and not l.lstrip().startswith("#")]
+
+
+def check_priv_bump(root):
+    """Against the last release tag (vX.Y.Z reachable from HEAD): if any byte
+    of the helper changed (the shared ntfy-yml block included) or the rule
+    lines render_sudoers() writes did (comments don't count), install.sh's
+    SUDOERS_VERSION must be higher than the tag's — users then get the
+    "Sudoers update required" prompt, the only way a new helper or new rules
+    reach a system (the in-app update runs as the service account)."""
+    root = Path(root)
+    top = _git(root, "rev-parse", "--show-toplevel")
+    if top.returncode or Path(top.stdout.decode().strip()).resolve() != root.resolve():
+        raise Skipped("not a git checkout (an unpacked release): no tag to compare with")
+    tag = _git(root, "describe", "--tags", "--abbrev=0", "--match", "v[0-9]*.[0-9]*.[0-9]*")
+    if tag.returncode:
+        raise Skipped("no vX.Y.Z tag reachable from HEAD")
+    tag = tag.stdout.decode().strip()
+    old_inst = _git(root, "show", f"{tag}:install.sh")
+    old_inst = old_inst.stdout.decode("utf-8", "replace") if not old_inst.returncode else ""
+    if func_body(old_inst, "render_sudoers") is None:
+        raise Skipped(f"{tag}'s install.sh has no render_sudoers() (before v3.4.145)")
+    old_helper = _git(root, "show", f"{tag}:{HELPER_REL}")
+    old_helper = old_helper.stdout if not old_helper.returncode else None
+    try:
+        new_helper = (root / HELPER_REL).read_bytes()
+    except OSError:
+        new_helper = None
+    inst = _read(root / "install.sh")
+    old_rules, new_rules = rendered_rule_lines(old_inst), rendered_rule_lines(inst or "")
+    if new_rules is None:
+        return ["install.sh: render_sudoers() didn't run (bash -c) — can't compare its rules"]
+    changed = []
+    if old_helper != new_helper:
+        changed.append(f"{HELPER_REL} changed")
+    if old_rules != new_rules:
+        changed.append("the rule lines render_sudoers() writes changed")
+    old_mark, new_mark = int(first_marker(old_inst) or 0), int(first_marker(inst or "") or 0)
+    if changed and not new_mark > old_mark:
+        return [f"since {tag}: {' and '.join(changed)}, but SUDOERS_VERSION is still "
+                f"{new_mark} ({tag}: {old_mark}) — raise it (and the helper's PRIV_VERSION, "
+                f"line 2 too), or nobody's system gets the change"]
+    return []
+
+
+def check_sudo_callsites(root):
+    """Only privhelper.py builds a sudo command line: no other first-party
+    Python file (tests aside) has a list or tuple literal starting with
+    "sudo". Everything privileged goes through the helper or run_sudo()."""
+    root = Path(root)
+    files = tracked(root, "*.py", others=True)
+    if files is None:
+        files = sorted(p for p in root.rglob("*.py") if "venv" not in p.relative_to(root).parts)
+    errs = []
+    for f in files:
+        rel = f.relative_to(root).as_posix()
+        if rel == "privhelper.py" or f.name.startswith("test_"):
+            continue
+        src = _read(f)
+        if src is None:
+            continue
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", SyntaxWarning)   # e.g. "\\/" in a string
+                tree = ast.parse(src)
+        except SyntaxError:
+            continue          # bump-version.sh's syntax gate reports it
+        for node in ast.walk(tree):
+            if (isinstance(node, (ast.List, ast.Tuple)) and node.elts
+                    and isinstance(node.elts[0], ast.Constant) and node.elts[0].value == "sudo"):
+                errs.append(f"{rel}:{node.lineno}: a sudo command line outside privhelper.py — "
+                            f"use privhelper.run_helper() (or run_sudo() for the restart/cat rules)")
+    return errs
+
+
+ALLOWED_RM = "/bin/rm -f /etc/systemd/system/aerodrome-synthetic-feeder.service"
+# Every command the rules grant, exactly — all as root, NOPASSWD. Adding one
+# (or a wildcard, an alias, a Defaults line) is a decision made here too.
+SUDOERS_ALLOWED = (
+    "/usr/local/libexec/aerodrome/aerodrome-helper",
+    "/bin/systemctl restart aerodrome", "/usr/bin/systemctl restart aerodrome",
+    "/bin/systemctl restart --no-block aerodrome", "/usr/bin/systemctl restart --no-block aerodrome",
+    "/bin/cat /etc/sudoers.d/aerodrome", "/usr/bin/cat /etc/sudoers.d/aerodrome",
+    # the previous release's switch-to-real (compatibility; gone at SUDOERS_VERSION 7)
+    "/bin/systemctl stop aerodrome-synthetic-feeder",
+    "/usr/bin/systemctl stop aerodrome-synthetic-feeder",
+    "/bin/systemctl disable aerodrome-synthetic-feeder",
+    "/usr/bin/systemctl disable aerodrome-synthetic-feeder",
+    ALLOWED_RM, "/bin/systemctl daemon-reload", "/usr/bin/systemctl daemon-reload",
+)
+RULE_LINE_RE = re.compile(r"example-svc ALL=\(root\) NOPASSWD: (\S.*)\Z")
+WRITERS = ("tee", "install", "cp", "mv", "dd", "chmod", "chown", "ln", "rm")
+
+
+def check_sudoers_boundary(root):
+    """The rules render_sudoers() writes grant exactly SUDOERS_ALLOWED, each
+    as root with NOPASSWD: plain rule lines only (no Defaults, aliases or
+    includes — `#include` is a directive, not a comment), and no wildcard,
+    negation, ALL or sudoedit in a command. A command that writes files
+    (tee, install, rm but the compatibility line, …) is named as such: only
+    the system helper writes, after its checks."""
+    inst = _read(Path(root) / "install.sh")
+    out = rendered_sudoers(inst or "")
+    if out is None:
+        return ["install.sh: render_sudoers() not found or didn't run"]
+    where, errs, granted = "install.sh render_sudoers()", [], []
+    for line in out.splitlines():
+        if re.match(r"\s*[#@]include", line):
+            errs.append(f"{where}: `{line.strip()}` — no includes in Aerodrome's rules")
+            continue
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        m = RULE_LINE_RE.match(line)
+        if not m:
+            errs.append(f"{where}: `{line.strip()}` — every rule line is "
+                        f"`<account> ALL=(root) NOPASSWD: <commands>`")
+            continue
+        granted += [c.strip() for c in m.group(1).split(",")]
+    for cmd in granted:
+        name = (cmd.split() or [""])[0].rsplit("/", 1)[-1]
+        if re.search(r"[*?\[\]!\\]|\bALL\b|sudoedit", cmd):
+            errs.append(f"{where}: `{cmd}` — no wildcards, negation, ALL or sudoedit")
+        elif name in WRITERS and cmd != ALLOWED_RM:
+            errs.append(f"{where}: `{cmd}` — the rules may not grant writing files "
+                        f"(only the system helper writes, after its checks)")
+        elif cmd not in SUDOERS_ALLOWED:
+            errs.append(f"{where}: `{cmd}` isn't one of the commands Aerodrome's rules grant "
+                        f"(scripts/check_installers.py SUDOERS_ALLOWED)")
+    for cmd in SUDOERS_ALLOWED:
+        if cmd not in granted:
+            errs.append(f"{where}: no longer grants `{cmd}` — if that is meant, take it out of "
+                        f"SUDOERS_ALLOWED too")
+    return errs
+
+
+def shared_block(text):
+    """The text from the BEGIN marker line to the END marker line, or None."""
+    a = text.find(SHARED_BEGIN)
+    b = text.find(SHARED_END, a)
+    return text[a:b + len(SHARED_END)] if a >= 0 and b >= 0 else None
+
+
+def check_ntfy_yml_shared(root):
+    """ntfy_installer.py and the helper carry one byte-identical copy of the
+    shared ntfy-yml block (the server.yml reader/renderer and the unit text):
+    what the app checks is what root writes."""
+    root = Path(root)
+    a = shared_block(_read(root / "ntfy_installer.py") or "")
+    b = shared_block(_read(root / HELPER_REL) or "")
+    if a is None or b is None:
+        return [f"the shared ntfy-yml block markers are missing in ntfy_installer.py "
+                f"and/or {HELPER_REL}"]
+    if a == b:
+        return []
+    d = list(difflib.unified_diff(a.splitlines(), b.splitlines(), "ntfy_installer.py",
+                                  HELPER_REL, lineterm="", n=0))
+    return [f"the shared ntfy-yml block differs between ntfy_installer.py and {HELPER_REL} "
+            f"(copy one over the other):\n      " + "\n      ".join(d[:20])]
+
+
+# Python 3.11+ names the helper must not use (it runs under any system
+# Python from 3.10). A denylist, not a proof: test_aerodrome_helper.py also
+# runs under 3.10.
+FLOOR_ATTRS = {("shutil", "rmtree"): "dir_fd", ("asyncio", "TaskGroup"): None,
+               ("enum", "StrEnum"): None, ("datetime", "UTC"): None,
+               ("hashlib", "file_digest"): None, ("contextlib", "chdir"): None,
+               ("typing", "Self"): None, ("sys", "exception"): None, ("re", "NOFLAG"): None,
+               ("operator", "call"): None}
+FLOOR_NAMES = {"ExceptionGroup", "BaseExceptionGroup"}
+FLOOR_MODULES = {"tomllib"}
+POSSESSIVE_RE = re.compile(r"\(\?>|(?<!\\)[*+?}]\+")
+
+
+def check_helper_api_floor(root):
+    """The helper parses as Python 3.10, imports the standard library only,
+    and uses none of the 3.11+ APIs above — however it spells them: `mod.X`,
+    an aliased `import mod as m` then `m.X`, or `from mod import X` (as Y) —
+    nor atomic groups or possessive quantifiers in its regexes."""
+    src = _read(Path(root) / HELPER_REL)
+    if src is None:
+        return [f"{HELPER_REL} not found"]
+    try:
+        tree = ast.parse(src, feature_version=(3, 10))
+    except SyntaxError as e:
+        return [f"{HELPER_REL}:{e.lineno}: not Python 3.10 syntax: {e.msg}"]
+    errs, std = [], set(getattr(sys, "stdlib_module_names", ()))
+    mods, names = {}, {}      # local name → module; → (module, name) it was imported from
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                mods[a.asname or a.name.split(".")[0]] = a.name if a.asname else a.name.split(".")[0]
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            for a in node.names:
+                names[a.asname or a.name] = (node.module, a.name)
+    for node in ast.walk(tree):
+        mods_of = ([a.name for a in node.names] if isinstance(node, ast.Import) else
+                   [node.module] if isinstance(node, ast.ImportFrom) and node.module else [])
+        for mod in mods_of:
+            top = mod.split(".")[0]
+            if top in FLOOR_MODULES or (std and top not in std):
+                errs.append(f"{HELPER_REL}:{node.lineno}: imports {mod} (stdlib 3.10 only)")
+        if isinstance(node, ast.ImportFrom) and node.module:
+            for a in node.names:
+                if FLOOR_ATTRS.get((node.module, a.name), "") is None:
+                    errs.append(f"{HELPER_REL}:{node.lineno}: {node.module}.{a.name} is Python 3.11+")
+        if type(node).__name__ == "TryStar":
+            errs.append(f"{HELPER_REL}:{node.lineno}: except* is Python 3.11+")
+        if isinstance(node, ast.Name) and node.id in FLOOR_NAMES:
+            errs.append(f"{HELPER_REL}:{node.lineno}: {node.id} is Python 3.11+")
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+            key = (mods.get(node.value.id, node.value.id), node.attr)
+            if FLOOR_ATTRS.get(key, "") is None:
+                errs.append(f"{HELPER_REL}:{node.lineno}: {key[0]}.{key[1]} is Python 3.11+")
+        if isinstance(node, ast.Call):
+            f = node.func
+            key = ((mods.get(f.value.id, f.value.id), f.attr)
+                   if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name)
+                   else names.get(f.id) if isinstance(f, ast.Name) else None)
+            kw = FLOOR_ATTRS.get(key) if key else None
+            if kw and any(k.arg == kw for k in node.keywords):
+                errs.append(f"{HELPER_REL}:{node.lineno}: {key[0]}.{key[1]}({kw}=) is Python 3.11+")
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) \
+                and POSSESSIVE_RE.search(node.value):
+            errs.append(f"{HELPER_REL}:{node.lineno}: an atomic group or possessive quantifier "
+                        f"(regex, Python 3.11+)")
+    return errs
+
+
+def check_helper_not_stamped(root):
+    """bump-version.sh never writes a `# Version:` line into the helper: its
+    line 2 is the PRIV_VERSION marker, and any byte it changes is a
+    permissions change (priv-bump)."""
+    text = _read(Path(root) / "bump-version.sh")
+    if text is None:
+        return ["bump-version.sh not found"]
+    m = re.search(r"^FILES=\((.*?)^\)", text, re.M | re.S)
+    if not m:
+        return ["bump-version.sh: no FILES=( … ) list found — update this check alongside it"]
+    if re.search(r'["\']?' + re.escape(HELPER_REL) + r'["\']?\s', m.group(1) + "\n"):
+        return [f"bump-version.sh FILES lists {HELPER_REL} — take it out (line 2 is reserved "
+                f"for PRIV_VERSION; a version stamp would change the helper every release)"]
+    return []
 
 
 CHECKS = [
@@ -552,6 +915,13 @@ CHECKS = [
     ("sudo-user", check_sudo_user),
     ("pipefail-readers", check_pipefail_readers),
     ("ntfy-cache", check_ntfy_cache),
+    ("priv-version", check_priv_version),
+    ("priv-bump", check_priv_bump),
+    ("sudo-callsites", check_sudo_callsites),
+    ("sudoers-boundary", check_sudoers_boundary),
+    ("ntfy-yml-shared", check_ntfy_yml_shared),
+    ("helper-api-floor", check_helper_api_floor),
+    ("helper-not-stamped", check_helper_not_stamped),
 ]
 
 
@@ -574,7 +944,11 @@ def main(argv):
     for name, fn in CHECKS:
         if name not in names:
             continue
-        errs = fn(root)
+        try:
+            errs = fn(root)
+        except Skipped as e:
+            print(f"  – {name} SKIPPED: {e}")
+            continue
         print(f"  {'✓' if not errs else '✗'} {name}")
         for e in errs:
             print(f"      {e}")

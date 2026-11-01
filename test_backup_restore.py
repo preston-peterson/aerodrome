@@ -2460,9 +2460,7 @@ class TestOtherWritersWaitForARestore(_Waiting):
         import collector
         calls = []
         with mock.patch("subprocess.run", side_effect=lambda *a, **k: calls.append(a)):
-            port = collector._demo_port_recovery_write(
-                {"data": {}}, self.inst / "feeder.service", "--port 30005", "--port 30105",
-                self.cfg_path, 30105, [])
+            port = collector._demo_port_recovery_write({"data": {}}, self.cfg_path, 30105, [])
         self.assertIsNone(port)
         self.assertEqual(calls, [])
         self.assertEqual(self.cfg_path.read_bytes(), self.cfg_before)

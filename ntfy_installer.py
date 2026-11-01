@@ -7,26 +7,28 @@ Design principles:
     returns the current state. Same for uninstall() when not installed.
   - Explicit. install_status() returns a dict describing every file and
     service we'd touch. No hidden state.
-  - Verifiable. Downloads are checked against SHA256 hashes published
-    alongside the release by the ntfy project.
+  - Verifiable. Downloads are checked against the SHA256 digests GitHub
+    publishes for each release asset.
   - Respectful of externally-managed installs. If the user installed
     ntfy themselves (via apt, snap, a Go build, etc.) and it's running
     at a path we don't recognize, we report that and offer no
     install/uninstall actions — only "use existing".
-  - No sudo inside this module. All privileged operations (moving files
-    to /usr/local/bin, writing systemd units, systemctl commands) are
-    executed through subprocess with sudo; the install.sh sudoers rule
-    must permit them. Callers are server.py endpoints running as the
-    aerodrome user.
+  - No sudo inside this module. Every change to the system — the binary,
+    the unit, server.yml, the message cache — is one call to Aerodrome's
+    root-owned helper (privhelper.run_helper: scripts/aerodrome-helper,
+    installed by install.sh), which checks every argument and writes the
+    unit and server.yml together. Reading is done here, without sudo.
+    Callers are server.py endpoints running as the aerodrome user.
 
-Paths we manage:
+Paths (the helper writes them; this module only reads):
   /usr/local/bin/ntfy                    — the binary
-  /etc/ntfy/server.yml                   — the minimal config
-  /etc/systemd/system/ntfy.service       — the systemd unit
-  /var/lib/ntfy/                         — the install stamp and ntfy's message
-                                           cache (SERVER_CACHE_FILE, which
-                                           server.yml names)
-  /var/cache/ntfy/                       — the download staging dir
+  /etc/ntfy/server.yml                   — the config (0644)
+  /etc/systemd/system/ntfy.service       — the unit (NTFY_UNIT_TEXT: an
+                                           unprivileged, sandboxed service)
+  /var/lib/ntfy/aerodrome-installed      — the install stamp
+  /var/lib/aerodrome-ntfy/cache.db       — ntfy's message cache (the unit's
+                                           private state directory; only
+                                           root and ntfy can see it)
 
 Public API:
   install_status() → dict
@@ -37,6 +39,8 @@ Public API:
       Re-render server.yml from Aerodrome's managed values and restart.
       Refuses (writes nothing) while the file has settings Aerodrome
       doesn't manage, unless drop_custom_keys names every one of them.
+      An install still on the older root-run unit moves to the sandboxed
+      one in the same step.
   current_config() → dict | None
       classify_server_yml() of the live server.yml (names only).
   upgrade() → dict
@@ -46,25 +50,25 @@ Public API:
       a system-managed package (we never touch apt-installed ntfy).
   latest_version() → str
       Query the GitHub API for the latest tag. Cached per process.
+Every helper error comes back as {'ok': False, 'message', ...}: see
+_helper_failure() for the codes.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
 import platform
 import re
 import secrets
-import shlex
-import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Tuple
 
 import requests
+
+import privhelper
 
 log = logging.getLogger("aerodrome.ntfy_installer")
 
@@ -75,24 +79,10 @@ BINARY_PATH = Path("/usr/local/bin/ntfy")
 CONFIG_DIR = Path("/etc/ntfy")
 CONFIG_FILE = CONFIG_DIR / "server.yml"
 SYSTEMD_UNIT = Path("/etc/systemd/system/ntfy.service")
-CACHE_DIR = Path("/var/cache/ntfy")
-# The message cache server.yml names while ntfy runs from the root unit above.
-# The renderer takes it from this constant only, so this line is the source of
-# truth: the stale-data note and "Also delete cached messages" derive their
-# paths from it (ntfy_purge_argvs), uninstall.sh's purge list must keep this
-# path, and the release gate (check_installers.py ntfy-cache) reads it from
-# this assignment. Every release in git history wrote this same path.
-SERVER_CACHE_FILE = "/var/lib/ntfy/cache.db"
 # Stamp file — presence indicates Aerodrome-managed install vs external.
 # Contents are the ntfy version string we installed.
 STAMP_FILE = Path("/var/lib/ntfy/aerodrome-installed")
 STAMP_DIR = STAMP_FILE.parent
-# Staging path for the downloaded binary before it's installed to BINARY_PATH.
-# Fixed path (not a temp dir) so the sudoers rule can whitelist exactly this
-# source path — no wildcards, no broader /tmp/* rule needed. The owning dir
-# is created at install time and cleaned up after.
-STAGING_DIR = CACHE_DIR / "staging"
-STAGING_BINARY = STAGING_DIR / "ntfy"
 
 # ---------------------------------------------------------------
 # server.yml: read, validate, render (v3.4.146). One block, kept verbatim so
@@ -107,6 +97,41 @@ NTFY_MANAGED_VARIABLE = ("base-url", "listen-http", "upstream-base-url")
 NTFY_MANAGED_FIXED = {"cache-duration": "12h", "behind-proxy": False}
 NTFY_CACHE_FILES = ("/var/lib/ntfy/cache.db", "/var/lib/aerodrome-ntfy/cache.db")
 NTFY_UPSTREAM = "https://ntfy.sh"
+# The unit (v3.4.150): ntfy as an unprivileged, sandboxed service. Its
+# --cache-file wins over a cache-file line in server.yml, so a server.yml
+# written for the older root-run unit runs under this one, and the other way
+# round. Only the helper writes it; the app compares the live unit (0644)
+# with it to tell the older setup, without sudo.
+NTFY_UNIT_TEXT = """[Unit]
+Description=ntfy server (managed by Aerodrome)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/ntfy serve --config /etc/ntfy/server.yml --cache-file /var/lib/aerodrome-ntfy/cache.db
+DynamicUser=yes
+StateDirectory=aerodrome-ntfy
+ProtectSystem=strict
+ProtectHome=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+"""
+# Aerodrome's ntfy paths, then an official package's. Any of them without
+# Aerodrome's stamp is someone else's ntfy, never touched.
+NTFY_OWN_PATHS = ("/usr/local/bin/ntfy", "/etc/ntfy/server.yml",
+                  "/etc/systemd/system/ntfy.service")
+NTFY_VENDOR_PATHS = ("/usr/bin/ntfy", "/lib/systemd/system/ntfy.service",
+                     "/usr/lib/systemd/system/ntfy.service")
 _LABEL = r"[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?"
 _HOST = r"(?:" + _LABEL + r"(?:\." + _LABEL + r")*|\[[0-9A-Fa-f:.]{2,45}\])"
 _URL_RE = re.compile(r"\Ahttps?://" + _HOST + r"(?::([0-9]{1,5}))?(?:/[A-Za-z0-9._~/-]*)?\Z")
@@ -290,11 +315,13 @@ def render_server_yml(port, bind, base_url, upstream, cache_file=None):
         + ["%s: %s" % (k, json.dumps(v)) for k, v in pairs]) + "\n"
 # --- END shared ntfy-yml block ---
 
+# An official package's ntfy (as Paths, so tests can move them).
+VENDOR_PATHS = tuple(Path(p) for p in NTFY_VENDOR_PATHS)
+
 # ---------------------------------------------------------------
 # Release fetch
 # ---------------------------------------------------------------
 GITHUB_RELEASES_LATEST = "https://api.github.com/repos/binwiederhier/ntfy/releases/latest"
-DOWNLOAD_TIMEOUT_SECONDS = 60
 _version_cache: Optional[str] = None
 
 
@@ -341,12 +368,16 @@ def _detect_arch() -> Optional[str]:
 # ---------------------------------------------------------------
 
 def _file_info(path: Path) -> Dict[str, Any]:
-    """Small helper: present-ness + mtime for reporting."""
+    """Small helper: present-ness + mtime for reporting. Never raises: a
+    path in a folder this account can't search (an official package's 0700
+    /var/lib/ntfy) reads as absent, as the helper's os.path.lexists() does."""
+    info = {"present": os.path.lexists(path), "path": str(path)}
     try:
         st = path.stat()
-        return {"present": True, "path": str(path), "size": st.st_size, "mtime": int(st.st_mtime)}
-    except FileNotFoundError:
-        return {"present": False, "path": str(path)}
+        info.update(size=st.st_size, mtime=int(st.st_mtime))
+    except OSError:
+        pass
+    return info
 
 
 def _systemd_service_status(unit: str = "ntfy") -> Dict[str, Any]:
@@ -489,6 +520,9 @@ def install_status() -> Dict[str, Any]:
       version: installed version string (from `ntfy version`) or None
       installable: bool — true if we can install (arch supported, no conflict)
       arch: detected architecture suffix or None
+      legacy_unit: (v3.4.150) True while Aerodrome's ntfy still runs from the
+                   older root-run unit, False on the sandboxed one
+                   (NTFY_UNIT_TEXT), None when there's no unit of ours
     """
     bin_info = _file_info(BINARY_PATH)
     cfg_info = _file_info(CONFIG_FILE)
@@ -498,26 +532,24 @@ def install_status() -> Dict[str, Any]:
     version = _binary_version()
     arch = _detect_arch()
 
-    # Decide state:
-    #   - aerodrome_managed: stamp exists AND binary exists
-    #   - external: binary exists (in ANY path) but no stamp → user-managed
-    #   - not_installed: nothing present, nothing running
-    #   - partial: some of our files exist but not all — needs repair
+    # Decide state — the helper's own answer (its _ntfy_state()), with a
+    # stamped install that's missing a file told apart:
+    #   - aerodrome_managed: the stamp and all three of our files
+    #   - partial: the stamp, but a file is missing — needs repair
+    #   - external: no stamp, but one of our paths or an official package's
+    #     (VENDOR_PATHS) → someone else's ntfy, never touched
+    #   - not_installed: none of them
     has_stamp = stamp_info["present"]
     has_bin = bin_info["present"]
     has_cfg = cfg_info["present"]
     has_unit = unit_info["present"]
 
-    if has_stamp and has_bin and has_cfg and has_unit:
-        state = "aerodrome_managed"
-    elif has_stamp and not (has_bin and has_cfg and has_unit):
-        state = "partial"
-    elif has_bin and not has_stamp:
+    if has_stamp:
+        state = "aerodrome_managed" if has_bin and has_cfg and has_unit else "partial"
+    elif has_bin or has_cfg or has_unit or any(os.path.lexists(p) for p in VENDOR_PATHS):
         state = "external"
-    elif not any([has_bin, has_cfg, has_unit, has_stamp]):
-        state = "not_installed"
     else:
-        state = "partial"
+        state = "not_installed"
 
     # Stamp file may contain the version we wrote at install time
     stamp_version = None
@@ -527,6 +559,13 @@ def install_status() -> Dict[str, Any]:
         except Exception:
             stamp_version = None
     stamp_info["version_installed"] = stamp_version
+
+    legacy_unit = None
+    if has_stamp and has_unit:
+        try:
+            legacy_unit = SYSTEMD_UNIT.read_text(encoding="utf-8") != NTFY_UNIT_TEXT
+        except (OSError, UnicodeDecodeError):
+            pass
 
     installable = (arch is not None) and state in ("not_installed", "partial")
 
@@ -540,6 +579,7 @@ def install_status() -> Dict[str, Any]:
         "version": version,
         "installable": installable,
         "arch": arch,
+        "legacy_unit": legacy_unit,
     }
 
 
@@ -554,148 +594,41 @@ def _generate_topic() -> str:
     return f"aerodrome-{suffix}"
 
 
-def _sudo_run(cmd: list, input_text: Optional[str] = None) -> subprocess.CompletedProcess:
-    """Run a sudo command, capturing output. Non-zero exit raises
-    RuntimeError with a helpful message; we don't let the caller see
-    the raw CompletedProcess so error formatting is consistent."""
-    full_cmd = ["sudo", "-n"] + cmd  # -n = fail instead of prompt
-    try:
-        r = subprocess.run(full_cmd, input=input_text, capture_output=True,
-                           text=True, timeout=60)
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"Command timed out: {' '.join(cmd)}")
-    if r.returncode != 0:
-        stderr = (r.stderr or "").strip()
-        stdout = (r.stdout or "").strip()
-        msg = stderr or stdout or f"rc={r.returncode}"
-        # A common failure mode: sudoers rule doesn't permit this command.
-        # Make the error actionable.
-        if "a password is required" in stderr or "sudo:" in stderr:
-            recover = Path(__file__).resolve().parent / "scripts" / "recover-sudoers.sh"
-            raise RuntimeError(
-                f"sudo refused '{' '.join(cmd)}'. "
-                f"Run `sudo bash {shlex.quote(str(recover))}` on the server "
-                f"(it refreshes Aerodrome's system permissions only), or the "
-                f"command shown on Aerodrome's Updates page. Raw error: {msg}"
-            )
-        raise RuntimeError(f"Command failed: {' '.join(cmd)}: {msg}")
-    return r
+PAUSED_MESSAGE = ("Notification-server changes are paused until Aerodrome's system "
+                  "permissions are refreshed — run `{command}` on the server.")
+BUSY_MESSAGE = "Another Aerodrome system task is still running — try again in a minute."
 
 
-def _download_and_verify(version: str, arch: str, dest: Path) -> Path:
-    """Download the ntfy archive to dest/; verify its SHA256 against the
-    digest GitHub returns in the release API; return the path to the
-    extracted binary (still inside dest/).
-
-    v2.40.4 rewrite. The old implementation expected a separate
-    `ntfy_{version}_checksums.txt` file as a release artifact, but ntfy
-    doesn't publish one — the releases page only contains the binary
-    archives themselves, and SHA256 digests are exposed per-asset via
-    GitHub's own release metadata (added June 2025). So we now fetch
-    the release info from the GitHub API, find the matching asset's
-    `digest` field, download the archive, and verify locally. One API
-    call, one binary download, same security guarantee.
-    """
-    tag = f"v{version}"
-    base = f"ntfy_{version}_{arch}"
-    archive_name = f"{base}.tar.gz"
-    archive_url = f"https://github.com/binwiederhier/ntfy/releases/download/{tag}/{archive_name}"
-    archive_path = dest / archive_name
-
-    log.info("Fetching release metadata for ntfy %s", version)
-    # GitHub release metadata — each asset includes a `digest` field like
-    # "sha256:31798741da8ee81a0adb667f77920c1f8604af24b119e2de14352ac250ad89ce"
-    api_url = f"https://api.github.com/repos/binwiederhier/ntfy/releases/tags/{tag}"
-    try:
-        r = requests.get(api_url, timeout=DOWNLOAD_TIMEOUT_SECONDS,
-                         headers={"Accept": "application/vnd.github+json"})
-        r.raise_for_status()
-        release_info = r.json()
-    except requests.RequestException as e:
-        raise RuntimeError(f"Failed to fetch release metadata: {api_url}: {e}")
-
-    expected_hash: Optional[str] = None
-    for asset in release_info.get("assets", []):
-        if asset.get("name") == archive_name:
-            digest = asset.get("digest") or ""
-            # GitHub returns digests as "sha256:<hex>". Strip the prefix.
-            if digest.startswith("sha256:"):
-                expected_hash = digest[7:].lower()
-            break
-    if not expected_hash:
-        # The digest field was added to GitHub's API in June 2025. For
-        # very old releases predating that, fall back to a clear error
-        # rather than silently skipping verification.
-        raise RuntimeError(
-            f"Couldn't find SHA256 digest for {archive_name} in release metadata. "
-            f"The release may predate GitHub's asset-digest feature, or the "
-            f"asset name may have changed upstream."
-        )
-
-    log.info("Downloading ntfy %s for %s", version, arch)
-    try:
-        r = requests.get(archive_url, timeout=DOWNLOAD_TIMEOUT_SECONDS, stream=True)
-        r.raise_for_status()
-    except requests.RequestException as e:
-        raise RuntimeError(f"Download failed: {archive_url}: {e}")
-    with archive_path.open("wb") as f:
-        for chunk in r.iter_content(chunk_size=64 * 1024):
-            if chunk:
-                f.write(chunk)
-
-    # SHA256 verification against GitHub's published digest
-    h = hashlib.sha256()
-    with archive_path.open("rb") as f:
-        while True:
-            buf = f.read(64 * 1024)
-            if not buf: break
-            h.update(buf)
-    actual_hash = h.hexdigest().lower()
-    if actual_hash != expected_hash:
-        raise RuntimeError(
-            f"Checksum mismatch for {archive_name}: "
-            f"expected {expected_hash}, got {actual_hash}"
-        )
-    log.info("SHA256 verified for %s", archive_name)
-
-    # Extract with tar — native tool, available everywhere
-    r = subprocess.run(["tar", "-xzf", str(archive_path), "-C", str(dest)],
-                       capture_output=True, text=True)
-    if r.returncode != 0:
-        raise RuntimeError(f"tar extraction failed: {r.stderr.strip()}")
-
-    # The archive extracts to dest/ntfy_X.Y.Z_arch/ntfy
-    extracted_bin = dest / f"ntfy_{version}_{arch}" / "ntfy"
-    if not extracted_bin.is_file():
-        # Occasionally releases have slightly different internal layout —
-        # fall back to a recursive find.
-        found = list(dest.rglob("ntfy"))
-        # Filter for executable files only
-        found_exec = [p for p in found if p.is_file()]
-        if not found_exec:
-            raise RuntimeError(
-                f"Could not find 'ntfy' binary inside extracted archive at {dest}"
-            )
-        extracted_bin = found_exec[0]
-
-    return extracted_bin
+def _custom_keys_message(names) -> str:
+    return ("Your notification server's config file has settings Aerodrome "
+            f"doesn't manage: {', '.join(names)}. Saving would remove them.")
 
 
-def _systemd_unit_text() -> str:
-    return """[Unit]
-Description=ntfy server (managed by Aerodrome)
-After=network.target
-
-[Service]
-ExecStart=/usr/local/bin/ntfy serve --config /etc/ntfy/server.yml
-Restart=on-failure
-RestartSec=5
-# Run as root by default to allow binding to low ports if reconfigured.
-# The config file itself restricts what ntfy actually does.
-
-[Install]
-WantedBy=multi-user.target
-"""
+def _helper_failure(e: privhelper.HelperError, **extra) -> Dict[str, Any]:
+    """The result dict for a helper error (v3.4.150). Codes:
+      helper_unavailable — no helper answered: the system permissions need a
+                           refresh; `command` is the one that does it
+      still_running      — the call timed out; the helper may still be at it
+                           (or was stopped part-way: the next ntfy action
+                           first settles what it left — kept when ntfy
+                           answers on it, put back when it doesn't)
+      busy               — another system task holds the helper's lock
+      custom_keys        — server.yml has settings Aerodrome doesn't manage
+                           (custom_keys: names) the caller didn't confirm
+    and no code for anything else (message = the helper's)."""
+    if isinstance(e, privhelper.HelperUnavailable):
+        return {"ok": False, "code": "helper_unavailable", "command": e.command,
+                "message": PAUSED_MESSAGE.format(command=e.command), **extra}
+    if isinstance(e, privhelper.HelperStillRunning):
+        return {"ok": False, "code": "still_running", "still_running": True,
+                "message": str(e), **extra}
+    reply = e.payload
+    if reply.get("busy"):
+        return {"ok": False, "code": "busy", "busy": True, "message": BUSY_MESSAGE, **extra}
+    if reply.get("custom_keys") and not reply.get("problems"):
+        return {"ok": False, "code": "custom_keys", "custom_keys": reply["custom_keys"],
+                "message": _custom_keys_message(reply["custom_keys"]), **extra}
+    return {"ok": False, "message": str(e), **extra}
 
 
 def _detect_lan_ip() -> Tuple[Optional[str], Optional[str]]:
@@ -780,34 +713,9 @@ def _detect_lan_ip() -> Tuple[Optional[str], Optional[str]]:
     return (None, last_error or "unknown error")
 
 
-def _server_yml_text(port: int, bind: str,
-                     base_url: Optional[str] = None,
-                     upstream_relay: bool = True) -> str:
-    """The server.yml Aerodrome writes, via the shared render_server_yml()
-    (validated, JSON-quoted values; fixed comment text).
-
-    cache-file stays SERVER_CACHE_FILE while ntfy runs from the root unit.
-
-    base_url — external URL phones use to reach this server. None means a
-      fresh install: auto-detect the LAN IP, falling back to localhost when
-      detection fails (the Notifications tab shows detected_lan_ip_error and
-      offers a one-click fix). Every other caller passes a validated value.
-
-    upstream_relay — adds upstream-base-url: https://ntfy.sh so iOS clients
-      get real-time push (ntfy.sh sees topic and message IDs, never bodies).
-
-    Raises ValueError for any value the renderer refuses.
-    """
-    if base_url is None:
-        lan_ip, _err = _detect_lan_ip()
-        base_url = f"http://{lan_ip or 'localhost'}:{port}"
-    return render_server_yml(port, bind, base_url, bool(upstream_relay),
-                             cache_file=SERVER_CACHE_FILE)
-
-
 def _validate_install_args(port, bind, base_url) -> None:
     """Raise ValueError unless port/bind/base_url are values the renderer
-    will accept. Runs before any sudo call."""
+    will accept. Runs before the helper is called."""
     if type(port) is not int or not 1 <= port <= 65535:
         raise ValueError("Port must be between 1 and 65535")
     if bind not in ("0.0.0.0", "127.0.0.1"):
@@ -834,15 +742,19 @@ def install(port: int = 2586, bind: str = "0.0.0.0",
             the user subscribes to.
     base_url — (v2.40.5) external URL phones use to reach this server.
             If None, auto-detected from the LAN IP; if detection fails,
-            falls back to localhost with a warning. Otherwise it must pass
-            validate_base_url().
+            falls back to localhost (the Notifications tab says so and
+            offers a fix). Otherwise it must pass validate_base_url().
     upstream_relay — (v2.40.5) if True (default), adds upstream-base-url:
             https://ntfy.sh so iOS clients get real-time APNs push.
 
+    v3.4.150: one helper call (ntfy-install latest + the four settings)
+    downloads and verifies the release, installs the binary, writes the
+    unit and server.yml together and starts ntfy, checking it answers.
+
     Returns a dict: {'ok', 'message', 'status' (install_status dict),
-    'topic' (the one to subscribe to), 'version' (installed)}.
-    A value the config renderer would refuse returns {'ok': False,
-    'message'} before anything is downloaded or any sudo call is made.
+    'topic' (the one to subscribe to), 'version' (installed)}; a helper
+    error as _helper_failure() describes. A value the config renderer
+    would refuse returns {'ok': False, 'message'} before the helper runs.
     """
     try:
         _validate_install_args(port, bind, base_url)
@@ -875,123 +787,28 @@ def install(port: int = 2586, bind: str = "0.0.0.0",
             "status": status,
         }
 
-    version = latest_version()
-    if not version:
-        return {
-            "ok": False,
-            "message": "Could not determine the latest ntfy version from GitHub. "
-                       "Check internet connectivity and try again.",
-            "status": status,
-        }
-
     topic = topic or _generate_topic()
-
-    # --- Create the cache dir (owned by the aerodrome user so we can write
-    # the staged binary into it without another sudo call). The sudoers rule
-    # pins the owner to the current user: the account this process runs as,
-    # not an inherited $LOGNAME/$USER (which getpass.getuser() reads first). ---
-    import getpass
-    import pwd
+    if base_url is None:
+        # Fresh install only: the LAN address phones can reach, else
+        # localhost (the Notifications tab shows detected_lan_ip_error).
+        lan_ip, _err = _detect_lan_ip()
+        base_url = f"http://{lan_ip}:{port}"
+        if not lan_ip or not base_url_ok(base_url):
+            base_url = f"http://localhost:{port}"
     try:
-        aero_user = pwd.getpwuid(os.geteuid()).pw_name
-    except KeyError:    # no passwd entry for our uid (directory offline)
-        aero_user = getpass.getuser()
-    try:
-        _sudo_run(["install", "-d", "-m", "0755",
-                   "-o", aero_user, "-g", aero_user, str(CACHE_DIR)])
-        STAGING_DIR.mkdir(parents=True, exist_ok=True)
-    except RuntimeError as e:
-        return {"ok": False, "message": f"Failed to create cache dir: {e}",
-                "status": install_status()}
-    except OSError as e:
-        return {"ok": False,
-                "message": f"Failed to create staging dir: {e}",
-                "status": install_status()}
+        res = privhelper.run_helper("ntfy-install", "latest", "--port", str(port),
+                                    "--bind", bind, "--base-url", base_url,
+                                    "--upstream", "1" if upstream_relay else "0")
+    except privhelper.HelperError as e:
+        log.warning("ntfy install failed: %s", e)
+        return _helper_failure(e, status=install_status())
 
-    # --- Download + verify in a python tempdir (as aerodrome user, no sudo),
-    # then copy the extracted binary into the whitelisted staging path. ---
-    with tempfile.TemporaryDirectory() as td:
-        tmp = Path(td)
-        try:
-            extracted_bin = _download_and_verify(version, status["arch"], tmp)
-        except Exception as e:
-            log.exception("Download/verify failed")
-            return {"ok": False,
-                    "message": f"Download or verification failed: {e}",
-                    "status": install_status()}
-
-        # Move extracted binary to the fixed staging path. Done as the
-        # aerodrome user (no sudo) since the staging dir is user-owned.
-        try:
-            shutil.copy2(extracted_bin, STAGING_BINARY)
-            STAGING_BINARY.chmod(0o755)
-        except OSError as e:
-            return {"ok": False,
-                    "message": f"Failed to stage binary: {e}",
-                    "status": install_status()}
-
-    # --- Install binary from the staging path (sudoers whitelists exactly
-    # this source → dest pair). ---
-    try:
-        _sudo_run(["install", "-m", "0755", str(STAGING_BINARY), str(BINARY_PATH)])
-    except RuntimeError as e:
-        return {"ok": False, "message": f"Failed to install binary: {e}",
-                "status": install_status()}
-    # Clean up staging (best-effort)
-    try:
-        STAGING_BINARY.unlink(missing_ok=True)
-    except OSError:
-        pass
-
-    # --- Create other directories ---
-    for d in (CONFIG_DIR, STAMP_DIR):
-        try:
-            _sudo_run(["install", "-d", "-m", "0755", str(d)])
-        except RuntimeError as e:
-            return {"ok": False, "message": f"Failed to create {d}: {e}",
-                    "status": install_status()}
-
-    # --- Write config via sudo tee ---
-    try:
-        cfg_text = _server_yml_text(port, bind, base_url=base_url,
-                                    upstream_relay=upstream_relay)
-        _sudo_run(["tee", str(CONFIG_FILE)], input_text=cfg_text)
-    except (RuntimeError, ValueError) as e:
-        return {"ok": False, "message": f"Failed to write config: {e}",
-                "status": install_status()}
-
-    # --- Write systemd unit ---
-    # (From here on server.yml is written: failures say so with written=True.)
-    try:
-        _sudo_run(["tee", str(SYSTEMD_UNIT)], input_text=_systemd_unit_text())
-    except RuntimeError as e:
-        return {"ok": False, "written": True,
-                "message": f"Failed to write systemd unit: {e}",
-                "status": install_status()}
-
-    # --- Stamp file (marks this install as aerodrome-managed) ---
-    try:
-        _sudo_run(["tee", str(STAMP_FILE)], input_text=version + "\n")
-    except RuntimeError as e:
-        return {"ok": False, "written": True, "message": f"Failed to write stamp: {e}",
-                "status": install_status()}
-
-    # --- Enable and start service ---
-    try:
-        _sudo_run(["systemctl", "daemon-reload"])
-        _sudo_run(["systemctl", "enable", "ntfy"])
-        _sudo_run(["systemctl", "start", "ntfy"])
-    except RuntimeError as e:
-        return {"ok": False, "written": True,
-                "message": f"Failed to enable/start service: {e}",
-                "status": install_status()}
-
-    new_status = install_status()
+    version = res.get("version")
     return {
         "ok": True,
         "message": f"ntfy {version} installed and started. "
                    f"Subscribe from the ntfy mobile app.",
-        "status": new_status,
+        "status": install_status(),
         "topic": topic,
         "version": version,
         "port": port,
@@ -1044,9 +861,16 @@ def update_config(base_url: Optional[str] = None,
                                     port/bind would replace.
     Names only in every response, never values.
 
+    v3.4.150: the write is the helper's ntfy-config, which reads the file
+    again as root and refuses (custom_keys) any setting the names it is
+    given don't cover; writes server.yml and the unit together — an install
+    still on the older root-run unit moves to the sandboxed one here — and
+    restarts ntfy if it was running. If ntfy then doesn't answer, the
+    helper puts the previous files back and this returns {'ok': False,
+    'message'}. Other helper errors: _helper_failure().
+
     Returns {'ok', 'message', 'base_url', 'upstream_relay', 'port', 'bind',
-    'dropped_keys'} on success. When the file was written but ntfy didn't
-    restart: {'ok': False, 'written': True, 'dropped_keys', 'message'}.
+    'dropped_keys'} on success.
     """
     status = install_status()
     if status["state"] != "aerodrome_managed":
@@ -1073,12 +897,8 @@ def update_config(base_url: Optional[str] = None,
     confirmed = (set(drop_custom_keys)
                  if isinstance(drop_custom_keys, (list, tuple, set, frozenset)) else set())
     if set(cur["custom"]) - confirmed:
-        return {
-            "ok": False, "code": "custom_keys", "custom_keys": cur["custom"],
-            "message": "Your notification server's config file has settings Aerodrome "
-                       f"doesn't manage: {', '.join(cur['custom'])}. "
-                       "Saving would remove them.",
-        }
+        return {"ok": False, "code": "custom_keys", "custom_keys": cur["custom"],
+                "message": _custom_keys_message(cur["custom"])}
 
     # Fields the caller left as None come from the live file — only when
     # that value can be carried over exactly. listen-http is always checked:
@@ -1101,25 +921,24 @@ def update_config(base_url: Optional[str] = None,
     bind = cur["bind"] if bind is None else bind
     upstream_relay = cur["upstream"] if upstream_relay is None else bool(upstream_relay)
     try:
-        cfg_text = render_server_yml(port, bind, base_url, upstream_relay,
-                                     cache_file=SERVER_CACHE_FILE)
+        render_server_yml(port, bind, base_url, upstream_relay)     # what the helper writes
     except ValueError as e:
         return {"ok": False, "code": "invalid", "message": str(e)}
 
+    args = ["--port", str(port), "--bind", bind, "--base-url", base_url,
+            "--upstream", "1" if upstream_relay else "0"]
+    if cur["custom"]:
+        args += ["--drop-custom-keys", ",".join(cur["custom"])]
     try:
-        _sudo_run(["tee", str(CONFIG_FILE)], input_text=cfg_text)
-    except RuntimeError as e:
-        return {"ok": False, "message": f"Failed to write config: {e}"}
-
-    try:
-        _sudo_run(["systemctl", "restart", "ntfy"])
-    except RuntimeError as e:
-        return {"ok": False, "written": True, "dropped_keys": cur["custom"],
-                "message": f"Config written but failed to restart: {e}"}
+        res = privhelper.run_helper("ntfy-config", *args)
+    except privhelper.HelperError as e:
+        log.warning("ntfy config change failed: %s", e)
+        return _helper_failure(e)
 
     return {
         "ok": True,
-        "message": "ntfy config updated and service restarted.",
+        "message": ("ntfy config updated and service restarted." if res.get("restarted")
+                    else "ntfy config updated."),
         "base_url": base_url,
         "upstream_relay": upstream_relay,
         "port": port,
@@ -1154,7 +973,10 @@ def _read_upstream_relay() -> bool:
 
 def upgrade() -> Dict[str, Any]:
     """Upgrade to the latest ntfy. Only works on aerodrome_managed installs.
-    Pulls latest version, verifies, swaps the binary, restarts the service.
+    The helper's ntfy-install pulls the latest release, verifies it, swaps
+    the binary and restarts the service if it was running — and nothing
+    else: the unit and server.yml stay exactly as they are (an install on
+    the older root-run unit moves only when its settings are saved).
     """
     status = install_status()
     if status["state"] != "aerodrome_managed":
@@ -1163,55 +985,21 @@ def upgrade() -> Dict[str, Any]:
                            "Upgrade is only available for Aerodrome-managed installs.",
                 "status": status}
 
-    latest = latest_version()
-    if not latest:
-        return {"ok": False,
-                "message": "Could not determine latest ntfy version.",
-                "status": status}
+    latest = latest_version()          # None: the helper looks it up itself
     current = status.get("version") or status["stamp"].get("version_installed")
-    if current == latest:
+    if latest and current == latest:
         return {"ok": True,
                 "message": f"Already on the latest ntfy ({latest}).",
                 "status": status, "version": latest}
 
-    with tempfile.TemporaryDirectory() as td:
-        tmp = Path(td)
-        try:
-            extracted_bin = _download_and_verify(latest, status["arch"], tmp)
-        except Exception as e:
-            return {"ok": False, "message": f"Download failed: {e}",
-                    "status": install_status()}
-        # Stage into the whitelisted path
-        try:
-            STAGING_DIR.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(extracted_bin, STAGING_BINARY)
-            STAGING_BINARY.chmod(0o755)
-        except OSError as e:
-            return {"ok": False,
-                    "message": f"Failed to stage upgraded binary: {e}",
-                    "status": install_status()}
-
     try:
-        _sudo_run(["install", "-m", "0755", str(STAGING_BINARY), str(BINARY_PATH)])
-    except RuntimeError as e:
-        return {"ok": False, "message": f"Failed to replace binary: {e}",
-                "status": install_status()}
-    # Clean up staging (best-effort)
-    try:
-        STAGING_BINARY.unlink(missing_ok=True)
-    except OSError:
-        pass
-
-    try:
-        _sudo_run(["tee", str(STAMP_FILE)], input_text=latest + "\n")
-        _sudo_run(["systemctl", "restart", "ntfy"])
-    except RuntimeError as e:
-        return {"ok": False, "message": f"Failed to restart service: {e}",
-                "status": install_status()}
-
+        res = privhelper.run_helper("ntfy-install", "latest")
+    except privhelper.HelperError as e:
+        log.warning("ntfy upgrade failed: %s", e)
+        return _helper_failure(e, status=install_status())
     return {"ok": True,
-            "message": f"Upgraded ntfy {current or '?'} → {latest}.",
-            "status": install_status(), "version": latest}
+            "message": f"Upgraded ntfy {current or '?'} → {res.get('version')}.",
+            "status": install_status(), "version": res.get("version")}
 
 
 def uninstall(purge_data: bool = False) -> Dict[str, Any]:
@@ -1219,150 +1007,63 @@ def uninstall(purge_data: bool = False) -> Dict[str, Any]:
     missing files are ignored. Refuses to touch external installs.
 
     purge_data (v2.41.0) — if True, also delete ntfy's cached messages
-    (ntfy_purge_argvs: SERVER_CACHE_FILE and its -wal/-shm). Default False
-    so users who reinstall later keep their topic's message history.
-    purged_data in the result is True only when that deletion went through.
+    (the helper's purge: the sandboxed unit's cache and the older root-run
+    unit's, each with SQLite's -wal/-shm; never /var/cache/ntfy, an official
+    package's). Default False so users who reinstall later keep their
+    topic's message history. With nothing installed it deletes a cache an
+    earlier install left. purged_data is True only when that went through.
 
-    The stamp goes last, and only when every earlier step worked: anything
-    left behind (a refused purge, a file sudo wouldn't remove) keeps the
-    install 'partial', whose panel offers Uninstall again — without the
-    stamp a leftover binary would read as 'external' (never touched) and a
-    leftover cache as 'not_installed' (no uninstall control)."""
+    The helper removes the stamp last, and only when every earlier step
+    worked: anything left behind keeps the install 'partial', whose panel
+    offers Uninstall again — without the stamp a leftover binary would read
+    as 'external' (never touched)."""
     status = install_status()
     if status["state"] == "external":
         return {"ok": False,
                 "message": "Refusing to uninstall: ntfy was installed outside "
                            "Aerodrome. Manage it with your package manager.",
                 "status": status}
-    if status["state"] == "not_installed":
-        # Even when there's no install, honor the purge request if the user
-        # somehow has stale data left over from a prior install.
-        if purge_data:
-            try:
-                _purge_ntfy_data()
-            except Exception as e:
-                return {"ok": False,
-                        "message": f"Nothing to uninstall. Deleting cached messages failed: {e}",
-                        "status": status, "purged_data": False}
+    if status["state"] == "not_installed" and not purge_data:
         return {"ok": True, "message": "Nothing to uninstall.", "status": status,
-                "purged_data": purge_data}
+                "purged_data": False}
 
     # A cache-file set by hand in server.yml (a custom setting) isn't
-    # Aerodrome's to delete: the purge removes SERVER_CACHE_FILE only, and the
-    # result says the hand-set one was left (its name, never its value). Read
-    # before server.yml is removed below.
+    # Aerodrome's to delete: the purge removes Aerodrome's caches only, and
+    # the result says the hand-set one was left (its name, never its value).
+    # Read before server.yml goes.
     hand_cache = purge_data and "cache-file" in ((current_config() or {}).get("custom") or ())
 
-    errors = []
-    # Best-effort stop + disable; ignore failures (service may already be gone)
-    for cmd in (["systemctl", "stop", "ntfy"],
-                ["systemctl", "disable", "ntfy"]):
-        try:
-            _sudo_run(cmd)
-        except RuntimeError as e:
-            # Only record as an error if the unit actually exists
-            if SYSTEMD_UNIT.exists():
-                errors.append(str(e))
-
-    # Remove files (the stamp last, below)
-    for path in (SYSTEMD_UNIT, BINARY_PATH, CONFIG_FILE):
-        if path.exists():
-            try:
-                _sudo_run(["rm", "-f", str(path)])
-            except RuntimeError as e:
-                errors.append(f"rm {path}: {e}")
-
-    # v2.41.0: if user asked to purge data, wipe the message cache
-    # (ntfy_purge_argvs). This is destructive — only on explicit opt-in.
-    purged = False
-    if purge_data:
-        try:
-            _purge_ntfy_data()
-            purged = True
-        except Exception as e:
-            errors.append(f"purge data: {e}")
-
-    # The stamp only once everything above worked (see the docstring).
-    if not errors and STAMP_FILE.exists():
-        try:
-            _sudo_run(["rm", "-f", str(STAMP_FILE)])
-        except RuntimeError as e:
-            errors.append(f"rm {STAMP_FILE}: {e}")
-
-    # Remove empty directories — leave them if they contain user data
-    for path in (CONFIG_DIR, CACHE_DIR, STAMP_DIR):
-        if path.exists():
-            try:
-                _sudo_run(["rmdir", "--ignore-fail-on-non-empty", str(path)])
-            except RuntimeError:
-                pass  # not fatal
-
-    # daemon-reload after unit removal
     try:
-        _sudo_run(["systemctl", "daemon-reload"])
-    except RuntimeError:
-        pass  # best-effort
+        res = privhelper.run_helper("ntfy-uninstall", *(["--purge"] if purge_data else []))
+    except privhelper.HelperError as e:
+        log.warning("ntfy uninstall failed: %s", e)
+        return _helper_failure(e, status=install_status(), purged_data=False)
 
-    new_status = install_status()
-    if errors:
-        return {"ok": False,
-                "message": f"Uninstall finished with errors: {'; '.join(errors)}",
-                "status": new_status,
-                "purged_data": purged}
-    msg = "Uninstalled ntfy."
-    if purge_data:
-        msg += f" Cached message data at {Path(SERVER_CACHE_FILE).parent}/ was also removed."
-        if hand_cache:
-            msg += " The cache file you set by hand in server.yml (cache-file) was left in place."
+    if status["state"] == "not_installed":
+        msg = "Nothing to uninstall."
+        if any("cache.db" in p for p in res.get("removed") or ()):
+            msg += " Cached messages from an earlier install were deleted."
     else:
-        msg += f" Cached message data at {SERVER_CACHE_FILE} was kept."
-    return {"ok": True, "message": msg, "status": new_status,
-            "purged_data": purged}
-
-
-def _sqlite_files(db) -> list:
-    """An SQLite database and the -wal/-shm files SQLite keeps beside it."""
-    return [Path(f"{db}{side}") for side in ("", "-wal", "-shm")]
-
-
-def ntfy_purge_argvs() -> list:
-    """The commands "Also delete cached messages" runs through sudo -n, one
-    per path: `rm -f` on the cache server.yml names (SERVER_CACHE_FILE) and
-    SQLite's -wal/-shm beside it — the cache every release wrote and a
-    reinstall picks up. sudo matches a rule's whole command line, so
-    install.sh's sudoers rules must grant each argv word for word.
-
-    Nothing in /var/cache/ntfy: no Aerodrome release wrote a cache or
-    attachments there (the purge looked there by mistake before v3.4.146),
-    and ntfy's own package keeps its cache there. uninstall.sh's purge
-    removes the same files."""
-    return [["rm", "-f", str(p)] for p in _sqlite_files(SERVER_CACHE_FILE)]
-
-
-def _purge_ntfy_data() -> None:
-    """Remove ntfy's cached message data (ntfy_purge_argvs). Tries every
-    path that exists — a dangling link too — then raises one RuntimeError
-    naming the ones that couldn't be removed (e.g. sudo refused: no rule
-    for that path yet)."""
-    failed = []
-    for argv in ntfy_purge_argvs():
-        path = argv[-1]
-        if not os.path.lexists(path):
-            continue
-        try:
-            _sudo_run(argv)
-        except RuntimeError as e:
-            failed.append(f"{path}: {e}")
-    if failed:
-        raise RuntimeError("couldn't remove " + "; ".join(failed))
+        msg = "Uninstalled ntfy."
+        if purge_data:
+            msg += " Its cached messages were deleted too."
+            if hand_cache:
+                msg += " The cache file you set by hand in server.yml (cache-file) was left in place."
+        else:
+            msg += " Its cached messages were kept."
+    return {"ok": True, "message": msg, "status": install_status(),
+            "purged_data": purge_data}
 
 
 def stale_data_present() -> bool:
-    """(v2.41.0) Return True if the message cache a reinstall would use
-    (SERVER_CACHE_FILE, or its -wal/-shm) exists even though no ntfy install
-    is active. Used by the install flow to inform the user their reinstall
-    will inherit old cached messages."""
-    status = install_status()
-    if status["state"] != "not_installed":
+    """(v2.41.0) True when a message cache an earlier install left is
+    still there although no ntfy install is. Used by the install flow to
+    tell the user about old cached messages (and how to delete them).
+    v3.4.150: the helper's `version` answers (the cache is in a folder only
+    root can see); False when it can't be asked."""
+    if install_status()["state"] != "not_installed":
         return False
-    return any(p.exists() for p in _sqlite_files(SERVER_CACHE_FILE))
+    try:
+        return bool(privhelper.run_helper("version").get("ntfy_cache"))
+    except privhelper.HelperError:
+        return False

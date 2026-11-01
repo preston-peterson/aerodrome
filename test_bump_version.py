@@ -164,6 +164,10 @@ class _FixtureCase(unittest.TestCase):
         cls.tmp = Path(cls._tmp.name)
         cls.base = build_worktree_fixture(cls.tmp / "base" / "aerodrome", cls.INCLUDE_DOCS)
         cls.old = (cls.base / "VERSION").read_text().strip()
+        # v3.4.150: a release tag for check_installers.py's priv-bump to
+        # compare against (it is SKIPPED without one). Not in the shared
+        # fixture: test_check_release_zip.py's publish tests own its tags.
+        git(cls.base, "tag", "v" + cls.old)
         cls.new = _next_patch(cls.old)
         cls.env = subprocess_env(cls.tmp)
 

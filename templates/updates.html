@@ -1,4 +1,4 @@
-<!-- Version: 3.4.149 -->
+<!-- Version: 3.4.150 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -597,8 +597,9 @@ function showSudoersRequiredModal(opts){
             <p style="font-size:12px;color:var(--t2);line-height:1.6;margin:0 0 8px 0;">
                 Aerodrome can't update the sudoers file on its own — that would be a permission
                 escalation risk. Please SSH to your server and run the command below.
-                This only refreshes Aerodrome's system permissions. It doesn't reinstall,
-                restart or change anything else.
+                This only refreshes Aerodrome's system permissions (and moves its local
+                notification server, if it manages one, to its restricted setup). It doesn't
+                reinstall or restart Aerodrome.
             </p>
             <div style="position:relative;background:var(--bg0);border:1px solid var(--bdr);
                         border-radius:6px;padding:10px 12px;font-family:var(--mono);font-size:12px;
@@ -1018,7 +1019,7 @@ async function checkLocal(){
                     `⚠ <strong>Sudoers refresh required.</strong> ` +
                     `Installed Aerodrome expects version ${_esc(ev)} but ` +
                     `/etc/sudoers.d/aerodrome is at version ${_esc(lv)}. ` +
-                    `Some features (ntfy install/uninstall, data purge) will fail until you SSH to the server and run: ` +
+                    `Some features (installing or changing the local notification server, moving the demo feeder) will fail until you SSH to the server and run: ` +
                     `<br><code style="display:inline-block;margin-top:4px;font-size:11px;padding:2px 6px;background:var(--bg0);border-radius:3px;">${_esc(driftCmd)}</code>` +
                     // v2.41.20: explicit note so users don't try `./install.sh`
                     // and hit "permission denied" when the release zip stripped
@@ -2194,8 +2195,9 @@ async function applyGithubUpdate(tag){
                                 padding:3px 10px;cursor:pointer;">Copy</button>
                     </div>
                     <div style="font-size:11px;color:var(--t3);margin-bottom:14px;">
-                        This only refreshes Aerodrome's system permissions. It doesn't reinstall,
-                        restart or change anything else.
+                        This only refreshes Aerodrome's system permissions (and moves its local
+                        notification server, if it manages one, to its restricted setup). It doesn't
+                        reinstall or restart Aerodrome.
                     </div>
                     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
                         <button class="btn btn-primary" id="_ghsu_recheck">I ran the command — re-check</button>

@@ -10,7 +10,7 @@ Usage:
         # each error: {"path": "receiver.port", "message": "Must be 1-65535"}
         return error_response(errors)
 """
-# Version: 3.4.149
+# Version: 3.4.150
 
 import re
 import socket
@@ -264,6 +264,8 @@ def _validate_outbound_url(value: Any, path: str) -> Errors:
             ip = ipaddress.ip_address(info[4][0])
         except ValueError:
             continue
+        if ip.is_loopback:
+            continue  # allowed above; Python's ipaddress also calls ::1 reserved
         if ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
             return [(path, "URL resolves to a blocked address (link-local/"
                            "metadata, multicast, or reserved). Use your ntfy "

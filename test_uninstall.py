@@ -3,7 +3,7 @@
 Runs the WORKING tree's uninstall.sh from a fake install dir (HARD GUARD: it
 must resolve under tempfile.gettempdir(); uninstall.sh takes its install dir
 from its own location) with a fake HOME, cwd=/ and no terminal. sudo,
-systemctl and firewall-cmd are stubs; the sudo stub maps /etc, /var and
+systemctl and firewall-cmd are stubs; the sudo stub maps /etc, /var, /run and
 /usr/local into a fake root, so the "system" files it removes are fakes too.
 
 Covers L10: --purge removes everything Aerodrome created (database and its
@@ -40,7 +40,7 @@ args=()
 for a in "$@"; do
   case "$a" in
     "$TEST_TMP"/*) args+=("$a") ;;
-    /etc/*|/var/*|/usr/local/*) args+=("$FAKE_ROOT$a") ;;
+    /etc/*|/var/*|/usr/local/*|/run/*) args+=("$FAKE_ROOT$a") ;;
     *) args+=("$a") ;;
   esac
 done
@@ -603,6 +603,170 @@ class Firewall(_Case):
                 rc, out = self.run_un(stdin="y", FIREWALLD_ACTIVE=1, FW_PORTS="8000/tcp")
                 self.assertEqual(rc, 0, out)
                 self.assertEqual("--remove-port" in self.log.read_text(), closed, out)
+
+
+@GUARD
+@NEEDS
+class LocalNtfyAndSystemHelper(_Case):
+    """v3.4.150: while Aerodrome's system helper is there, the demo feeder
+    and the local ntfy server go through it (the helper itself is a logging
+    stand-in here). The sudoers rule goes in step 1, so a run that stops
+    later leaves no rule behind; the helper, its folder and lock go after
+    the local ntfy server. Without the helper, uninstall.sh does the same
+    steps itself, the cache purge before the stamp. A busy helper (another
+    run holds its lock) is waited for, never raced."""
+
+    HELPER = "usr/local/libexec/aerodrome/aerodrome-helper"
+    NTFY = ("var/lib/ntfy/aerodrome-installed", "usr/local/bin/ntfy", "etc/ntfy/server.yml",
+            "etc/ntfy/server.yml.pre-v6", "etc/ntfy/.aerodrome-converge",
+            "etc/systemd/system/ntfy.service",
+            "var/lib/ntfy/cache.db", "var/lib/ntfy/cache.db-wal",
+            "var/lib/private/aerodrome-ntfy/cache.db")
+
+    def plant(self, *rels):
+        for rel in rels:
+            f = self.fr / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text("2.11.0\n")
+
+    def plant_helper(self):
+        h = self.fr / self.HELPER
+        h.parent.mkdir(parents=True)
+        h.write_text('#!/bin/bash\necho "helper $*" >> "$STUB_LOG"\n')
+        h.chmod(0o755)
+        self.plant("run/aerodrome-helper.lock")
+
+    def at(self, needle):
+        log = self.log.read_text().splitlines()
+        return next(i for i, line in enumerate(log) if needle in line)
+
+    def test_through_the_helper_then_the_helper_and_the_rules_go(self):
+        self.config()
+        self.plant(*self.NTFY)
+        self.plant_helper()
+        rc, out = self.run_un("--purge", FEEDER_UNIT=1)
+        self.assertEqual(rc, 0, out)
+        steps = [self.at(s) for s in ("helper feeder-remove", "sudo rm -f /etc/sudoers.d/aerodrome",
+                                      "helper ntfy-uninstall --purge",
+                                      f"sudo rm -f /{self.HELPER}", "sudo rm -f /run/aerodrome-helper.lock")]
+        self.assertEqual(steps, sorted(steps), self.log.read_text())
+        self.assertFalse((self.fr / self.HELPER).parent.exists())
+        self.assertFalse((self.fr / "run/aerodrome-helper.lock").exists())
+        self.assertFalse((self.fr / "etc/sudoers.d/aerodrome").exists())
+        log = self.log.read_text()
+        self.assertNotIn("systemctl stop aerodrome-synthetic-feeder", log)    # the helper did it
+        self.assertNotIn("rm -f /var/lib/ntfy", log)                          # ditto
+        self.assertIn("Local ntfy removed", out)
+
+    def test_a_helper_that_fails_hands_over_to_the_direct_steps(self):
+        self.config()
+        self.plant(*self.NTFY)
+        self.plant_helper()
+        h = self.fr / self.HELPER
+        h.write_text('#!/bin/bash\necho "helper $*" >> "$STUB_LOG"\n'
+                     '[ "$1" = ntfy-uninstall ] && { echo "it broke"; exit 1; }\nexit 0\n')
+        rc, out = self.run_un("--purge")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("didn't remove the local ntfy server (it broke) — removing it directly", out)
+        self.assertLess(self.at("helper ntfy-uninstall --purge"),
+                        self.at("rm -f /var/lib/ntfy/aerodrome-installed"))
+        for rel in self.NTFY:
+            self.assertFalse((self.fr / rel).exists(), rel)
+        self.assertFalse((self.fr / self.HELPER).exists())
+
+    def test_a_busy_helper_is_waited_for_never_raced(self):
+        """Busy three times: nothing of ntfy's is removed alongside the other
+        run, the uninstall stops (exit 1) saying to run it again, and the
+        helper stays for that run. Busy once, then free: it carries on."""
+        self.config()
+        self.plant(*self.NTFY)
+        self.plant_helper()
+        (self.stubs / "sleep").write_text('#!/bin/sh\necho "sleep $*" >> "$STUB_LOG"\n')
+        (self.stubs / "sleep").chmod(0o755)
+        busy = self.tmp / "busy-left"
+        busy.write_text("3")
+        h = self.fr / self.HELPER
+        h.write_text('#!/bin/bash\necho "helper $*" >> "$STUB_LOG"\n'
+                     f'b=$(cat "{busy}")\n'
+                     'if [ "$1" = ntfy-uninstall ] && [ "$b" -gt 0 ]; then\n'
+                     f'  echo $((b - 1)) > "{busy}"\n'
+                     '  echo \'{"ok": false, "message": "another task", "busy": true}\'; exit 3\n'
+                     'fi\nexit 0\n')
+        rc, out = self.run_un("--purge")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("Run uninstall.sh again in a minute", out)
+        log = self.log.read_text()
+        self.assertEqual(log.count("\nhelper ntfy-uninstall --purge"), 3, log)
+        self.assertEqual(log.count("sleep 5"), 2, log)
+        self.assertNotIn("removing it directly", out)
+        for rel in self.NTFY:
+            self.assertTrue((self.fr / rel).exists(), rel)
+        self.assertTrue(h.exists())                                  # for the next run
+        self.assertFalse((self.fr / "etc/sudoers.d/aerodrome").exists())   # step 1's
+        busy.write_text("1")
+        rc, out = self.run_un("--purge")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("Local ntfy removed", out)
+        self.assertNotIn("removing it directly", out)
+        self.assertFalse(h.exists())
+
+    def test_a_run_that_stops_after_step_one_leaves_no_rule(self):
+        """Step 2 fails (a venv file that can't be removed, under set -e):
+        the sudoers rule is already gone; only the helper file is left, which
+        no rule lets Aerodrome's account run as root, and a re-run finishes."""
+        self.config()
+        self.plant_helper()
+        stuck = self.inst / "venv" / "lib"
+        stuck.mkdir(parents=True)
+        (stuck / "x.txt").write_text("x\n")
+        stuck.chmod(0o555)
+        self.addCleanup(lambda: stuck.exists() and stuck.chmod(0o755))
+        rc, out = self.run_un("--purge")
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("Sudoers rule removed", out)
+        self.assertFalse((self.fr / "etc/sudoers.d/aerodrome").exists())
+        self.assertFalse((self.fr / "etc/systemd/system/aerodrome.service").exists())
+        self.assertTrue((self.fr / self.HELPER).exists())
+        stuck.chmod(0o755)
+        rc, out = self.run_un("--purge")
+        self.assertEqual(rc, 0, out)
+        self.assertFalse((self.fr / self.HELPER).exists())
+
+    def test_keep_leaves_ntfy_but_still_removes_the_permissions(self):
+        self.config()
+        self.plant(*self.NTFY)
+        self.plant_helper()
+        rc, out = self.run_un("--keep")
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("helper ntfy-uninstall", self.log.read_text())
+        self.assertTrue((self.fr / "var/lib/ntfy/aerodrome-installed").exists())
+        self.assertFalse((self.fr / self.HELPER).exists())
+        self.assertFalse((self.fr / "etc/sudoers.d/aerodrome").exists())
+
+    def test_without_the_helper_the_purge_goes_before_the_stamp(self):
+        self.config()
+        self.plant(*self.NTFY)
+        rc, out = self.run_un("--purge")
+        self.assertEqual(rc, 0, out)
+        self.assertLess(self.at("rm -f /var/lib/ntfy/cache.db-wal"),
+                        self.at("rm -f /var/lib/ntfy/aerodrome-installed"))
+        for rel in self.NTFY:
+            self.assertFalse((self.fr / rel).exists(), rel)
+        self.assertFalse((self.fr / "etc/ntfy").exists())
+        self.assertIn("Cached messages removed", out)
+
+    def test_without_the_helper_a_failed_purge_keeps_the_stamp(self):
+        """So the next run (or the Notifications tab) can finish it."""
+        self.config()
+        self.plant(*self.NTFY)
+        stuck = self.fr / "var/lib/ntfy/cache.db-shm"
+        stuck.mkdir()
+        (stuck / "x").write_text("x\n")                # rm -f can't remove a folder
+        rc, out = self.run_un("--purge")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("Cached messages not removed: /var/lib/ntfy/cache.db-shm", out)
+        self.assertTrue((self.fr / "var/lib/ntfy/aerodrome-installed").exists())
+        self.assertFalse((self.fr / "var/lib/ntfy/cache.db").exists())
 
 
 if __name__ == "__main__":

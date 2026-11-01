@@ -55,7 +55,10 @@ class ModalCallSites(unittest.TestCase):
 
     def test_texts_no_longer_say_rerun_install_sh(self):
         self.assertIsNone(re.search(r"(?i)re-?run(ning)? install\.sh", HTML))
-        self.assertGreaterEqual(HTML.count("This only refreshes Aerodrome's system permissions."), 2)
+        self.assertGreaterEqual(HTML.count("This only refreshes Aerodrome's system permissions"), 2)
+        # v3.4.150: the refresh also moves a local notification server
+        self.assertGreaterEqual(HTML.count("moves its local\n"), 1)
+        self.assertNotIn("ntfy install/uninstall, data purge", HTML)
 
     def test_drift_banner_shows_the_server_command_escaped(self):
         self.assertIn("${_esc(driftCmd)}", HTML)

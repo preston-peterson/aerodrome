@@ -9,8 +9,10 @@ by hand without being told to: the Notifications tab names them and asks
 first (static checks on templates/config.html). Also: the stale-data note and
 "Also delete cached messages" look at the message cache server.yml names.
 
-No root, no network: sudo/systemctl go through a mocked subprocess.run that
-writes "tee" input to a temp server.yml. Addresses are RFC 5737 / example.net,
+v3.4.150: the writes are Aerodrome's system helper's. No root, no network:
+`sudo -n <helper> …` goes through a mocked subprocess.run that runs the REAL
+helper in-process on a fake root (test_aerodrome_helper's harness), so these
+tests see the files root would write. Addresses are RFC 5737 / example.net,
 paths under /srv/example are invented.
 """
 import ast
@@ -35,8 +37,10 @@ import yaml
 
 import collector
 import ntfy_installer
+import privhelper
 import server
 from schema_migrations import apply_schema_migrations
+from test_aerodrome_helper import HelperHost, HelperSudo
 
 REPO = Path(__file__).resolve().parent
 
@@ -262,14 +266,23 @@ class SharedBlockClassify(unittest.TestCase):
             self.assertTrue(callable(ns.get(name)), name)
         self.assertEqual(text.count("# --- BEGIN shared ntfy-yml block"), 1)
 
-    def test_cache_file_has_one_source_the_release_gate_can_read(self):
-        """check_installers.py ntfy-cache reads the cache path from the
-        SERVER_CACHE_FILE assignment; the renderer takes it from there too."""
-        text = (REPO / "ntfy_installer.py").read_text()
-        found = re.findall(r'^SERVER_CACHE_FILE = "(/[^"]+)"$', text, re.M)
-        self.assertEqual(found, ["/var/lib/ntfy/cache.db"])
-        self.assertIn(found[0], ntfy_installer.NTFY_CACHE_FILES)
-        self.assertEqual(text.count("cache_file=SERVER_CACHE_FILE"), 2)   # install + update_config
+    def test_the_helper_runs_the_same_block(self):
+        """v3.4.150: the helper carries a byte-identical copy; what the app
+        accepts is what root writes."""
+        def block(text):
+            return text[text.index("# --- BEGIN shared ntfy-yml block"):
+                        text.index("# --- END shared ntfy-yml block ---")]
+        self.assertEqual(block((REPO / "ntfy_installer.py").read_text()),
+                         block((REPO / "scripts" / "aerodrome-helper").read_text()))
+
+    def test_the_helpers_url_check_is_the_apps(self):
+        from test_aerodrome_helper import load_helper
+        h = load_helper()
+        for u in GOOD_URLS:
+            self.assertEqual(h.v_base_url(u), u)
+        for u in BAD_URLS:
+            with self.assertRaises(Exception, msg=repr(u)):
+                h.v_base_url(u)
 
 
 SCALARS = ['"a"', "'a'", "a", '"a" # c', "'it''s'", "a # c", "true", "false", "False", "~", "",
@@ -355,38 +368,15 @@ class ParityWithPyYAML(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# A fake sudo: "tee PATH" writes stdin to PATH, everything else succeeds
-# unless the test says otherwise. Records every call.
+# v3.4.150: every write goes through Aerodrome's system helper. The tests run
+# the REAL helper in-process on a fake root (test_aerodrome_helper's
+# HelperHost/HelperSudo): `sudo -n <helper> …` from privhelper lands there,
+# and what ends up in the fake root is what root would have written.
 # ---------------------------------------------------------------------------
 
-class FakeSudo:
-
-    def __init__(self, root, fail=()):
-        self.root = Path(root)
-        self.calls = []
-        self.fail = set(fail)
-
-    def __call__(self, cmd, *a, **kw):
-        self.calls.append((list(cmd), kw.get("input")))
-        argv = cmd[2:] if cmd[:2] == ["sudo", "-n"] else cmd
-        rc = 1 if argv[0] in self.fail else 0
-        if argv[0] == "tee" and rc == 0:
-            target = Path(argv[1])
-            if self.root not in target.parents:
-                raise AssertionError(f"tee outside the test dir: {target}")
-            target.write_text(kw.get("input") or "")
-        return subprocess.CompletedProcess(cmd, rc, stdout="",
-                                           stderr="tee: write error" if rc else "")
-
-    def sudo_argvs(self):
-        return [c[2:] for c, _ in self.calls if c[:2] == ["sudo", "-n"]]
-
-    def tee_inputs(self):
-        return [stdin for c, stdin in self.calls if c[2:3] == ["tee"]]
-
-
 class _NtfyCase(unittest.TestCase):
-    """A managed install whose server.yml lives in a temp dir."""
+    """A managed install (still on the older root-run unit, running) whose
+    files live in a fake root; the helper runs there."""
 
     STATE = "aerodrome_managed"
 
@@ -394,26 +384,26 @@ class _NtfyCase(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, True)
         fake = self.tmp / "root"
+        self.host = HelperHost(fake)
         self.cfg = fake / "etc" / "ntfy" / "server.yml"
-        self.cfg.parent.mkdir(parents=True)
-        self.sudo = FakeSudo(fake)
-        paths = {   # every module path constant lives under the temp dir
+        self.unit = fake / "etc" / "systemd" / "system" / "ntfy.service"
+        self.stamp = fake / "var" / "lib" / "ntfy" / "aerodrome-installed"
+        if self.STATE == "aerodrome_managed":
+            self.host.legacy_host()
+            self.cfg.unlink()              # each test writes the server.yml it needs
+        self.sudo = HelperSudo(self.host, privhelper.HELPER)
+        paths = {   # every module path constant lives under the fake root
             "BINARY_PATH": fake / "usr" / "local" / "bin" / "ntfy",
             "CONFIG_DIR": self.cfg.parent, "CONFIG_FILE": self.cfg,
-            "SYSTEMD_UNIT": fake / "etc" / "systemd" / "system" / "ntfy.service",
-            "CACHE_DIR": fake / "var" / "cache" / "ntfy",
-            "STAGING_DIR": fake / "var" / "cache" / "ntfy" / "staging",
-            "STAGING_BINARY": fake / "var" / "cache" / "ntfy" / "staging" / "ntfy",
-            "STAMP_FILE": fake / "var" / "lib" / "ntfy" / "aerodrome-installed",
-            "STAMP_DIR": fake / "var" / "lib" / "ntfy",
+            "SYSTEMD_UNIT": self.unit,
+            "STAMP_FILE": self.stamp, "STAMP_DIR": self.stamp.parent,
+            "VENDOR_PATHS": tuple(fake / p.lstrip("/") for p in ntfy_installer.NTFY_VENDOR_PATHS),
         }
         patches = [mock.patch.object(ntfy_installer, k, v) for k, v in paths.items()]
         patches += [
             mock.patch.object(ntfy_installer, "install_status",
                               side_effect=lambda: {"state": self.STATE, "arch": "linux_amd64"}),
             mock.patch.object(ntfy_installer, "latest_version", return_value="2.11.0"),
-            mock.patch.object(ntfy_installer, "_download_and_verify",
-                              side_effect=RuntimeError("no downloads in tests")),
             mock.patch.object(ntfy_installer.subprocess, "run", side_effect=self.sudo),
             mock.patch.object(requests, "get", side_effect=AssertionError("network")),
         ]
@@ -424,10 +414,21 @@ class _NtfyCase(unittest.TestCase):
     def live(self, text):
         self.cfg.write_text(text)
 
+    def helper_calls(self):
+        return self.sudo.helper_calls()
+
+
+def config_args(port=2586, bind="0.0.0.0", base_url="http://192.0.2.10:2586", upstream=True,
+                drop=None):
+    """The ntfy-config call update_config makes."""
+    return (["ntfy-config", "--port", str(port), "--bind", bind, "--base-url", base_url,
+             "--upstream", "1" if upstream else "0"]
+            + (["--drop-custom-keys", ",".join(drop)] if drop else []))
+
 
 class UpdateConfig(_NtfyCase):
 
-    def test_custom_keys_refuse_without_any_sudo_call(self):
+    def test_custom_keys_refuse_without_any_helper_call(self):
         self.live(LEGACY + 'auth-file: "/srv/example/user.db"\n')
         before = self.cfg.read_text()
         r = ntfy_installer.update_config(base_url="http://192.0.2.20:2586")
@@ -440,18 +441,23 @@ class UpdateConfig(_NtfyCase):
         self.assertEqual(self.cfg.read_text(), before)
 
     def test_drop_custom_keys_rewrites_managed_keys_only_then_restarts(self):
-        self.live(LEGACY + 'auth-file: "/srv/example/user.db"\n')
+        live = LEGACY + 'auth-file: "/srv/example/user.db"\n'
+        self.live(live)
         r = ntfy_installer.update_config(upstream_relay=False, drop_custom_keys=["auth-file"])
         self.assertTrue(r["ok"], r)
         self.assertEqual(r["dropped_keys"], ["auth-file"])
-        self.assertEqual([a[0] for a in self.sudo.sudo_argvs()], ["tee", "systemctl"])
-        self.assertEqual(self.sudo.sudo_argvs()[1], ["systemctl", "restart", "ntfy"])
-        c = ntfy_installer.classify_server_yml(self.sudo.tee_inputs()[0])
+        self.assertEqual(self.helper_calls(), [config_args(upstream=False, drop=["auth-file"])])
+        self.assertIn(["systemctl", "restart", "ntfy"], self.host.calls)
+        c = ntfy_installer.classify_server_yml(self.cfg.read_text())
         self.assertEqual((c["custom"], c["problems"]), ([], []))
         self.assertEqual((c["base_url"], c["port"], c["bind"], c["upstream"]),
                          ("http://192.0.2.10:2586", 2586, "0.0.0.0", False))
         self.assertEqual(set(yaml.safe_load(self.cfg.read_text())),
-                         MANAGED_KEYS - {"upstream-base-url"})
+                         MANAGED_KEYS - {"upstream-base-url", "cache-file"})
+        # saving moved it to the sandboxed unit; the file it changed is kept
+        self.assertEqual(self.unit.read_text(), ntfy_installer.NTFY_UNIT_TEXT)
+        pre = self.cfg.parent / "server.yml.pre-v6"
+        self.assertEqual((pre.read_text(), stat.S_IMODE(pre.stat().st_mode)), (live, 0o600))
 
     def test_drop_needs_every_live_name(self):
         """drop_custom_keys confirms names, not a blanket drop: a setting the
@@ -472,11 +478,32 @@ class UpdateConfig(_NtfyCase):
             drop_custom_keys=["auth-default-access", "auth-file", "web-push-file"])
         self.assertTrue(r["ok"], r)
         self.assertEqual(r["dropped_keys"], ["auth-default-access", "auth-file"])
+        self.assertEqual(self.helper_calls()[-1][-1], "auth-default-access,auth-file")
+
+    def test_root_checks_the_names_again(self):
+        """The helper re-reads the file as root: a setting added between the
+        app's read and the helper's is refused there (exit 3) and comes back
+        as the same custom_keys answer, with nothing written."""
+        self.live(LEGACY + 'auth-file: "/srv/example/user.db"\n')
+        real_main = self.host.h.main
+
+        def racing_main(argv, out=None):
+            self.cfg.write_text(self.cfg.read_text() + 'auth-default-access: "deny-all"\n')
+            self.host.h.main = real_main
+            return real_main(argv, out=out)
+        self.host.h.main = racing_main
+        before_unit = self.unit.read_text()
+        r = ntfy_installer.update_config(upstream_relay=False, drop_custom_keys=["auth-file"])
+        self.assertEqual((r["ok"], r.get("code"), r.get("custom_keys")),
+                         (False, "custom_keys", ["auth-default-access", "auth-file"]))
+        self.assertIn("deny-all", self.cfg.read_text())
+        self.assertEqual(self.unit.read_text(), before_unit)
 
     def test_clean_file_saves_without_any_confirmation(self):
         self.live(LEGACY)
         r = ntfy_installer.update_config(upstream_relay=False)
         self.assertEqual((r["ok"], r["dropped_keys"]), (True, []))
+        self.assertEqual(r["message"], "ntfy config updated and service restarted.")
 
     def test_missing_file_is_unreadable_not_reset_to_defaults(self):
         """v3.4.144 re-rendered a missing server.yml from defaults."""
@@ -485,7 +512,7 @@ class UpdateConfig(_NtfyCase):
         self.assertEqual(self.sudo.calls, [])
         self.assertFalse(self.cfg.exists())
 
-    def test_bad_port_or_bind_is_invalid_before_sudo(self):
+    def test_bad_port_or_bind_is_invalid_before_the_helper(self):
         self.live(LEGACY)
         for kw in ({"port": 0}, {"port": 65536}, {"bind": "192.0.2.1"}, {"bind": "0.0.0.0\nx: 1"},
                    {"base_url": INJECTION}):
@@ -563,38 +590,55 @@ class UpdateConfig(_NtfyCase):
         self.live(LEGACY)
         r = ntfy_installer.update_config(upstream_relay=False)
         self.assertTrue(r["ok"], r)
-        self.assertEqual(self.sudo.tee_inputs(), [ntfy_installer.render_server_yml(
-            2586, "0.0.0.0", "http://192.0.2.10:2586", False, cache_file="/var/lib/ntfy/cache.db")])
+        self.assertEqual(self.cfg.read_text(), ntfy_installer.render_server_yml(
+            2586, "0.0.0.0", "http://192.0.2.10:2586", False))
 
-    def test_injection_payload_is_refused_before_sudo(self):
+    def test_injection_payload_is_refused_before_the_helper(self):
         self.live(LEGACY)
         r = ntfy_installer.update_config(base_url=INJECTION)
         self.assertFalse(r["ok"])
         self.assertEqual(self.sudo.calls, [])
         self.assertEqual(self.cfg.read_text(), LEGACY)
 
-    def test_tee_failure_writes_nothing_and_never_restarts(self):
-        """Guard (same on v3.4.144): a failed write stops before the restart."""
+    def test_permissions_not_refreshed_yet_pauses_changes(self):
+        """No helper answered (this host still has the older rules): nothing
+        changes, and the message gives the command that fixes it."""
         self.live(LEGACY)
-        self.sudo.fail = {"tee"}
+        self.sudo.unavailable = True
         r = ntfy_installer.update_config(upstream_relay=False)
-        self.assertFalse(r["ok"])
-        self.assertTrue(r["message"].startswith("Failed to write config"))
-        self.assertEqual([a[0] for a in self.sudo.sudo_argvs()], ["tee"])
+        self.assertEqual((r["ok"], r["code"]), (False, "helper_unavailable"))
+        self.assertIn("recover-sudoers.sh", r["command"])
+        self.assertEqual(r["message"], "Notification-server changes are paused until "
+                                       "Aerodrome's system permissions are refreshed — run "
+                                       f"`{r['command']}` on the server.")
         self.assertEqual(self.cfg.read_text(), LEGACY)
+        self.assertNotIn("written", r)
 
-    def test_restart_failure_is_reported(self):
-        """The message is as on v3.4.144; the result now also says the file
-        was written and what it left out."""
-        self.live(LEGACY + 'auth-file: "/srv/example/user.db"\n')
-        self.sudo.fail = {"systemctl"}
+    def test_ntfy_not_coming_back_puts_the_old_files_back(self):
+        """The helper's health check fails after the restart: it restores the
+        previous unit and server.yml and says so; nothing is left half-done."""
+        live = LEGACY + 'auth-file: "/srv/example/user.db"\n'
+        self.live(live)
+        before_unit = self.unit.read_text()
+        self.host.healthy = False
         r = ntfy_installer.update_config(upstream_relay=False, drop_custom_keys=["auth-file"])
         self.assertFalse(r["ok"])
-        self.assertTrue(r["message"].startswith("Config written but failed to restart"))
-        self.assertEqual((r.get("written"), r.get("dropped_keys")), (True, ["auth-file"]))
-        self.sudo.fail = {"tee"}
-        r = ntfy_installer.update_config(upstream_relay=False, drop_custom_keys=["auth-file"])
-        self.assertFalse(r.get("written", False))
+        self.assertIn("previous settings were put back", r["message"])
+        self.assertNotIn("written", r)
+        self.assertEqual(self.cfg.read_text(), live)
+        self.assertEqual(self.unit.read_text(), before_unit)
+
+    def test_a_busy_helper(self):
+        self.live(LEGACY)
+        fd = os.open(str(self.host.f("/run/aerodrome-helper.lock")), os.O_RDWR | os.O_CREAT, 0o600)
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            r = ntfy_installer.update_config(upstream_relay=False)
+        finally:
+            os.close(fd)
+        self.assertEqual((r["ok"], r["code"], r["busy"]), (False, "busy", True))
+        self.assertEqual(self.cfg.read_text(), LEGACY)
 
 
 class ReadersFollowYaml(_NtfyCase):
@@ -629,95 +673,56 @@ class InstallValidatesFirst(_NtfyCase):
             self.assertEqual(self.sudo.calls, [], kw)
 
     def test_fresh_install_falls_back_to_localhost_only_without_an_address(self):
-        """Pins the fresh-install localhost fallback. The behaviour is as on
-        v3.4.144; this errors there only because _server_yml_text dropped an
-        unused parameter, so it is not one of the defect tests."""
+        """Pins the fresh-install localhost fallback (LAN detection failed)."""
         with mock.patch.object(ntfy_installer, "_detect_lan_ip",
                                return_value=(None, "no route")):
-            t = ntfy_installer._server_yml_text(2586, "0.0.0.0")
-        self.assertEqual(yaml.safe_load(t)["base-url"], "http://localhost:2586")
+            r = ntfy_installer.install()
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(self.helper_calls(), [["ntfy-install", "latest", "--port", "2586",
+                                                "--bind", "0.0.0.0", "--base-url",
+                                                "http://localhost:2586", "--upstream", "1"]])
+        self.assertEqual(yaml.safe_load(self.cfg.read_text())["base-url"], "http://localhost:2586")
+        self.assertEqual(self.unit.read_text(), ntfy_installer.NTFY_UNIT_TEXT)
+
+    def test_a_detected_address_and_the_settings_reach_the_helper(self):
+        with mock.patch.object(ntfy_installer, "_detect_lan_ip",
+                               return_value=("192.0.2.44", None)):
+            r = ntfy_installer.install(port=80, bind="127.0.0.1", upstream_relay=False)
+        self.assertEqual((r["ok"], r["version"], r["port"], r["bind"]),
+                         (True, "2.11.0", 80, "127.0.0.1"), r)
+        self.assertTrue(r["topic"].startswith("aerodrome-"))
+        c = ntfy_installer.classify_server_yml(self.cfg.read_text())
+        self.assertEqual((c["base_url"], c["port"], c["bind"], c["upstream"]),
+                         ("http://192.0.2.44:80", 80, "127.0.0.1", False))
 
 
 # ---------------------------------------------------------------------------
-# ntfy's message cache: the file server.yml names is the one the stale-data
-# note and "Also delete cached messages" look at
+# ntfy's message cache: the stale-data note and "Also delete cached messages"
+# see both caches Aerodrome's ntfy has used — the sandboxed unit's (only root
+# can see it: the helper answers) and the older root-run unit's.
 # ---------------------------------------------------------------------------
-
-class RmSudo(FakeSudo):
-    """FakeSudo whose `rm` really removes under the fake root, the way
-    `rm -f` / `rm -rf` do (a link, never its target; `rm -f` refuses a
-    directory); `refuse` paths fail the way sudo -n does when no rule grants
-    them."""
-
-    def __init__(self, root, refuse=()):
-        super().__init__(root)
-        self.refuse = {str(p) for p in refuse}
-
-    def __call__(self, cmd, *a, **kw):
-        argv = cmd[2:] if cmd[:2] == ["sudo", "-n"] else cmd
-        if argv[:1] == ["rm"]:
-            self.calls.append((list(cmd), kw.get("input")))
-            target = Path(argv[-1])
-            if self.root not in target.parents:
-                raise AssertionError(f"rm outside the test dir: {target}")
-            if str(target) in self.refuse:
-                return subprocess.CompletedProcess(
-                    cmd, 1, stdout="", stderr="sudo: a password is required")
-            if target.is_symlink() or target.is_file():
-                target.unlink()
-            elif target.is_dir():
-                if "-rf" not in argv:
-                    return subprocess.CompletedProcess(
-                        cmd, 1, stdout="", stderr=f"rm: cannot remove '{target}': Is a directory")
-                shutil.rmtree(target)
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-        return super().__call__(cmd, *a, **kw)
-
 
 _REAL_INSTALL_STATUS = ntfy_installer.install_status
 HAND_CACHE_TEXT = "The cache file you set by hand in server.yml (cache-file) was left in place."
+STATE_CACHE = "/var/lib/private/aerodrome-ntfy/cache.db"
+LEGACY_CACHE = "/var/lib/ntfy/cache.db"
 
 
-class MessageCache(_NtfyCase):
-    """Every release in git history (v2.98.2 → v3.4.144) wrote
-    `cache-file: /var/lib/ntfy/cache.db` (SERVER_CACHE_FILE), but the purge
-    and the stale-data check looked only in /var/cache/ntfy, so "Also delete
-    cached messages" left the real file behind and the reinstall note never
-    showed."""
+class _CacheCase(_NtfyCase):
+    """Nothing installed; helpers to plant files and to use the real
+    install_status() over the fake root."""
 
     STATE = "not_installed"
 
-    def setUp(self):
-        super().setUp()
-        fake = self.tmp / "root"
-        self.server_cache = fake / "var" / "lib" / "ntfy" / "cache.db"
-        self.old_cache = fake / "var" / "cache" / "ntfy" / "cache.db"
-        p = mock.patch.object(ntfy_installer, "SERVER_CACHE_FILE", str(self.server_cache))
-        p.start()
-        self.addCleanup(p.stop)
-        self.sudo = RmSudo(fake)
-        ntfy_installer.subprocess.run.side_effect = self.sudo
-
-    @staticmethod
-    def plant(*paths):
+    def plant(self, *paths):
         for p in paths:
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text("message bodies\n")
+            f = self.host.f(p)
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text("message bodies\n")
+            yield f
 
-    def family(self, db):
-        return [db, Path(f"{db}-wal"), Path(f"{db}-shm")]
-
-    def rm_targets(self):
-        return [argv[-1] for argv in self.sudo.sudo_argvs() if argv[:1] == ["rm"]]
-
-    def rm_argvs(self):
-        return [argv for argv in self.sudo.sudo_argvs() if argv[:1] == ["rm"]]
-
-    def managed_install(self):
-        """A real install_status() over the fake root, with every managed
-        file present (unit, binary, server.yml, stamp)."""
-        self.plant(ntfy_installer.SYSTEMD_UNIT, ntfy_installer.BINARY_PATH,
-                   ntfy_installer.CONFIG_FILE, ntfy_installer.STAMP_FILE)
+    def real_status(self):
+        """install_status() for real over the fake root (no systemctl)."""
         for name, value in (("install_status", _REAL_INSTALL_STATUS),
                             ("_systemd_service_status", lambda *a: {"active": False,
                                                                     "enabled": False}),
@@ -726,219 +731,186 @@ class MessageCache(_NtfyCase):
             p = mock.patch.object(ntfy_installer, name, value)
             p.start()
             self.addCleanup(p.stop)
-        self.assertEqual(ntfy_installer.install_status()["state"], "aerodrome_managed")
+
+
+class MessageCache(_CacheCase):
 
     # -- the reinstall note (/api/ntfy/status stale_data) -----------------------
-    def test_stale_note_sees_the_file_server_yml_names(self):
-        self.plant(self.server_cache)
-        self.assertTrue(ntfy_installer.stale_data_present())
+    def test_stale_note_sees_either_cache_and_its_wal_or_shm(self):
+        for cache in (STATE_CACHE, LEGACY_CACHE):
+            for side in ("", "-wal", "-shm"):
+                with self.subTest(path=cache + side):
+                    (f,) = self.plant(cache + side)
+                    self.assertTrue(ntfy_installer.stale_data_present())
+                    f.unlink()
+        self.assertFalse(ntfy_installer.stale_data_present())
+        self.assertEqual({tuple(c) for c in self.helper_calls()}, {("version",)})
 
-    def test_stale_note_sees_a_leftover_wal_or_shm(self):
-        for side in self.family(self.server_cache)[1:]:
-            self.plant(side)
-            self.assertTrue(ntfy_installer.stale_data_present(), side)
-            side.unlink()
+    def test_stale_note_ignores_the_official_packages_cache(self):
+        list(self.plant("/var/cache/ntfy/cache.db"))
         self.assertFalse(ntfy_installer.stale_data_present())
 
-    def test_stale_note_ignores_a_cache_a_reinstall_would_not_use(self):
-        """A reinstall writes cache-file: SERVER_CACHE_FILE, so a cache.db in
-        /var/cache/ntfy (ntfy's own package suggests that path) is not one it
-        would pick up, and the note says /var/lib/ntfy/cache.db."""
-        self.plant(self.old_cache)
+    def test_stale_note_is_off_while_installed_or_without_the_helper(self):
+        list(self.plant(LEGACY_CACHE))
+        self.sudo.unavailable = True
         self.assertFalse(ntfy_installer.stale_data_present())
-
-    def test_stale_note_is_off_while_installed(self):
-        """Guard (same on v3.4.144)."""
+        self.sudo.unavailable = False
         self.STATE = "aerodrome_managed"
-        self.plant(self.server_cache)
         self.assertFalse(ntfy_installer.stale_data_present())
-
-    def test_stale_note_follows_the_one_constant(self):
-        self.plant(self.server_cache)
-        moved = self.tmp / "root" / "var" / "lib" / "ntfy-moved" / "cache.db"
-        with mock.patch.object(ntfy_installer, "SERVER_CACHE_FILE", str(moved)):
-            self.assertFalse(ntfy_installer.stale_data_present())
-            self.plant(moved)
-            self.assertTrue(ntfy_installer.stale_data_present())
 
     # -- "Also delete cached messages" ------------------------------------------
-    def test_purge_is_the_file_server_yml_names_and_nothing_else(self):
-        """Exactly `rm -f` on SERVER_CACHE_FILE and its -wal/-shm — the argv
-        install.sh's sudoers rules grant word for word (sudo -n matches the
-        whole command line, flags included). Nothing in /var/cache/ntfy: no
-        Aerodrome release wrote a cache or attachments there, and ntfy's own
-        package uses those paths."""
-        self.assertEqual(_ni("ntfy_purge_argvs")(),
-                         [["rm", "-f", str(p)] for p in self.family(self.server_cache)])
+    def managed_install(self):
+        self.host.legacy_host()
+        self.real_status()
+        self.assertEqual(ntfy_installer.install_status()["state"], "aerodrome_managed")
 
-    def test_uninstall_purge_removes_the_file_server_yml_names(self):
-        self.STATE = "aerodrome_managed"
-        attachment = self.old_cache.parent / "attachments" / "a1"
-        self.plant(*self.family(self.server_cache), self.old_cache, attachment)
+    def test_uninstall_purge_removes_both_caches_and_nothing_of_the_packages(self):
+        self.managed_install()
+        planted = list(self.plant(STATE_CACHE, STATE_CACHE + "-wal", LEGACY_CACHE,
+                                  LEGACY_CACHE + "-shm"))
+        vendor = list(self.plant("/var/cache/ntfy/cache.db", "/var/cache/ntfy/attachments/a1"))
         r = ntfy_installer.uninstall(purge_data=True)
         self.assertTrue(r["ok"], r)
         self.assertTrue(r["purged_data"], r)
-        for p in self.family(self.server_cache):
-            self.assertFalse(p.exists(), p)
-        cache_rms = [a for a in self.rm_argvs() if str(self.server_cache.parent) in a[-1]
-                     and a[-1] != str(ntfy_installer.STAMP_FILE)]
-        self.assertEqual(cache_rms, [["rm", "-f", str(p)] for p in self.family(self.server_cache)])
-        # /var/cache/ntfy is left alone
-        self.assertTrue(self.old_cache.exists())
-        self.assertTrue(attachment.exists())
-        self.assertFalse([t for t in self.rm_targets() if str(self.old_cache.parent) in t])
-        self.assertIn(f"Cached message data at {self.server_cache.parent}/ was also removed.",
-                      r["message"])
+        self.assertEqual(self.helper_calls(), [["ntfy-uninstall", "--purge"]])
+        for f in planted:
+            self.assertFalse(f.exists(), f)
+        for f in vendor:
+            self.assertTrue(f.exists(), f)
+        self.assertEqual(r["message"], "Uninstalled ntfy. Its cached messages were deleted too.")
+        self.assertEqual(r["status"]["state"], "not_installed")
 
-    def test_files_that_are_not_there_get_no_sudo_call(self):
-        self.STATE = "aerodrome_managed"
-        self.plant(self.server_cache)
-        r = ntfy_installer.uninstall(purge_data=True)
+    def test_without_the_box_the_messages_stay(self):
+        self.managed_install()
+        planted = list(self.plant(STATE_CACHE, LEGACY_CACHE))
+        r = ntfy_installer.uninstall(purge_data=False)
         self.assertTrue(r["ok"], r)
-        self.assertEqual(self.rm_targets(), [str(self.server_cache)])
-
-    def test_a_dangling_link_at_a_purge_path_is_removed(self):
-        """`rm -f` removes the link itself; the purge must not skip it because
-        the file it pointed at is gone."""
-        self.STATE = "aerodrome_managed"
-        wal = Path(f"{self.server_cache}-wal")
-        wal.parent.mkdir(parents=True, exist_ok=True)
-        wal.symlink_to(self.tmp / "gone")
-        r = ntfy_installer.uninstall(purge_data=True)
-        self.assertTrue(r["ok"], r)
-        self.assertFalse(os.path.lexists(wal))
-        self.assertEqual(self.rm_argvs(), [["rm", "-f", str(wal)]])
+        self.assertFalse(r["purged_data"], r)
+        self.assertEqual(self.helper_calls(), [["ntfy-uninstall"]])
+        self.assertTrue(all(f.exists() for f in planted))
+        # (no "a reinstall picks them up": one cached on the older setup,
+        # in /var/lib/ntfy, stays there — a reinstall's unit uses its own)
+        self.assertEqual(r["message"], "Uninstalled ntfy. Its cached messages were kept.")
 
     def test_a_cache_file_set_by_hand_is_left_and_the_result_says_so(self):
         """A cache-file set by hand in server.yml (a setting Aerodrome doesn't
-        manage) is not Aerodrome's to delete: the purge removes only
-        SERVER_CACHE_FILE, and the result says the hand-set file was left
-        instead of implying the server's cache went too. Names only — the
-        hand-set path is never echoed."""
-        self.STATE = "aerodrome_managed"
-        hand = self.tmp / "root" / "srv" / "example" / "ntfy.db"
-        self.plant(self.server_cache, hand)
+        manage) is not Aerodrome's to delete: the result says the hand-set file
+        was left. Names only — the hand-set path is never echoed."""
+        self.managed_install()
+        (hand,) = self.plant("/srv/example/ntfy.db")
         self.live(LEGACY.replace("cache-file: /var/lib/ntfy/cache.db", f'cache-file: "{hand}"'))
         r = ntfy_installer.uninstall(purge_data=True)
         self.assertTrue(r["ok"], r)
         self.assertTrue(hand.exists())
-        self.assertFalse(self.server_cache.exists())
         self.assertIn(HAND_CACHE_TEXT, r["message"])
-        self.assertNotIn(str(hand), r["message"])
-        self.assertNotIn(str(hand), [a[-1] for a in self.rm_argvs()])
+        self.assertNotIn(str(hand), json.dumps(r))
 
     def test_a_managed_cache_file_adds_no_note(self):
-        self.STATE = "aerodrome_managed"
-        self.plant(self.server_cache)
+        self.managed_install()
         self.live(LEGACY)
         r = ntfy_installer.uninstall(purge_data=True)
         self.assertTrue(r["ok"], r)
         self.assertNotIn(HAND_CACHE_TEXT, r["message"])
-        # without the box nothing is deleted, so there is nothing to explain
-        self.live(LEGACY.replace("cache-file: /var/lib/ntfy/cache.db",
-                                 'cache-file: "/srv/example/ntfy.db"'))
-        self.plant(ntfy_installer.STAMP_FILE)
-        r = ntfy_installer.uninstall(purge_data=False)
-        self.assertNotIn(HAND_CACHE_TEXT, r["message"])
 
-    def test_kept_message_names_server_cache_file(self):
-        """Without the box: nothing is removed (as on v3.4.144); the message
-        follows SERVER_CACHE_FILE instead of a fixed string."""
-        self.STATE = "aerodrome_managed"
-        self.plant(self.server_cache)
-        r = ntfy_installer.uninstall(purge_data=False)
-        self.assertTrue(r["ok"], r)
-        self.assertFalse(r["purged_data"], r)
-        self.assertTrue(self.server_cache.exists())
-        self.assertEqual(self.rm_targets(), [])
-        self.assertIn(f"Cached message data at {self.server_cache} was kept.", r["message"])
-
-    def test_a_refused_path_is_reported_and_the_rest_still_go(self):
-        """On a host whose permission rules predate the rule for
-        SERVER_CACHE_FILE, sudo refuses that one rm: the others still run and
-        the result says what's left instead of claiming it was removed."""
-        self.STATE = "aerodrome_managed"
-        self.sudo.refuse = {str(self.server_cache)}
-        self.plant(self.server_cache, Path(f"{self.server_cache}-wal"))
-        r = ntfy_installer.uninstall(purge_data=True)
-        self.assertFalse(r["ok"], r)
-        self.assertFalse(r["purged_data"], r)
-        self.assertIn(str(self.server_cache), r["message"])
-        self.assertNotIn("was also removed", r["message"])
-        self.assertTrue(self.server_cache.exists())
-        self.assertFalse(Path(f"{self.server_cache}-wal").exists())
-
-    def test_a_refused_purge_keeps_the_stamp_so_the_tab_can_retry(self):
-        """The stamp goes last, and only when everything before it worked: a
-        refused purge leaves the install 'partial', whose panel offers
-        Uninstall again (with the box), instead of 'not_installed', which has
-        no uninstall control."""
+    def test_without_the_helper_nothing_changes_and_the_command_is_given(self):
         self.managed_install()
-        self.sudo.refuse = {str(self.server_cache)}
-        self.plant(self.server_cache)
+        planted = list(self.plant(LEGACY_CACHE))
+        self.sudo.unavailable = True
         r = ntfy_installer.uninstall(purge_data=True)
-        self.assertFalse(r["ok"], r)
-        self.assertTrue(ntfy_installer.STAMP_FILE.exists())
-        self.assertEqual(r["status"]["state"], "partial")
-        for p in (ntfy_installer.SYSTEMD_UNIT, ntfy_installer.BINARY_PATH,
-                  ntfy_installer.CONFIG_FILE):
-            self.assertFalse(p.exists(), p)
-        # the retry (permissions refreshed) purges and only then drops the stamp
-        self.sudo.refuse = set()
-        self.sudo.calls.clear()
-        r = ntfy_installer.uninstall(purge_data=True)
-        self.assertTrue(r["ok"], r)
-        self.assertFalse(self.server_cache.exists())
-        self.assertFalse(ntfy_installer.STAMP_FILE.exists())
-        self.assertEqual(r["status"]["state"], "not_installed")
-        self.assertEqual(self.rm_targets()[-1], str(ntfy_installer.STAMP_FILE))
+        self.assertEqual((r["ok"], r["code"], r["purged_data"]), (False, "helper_unavailable", False))
+        self.assertIn("recover-sudoers.sh", r["message"])
+        self.assertTrue(self.stamp.exists())
+        self.assertTrue(planted[0].exists())
+        self.assertEqual(r["status"]["state"], "aerodrome_managed")
 
-    def test_a_failed_removal_keeps_the_stamp_not_external(self):
-        """A binary left behind without its stamp would read as someone
-        else's ntfy ('external'), which uninstall refuses to touch."""
-        self.managed_install()
-        self.sudo.refuse = {str(ntfy_installer.BINARY_PATH)}
-        r = ntfy_installer.uninstall(purge_data=False)
-        self.assertFalse(r["ok"], r)
-        self.assertTrue(ntfy_installer.STAMP_FILE.exists())
-        self.assertEqual(r["status"]["state"], "partial")
-
-    def test_a_clean_uninstall_removes_the_stamp_last(self):
-        self.managed_install()
-        self.plant(self.server_cache)
+    def test_leftover_purge_with_nothing_installed(self):
+        planted = list(self.plant(STATE_CACHE, LEGACY_CACHE))
+        self.real_status()
         r = ntfy_installer.uninstall(purge_data=True)
-        self.assertTrue(r["ok"], r)
-        self.assertEqual(r["status"]["state"], "not_installed")
-        self.assertEqual(self.rm_targets()[-1], str(ntfy_installer.STAMP_FILE))
-
-    def test_leftover_purge_with_nothing_installed_returns_a_result(self):
-        """The not-installed purge used to raise straight out of uninstall()."""
-        self.sudo.refuse = {str(self.server_cache)}
-        self.plant(self.server_cache)
-        r = ntfy_installer.uninstall(purge_data=True)
-        self.assertFalse(r["ok"], r)
-        self.assertFalse(r["purged_data"], r)
-        self.assertIn(str(self.server_cache), r["message"])
-        self.sudo.refuse = set()
-        r = ntfy_installer.uninstall(purge_data=True)
-        self.assertTrue(r["ok"], r)
-        self.assertTrue(r["purged_data"], r)
-        self.assertFalse(self.server_cache.exists())
+        self.assertEqual((r["ok"], r["purged_data"]), (True, True), r)
+        self.assertEqual(r["message"], "Nothing to uninstall. Cached messages from an earlier "
+                                       "install were deleted.")
+        self.assertFalse(any(f.exists() for f in planted))
         self.assertFalse(ntfy_installer.stale_data_present())
+        r = ntfy_installer.uninstall(purge_data=True)
+        self.assertEqual(r["message"], "Nothing to uninstall.")
+        self.sudo.calls.clear()
+        self.assertEqual(ntfy_installer.uninstall(purge_data=False)["message"], "Nothing to uninstall.")
+        self.assertEqual(self.sudo.calls, [])
 
-    def test_server_yml_renders_server_cache_file(self):
-        """The renderer, the purge and the stale note share one constant, and
-        the release gate (check_installers.py ntfy-cache) reads it from its
-        assignment line."""
-        src = (REPO / "ntfy_installer.py").read_text()
-        self.assertRegex(src, r'(?m)^SERVER_CACHE_FILE = "/var/lib/ntfy/cache\.db"$')
-        self.assertIn("/var/lib/ntfy/cache.db", ntfy_installer.NTFY_CACHE_FILES)
-        self.assertEqual(src.count("cache_file=SERVER_CACHE_FILE"), 2)
-        with mock.patch.object(ntfy_installer, "SERVER_CACHE_FILE", "/var/lib/ntfy/cache.db"):
-            y = yaml.safe_load(ntfy_installer.render_server_yml(
-                2586, "0.0.0.0", "http://192.0.2.10:2586", False,
-                cache_file=ntfy_installer.SERVER_CACHE_FILE))
-        self.assertEqual(y["cache-file"], "/var/lib/ntfy/cache.db")
+    def test_the_unit_and_the_purge_name_the_same_caches(self):
+        """The new unit's --cache-file sits in its StateDirectory (under
+        /var/lib/private: DynamicUser); the shared block's NTFY_CACHE_FILES
+        are the two cache paths a server.yml may name (the older unit's and
+        the new one's); the helper purges both folders. The release gate
+        (check_installers.py ntfy-cache) reads the same constants."""
+        unit = ntfy_installer.NTFY_UNIT_TEXT
+        self.assertIn("--cache-file /var/lib/aerodrome-ntfy/cache.db", unit)
+        self.assertIn("\nStateDirectory=aerodrome-ntfy\n", unit)
+        self.assertEqual(ntfy_installer.NTFY_CACHE_FILES,
+                         (LEGACY_CACHE, "/var/lib/aerodrome-ntfy/cache.db"))
+        self.assertEqual(self.host.h.NTFY_PURGE_DIRS,
+                         ("/var/lib/private/aerodrome-ntfy", "/var/lib/ntfy"))
+        self.assertNotIn("SERVER_CACHE_FILE", (REPO / "ntfy_installer.py").read_text())
+
+
+class InstallStatus(_CacheCase):
+    """install_status() on its own: the same answer as the helper's
+    _ntfy_state() (which counts a stamped install with files missing as
+    ours: 'partial' here), the older unit told apart without sudo, and an
+    official package's folder it can't search read as absent."""
+
+    def setUp(self):
+        super().setUp()
+        self.real_status()
+
+    def state(self):
+        return ntfy_installer.install_status()
+
+    def test_layouts_agree_with_the_helper(self):
+        h = self.host.h
+        layouts = {
+            "none": [],
+            "ours": ["/var/lib/ntfy/aerodrome-installed", "/usr/local/bin/ntfy",
+                     "/etc/ntfy/server.yml", "/etc/systemd/system/ntfy.service"],
+            "ours, partial": ["/var/lib/ntfy/aerodrome-installed", "/etc/ntfy/server.yml"],
+            "official package": ["/usr/bin/ntfy", "/lib/systemd/system/ntfy.service",
+                                 "/etc/ntfy/server.yml"],
+            "a vendor unit only": ["/usr/lib/systemd/system/ntfy.service"],
+            "a server.yml only": ["/etc/ntfy/server.yml"],
+        }
+        want = {"none": "not_installed", "ours": "aerodrome_managed",
+                "ours, partial": "partial", "official package": "external",
+                "a vendor unit only": "external", "a server.yml only": "external"}
+        for name, files in layouts.items():
+            with self.subTest(name):
+                for p in self.host.root.rglob("*"):
+                    if p.is_file():
+                        p.unlink()
+                list(self.plant(*files))
+                app = self.state()["state"]
+                self.assertEqual(app, want[name])
+                self.assertEqual({"partial": "aerodrome_managed"}.get(app, app), h._ntfy_state())
+
+    def test_legacy_unit_without_sudo(self):
+        self.host.legacy_host()
+        self.assertIs(self.state()["legacy_unit"], True)
+        self.unit.write_text(ntfy_installer.NTFY_UNIT_TEXT)
+        self.assertIs(self.state()["legacy_unit"], False)
+        self.unit.unlink()
+        self.assertIsNone(self.state()["legacy_unit"])
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root searches any folder")
+    def test_an_unsearchable_folder_reads_as_absent(self):
+        """An official package's 0700 /var/lib/ntfy: install_status used to
+        raise PermissionError."""
+        list(self.plant("/usr/bin/ntfy", "/var/lib/ntfy/user.db"))
+        d = self.host.f("/var/lib/ntfy")
+        d.chmod(0)
+        self.addCleanup(d.chmod, 0o755)
+        s = self.state()
+        self.assertEqual(s["state"], "external")
+        self.assertFalse(s["stamp"]["present"])
 
 
 # ---------------------------------------------------------------------------
@@ -1263,7 +1235,8 @@ class ConfigHtmlSaveBehaviour(unittest.TestCase):
         src = (REPO / "templates" / "config.html").read_text()
         decls = re.findall(r"(?m)^(?:let|const) (?:nf|NF_)\w* = [^\n]*$", src)
         code = "\n".join(decls + [_js_block(src, n) for n in (
-            "nfPostNtfyConfig", "nfShowConfigError", "nfSaveNtfyConfig", "nfFixLocalhostBaseUrl")])
+            "nfPostNtfyConfig", "nfShowConfigError", "nfSaveNtfyConfig", "nfFixLocalhostBaseUrl",
+            "nfHelperAlert")])
         r = subprocess.run([node, "-e", PAGE_HARNESS], input=json.dumps({"code": code}),
                            capture_output=True, text=True, timeout=120)
         if r.returncode:
@@ -1357,11 +1330,10 @@ class ConfigHtmlSaveBehaviour(unittest.TestCase):
 # wording and styling
 # ---------------------------------------------------------------------------
 
-STALE_NOTE_TEXT = ("Cached messages from a prior install are still present at "
-                   "<code>/var/lib/ntfy/cache.db</code>. Reinstalling will pick them up. "
+STALE_NOTE_TEXT = ("Cached messages from a prior install are still on this server. "
                    "To start fresh, run this on the Aerodrome machine first, then reinstall:")
-PURGE_HINT_TEXT = ("Wipes <code>/var/lib/ntfy/cache.db</code>. Leave unchecked if you might "
-                   "reinstall later and want to keep your message history.")
+PURGE_HINT_TEXT = ("Deletes the notification server's cached messages. Leave unchecked if you "
+                   "might reinstall later and want to keep your message history.")
 STALE_CMD_RE = re.compile(r'<code id="nfStaleCacheCmd"[^>]*>([^<]*)</code>')
 COPY_ONCLICK = ("onclick=\"copyToClipboard(document.getElementById('nfStaleCacheCmd')"
                 ".textContent, this)\">Copy</button>")
@@ -1372,13 +1344,10 @@ def _squash(s):
 
 
 def _stale_cmd():
-    """The one command that deletes what "Also delete cached messages"
-    deletes: the paths of ntfy_purge_argvs() (SERVER_CACHE_FILE and its
-    -wal/-shm), named outright, under one sudo rm -f."""
-    argvs = ntfy_installer.ntfy_purge_argvs()
-    for argv in argvs:
-        assert argv[:2] == ["rm", "-f"] and len(argv) == 3, argv
-    return "sudo rm -f " + " ".join(argv[-1] for argv in argvs)
+    """The command the page gives for leftover messages (v3.4.150): the
+    system helper's purge with nothing installed — both caches Aerodrome's
+    ntfy has used, one of them in a folder only root can see."""
+    return f"sudo {privhelper.HELPER} ntfy-uninstall --purge"
 
 
 def _css_rules(src):
@@ -1431,21 +1400,20 @@ class ConfigHtmlNtfyPanelWording(unittest.TestCase):
         self.assertIn(STALE_NOTE_TEXT, _squash(self.note))
         self.assertNotIn("run uninstall with", _squash(self.src))
 
-    def test_the_command_deletes_exactly_what_the_purge_deletes(self):
-        """The three paths are ntfy_purge_argvs()'s, named outright — a
-        cache.db* wildcard expands as the user, who may not be able to list
-        /var/lib/ntfy, and then deletes nothing."""
+    def test_the_command_is_the_helpers_purge(self):
+        """No wildcard (it would expand as the user, who can't list the
+        folders) and no paths: the helper knows both caches."""
         self.assertEqual(STALE_CMD_RE.findall(self.note), [_stale_cmd()])
         self.assertEqual(self.src.count('id="nfStaleCacheCmd"'), 1)
         self.assertNotIn("*", STALE_CMD_RE.search(self.note).group(1))
 
-    def test_the_paths_shown_are_server_cache_file(self):
-        """Guard (the page text already named it): the note and the
-        uninstall prompt name the file the purge and the stale-data check
-        look at."""
+    def test_no_single_cache_path_is_named(self):
+        """There are two (v3.4.150): the note and the uninstall prompt name
+        neither."""
         prompt = _js_function(self.src, "nfUninstallPrompt")
         for where in (self.note, prompt):
-            self.assertIn(f"<code>{ntfy_installer.SERVER_CACHE_FILE}</code>", where)
+            self.assertNotIn("/var/lib/ntfy/cache.db", where)
+            self.assertNotIn("/var/lib/aerodrome-ntfy", where)
 
     def test_the_copy_button_uses_the_pages_clipboard_helper(self):
         """copyToClipboard(text, feedbackEl) falls back to execCommand('copy'),
@@ -1549,6 +1517,181 @@ class ConfigHtmlStaleNoteRenders(unittest.TestCase):
         self.assertNotIn("Cached messages from a prior install", self.res["fresh"])
         self.assertNotIn("nfStaleCacheCmd", self.res["fresh"])
         self.assertIn("Install local ntfy", self.res["fresh"])
+
+
+# v3.4.150: _renderNtfyPanel() for a managed install still on the older,
+# root-run setup (legacy_unit), and nfHelperAlert() with each helper answer.
+LEGACY_HARNESS = r"""
+const fs = require('fs');
+const {code} = JSON.parse(fs.readFileSync(0, 'utf8'));
+const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/'/g, '&#39;');
+const modals = [];
+const fns = new Function('escapeAttr', 'alertModal', 'NF_STORED_URL_MSG',
+    code + '\nreturn {render: _renderNtfyPanel, alert: nfHelperAlert};')(
+    esc, (t, m, k) => { modals.push([t, m, k]); return Promise.resolve(); }, 'x');
+const status = {state: 'aerodrome_managed', version: '2.11.0', legacy_unit: true,
+                service: {active: true}};
+const cmd = '/usr/local/libexec/aerodrome/aerodrome-helper ntfy-migrate';
+const out = {};
+for (const [name, config] of Object.entries({
+    plain: {migrate_command: 'sudo ' + cmd, custom_keys: [], problems: []},
+    custom: {migrate_command: 'sudo ' + cmd + ' --drop-custom-keys auth-file',
+             custom_keys: ['auth-file'], problems: []},
+    address: {migrate_command: 'sudo ' + cmd, custom_keys: [], problems: ['base-url']},
+    listen: {migrate_command: 'sudo ' + cmd, custom_keys: [], problems: ['listen-http']},
+})) {
+    out[name] = fns.render({status, config});
+}
+out.current = fns.render({status: Object.assign({}, status, {legacy_unit: false}),
+                          config: {custom_keys: [], problems: []}});
+for (const code of ['still_running', 'busy', 'helper_unavailable', undefined]) {
+    fns.alert({code, message: 'm-' + code}, 'Install failed');
+}
+out.modals = modals;
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+class ConfigHtmlOlderSetupNote(unittest.TestCase):
+    """The managed panel says when the notification server still runs on its
+    older setup, why it hasn't moved yet, and the command that moves it when
+    that can work; the helper's answers that aren't failures get their own
+    alert titles."""
+
+    @classmethod
+    def setUpClass(cls):
+        node = _node18()
+        if not node:
+            raise unittest.SkipTest("needs node >= 18")
+        src = (REPO / "templates" / "config.html").read_text()
+        code = "\n".join(_js_block(src, n) for n in
+                         ("_nfLegacyNote", "_renderNtfyPanel", "nfHelperAlert"))
+        r = subprocess.run([node, "-e", LEGACY_HARNESS], input=json.dumps({"code": code}),
+                           capture_output=True, text=True, timeout=120)
+        if r.returncode:
+            raise AssertionError(f"harness failed: {r.stderr[-2000:]}")
+        cls.res = json.loads(r.stdout)
+
+    @staticmethod
+    def text(html):
+        import html as _html
+        return _squash(_html.unescape(re.sub(r"<[^>]+>", " ", html)))
+
+    def note(self, name):
+        m = re.search(r'<div id="nfLegacyNote".*?</div>\s*</div>|<div id="nfLegacyNote".*?</div>',
+                      self.res[name], re.S)
+        return self.text(m.group(0)) if m else None
+
+    def test_each_reason_reads_as_written(self):
+        self.assertIn("The notification server still runs on its older setup. Saving any setting "
+                      "in this tab moves it to its restricted setup; or run this on the server: "
+                      "sudo /usr/local/libexec/aerodrome/aerodrome-helper ntfy-migrate Copy",
+                      self.note("plain"))
+        self.assertIn("because its config has settings Aerodrome doesn't manage (auth-file). Saving "
+                      "from this tab asks before removing them; or run this on the server: "
+                      "sudo /usr/local/libexec/aerodrome/aerodrome-helper ntfy-migrate "
+                      "--drop-custom-keys auth-file Copy", self.note("custom"))
+        self.assertIn("its saved address is no longer accepted. Saving the address below "
+                      "finishes the move.", self.note("address"))
+        self.assertNotIn("ntfy-migrate", self.note("address"))       # it would refuse
+        self.assertIn("a value Aerodrome can't carry over (listen-http). Correct it in "
+                      "/etc/ntfy/server.yml, then run this on the server:", self.note("listen"))
+
+    def test_no_note_once_moved(self):
+        self.assertIsNone(self.note("current"))
+        self.assertNotIn("older setup", self.res["current"])
+
+    def test_helper_answers_get_their_own_titles(self):
+        self.assertEqual(self.res["modals"], [
+            ["Still working", "m-still_running", "info"], ["Busy", "m-busy", "warning"],
+            ["System permissions need a refresh", "m-helper_unavailable", "warning"],
+            ["Install failed", "m-undefined", "error"]])
+
+    def test_every_ntfy_action_uses_it(self):
+        src = (REPO / "templates" / "config.html").read_text()
+        for fn, title in (("nfInstallNtfy", "Install failed"), ("nfUpgradeNtfy", "Upgrade failed"),
+                          ("nfUninstallNtfy", "Uninstall failed"), ("nfSaveNtfyConfig", "Save failed")):
+            with self.subTest(fn):
+                self.assertIn(f"nfHelperAlert(j, '{title}')", _js_function(src, fn))
+
+
+# executeTransition() cut from switch-to-real.html and run against a stub
+# page and a stub /api/setup/switch-to-real reply.
+SWITCH_HARNESS = r"""
+const fs = require('fs');
+const {code, replies} = JSON.parse(fs.readFileSync(0, 'utf8'));
+(async () => {
+  const out = [];
+  for (const reply of replies) {
+    const els = {}, calls = [];
+    const classes = () => { const s = new Set(); return {
+        add: x => s.add(x), remove: x => s.delete(x), contains: x => s.has(x),
+        toggle: (x, on) => (on ? s.add(x) : s.delete(x))}; };
+    const value = {recvIp: '192.0.2.10', recvPort: '30005', recvPath: '', recvLat: '', recvLon: ''};
+    const document = {
+      getElementById: id => els[id] || (els[id] = {value: value[id] || '', textContent: '',
+                                                   classList: classes()}),
+      querySelectorAll: () => [],
+    };
+    const run = new Function('document', 'fetch', 'alert', 'goToStep', '_setProgressState',
+                             '_showError', code + '\nreturn executeTransition;')(
+      document, async () => ({json: async () => reply}), m => calls.push(['alert', m]),
+      n => calls.push(['step', n]), (n, s) => calls.push(['state', n, s]),
+      m => calls.push(['error', m]));
+    await run();
+    const w = document.getElementById('feederWarning'), r = document.getElementById('feederRemoved');
+    out.push({calls, warning: w.textContent, warningShown: !w.classList.contains('hidden'),
+              removedShown: !r.classList.contains('hidden')});
+  }
+  process.stdout.write(JSON.stringify(out));
+})();
+"""
+
+
+class SwitchToRealFinishesWithAWarning(unittest.TestCase):
+    """v3.4.150: a demo feeder the system helper couldn't remove doesn't stop
+    the switch; the wizard's last step says how to remove it."""
+
+    def test_ok_with_a_failed_feeder_step_reaches_step_four(self):
+        """The server's reply when the helper couldn't remove the feeder: ok,
+        no error, a warning and step 1 failed — step 4, the warning shown and
+        the "feeder has been removed" sentence hidden (before v3.4.150's page:
+        "Transition failed at an unknown step."). A plain success and a real
+        failure are unchanged."""
+        node = _node18()
+        if not node:
+            self.skipTest("needs node >= 18")
+        src = (REPO / "templates" / "switch-to-real.html").read_text()
+        warning = ("The demo feeder couldn't be removed (Aerodrome's system permissions need a "
+                   "refresh). It is harmless — it only listens on 127.0.0.1.")
+        steps = [{"name": "stop_feeder_service", "ok": False, "message": warning},
+                 {"name": "write_config", "ok": True}, {"name": "restart_aerodrome", "ok": True}]
+        replies = [{"ok": True, "error": None, "warning": warning, "steps": steps},
+                   {"ok": True, "error": None, "steps": [dict(s, ok=True) for s in steps]},
+                   {"ok": False, "error": "The receiver didn't answer.", "steps": steps[:1]}]
+        r = subprocess.run([node, "-e", SWITCH_HARNESS],
+                           input=json.dumps({"code": _js_block(src, "executeTransition"),
+                                             "replies": replies}),
+                           capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+        warned, plain, failed = json.loads(r.stdout)
+        self.assertEqual(warned["calls"][-1], ["step", 4], warned["calls"])
+        self.assertNotIn("error", [c[0] for c in warned["calls"]])
+        self.assertIn(["state", "stop_feeder_service", "failed"], warned["calls"])
+        self.assertEqual((warned["warning"], warned["warningShown"], warned["removedShown"]),
+                         (warning, True, False))
+        self.assertEqual(plain["calls"][-1], ["step", 4])
+        self.assertEqual((plain["warningShown"], plain["removedShown"]), (False, True))
+        self.assertEqual(failed["calls"][-1], ["error", "The receiver didn't answer."])
+        self.assertNotIn(["step", 4], failed["calls"])
+
+    def test_step_four_shows_the_warning(self):
+        src = (REPO / "templates" / "switch-to-real.html").read_text()
+        self.assertIn('<div class="warn-box hidden" id="feederWarning"></div>', src)
+        self.assertIn("if (data.ok) {", src)
+        self.assertIn("document.getElementById('feederWarning').textContent = warning;", src)
+        self.assertNotIn("data.ok && !seenFailed", src)
+        self.assertIn('<span id="feederRemoved">The synthetic feeder has been removed. </span>', src)
 
 
 # copyToClipboard() cut from config.html and run against a stub DOM, a stub
@@ -1801,11 +1944,14 @@ class _AppCase(_NtfyCase):
         cfg["watchlist"] = []
         cfg_path = self.install_dir / "config.yaml"
         cfg_path.write_text(yaml.safe_dump(cfg, sort_keys=False))
-        # install_dir = Path(server.__file__).parent: point it at the temp dir
-        p = mock.patch.object(server, "__file__", str(self.install_dir / "server.py"))
-        p.start()
-        self.addCleanup(p.stop)
+        # install_dir = Path(server.__file__).parent: point it at the temp dir;
+        # no live sudoers file (the startup drift check reads nothing).
+        for p in (mock.patch.object(server, "__file__", str(self.install_dir / "server.py")),
+                  mock.patch.object(server, "SUDOERS_DROPIN", self.tmp / "no-sudoers")):
+            p.start()
+            self.addCleanup(p.stop)
         self.app = server.get_app(cfg, str(cfg_path))
+        self.sudo.calls.clear()
 
     def post(self, path, **fields):
         ep = _endpoint(self.app, path, "POST")
@@ -1883,6 +2029,56 @@ class Endpoints(_AppCase):
         self.assertEqual((body["code"], body["keys"]), ("stored_value_invalid", ["base-url"]))
         self.assertEqual(self.sudo.calls, [])
 
+    def test_helper_errors_reach_the_page_with_their_status(self):
+        """v3.4.150: no helper answered → 500 with the refresh command; the
+        helper busy → 409; a download still running → 202. error == message."""
+        self.live(LEGACY)
+        self.sudo.unavailable = True
+        status, body = self.post("/api/ntfy/config", base_url="http://192.0.2.20:2586",
+                                 upstream_relay=True)
+        self.assertEqual((status, body["code"]), (500, "helper_unavailable"))
+        self.assertIn(body["command"], body["message"])
+        self.assertEqual(body["error"], body["message"])
+        self.sudo.unavailable = False
+        with mock.patch.object(privhelper, "run_sudo",
+                               side_effect=subprocess.TimeoutExpired(["sudo"], 300)):
+            status, body = self.post("/api/ntfy/install", port=2586)
+        self.assertEqual(status, 200, body)                  # already installed: no helper call
+        self.STATE = "not_installed"
+        with mock.patch.object(privhelper, "run_sudo",
+                               side_effect=subprocess.TimeoutExpired(["sudo"], 300)), \
+                mock.patch.object(ntfy_installer, "_detect_lan_ip",
+                                  return_value=("192.0.2.10", None)):
+            status, body = self.post("/api/ntfy/install", port=2586)
+        self.assertEqual((status, body["code"], body["still_running"]), (202, "still_running", True))
+        self.assertIn("Check the status again in a minute", body["message"])
+        self.STATE = "aerodrome_managed"
+        import fcntl
+        fd = os.open(str(self.host.f("/run/aerodrome-helper.lock")), os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            with mock.patch.object(ntfy_installer, "install_status", side_effect=lambda: {
+                    "state": "aerodrome_managed", "arch": "linux_amd64", "version": "2.10.0",
+                    "stamp": {}}):
+                status, body = _out(_endpoint(self.app, "/api/ntfy/upgrade", "POST")())
+        finally:
+            os.close(fd)
+        self.assertEqual((status, body["code"]), (409, "busy"), body)
+
+    def test_status_says_when_the_older_setup_is_still_in_use(self):
+        """legacy_unit, and the command that finishes the move (with the
+        names to drop, when there are any)."""
+        self.live(LEGACY + 'auth-file: "/srv/example/user.db"\n')
+        with mock.patch.object(ntfy_installer, "latest_version", return_value=None), \
+             mock.patch.object(ntfy_installer, "_detect_lan_ip", return_value=("192.0.2.10", None)), \
+             mock.patch.object(ntfy_installer, "install_status", side_effect=lambda: {
+                 "state": "aerodrome_managed", "arch": "linux_amd64", "legacy_unit": True}):
+            status, body = _out(_endpoint(self.app, "/api/ntfy/status", "GET")())
+        self.assertEqual(status, 200)
+        self.assertTrue(body["status"]["legacy_unit"])
+        self.assertEqual(body["config"]["migrate_command"],
+                         f"sudo {privhelper.HELPER} ntfy-migrate --drop-custom-keys auth-file")
+
     def test_status_reports_names_and_hides_an_invalid_address(self):
         self.live(LEGACY.replace("http://192.0.2.10:2586", "http://x?q=1")
                   + 'auth-file: "/srv/example/user.db"\n')
@@ -1932,13 +2128,12 @@ class Restore(_AppCase):
         self.assertEqual(uc.call_args.kwargs, {
             "base_url": "http://192.0.2.30:8090", "upstream_relay": True,
             "port": 8090, "bind": "127.0.0.1", "drop_custom_keys": None})
-        tees = self.sudo.tee_inputs()
-        self.assertEqual(len(tees), 1)
-        y = yaml.safe_load(tees[0])
-        self.assertEqual(set(y), MANAGED_KEYS)
-        self.assertEqual(y["cache-file"], "/var/lib/ntfy/cache.db")
+        self.assertEqual(self.helper_calls(), [config_args(
+            port=8090, bind="127.0.0.1", base_url="http://192.0.2.30:8090")])
+        y = yaml.safe_load(self.cfg.read_text())
+        self.assertEqual(set(y), MANAGED_KEYS - {"cache-file"})    # the unit names the cache
         self.assertEqual(y["listen-http"], "127.0.0.1:8090")
-        self.assertIn(["systemctl", "restart", "ntfy"], self.sudo.sudo_argvs())
+        self.assertIn(["systemctl", "restart", "ntfy"], self.host.calls)
         self.assertEqual(body["restored"]["ntfy_config"],
                          {"ok": True, "bytes": len(backup.encode()),
                           "carried": ["base-url", "listen-http", "upstream-base-url"]})
@@ -1955,8 +2150,8 @@ class Restore(_AppCase):
         status, body = self.restore('base-url: "' + INJECTION + '"\n'
                                     'listen-http: "0.0.0.0:2586"\n')
         self.assertEqual(status, 200, body)
-        y = yaml.safe_load(self.sudo.tee_inputs()[0])
-        self.assertEqual(set(y), MANAGED_KEYS - {"upstream-base-url"})
+        y = yaml.safe_load(self.cfg.read_text())
+        self.assertEqual(set(y), MANAGED_KEYS - {"upstream-base-url", "cache-file"})
         self.assertEqual(y["base-url"], "http://192.0.2.10:2586")
         self.assertIn("Left out notification-server settings Aerodrome doesn't manage: "
                       "auth-file", body["warnings"])
@@ -2021,25 +2216,22 @@ class Restore(_AppCase):
         self.assertIn("no longer accepted — re-enter it.", reason)
         self.assertIn(self.stash_files()[0], reason)
 
-    def test_restart_failure_still_names_what_was_left_out(self):
-        """server.yml was rewritten (the backup's managed values) before the
-        restart failed: skipped[] says what failed, warnings still name the
-        settings the write left out — names only."""
+    def test_ntfy_not_coming_back_leaves_the_live_file(self):
+        """The helper's health check fails after the restart: it puts the
+        previous files back, so skipped[] says so and no warning claims
+        anything was written."""
         self.live(LEGACY)
-        self.sudo.fail = {"systemctl"}
+        before_unit = self.unit.read_text()
+        self.host.healthy = False
         status, body = self.restore(LEGACY.replace("192.0.2.10", "192.0.2.30")
                                     + 'auth-file: "/srv/example/user.db"\n')
         self.assertEqual(status, 200, body)
-        self.assertEqual([a[:2] for a in self.sudo.sudo_argvs()],
-                         [["tee", str(self.cfg)], ["systemctl", "restart"]])
-        self.assertNotIn("auth-file", self.cfg.read_text())
+        self.assertEqual((self.cfg.read_text(), self.unit.read_text()), (LEGACY, before_unit))
         self.assertNotIn("ntfy_config", body["restored"])
         reason = next(s["reason"] for s in body["skipped"] if s["file"] == "ntfy/server.yml")
-        self.assertTrue(reason.startswith("Config written but failed to restart"), reason)
+        self.assertIn("previous settings were put back", reason)
         self.assertIn(self.stash_files()[0], reason)
-        self.assertIn("Left out notification-server settings Aerodrome doesn't manage: "
-                      "auth-file", body["warnings"])
-        self.assertIn(OLD_SERVER_WARNING, body["warnings"])
+        self.assertFalse([w for w in body["warnings"] if "Left out" in w])
         self.assertNotIn("/srv/example", json.dumps(body))
 
     def test_unusable_backup_port_warns_per_branch(self):
@@ -2094,7 +2286,7 @@ class Restore(_AppCase):
         self.assertEqual(inst.call_args.kwargs, {
             "port": 8080, "bind": "0.0.0.0", "base_url": "https://ntfy.example.net",
             "upstream_relay": False})
-        self.assertEqual(self.sudo.tee_inputs(), [])     # install rendered it; no raw copy
+        self.assertEqual(self.helper_calls(), [])       # install wrote it; no raw copy
         self.assertTrue(body["restored"]["ntfy_config"]["ok"])
 
     def test_unusable_backup_address_keeps_current_when_managed(self):
@@ -2108,7 +2300,7 @@ class Restore(_AppCase):
         self.assertIn("The backup had no usable notification server address, "
                       "so the current one was kept.", body["warnings"])
         self.assertNotIn(OLD_SERVER_WARNING, body["warnings"])
-        self.assertEqual(yaml.safe_load(self.sudo.tee_inputs()[0])["base-url"],
+        self.assertEqual(yaml.safe_load(self.cfg.read_text())["base-url"],
                          "http://192.0.2.10:2586")
 
     def test_unusable_backup_address_is_detected_on_a_fresh_install(self):

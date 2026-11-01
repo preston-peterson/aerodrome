@@ -19,6 +19,35 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.150] — 2026-11-01
+
+**Aerodrome now does its system tasks through one small, dedicated helper.** Installing, upgrading or reconfiguring the local notification server, and moving the demo feeder to a free port, now go through a single helper that accepts only a fixed set of checked actions. The local notification server now runs under its own restricted, sandboxed system account. Its address, port, listen address and iPhone-relay setting carry over, and your phone subscriptions keep working.
+
+When you change the notification server's settings, Aerodrome now checks that the server is answering again afterwards. If it isn't — for example because another program already uses the new port — the previous settings are put back and the Notifications tab says so. If the notification server hasn't moved to its new setup yet, the Notifications tab says why and how to finish the move.
+
+Switching a demo install to a real receiver now finishes even when the demo feeder can't be removed straight away; the last step of the wizard says how to remove it (it only listens on the server itself, so it does no harm meanwhile).
+
+Notifications through the local notification server now work on systems where `localhost` also means the IPv6 address `::1`, such as Ubuntu 26.04. Before, saving its address was refused ("URL resolves to a blocked address"), and notifications sent to it were blocked.
+
+### Behind the scenes
+- Aerodrome's system permissions now allow exactly four things: running the helper, restarting Aerodrome, reading its own permissions file, and — for one more release — the commands the previous release uses when you switch from demo mode, so going back a version keeps working. None of them lets Aerodrome write a file of its choosing.
+- The helper is installed root-owned at `/usr/local/libexec/aerodrome/aerodrome-helper` and runs under the system's own Python, never from the install folder. It writes only to folders that only root can change, never follows a link, and takes one action at a time.
+- The notification server's systemd unit and config file are always written together, in an order where every step in between still starts. A move or a settings change that gets cut off part-way — the helper stopped, or Aerodrome restarted meanwhile — is settled the next time the helper acts on the notification server (a save, an upgrade, the permissions refresh): it is kept once the server answers on it, and put back if it doesn't. A first install cut off that way keeps its files. A settings change that fails its check puts the config file back with its own permissions.
+- The Updates page's permissions check now also checks the helper itself, so a missing or older helper shows the refresh command. A server without Aerodrome's permissions file at all (a manual install) is never held back by this check and shows no notice.
+- Uninstalling removes the Aerodrome service, the demo feeder (through the helper) and then Aerodrome's permissions in its first step, so a run that stops part-way never leaves the permissions behind. The local notification server is removed through the helper near the end, and the helper itself last. Removing the local notification server also removes the config copy kept at the move; with `--purge` its message cache goes too, and `/var/cache/ntfy` belongs to ntfy's own package and is never touched. If another Aerodrome system task is still running, uninstall waits for it, and stops — asking you to run it again — rather than remove the server alongside it.
+- New release checks keep the helper and the permission rules in step, make every change to them raise the permissions version, and keep the helper working on Python 3.10.
+- An update check no longer creates an empty database if it runs while the database file is missing, as it briefly is during a switch from demo to real data.
+- Tested on Ubuntu 24.04, and on Ubuntu 26.04, whose `sudo` is sudo-rs.
+
+### Operational notes
+- **Run this once.** This update needs a one-time permissions refresh. When you stage it — **Update now** on the Updates page's GitHub card, or an upload on the Updates page — the Updates page shows an amber **Sudoers update required** box with the command and a **Copy** button. It looks like `sudo bash /opt/aerodrome/update/scripts/recover-sudoers.sh --install-dir /opt/aerodrome` (with your install folder). Run it on the server, press **Re-check** (or **I ran the command — re-check**), then **Apply**. Run it right after staging the update yourself.
+- If the prompt instead shows `sudo bash <install folder>/install.sh`, run `sudo bash <install folder>/update/install.sh` (or `…/update/aerodrome/install.sh` if you staged into that folder).
+- If you added your own settings to the notification server's config file, the refresh leaves the server as it is — it keeps running as before until it moves — and prints the one command that finishes the move. It names the settings that would be removed, for example `sudo /usr/local/libexec/aerodrome/aerodrome-helper ntfy-migrate --drop-custom-keys auth-file`, and your file is kept alongside as `/etc/ntfy/server.yml.pre-v6`. Saving the address or the relay setting in the Notifications tab asks before removing them and finishes the move too.
+- Messages the notification server had cached before the move aren't carried over to its new location.
+- Until the update is applied, or if it is rolled back, installing or changing the notification server from the Notifications tab is paused. Sending notifications keeps working.
+- The one-click notification-server install and upgrade need direct internet access from the server; they don't use a proxy.
+- The refresh needs a system Python 3.10 or newer. If your distribution's default `python3` is older (RHEL 9 and its rebuilds, openSUSE Leap 15), install its `python3.11` (or newer) package first: `sudo dnf install python3.11` or `sudo zypper install python311`. The refresh tells you if this applies, and changes nothing until then.
+
 ## [3.4.149] — 2026-11-01
 
 ### Fixed

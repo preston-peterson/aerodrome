@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.4.149
+# Version: 3.4.150
 # =============================================================================
 # Aerodrome — Server Install Script
 # =============================================================================
@@ -16,11 +16,14 @@
 #   - Install all Python dependencies
 #   - Install a systemd service that runs as the current user (a re-run keeps
 #     the account an existing service already runs as)
-#   - Install Aerodrome's sudoers rule (checked with visudo before it goes live)
+#   - Install Aerodrome's system permissions: its root-owned system helper
+#     (/usr/local/libexec/aerodrome/aerodrome-helper) and the sudoers rule
+#     that names it (checked with visudo before it goes live)
 #   - Start the service
 #
-# Refresh ONLY the system permissions (the sudoers rule) of an existing
-# install — no packages, venv, units or restart:
+# Refresh ONLY the system permissions (the helper and the sudoers rule) of an
+# existing install — no packages, venv, Aerodrome units or restart — then
+# move a local notification server Aerodrome manages to its restricted setup:
 #   sudo bash install.sh --privileges-only [--install-dir DIR]
 # This mode is automatic when this file sits inside an install's update/
 # staging folder, and scripts/recover-sudoers.sh hands off to it.
@@ -38,6 +41,8 @@ INSTALL_DIR="$(cd "$(dirname "$0")" && pwd)"
 SERVICE_NAME="aerodrome"
 FEEDER_SERVICE_NAME="aerodrome-synthetic-feeder"
 SUDOERS_FILE="/etc/sudoers.d/aerodrome"
+HELPER_DIR="/usr/local/libexec/aerodrome"
+HELPER="${HELPER_DIR}/aerodrome-helper"
 
 # An install.sh inside an existing install's update/ staging directory (the
 # in-app updater stages releases at <install>/update/, update/aerodrome/ or
@@ -108,9 +113,11 @@ Usage:
   ./install.sh                    Real install (default — assumes you have a receiver)
   ./install.sh --demo             Demo install (synthetic feeder, no receiver needed)
   sudo bash install.sh --privileges-only [--install-dir DIR]
-                                  Refresh ONLY Aerodrome's system permissions (the
-                                  sudoers rule) for an existing install. Nothing else
-                                  changes: no packages, venv, units or restart.
+                                  Refresh ONLY Aerodrome's system permissions (its
+                                  system helper and the sudoers rule) for an existing
+                                  install, then move a local notification server
+                                  Aerodrome manages to its restricted setup. No
+                                  packages, venv, Aerodrome units or restart.
 
 Flags (used by bootstrap.sh --demo):
   --home-lat <n>                  Synthetic receiver latitude (default: 40.0)
@@ -166,86 +173,32 @@ fi
 # The rules Aerodrome's service account gets, for account $1. The marker below
 # is the FIRST SUDOERS_VERSION marker in this file on purpose: the updater
 # (server.py) reads the first one in a staged install.sh, and
-# scripts/check_installers.py enforces that it lives in this function.
+# scripts/check_installers.py enforces that it lives in this function. It
+# equals the helper's PRIV_VERSION (line 2 of scripts/aerodrome-helper), and
+# any change to the rule lines or to the helper raises both
+# (check_installers.py priv-version, priv-bump).
 render_sudoers() {
     local u="$1"
     cat << SUDOEOF
-# SUDOERS_VERSION: 5
+# SUDOERS_VERSION: 6
 # Aerodrome sudoers rule — machine-readable; written by install.sh.
 # The SUDOERS_VERSION comment above is read by the updater to detect when
 # a newer release requires this file to be refreshed. If Aerodrome shows
 # "Sudoers update required", run the command it shows (or
 # sudo bash <install>/scripts/recover-sudoers.sh). Never edit this file by hand.
 #
-# Allow ${u} to restart the aerodrome service without a password.
-# Used by the "Restart now" UI button and automatic post-update restarts.
-${u} ALL=(ALL) NOPASSWD: /bin/systemctl restart aerodrome, /usr/bin/systemctl restart aerodrome, /bin/systemctl restart --no-block aerodrome, /usr/bin/systemctl restart --no-block aerodrome
-
-# Allow ${u} to install and manage the LOCAL ntfy service when the user
-# opts in via the Notifications tab. Scoped strictly to the ntfy-related
-# paths Aerodrome owns. These commands are only issued by ntfy_installer.py.
-${u} ALL=(ALL) NOPASSWD: /usr/bin/install -m 0755 /var/cache/ntfy/staging/ntfy /usr/local/bin/ntfy
-${u} ALL=(ALL) NOPASSWD: /usr/bin/install -d -m 0755 /etc/ntfy
-${u} ALL=(ALL) NOPASSWD: /usr/bin/install -d -m 0755 -o ${u} -g ${u} /var/cache/ntfy
-${u} ALL=(ALL) NOPASSWD: /usr/bin/install -d -m 0755 /var/lib/ntfy
-${u} ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/ntfy/server.yml
-${u} ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/systemd/system/ntfy.service
-${u} ALL=(ALL) NOPASSWD: /usr/bin/tee /var/lib/ntfy/aerodrome-installed
-${u} ALL=(ALL) NOPASSWD: /bin/rm -f /usr/local/bin/ntfy
-${u} ALL=(ALL) NOPASSWD: /bin/rm -f /etc/ntfy/server.yml
-${u} ALL=(ALL) NOPASSWD: /bin/rm -f /etc/systemd/system/ntfy.service
-${u} ALL=(ALL) NOPASSWD: /bin/rm -f /var/lib/ntfy/aerodrome-installed
-# v2.41.0: data-purge commands, used only when user opts in via the
-# "Also delete cached messages" checkbox during uninstall. Explicit paths
-# — no wildcards. Since v3.4.146 the app removes ntfy's message cache at
-# /var/lib/ntfy/cache.db (the file server.yml names) and its -wal/-shm;
-# the /var/cache/ntfy cache.db/attachments lines are no longer used and
-# stay only until this rule set is next replaced.
-${u} ALL=(ALL) NOPASSWD: /bin/rm -f /var/lib/ntfy/cache.db
-${u} ALL=(ALL) NOPASSWD: /bin/rm -f /var/lib/ntfy/cache.db-wal
-${u} ALL=(ALL) NOPASSWD: /bin/rm -f /var/lib/ntfy/cache.db-shm
-${u} ALL=(ALL) NOPASSWD: /bin/rm -f /var/cache/ntfy/cache.db
-${u} ALL=(ALL) NOPASSWD: /bin/rm -f /var/cache/ntfy/cache.db-wal
-${u} ALL=(ALL) NOPASSWD: /bin/rm -f /var/cache/ntfy/cache.db-shm
-${u} ALL=(ALL) NOPASSWD: /bin/rm -rf /var/cache/ntfy/attachments
-${u} ALL=(ALL) NOPASSWD: /bin/rmdir --ignore-fail-on-non-empty /etc/ntfy
-${u} ALL=(ALL) NOPASSWD: /bin/rmdir --ignore-fail-on-non-empty /var/cache/ntfy
-${u} ALL=(ALL) NOPASSWD: /bin/rmdir --ignore-fail-on-non-empty /var/lib/ntfy
-${u} ALL=(ALL) NOPASSWD: /bin/systemctl daemon-reload, /usr/bin/systemctl daemon-reload
-${u} ALL=(ALL) NOPASSWD: /bin/systemctl enable ntfy, /usr/bin/systemctl enable ntfy
-${u} ALL=(ALL) NOPASSWD: /bin/systemctl disable ntfy, /usr/bin/systemctl disable ntfy
-${u} ALL=(ALL) NOPASSWD: /bin/systemctl start ntfy, /usr/bin/systemctl start ntfy
-${u} ALL=(ALL) NOPASSWD: /bin/systemctl stop ntfy, /usr/bin/systemctl stop ntfy
-${u} ALL=(ALL) NOPASSWD: /bin/systemctl restart ntfy, /usr/bin/systemctl restart ntfy
-
-# Allow ${u} to read /etc/sudoers.d/aerodrome so the updater can
-# verify the live SUDOERS_VERSION against the staged release's marker.
-# Read-only — sudoers does not grant write.
-${u} ALL=(ALL) NOPASSWD: /bin/cat /etc/sudoers.d/aerodrome, /usr/bin/cat /etc/sudoers.d/aerodrome
-
-# v3.1.0: synthetic-feeder service lifecycle. Demo-mode installs need
-# the switch-to-real wizard to be able to stop, disable, and remove
-# the feeder service without a password. The rule is unconditional in
-# the sudoers file (rather than gated on DEMO_MODE) because:
-#   1. The feeder service file simply may not exist on real installs,
-#      so these commands fail harmlessly there.
-#   2. Keeping the sudoers rule consistent across real and demo installs
-#      means the SUDOERS_VERSION marker doesn't need a demo-mode branch.
-#   3. The aerodrome-synthetic-feeder unit name is exact (no wildcards)
-#      so this can't be leveraged into broader privileges.
-${u} ALL=(ALL) NOPASSWD: /bin/systemctl stop aerodrome-synthetic-feeder, /usr/bin/systemctl stop aerodrome-synthetic-feeder
-${u} ALL=(ALL) NOPASSWD: /bin/systemctl start aerodrome-synthetic-feeder, /usr/bin/systemctl start aerodrome-synthetic-feeder
-${u} ALL=(ALL) NOPASSWD: /bin/systemctl restart aerodrome-synthetic-feeder, /usr/bin/systemctl restart aerodrome-synthetic-feeder
-${u} ALL=(ALL) NOPASSWD: /bin/systemctl enable aerodrome-synthetic-feeder, /usr/bin/systemctl enable aerodrome-synthetic-feeder
-${u} ALL=(ALL) NOPASSWD: /bin/systemctl disable aerodrome-synthetic-feeder, /usr/bin/systemctl disable aerodrome-synthetic-feeder
-${u} ALL=(ALL) NOPASSWD: /bin/rm -f /etc/systemd/system/aerodrome-synthetic-feeder.service
-# v3.4.42: write access to the feeder unit file, scoped to that exact
-# path. Enables the collector's auto-port-recovery (port-conflict detection
-# + automatic feeder-port reassignment when it detects the v3.4.40 non-ADS-B
-# wedge state). Bounded to the single file by sudoers' exact-command-match
-# semantics — no wildcards, no parent path; this can't be leveraged into
-# broader privileges.
-${u} ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/systemd/system/aerodrome-synthetic-feeder.service
+# Aerodrome's system helper: a root-owned program with a fixed set of checked
+# actions (install, configure, upgrade or remove the local ntfy server; move
+# or remove the demo feeder). Named without arguments: it checks every
+# argument itself.
+${u} ALL=(root) NOPASSWD: /usr/local/libexec/aerodrome/aerodrome-helper
+# Restart Aerodrome ("Restart now", and the restart after an update).
+${u} ALL=(root) NOPASSWD: /bin/systemctl restart aerodrome, /usr/bin/systemctl restart aerodrome, /bin/systemctl restart --no-block aerodrome, /usr/bin/systemctl restart --no-block aerodrome
+# Read this file, so the updater can compare its SUDOERS_VERSION with a
+# staged release's. Read-only.
+${u} ALL=(root) NOPASSWD: /bin/cat /etc/sudoers.d/aerodrome, /usr/bin/cat /etc/sudoers.d/aerodrome
+# Compatibility for the previous release's switch-to-real only. Removed at SUDOERS_VERSION 7.
+${u} ALL=(root) NOPASSWD: /bin/systemctl stop aerodrome-synthetic-feeder, /usr/bin/systemctl stop aerodrome-synthetic-feeder, /bin/systemctl disable aerodrome-synthetic-feeder, /usr/bin/systemctl disable aerodrome-synthetic-feeder, /bin/rm -f /etc/systemd/system/aerodrome-synthetic-feeder.service, /bin/systemctl daemon-reload, /usr/bin/systemctl daemon-reload
 SUDOEOF
 }
 
@@ -330,44 +283,242 @@ resolve_service_user() {
     printf '%s\n' "$user"
 }
 
-# Write the rules ($1) to /etc/sudoers.d/aerodrome: validated first, then
-# swapped in all at once. The temp file sits in /etc/sudoers.d under a name
-# starting with '.', which sudo AND sudo-rs skip (sudoers(5) / sudoers-rs(5),
-# @includedir), and mv within one directory is an atomic rename — so sudo
-# never sees a partial or unchecked file, and a failure leaves the live file
-# exactly as it was. Every step is a sudo call (harmless when already root).
-install_sudoers_dropin() {
-    local tmp out
+# The rules ($1), checked, in a dot-temp in /etc/sudoers.d (SUDOERS_TMP).
+# sudo AND sudo-rs skip a file whose name starts with '.' (sudoers(5) /
+# sudoers-rs(5), @includedir), so a temp is never read as rules; on any
+# failure it is removed and the live file is exactly as it was. Every step is
+# a sudo call (harmless when already root).
+stage_sudoers_dropin() {
+    local out
+    SUDOERS_TMP=""
     # Temp files of a run that was killed mid-way (never read by sudo).
     sudo find /etc/sudoers.d -maxdepth 1 -type f -name '.aerodrome.*' -delete 2>/dev/null || true
-    if ! tmp="$(sudo mktemp /etc/sudoers.d/.aerodrome.XXXXXX)" || [ -z "$tmp" ]; then
+    if ! SUDOERS_TMP="$(sudo mktemp /etc/sudoers.d/.aerodrome.XXXXXX)" || [ -z "$SUDOERS_TMP" ]; then
         echo -e "  ${RED}✗${RESET} Could not create a temporary file in /etc/sudoers.d — ${SUDOERS_FILE} was NOT changed."
         return 1
     fi
-    if ! printf '%s\n' "$1" | sudo tee "$tmp" > /dev/null || ! sudo chmod 0440 "$tmp"; then
-        sudo rm -f "$tmp" || true
+    if ! printf '%s\n' "$1" | sudo tee "$SUDOERS_TMP" > /dev/null || ! sudo chmod 0440 "$SUDOERS_TMP"; then
+        sudo rm -f "$SUDOERS_TMP" || true
         echo -e "  ${RED}✗${RESET} Could not write the new sudoers rule — ${SUDOERS_FILE} was NOT changed."
         return 1
     fi
-    if out="$(sudo visudo -cf "$tmp" 2>&1)"; then
-        if sudo mv -f "$tmp" "$SUDOERS_FILE"; then
-            echo -e "  ${GREEN}✓${RESET} Sudoers rule installed (${SUDOERS_FILE})"
-            return 0
-        fi
-        sudo rm -f "$tmp" || true
-        echo -e "  ${RED}✗${RESET} Could not move the new sudoers rule into place — ${SUDOERS_FILE} was NOT changed."
+    if ! out="$(sudo visudo -cf "$SUDOERS_TMP" 2>&1)"; then
+        sudo rm -f "$SUDOERS_TMP" || true
+        echo -e "  ${RED}✗${RESET} Sudoers rule failed validation — ${SUDOERS_FILE} was NOT changed:"
+        printf '%s\n' "$out" | sed 's/^/      /'
         return 1
     fi
-    sudo rm -f "$tmp" || true
-    echo -e "  ${RED}✗${RESET} Sudoers rule failed validation — ${SUDOERS_FILE} was NOT changed:"
-    printf '%s\n' "$out" | sed 's/^/      /'
+}
+
+# The checked SUDOERS_TMP onto the live file: mv within one directory is an
+# atomic rename, so sudo sees the old rules or the new ones, never a part.
+activate_sudoers_dropin() {
+    if sudo mv -f "$SUDOERS_TMP" "$SUDOERS_FILE"; then
+        echo -e "  ${GREEN}✓${RESET} Sudoers rule installed (${SUDOERS_FILE})"
+        return 0
+    fi
+    sudo rm -f "$SUDOERS_TMP" || true
+    echo -e "  ${RED}✗${RESET} Could not move the new sudoers rule into place — ${SUDOERS_FILE} was NOT changed."
     return 1
 }
 
+# trusted_dir DIR ACCOUNT — DIR and every folder above it are real folders
+# (not symlinks) owned by root that neither everyone nor a group ACCOUNT is
+# in can write to: nobody but root can swap what sits in them. Read through
+# sudo stat (a folder on the way may not be searchable otherwise).
+trusted_dir() {
+    local d="$1" gids st uid gid mode kind
+    gids=" $(id -G "$2" 2>/dev/null) "
+    while :; do
+        st="$(sudo stat -c '%u %g %a %F' -- "$d" 2>/dev/null)" || return 1
+        read -r uid gid mode kind <<< "$st"
+        [ "$kind" = directory ] && [ "$uid" = 0 ] || return 1
+        if (( 8#$mode & 8#002 )) || { (( 8#$mode & 8#020 )) && [[ "$gids" == *" $gid "* ]]; }; then
+            return 1
+        fi
+        [ "$d" = / ] && return 0
+        d="$(dirname -- "$d")"
+    done
+}
+
+# trusted_file FILE ACCOUNT — a regular file of root's that only root can
+# write, in a trusted_dir.
+trusted_file() {
+    local st uid gid mode kind
+    st="$(sudo stat -c '%u %g %a %F' -- "$1" 2>/dev/null)" || return 1
+    read -r uid gid mode kind <<< "$st"
+    case "$kind" in "regular file"|"regular empty file") ;; *) return 1 ;; esac
+    [ "$uid" = 0 ] && ! (( 8#$mode & 8#022 )) && trusted_dir "$(dirname -- "$1")" "$2"
+}
+
+# pick_helper_python ACCOUNT — the system Python the helper runs under,
+# printed: the first of a fixed list (never the venv, never $PATH) that is a
+# root-owned file only root can write, in trusted folders, and is 3.10 or
+# newer. A candidate is run only once it is trusted. AERODROME_HELPER_PYTHONS
+# replaces the list (tests): only root's own environment can set it — sudo
+# drops it. Returns 1, naming what it found, when none qualifies.
+pick_helper_python() {
+    local c real found="" v
+    for c in ${AERODROME_HELPER_PYTHONS:-/usr/bin/python3 /usr/bin/python3.14 /usr/bin/python3.13 /usr/bin/python3.12 /usr/bin/python3.11 /usr/bin/python3.10}; do
+        real="$(realpath -e -- "$c" 2>/dev/null)" || continue
+        if ! trusted_file "$real" "$1" || ! trusted_dir "$(dirname -- "$c")" "$1"; then
+            found="${found:+$found, }$c (not root's alone)"
+            continue
+        fi
+        v="$("$c" -IS -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null)" || v="?"
+        if "$c" -IS -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+            printf '%s\n' "$c"
+            return 0
+        fi
+        found="${found:+$found, }$c ($v)"
+    done
+    echo -e "  ${RED}✗${RESET} Aerodrome's helper needs a system Python 3.10 or newer in /usr/bin (found: ${found:-none})." >&2
+    echo "    Install your distribution's python3.11 (or newer) package and run this again." >&2
+    echo "    Nothing was changed." >&2
+    return 1
+}
+
+# The PRIV_VERSION on line 2 of helper file $1 ("0" when it is missing).
+helper_version_of() {
+    local v
+    v="$(sudo sed -n '2s/^# PRIV_VERSION = \([0-9][0-9]*\)$/\1/p' -- "$1" 2>/dev/null)" || v=""
+    printf '%s\n' "${v:-0}"
+}
+
+# install_helper SRC PYTHON VERSION — SRC to $HELPER, root:root 0755, line 1
+# naming PYTHON with -IS (no site packages, no user paths, no PYTHON*
+# variables), through a dot-temp in the same folder that must parse and
+# answer `version` with VERSION before it is renamed into place.
+install_helper() {
+    local tmp out
+    if ! tmp="$(sudo mktemp "${HELPER_DIR}/.aerodrome-helper.XXXXXX")" || [ -z "$tmp" ]; then
+        echo -e "  ${RED}✗${RESET} Could not create a temporary file in ${HELPER_DIR} — nothing was changed."
+        return 1
+    fi
+    if ! { printf '#!%s -IS\n' "$2"; tail -n +2 -- "$1"; } | sudo tee "$tmp" > /dev/null \
+            || ! sudo chmod 0755 "$tmp" \
+            || ! sudo "$2" -IS -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' "$tmp" \
+            || ! out="$(sudo "$2" -IS "$tmp" version 2>/dev/null)" \
+            || [[ "$out" != *"\"version\": $3,"* ]]; then
+        sudo rm -f "$tmp" || true
+        echo -e "  ${RED}✗${RESET} The new system helper didn't pass its check (${2}) — nothing was changed."
+        return 1
+    fi
+    if ! sudo mv -f "$tmp" "$HELPER"; then
+        sudo rm -f "$tmp" || true
+        echo -e "  ${RED}✗${RESET} Could not move the new system helper into place — nothing was changed."
+        return 1
+    fi
+    if command -v restorecon > /dev/null 2>&1; then
+        sudo restorecon "$HELPER" 2> /dev/null || true
+    fi
+    echo -e "  ${GREEN}✓${RESET} System helper installed (${HELPER}, run by ${2})"
+}
+
+# migrate_ntfy PYTHON — the helper's ntfy-migrate: a local ntfy server
+# Aerodrome manages moves to its restricted setup. Never fails the run: when
+# it can't move, ntfy keeps its previous setup and this prints why and what
+# finishes the move.
+migrate_ntfy() {
+    local out rc fields problems custom msg moved drop=""
+    out="$(sudo "$HELPER" ntfy-migrate 2> /dev/null)" && rc=0 || rc=$?
+    fields="$(printf '%s\n' "$out" | "$1" -IS -c 'import json, sys
+lines = sys.stdin.read().strip().splitlines()
+try:
+    d = json.loads(lines[-1])
+except Exception:
+    d = {}
+d = d if isinstance(d, dict) else {}
+print(",".join(d.get("problems") or []))
+print(",".join(d.get("custom_keys") or []))
+print(" ".join(str(d.get("message") or "").split()))
+print("yes" if d.get("migrated") else "already" if d.get("already") else "no")' 2> /dev/null)" || fields=""
+    problems="$(sed -n 1p <<< "$fields")"
+    custom="$(sed -n 2p <<< "$fields")"
+    msg="$(sed -n 3p <<< "$fields")"
+    moved="$(sed -n 4p <<< "$fields")"
+    [ -n "$custom" ] && drop=" --drop-custom-keys $(printf %q "$custom")"
+    if [ "$rc" = 0 ]; then
+        case "$moved" in
+            yes)     echo -e "  ${GREEN}✓${RESET} Local notification server moved to its restricted setup" ;;
+            already) echo -e "  ${GREEN}✓${RESET} Local notification server: already on its restricted setup" ;;
+            *)       echo -e "  ${GREEN}✓${RESET} Local notification server: nothing to move" ;;
+        esac
+    elif [ "$rc" = 3 ] && [ -n "$problems" ]; then
+        echo -e "  ${YELLOW}⚠${RESET}  The local notification server was left on its previous setup: its config file has"
+        echo "     values Aerodrome can't carry over (${problems//,/, })."
+        # Saving in the Notifications tab rewrites the address and the relay
+        # setting, never a listen address Aerodrome can't represent.
+        if [[ ",${problems}," != *,listen-http,* ]]; then
+            echo "     Once this version of Aerodrome is running, enter the server address in its"
+            echo "     Notifications tab and save — that finishes the move. Or correct the value in"
+            echo "     /etc/ntfy/server.yml and run:"
+        else
+            echo "     Correct them in /etc/ntfy/server.yml, then run:"
+        fi
+        echo "       sudo ${HELPER} ntfy-migrate${drop}"
+        if [ -n "$custom" ]; then
+            echo "     Moving it also removes the settings Aerodrome doesn't manage (${custom//,/, }); your"
+            echo "     current file is kept as /etc/ntfy/server.yml.pre-v6."
+        fi
+    elif [ "$rc" = 3 ] && [ -n "$custom" ]; then
+        echo -e "  ${YELLOW}⚠${RESET}  The local notification server was left on its previous setup: its config file has"
+        echo "     settings Aerodrome doesn't manage (${custom//,/, }). Moving it removes them; your current"
+        echo "     file is kept as /etc/ntfy/server.yml.pre-v6 when you run:"
+        echo "       sudo ${HELPER} ntfy-migrate${drop}"
+    else
+        echo -e "  ${YELLOW}⚠${RESET}  The local notification server kept its previous setup: ${msg:-no answer from the system helper}"
+    fi
+    return 0
+}
+
+# install_privileged ACCOUNT RULES — Aerodrome's system permissions for
+# ACCOUNT: the helper and the sudoers RULES that name it, then the move of a
+# local ntfy server to its restricted setup. In this order, so a run killed
+# anywhere leaves the old rules or the new ones, and the old helper or the
+# whole new one, and running it again finishes:
+#   0. leftovers of a killed run go;  1. the helper's folder must be root's
+#   alone;  2. a system Python 3.10+;  3. a newer installed helper is kept;
+#   4. RULES to a dot-temp, checked by visudo;  5. the helper into place;
+#   6. RULES live — the step that lifts the Updates page's gate;
+#   7. ntfy-migrate (never fails the run).
+# Returns 1 with the live rules unchanged when a step up to 6 fails.
+install_privileged() {
+    local svc="$1" src="${INSTALL_DIR}/scripts/aerodrome-helper" py want have
+    sudo find "$HELPER_DIR" -maxdepth 1 -type f -name '.aerodrome-helper.*' -delete 2> /dev/null || true
+    if [ ! -f "$src" ]; then
+        echo -e "  ${RED}✗${RESET} This copy of Aerodrome has no scripts/aerodrome-helper — nothing was changed."
+        return 1
+    fi
+    if ! sudo test -d "$HELPER_DIR" && ! sudo install -d -m 0755 -o root -g root "$HELPER_DIR"; then
+        echo -e "  ${RED}✗${RESET} Could not create ${HELPER_DIR} — nothing was changed."
+        return 1
+    fi
+    if ! trusted_dir "$HELPER_DIR" "$svc"; then
+        echo -e "  ${RED}✗${RESET} ${HELPER_DIR}, or a folder above it, isn't root's alone (a symlink, or"
+        echo "    ${svc} could write to it) — nothing was changed. Make it a root-owned folder (0755)."
+        return 1
+    fi
+    py="$(pick_helper_python "$svc")" || return 1
+    want="$(helper_version_of "$src")"
+    have="$(helper_version_of "$HELPER")"
+    stage_sudoers_dropin "$2" || return 1
+    if [ "$have" -gt "$want" ]; then
+        echo -e "  ${YELLOW}⚠${RESET}  Kept the newer system helper (version ${have}) this system already has."
+    elif ! install_helper "$src" "$py" "$want"; then
+        sudo rm -f "$SUDOERS_TMP" || true
+        return 1
+    fi
+    activate_sudoers_dropin || return 1
+    migrate_ntfy "$py"
+}
+
 # ---------------------------------------------------------------------------
-# Privileges-only refresh: the sudoers rule for an existing install, nothing
-# else (no packages, venv, units, chown or restart — sudo re-reads its rules
-# on every call). Runs before the not-root check below: it needs root.
+# Privileges-only refresh: the system helper and the sudoers rule for an
+# existing install, then the move of a local ntfy server Aerodrome manages
+# (install_privileged). No packages, venv, Aerodrome units, chown or restart —
+# sudo re-reads its rules on every call. Runs before the not-root check
+# below: it needs root.
 # ---------------------------------------------------------------------------
 if [ "$PRIV_ONLY" = true ]; then
     echo ""
@@ -415,10 +566,11 @@ if [ "$PRIV_ONLY" = true ]; then
         echo "      sudo bash $(printf %q "$INSTALL_DIR/install.sh") --privileges-only --install-dir $(printf %q "$REAL_ROOT") --allow-privilege-downgrade" >&2
         exit 3
     fi
-    # The drop-in is what lifts the Updates page's gate, so it is the LAST write.
-    install_sudoers_dropin "$RULES" || exit 1
+    # The rules are what lift the Updates page's gate, so they go live after
+    # the helper they name (install_privileged's step 6).
+    install_privileged "$SVC_USER" "$RULES" || exit 1
     echo ""
-    echo -e "${GREEN}System permissions refreshed${RESET} (rules version ${NEW_MARK}). Nothing else was changed."
+    echo -e "${GREEN}System permissions refreshed${RESET} (rules version ${NEW_MARK})."
     echo "Go back to Aerodrome's Updates page and press Re-check (or \"I ran the command — re-check\")."
     exit 0
 fi
@@ -901,21 +1053,12 @@ FEEDEREOF
     echo -e "  ${GREEN}✓${RESET} ${FEEDER_SERVICE_NAME} installed and enabled"
 fi
 
-# Grant the service user passwordless permission for two scoped things:
-#   1. Restarting the aerodrome service (for the "Restart now" UI button
-#      and post-update restarts).
-#   2. Installing and managing a LOCAL ntfy service alongside Aerodrome
-#      (the one-click installer in the Notifications tab). The install
-#      needs to write to /usr/local/bin, /etc/ntfy, /etc/systemd/system,
-#      and /var/cache/ntfy, plus run systemctl on the ntfy unit.
-#
-# Each allowed command is listed explicitly — no wildcards that could be
-# leveraged into broader privileges. We list the plain and --no-block forms
-# separately because sudoers treats them as different commands. Arguments
-# to 'install', 'tee', 'rm', and 'rmdir' are restricted by specifying the
-# full path prefix we write to (/usr/local/bin/ntfy, /etc/ntfy/*, etc.).
+# Aerodrome's system permissions (install_privileged): the service account
+# may restart Aerodrome, read its own sudoers file, and run the root-owned
+# system helper — whose fixed, checked actions install and manage a LOCAL
+# ntfy server (the Notifications tab) and move or remove the demo feeder.
 # The rules themselves are in render_sudoers() above.
-echo -e "  Creating sudoers rule for in-UI restart button + ntfy installer..."
+echo -e "  Setting up Aerodrome's system permissions (system helper + sudoers rule)..."
 RULES="$(render_sudoers "$USER")"
 NEW_MARK="$(printf '%s\n' "$RULES" | marker_of)"
 if ! LIVE_MARK="$(live_marker)"; then
@@ -929,7 +1072,7 @@ elif [ "$LIVE_MARK" -gt "$NEW_MARK" ] && [ "$ALLOW_DOWNGRADE" != true ]; then
     echo -e "  ${YELLOW}⚠${RESET}  Kept the newer permission rules (version ${LIVE_MARK}) this system already has."
     echo "     (After a deliberate rollback, to use this copy's rules instead:"
     echo "      sudo bash $(printf %q "$INSTALL_DIR/install.sh") --privileges-only --allow-privilege-downgrade)"
-elif ! install_sudoers_dropin "$RULES"; then
+elif ! install_privileged "$USER" "$RULES"; then
     echo -e "  ${RED}⚠${RESET}  The 'Restart now' button and the ntfy auto-installer may not work."
     echo -e "     You can still use 'sudo systemctl restart aerodrome' manually."
 fi

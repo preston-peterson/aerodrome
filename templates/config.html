@@ -1,4 +1,4 @@
-<!-- Version: 3.4.149 -->
+<!-- Version: 3.4.150 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -3615,20 +3615,19 @@ function _renderNtfyPanel(statusPayload) {
         // v2.41.0: note leftover cache.db from prior install so users aren't
         // surprised when reinstalling pulls in old messages. This panel offers
         // only Install, so the note gives the one command that deletes them:
-        // the three files ntfy_installer.ntfy_purge_argvs() removes, named
-        // outright (a cache.db* wildcard expands as the user, who may not be
-        // able to list /var/lib/ntfy, and then deletes nothing). On a narrow
-        // screen the Copy button drops under the command, so no path splits.
+        // v3.4.150: the system helper's purge with nothing installed (it
+        // removes both caches Aerodrome's ntfy has used, one of them in a
+        // folder only root can see). On a narrow screen the Copy button drops
+        // under the command, so no path splits.
         const staleNote = statusPayload.stale_data
             ? `<div style="margin-bottom:10px;padding:8px 10px;background:rgba(245,158,11,.08);
                            border-left:2px solid var(--amber);border-radius:0 4px 4px 0;
                            font-size:11px;color:var(--t2);line-height:1.5">
-                   Cached messages from a prior install are still present at
-                   <code>/var/lib/ntfy/cache.db</code>. Reinstalling will pick them up.
+                   Cached messages from a prior install are still on this server.
                    To start fresh, run this on the Aerodrome machine first, then reinstall:
                    <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:6px;padding:6px 8px;
                                background:var(--bg2);border:1px solid var(--bdr);border-radius:4px">
-                       <code id="nfStaleCacheCmd" style="flex:1 1 260px;min-width:0;overflow-wrap:anywhere">sudo rm -f /var/lib/ntfy/cache.db /var/lib/ntfy/cache.db-wal /var/lib/ntfy/cache.db-shm</code>
+                       <code id="nfStaleCacheCmd" style="flex:1 1 260px;min-width:0;overflow-wrap:anywhere">sudo /usr/local/libexec/aerodrome/aerodrome-helper ntfy-uninstall --purge</code>
                        <button type="button" class="btn" style="flex:none;margin-left:auto;font-size:11px;padding:3px 10px;background:var(--bg3)"
                                onclick="copyToClipboard(document.getElementById('nfStaleCacheCmd').textContent, this)">Copy</button>
                    </div>
@@ -3688,6 +3687,7 @@ function _renderNtfyPanel(statusPayload) {
     // state === 'aerodrome_managed'
     const hasUpgrade = latest && version && latest !== version && version !== '—';
     const cfg = statusPayload.config || {};
+    const legacyNote = s.legacy_unit ? _nfLegacyNote(cfg) : '';
     const baseUrl = cfg.base_url || '';
     const upstreamRelay = cfg.upstream_relay !== false;  // default on
     // v3.4.146: base_url is null when the saved address is no longer accepted.
@@ -3725,6 +3725,7 @@ function _renderNtfyPanel(statusPayload) {
                     : ''
             })` : ''}</div>
         ${serviceLine}
+        ${legacyNote}
         <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
             ${hasUpgrade ?
                 `<button class="btn btn-primary" onclick="nfUpgradeNtfy()">Upgrade to ${escapeAttr(latest)}</button>` :
@@ -3769,6 +3770,43 @@ function _renderNtfyPanel(statusPayload) {
             </label>
             <span id="nfConfigResult" style="display:block;margin-top:6px;font-size:11px;min-height:14px;color:var(--t3)"></span>
         </div>`;
+}
+
+// v3.4.150: an install made before v3.4.150 still runs on its older,
+// root-run setup until its settings are saved here (or the command runs).
+// Says why it hasn't moved yet, and the command that moves it when that
+// can work as things are (cfg.migrate_command, from /api/ntfy/status).
+function _nfLegacyNote(cfg) {
+    const custom = cfg.custom_keys || [];
+    const problems = cfg.problems || [];
+    let why, cmd = true;
+    if (problems.length === 1 && problems[0] === 'base-url') {
+        why = "The notification server still runs on its older setup: its saved address is no "
+            + "longer accepted. Saving the address below finishes the move.";
+        cmd = false;
+    } else if (problems.length) {
+        why = "The notification server still runs on its older setup: its config file has a value "
+            + "Aerodrome can't carry over (" + problems.join(', ') + "). Correct it in "
+            + "/etc/ntfy/server.yml, then run this on the server:";
+    } else if (custom.length) {
+        why = "The notification server still runs on its older setup because its config has "
+            + "settings Aerodrome doesn't manage (" + custom.join(', ') + "). Saving from this "
+            + "tab asks before removing them; or run this on the server:";
+    } else {
+        why = "The notification server still runs on its older setup. Saving any setting in this "
+            + "tab moves it to its restricted setup; or run this on the server:";
+    }
+    return `<div id="nfLegacyNote" style="margin-top:10px;padding:8px 10px;background:rgba(245,158,11,.08);
+                       border-left:2px solid var(--amber);border-radius:0 4px 4px 0;
+                       font-size:11px;color:var(--t2);line-height:1.5">
+               ${escapeAttr(why)}
+               ${cmd && cfg.migrate_command ? `<div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:6px;padding:6px 8px;
+                           background:var(--bg2);border:1px solid var(--bdr);border-radius:4px">
+                   <code id="nfMigrateCmd" style="flex:1 1 260px;min-width:0;overflow-wrap:anywhere">${escapeAttr(cfg.migrate_command)}</code>
+                   <button type="button" class="btn" style="flex:none;margin-left:auto;font-size:11px;padding:3px 10px;background:var(--bg3)"
+                           onclick="copyToClipboard(document.getElementById('nfMigrateCmd').textContent, this)">Copy</button>
+               </div>` : ''}
+           </div>`;
 }
 
 async function loadRecentNotifications() {
@@ -4107,6 +4145,18 @@ async function nfSendDailySummaryTest() {
     }
 }
 
+// v3.4.150: the system helper's answers that aren't failures, as alerts: a
+// download still running and a busy helper; a helper that can't run yet
+// (the permissions refresh — j.message has the command). Anything else is
+// failTitle with the server's message.
+function nfHelperAlert(j, failTitle) {
+    const msg = j.message || j.error || 'Unknown error. Check logs for details.';
+    if (j.code === 'still_running') return alertModal('Still working', msg, 'info');
+    if (j.code === 'busy') return alertModal('Busy', msg, 'warning');
+    if (j.code === 'helper_unavailable') return alertModal('System permissions need a refresh', msg, 'warning');
+    return alertModal(failTitle, msg, 'error');
+}
+
 async function nfInstallNtfy() {
     if (nfInstallInProgress) return;
     // v2.41.0: attribution in the pre-install prompt — users deserve to
@@ -4157,9 +4207,7 @@ async function nfInstallNtfy() {
             // Install failure — modal so the user can read the full error.
             // The sudoers-rejected case lands here and is exactly what
             // v2.40.1 was built to surface clearly.
-            await alertModal('Install failed',
-                j.message || 'Unknown error. Check logs at /var/log/aerodrome/ for details.',
-                'error');
+            await nfHelperAlert(j, 'Install failed');
         }
     } catch (e) {
         await alertModal('Install failed',
@@ -4281,9 +4329,7 @@ async function nfUpgradeNtfy() {
                 j.message || 'Upgrade completed successfully.',
                 'success');
         } else {
-            await alertModal('Upgrade failed',
-                j.message || 'Unknown error. Check logs for details.',
-                'error');
+            await nfHelperAlert(j, 'Upgrade failed');
         }
     } catch (e) {
         await alertModal('Upgrade failed',
@@ -4330,13 +4376,11 @@ async function nfUninstallNtfy() {
         if (j.ok) {
             await alertModal('ntfy uninstalled',
                 j.message || (purge
-                    ? 'Uninstall completed. Cached message data at /var/lib/ntfy/ was also removed.'
-                    : 'Uninstall completed. Cached message data at /var/lib/ntfy/cache.db was left in place.'),
+                    ? 'Uninstall completed. Its cached messages were deleted too.'
+                    : 'Uninstall completed. Its cached messages were kept.'),
                 'success');
         } else {
-            await alertModal('Uninstall failed',
-                j.message || 'Unknown error. Check logs for details.',
-                'error');
+            await nfHelperAlert(j, 'Uninstall failed');
         }
     } catch (e) {
         await alertModal('Uninstall failed',
@@ -4380,7 +4424,7 @@ function nfUninstallPrompt() {
                 <span>
                     <strong>Also delete cached messages</strong>
                     <div style="color:var(--t3);font-size:11px;margin-top:3px">
-                        Wipes <code>/var/lib/ntfy/cache.db</code>.
+                        Deletes the notification server's cached messages.
                         Leave unchecked if you might reinstall later and want to keep your
                         message history.
                     </div>
@@ -4513,9 +4557,7 @@ async function nfSaveNtfyConfig(trigger) {
             // restart; re-read the file rather than put the box back.
             if (j.written) loadNtfyStatus(); else putRelayBack();
             if (resultEl) resultEl.innerHTML = '';
-            await alertModal('Save failed',
-                j.message || j.error || 'Unknown error. Check logs for details.',
-                'error');
+            await nfHelperAlert(j, 'Save failed');
         }
     } catch (e) {
         putRelayBack();

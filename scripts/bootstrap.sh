@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Version: 3.4.149
+# Version: 3.4.150
 # =============================================================================
 # Aerodrome — Curl Install Bootstrap
 # =============================================================================
@@ -389,7 +389,8 @@ unit_working_dir() {
 # hand (when there is no uninstall.sh to run).
 print_leftover_removal() {
     echo "      sudo systemctl disable --now aerodrome"
-    echo "      sudo rm -f /etc/systemd/system/aerodrome.service /etc/sudoers.d/aerodrome"
+    echo "      sudo rm -f /etc/systemd/system/aerodrome.service /etc/sudoers.d/aerodrome \\"
+    echo "                 /usr/local/libexec/aerodrome/aerodrome-helper"
     echo "      sudo systemctl daemon-reload"
     echo "    On a demo install, also: sudo systemctl disable --now aerodrome-synthetic-feeder"
     echo "    and: sudo rm -f /etc/systemd/system/aerodrome-synthetic-feeder.service"

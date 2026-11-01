@@ -56,17 +56,20 @@ docs/INSTALL.md.
 ## Sudoers version check
 
 Aerodrome uses a `/etc/sudoers.d/aerodrome` rule for a small set of
-privileged operations (installing/uninstalling the ntfy service, purging
-data). When a release bumps the sudoers version, applying the update from
+privileged operations: restarting itself, and running its root-owned system
+helper (which installs and manages the local ntfy server and the demo
+feeder). When a release bumps the sudoers version, applying the update from
 the web UI is blocked until you SSH to the server and run the command the
 Updates page shows, for example:
 
     sudo bash /opt/aerodrome/update/scripts/recover-sudoers.sh --install-dir /opt/aerodrome
 
-It refreshes Aerodrome's system permissions only — no reinstall, no
-restart, same service account, and never older rules over newer ones.
-This is a one-time step per sudoers-version bump and is shown prominently
-on the Updates page when required.
+It refreshes Aerodrome's system permissions only — the helper and the
+rules, no reinstall, no restart of Aerodrome, same service account, and
+never older rules over newer ones — and then moves a local ntfy server
+Aerodrome manages to its restricted setup. Run it right after staging the
+update yourself. This is a one-time step per sudoers-version bump and is
+shown prominently on the Updates page when required.
 
 ## After a successful apply
 
