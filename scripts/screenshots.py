@@ -968,8 +968,10 @@ def _build_fetch_stub() -> str:
         'config':        FULL_CONFIG,
         'perf':          PERF_DIAG,
         'search':        SEARCH_RESPONSE,
-        # v3.4.147: nothing running, no update result, nothing pending.
-        'maintenance_status': {"busy": None, "update": None, "update_pending": None},
+        # v3.4.147: nothing running, no update result, nothing pending;
+        # v3.4.148: no startup config recovery.
+        'maintenance_status': {"busy": None, "update": None, "update_pending": None,
+                               "config": None},
     }
     return f"""<script>
 window.fetch = async (url) => {{

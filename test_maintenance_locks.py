@@ -17,6 +17,7 @@ import json
 import os
 import shutil
 import sqlite3
+import tempfile
 import threading
 import time
 import unittest
@@ -25,7 +26,7 @@ from pathlib import Path
 from unittest import mock
 
 import updater
-from test_update_apply import (NEW, OLD, _body, _EndpointCase, _status, _upload,
+from test_update_apply import (NEW, OLD, REPO, _body, _EndpointCase, _status, _upload,
                                _zip_release, repo_guard)
 
 setUpModule, tearDownModule = repo_guard()
@@ -265,6 +266,367 @@ class TestHoldAfterRestart(_LockCase):
         r = self.ep("/api/config/import")(file=_upload(text, "config.yaml"))
         self.assertTrue(_body(r)["ok"], _body(r))
         self.assertEqual(self.server._MAINT.holder()["op"], "restarting after a config import")
+
+
+# ===========================================================================
+# B4b (v3.4.148): backups never leave a partial or a database-sized file
+# behind; the backup download is for this page only; startup sweeps
+# leftovers. Driven through the full get_app ASGI stack (same-origin and
+# body-size middleware in the path) where the transport matters.
+# ===========================================================================
+
+def _backup_files(inst):
+    """Every file under .backups/ (relative), and the backup list's names."""
+    b = inst / ".backups"
+    if not b.is_dir():
+        return []
+    return sorted(str(p.relative_to(b)) for p in b.rglob("*") if p.is_file())
+
+
+def _fds_under(path):
+    out = []
+    for fd in os.listdir("/proc/self/fd"):
+        try:
+            t = os.readlink(f"/proc/self/fd/{fd}")
+        except OSError:
+            continue
+        if t.startswith(str(path)):
+            out.append(t)
+    return out
+
+
+def _export_scope(headers=(), spec="2.4"):
+    return {"type": "http", "asgi": {"version": "3.0", "spec_version": spec},
+            "http_version": "1.1", "method": "GET", "scheme": "http",
+            "path": "/api/backup/export", "raw_path": b"/api/backup/export",
+            "query_string": b"", "root_path": "",
+            "headers": [(b"host", b"127.0.0.1:18299"), *headers],
+            "client": ("127.0.0.1", 50000), "server": ("127.0.0.1", 18299)}
+
+
+class TestServerSideBackupNeverListsAPartial(_LockCase):
+
+    def test_the_zip_appears_only_when_complete(self):
+        # Before: the zip was written in place in .backups/, so while it was
+        # being built (and forever after a kill or a crash) a cut-short zip
+        # sat in the backup list looking like a real backup.
+        gate, seen = threading.Event(), {}
+        real_write = zipfile.ZipFile.write
+
+        def slow_write(zf, filename, arcname=None, *a, **kw):
+            if arcname == "aerodrome.db":
+                seen["listed"] = [b["filename"] for b in
+                                  self.ep("/api/backup/list-server-side", "GET")()["backups"]]
+                seen["files"] = [f for f in _backup_files(self.inst)
+                                 if f.startswith("aerodrome-backup-")]
+                gate.wait(10)
+            return real_write(zf, filename, arcname, *a, **kw)
+        out = []
+        with mock.patch.object(zipfile.ZipFile, "write", slow_write):
+            t = threading.Thread(target=lambda: out.append(
+                self.ep("/api/backup/create-server-side")()))
+            t.start()
+            for _ in range(500):
+                if "files" in seen:
+                    break
+                time.sleep(0.01)
+            gate.set()
+            t.join()
+        self.assertEqual(seen["listed"], [])
+        self.assertEqual(seen["files"], [])
+        b = _body(out[0])
+        self.assertTrue(b["ok"], b)
+        zips = sorted((self.inst / ".backups").glob("aerodrome-backup-*.zip"))
+        self.assertEqual([z.name for z in zips], [b["filename"]])
+        sidecar = Path(str(zips[0]) + ".sha256").read_text().split()[0]
+        self.assertEqual(sidecar, hashlib.sha256(zips[0].read_bytes()).hexdigest())
+        self.assertEqual(list((self.inst / ".backups" / ".tmp").iterdir()), [])
+
+    def test_a_full_disk_mid_build_leaves_nothing_and_frees_the_lock(self):
+        def full(*a, **kw):
+            raise OSError(28, "No space left on device")
+        with mock.patch.object(zipfile.ZipFile, "write", full):
+            r = self.ep("/api/backup/create-server-side")()
+        self.assertEqual(_status(r), 507, _body(r))
+        self.assertIn("Not enough free disk space", _body(r)["message"])
+        self.assertEqual([f for f in _backup_files(self.inst) if "aerodrome-backup" in f], [])
+        self.assertEqual(self.ep("/api/backup/list-server-side", "GET")()["backups"], [])
+        self.assertEqual(list((self.inst / ".backups" / ".tmp").iterdir()), [])
+        self.assertIsNone(self.server._MAINT.holder())
+
+    def test_space_check_counts_snapshot_and_zip(self):
+        db = Path(self.server.CONFIG["data"]["db_file"])
+        size = db.stat().st_size
+        need = 2 * size + 256 * 1024 * 1024
+        with mock.patch("shutil.disk_usage", return_value=mock.Mock(free=need - 1)):
+            r = self.ep("/api/backup/create-server-side")()
+        self.assertEqual(_status(r), 507)
+        self.assertEqual(_body(r)["error"], _body(r)["message"])
+
+    def test_a_failed_snapshot_leaves_nothing_in_tmp(self):
+        # Guard: the snapshot's -journal/-wal/-shm go with it.
+        import errno
+        real = self.server._open_db_conn
+
+        def opener(path, *a, **kw):
+            if "snapshot-" in str(path):
+                for sfx in ("-journal", "-wal", "-shm"):
+                    Path(str(path) + sfx).write_bytes(b"x")
+                raise OSError(errno.ENOSPC, "No space left on device")
+            return real(path, *a, **kw)
+        with mock.patch.object(self.server, "_open_db_conn", opener):
+            r = self.ep("/api/backup/create-server-side")()
+        self.assertEqual(_status(r), 507, _body(r))
+        self.assertEqual(list((self.inst / ".backups" / ".tmp").iterdir()), [])
+
+    def test_two_in_the_same_second_get_distinct_names(self):
+        with mock.patch.object(self.server.time, "strftime", return_value="20261022-120000"):
+            a = _body(self.ep("/api/backup/create-server-side")())
+            b = _body(self.ep("/api/backup/create-server-side")())
+        self.assertEqual((a["filename"], b["filename"]),
+                         ("aerodrome-backup-20261022-120000.zip",
+                          "aerodrome-backup-20261022-120000-2.zip"))
+
+
+class TestRestoreConfigWriteOffTheLoop(_LockCase):
+    """The restore's config.yaml writes take CONFIG_LOCK, which another
+    thread (the collector's demo-port recovery) may hold across a `sudo
+    tee`: on the event loop that froze every request. They run in the
+    threadpool now."""
+
+    def test_the_config_write_never_waits_on_the_loop(self):
+        import asyncio
+        import config_io
+        b = _body(self.ep("/api/backup/create-server-side")())
+        self.assertTrue(b["ok"], b)
+        where = []
+        real = config_io.write_text
+
+        def spy(path, text, check=True):
+            try:
+                asyncio.get_running_loop()
+                where.append("loop")
+            except RuntimeError:
+                where.append("thread")
+            return real(path, text, check=check)
+        model = _model(self.app, "/api/backup/restore-from-path")
+        with mock.patch.object(config_io, "write_text", side_effect=spy):
+            r = asyncio.run(self.ep("/api/backup/restore-from-path")(
+                model(path=b["path"]), background_tasks=None))
+        self.assertTrue(_body(r).get("ok"), _body(r))
+        self.assertTrue(where)
+        self.assertEqual(set(where), {"thread"})
+
+
+class TestExport(_LockCase):
+    """The browser backup download (GET /api/backup/export)."""
+
+    def setUp(self):
+        super().setUp()
+        (self.inst / ".backups").mkdir(exist_ok=True)     # as on every real install
+
+    def run_export(self, headers=(), spec="2.4", send_fails=False, disconnect=False):
+        msgs, state = [], {}
+
+        async def receive():
+            if disconnect:
+                return {"type": "http.disconnect"}
+            await asyncio.sleep(3600)
+
+        async def send(m):
+            if m["type"] == "http.response.start":
+                # The endpoint has returned: nothing may be left on disk.
+                state["files_at_start"] = [f for f in _backup_files(self.inst)
+                                           if not f.startswith("20")]
+            if m["type"] == "http.response.body" and send_fails and m.get("body"):
+                raise OSError(32, "Broken pipe")          # the client went away
+            msgs.append(m)
+
+        async def go():
+            try:
+                await asyncio.wait_for(self.app(_export_scope(headers, spec), receive, send), 30)
+            except Exception as e:      # noqa: BLE001 - a dropped client may surface here
+                state["raised"] = type(e).__name__
+        asyncio.run(go())
+        start = next((m for m in msgs if m["type"] == "http.response.start"), {})
+        data = b"".join(m.get("body", b"") for m in msgs if m["type"] == "http.response.body")
+        return start.get("status"), data, state
+
+    def test_full_download_is_a_valid_backup_and_leaves_nothing_behind(self):
+        status, data, state = self.run_export()
+        self.assertEqual(status, 200, data[:300])
+        self.assertEqual(state["files_at_start"], [])
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            self.assertTrue({"manifest.json", "config.yaml", "aerodrome.db"} <= set(z.namelist()))
+            self.assertIsNone(z.testzip())
+        self.assertEqual(_fds_under(self.inst / ".backups"), [])
+        self.assertIsNone(self.server._MAINT.holder())
+
+    def test_a_dropped_download_closes_the_file_at_once_2_4_spec(self):
+        before = _fds_under(self.inst / ".backups")
+        status, data, state = self.run_export(send_fails=True)
+        self.assertEqual(_fds_under(self.inst / ".backups"), before)
+        self.assertEqual([f for f in _backup_files(self.inst) if not f.startswith("20")], [])
+
+    def test_a_dropped_download_closes_the_file_at_once_2_3_spec(self):
+        # Guard: Starlette already ends a 2.3-spec stream cleanly on a
+        # disconnect; the 2.4-spec case above is the one that leaked.
+        before = _fds_under(self.inst / ".backups")
+        self.run_export(spec="2.3", disconnect=True)
+        self.assertEqual(_fds_under(self.inst / ".backups"), before)
+        self.assertEqual([f for f in _backup_files(self.inst) if not f.startswith("20")], [])
+
+    def test_requests_from_other_websites_are_refused_before_building(self):
+        for hdrs in ([(b"sec-fetch-site", b"cross-site")],
+                     [(b"sec-fetch-site", b"same-site")],
+                     [(b"origin", b"http://other.example.com")],
+                     [(b"referer", b"http://other.example.com/page")],
+                     [(b"origin", b"null")]):
+            with self.subTest(headers=hdrs), \
+                    mock.patch.object(zipfile, "ZipFile",
+                                      side_effect=AssertionError("built a backup")):
+                status, data, _ = self.run_export(hdrs)
+                self.assertEqual(status, 403, data[:200])
+                self.assertIn(b"other websites", data)
+
+    def test_the_page_a_typed_url_and_curl_are_allowed(self):
+        # Guard: the cross-site refusal never blocks the page, a typed URL or curl.
+        for hdrs in ([(b"sec-fetch-site", b"same-origin"),
+                      (b"referer", b"http://127.0.0.1:18299/config")],
+                     [(b"sec-fetch-site", b"none")],
+                     []):
+            with self.subTest(headers=hdrs):
+                status, data, _ = self.run_export(hdrs)
+                self.assertEqual(status, 200, data[:200])
+
+    def test_refused_while_another_maintenance_task_runs(self):
+        tok = self.server._MAINT.try_acquire("an update")
+        self.addCleanup(self.server._MAINT.release, tok)
+        with mock.patch.object(zipfile, "ZipFile", side_effect=AssertionError("built")):
+            status, data, _ = self.run_export()
+        self.assertEqual(status, 409)
+        self.assertEqual(json.loads(data)["busy"]["op"], "an update")
+
+    def test_refused_when_the_snapshot_and_zip_wouldnt_fit(self):
+        with mock.patch("shutil.disk_usage", return_value=mock.Mock(free=10 * 1024 * 1024)), \
+                mock.patch.object(zipfile, "ZipFile", side_effect=AssertionError("built")):
+            status, data, _ = self.run_export()
+        self.assertEqual(status, 507)
+        self.assertIn(b"Not enough free disk space", data)
+
+    def test_one_at_a_time(self):
+        gate, started = threading.Event(), threading.Event()
+        real_write = zipfile.ZipFile.write
+
+        def slow_write(zf, filename, arcname=None, *a, **kw):
+            if arcname == "aerodrome.db":
+                started.set()
+                gate.wait(10)
+            return real_write(zf, filename, arcname, *a, **kw)
+        res = []
+        with mock.patch.object(zipfile.ZipFile, "write", slow_write):
+            t = threading.Thread(target=lambda: res.append(self.run_export()))
+            t.start()
+            self.assertTrue(started.wait(10))
+            second = self.run_export()
+            gate.set()
+            t.join()
+        self.assertEqual(second[0], 409)
+        self.assertEqual(res[0][0], 200)
+
+
+class TestStartupSweep(unittest.TestCase):
+    """Leftovers of killed or crashed runs are removed at startup; backups,
+    update snapshots, config copies and markers never are."""
+
+    def test_removes_leftovers_and_keeps_everything_else(self):
+        import server
+        inst = Path(tempfile.mkdtemp(prefix="aerodrome-b4b-sweep-",
+                                     dir=os.environ.get("TMPDIR") or None))
+        self.addCleanup(shutil.rmtree, inst, True)
+        b = inst / ".backups"
+        removed = [b / ".tmp" / "export-x.zip", b / ".tmp" / "aerodrome-backup-1.zip.partial",
+                   b / ".tmp" / "aerodrome-verify-abc" / "x", b / "tmpab12cd34.zip",
+                   b / "tmpab12cd34.db", b / "tmpab12cd34.db-journal",
+                   b / ".uploads" / "upload-1-2.zip", inst / ".config.yaml.ab12cd34.tmp",
+                   # every other atomic write's temp file (v3.4.148 review):
+                   inst / ".config.yaml.bak.20260101-000000.ab12cd34.tmp",
+                   inst / ".config.yaml.bak.20260101-000000.pre-restore.ab12cd34.tmp",
+                   b / ".config.yaml.last-good.ab12cd34.tmp",
+                   b / ".config-recovery.json.ab12cd34.tmp",
+                   b / ".config.yaml.broken.20260101-000000-2.ab12cd34.tmp",
+                   b / ".aerodrome-backup-20260101-000000.zip.sha256.ab12cd34.tmp"]
+        kept = [b / "aerodrome-backup-20260101-000000.zip",
+                b / "aerodrome-backup-20260101-000000.zip.sha256",
+                b / "20260101-000000" / "VERSION", b / "tmp-notes.zip",
+                b / "config.yaml.last-good", b / "config.yaml.broken.20260101-000000",
+                b / "config-recovery.json", inst / "config.yaml",
+                inst / "config.yaml.bak.20260101-000000",
+                # look-alikes that aren't atomic-write temp files
+                inst / ".config.yaml.bak.20260101-000000.tmp", inst / ".other.yaml.ab12cd34.tmp",
+                b / ".config.yaml.last-good.ab12cd34.tmp.keep", b / ".private-modes-applied"]
+        for p in removed + kept:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(b"x" * 10)
+        with self.assertLogs("adsb.server", "INFO") as logs:
+            d = server.prepare_backup_tmp(inst)
+        self.assertEqual(d, b / ".tmp")
+        for p in removed:
+            self.assertFalse(p.exists(), p)
+        for p in kept:
+            self.assertTrue(p.exists(), p)
+        self.assertTrue(any("removed 14 leftover temporary file(s)" in m for m in logs.output),
+                        logs.output)
+
+    def test_a_config_write_temp_file_is_never_committed(self):
+        # It is a full copy of config.yaml (receiver location, credentials):
+        # a dev checkout must not pick it up with `git add -A`.
+        import subprocess
+        try:
+            inside = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], cwd=REPO,
+                                    capture_output=True, text=True, timeout=30)
+        except OSError:
+            self.skipTest("git isn't installed")
+        if inside.stdout.strip() != "true":
+            self.skipTest("not a git checkout")
+        for name in (".config.yaml.ab12cd34.tmp", ".config.yaml.bak.20260101-000000.ab12cd34.tmp",
+                     ".config.yaml.bak.20260101-000000.pre-restore.ab12cd34.tmp"):
+            with self.subTest(name=name):
+                r = subprocess.run(["git", "check-ignore", "-q", "--no-index", name], cwd=REPO,
+                                   timeout=30)
+                self.assertEqual(r.returncode, 0, f"{name} isn't ignored by .gitignore")
+
+    def test_real_killed_writes_are_swept(self):
+        # A write killed between staging and the rename (power cut, kill -9)
+        # leaves a full copy of config.yaml: last-good's and a .bak's temp
+        # files used to stay for good.
+        import server
+        import subprocess
+        import sys
+        inst = Path(tempfile.mkdtemp(prefix="aerodrome-b4b-sweep-",
+                                     dir=os.environ.get("TMPDIR") or None))
+        self.addCleanup(shutil.rmtree, inst, True)
+        (inst / "config.yaml").write_text((REPO / "config.yaml.example").read_text())
+        child = (
+            "import os, signal, sys\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "import config_io, pathlib\n"
+            "os.replace = lambda *a: os.kill(os.getpid(), signal.SIGKILL)\n"
+            "p = pathlib.Path(sys.argv[2])\n"
+            "if sys.argv[3] == 'last-good':\n"
+            "    config_io.write_last_good(p / 'config.yaml')\n"
+            "else:\n"
+            "    config_io.write_text(p / 'config.yaml.bak.20260101-000000',\n"
+            "                         (p / 'config.yaml').read_text(), check=False)\n")
+        for what in ("last-good", "bak"):
+            r = subprocess.run([sys.executable, "-c", child, str(REPO), str(inst), what],
+                               capture_output=True, text=True, timeout=60)
+            self.assertEqual(r.returncode, -9, r.stderr)
+        def left():
+            return sorted(str(p.relative_to(inst)) for p in inst.rglob("*.tmp") if p.is_file())
+        self.assertEqual(len(left()), 2, left())
+        server.prepare_backup_tmp(inst)
+        self.assertEqual(left(), [])
 
 
 def _model(app, path):

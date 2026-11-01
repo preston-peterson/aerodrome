@@ -1,5 +1,5 @@
 # Aerodrome
-<!-- Version: 3.4.147 -->
+<!-- Version: 3.4.148 -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -126,12 +126,13 @@ aerodrome/
 ├── main.py                       entrypoint — wires up collector + web + notifier
 ├── updater.py                    update guard: staged apply, swap, automatic rollback (stdlib only)
 ├── atomic_io.py                  crash-safe small-file writes (temp + fsync + rename)
+├── config_io.py                  all-or-nothing config.yaml writes, last-good, startup recovery
 ├── collector.py                  ADS-B polling, classification, hexdb enrichment, SQLite writes
 ├── server.py                     FastAPI app — dashboard routes + ~80 JSON endpoints
 ├── notifier.py                   ntfy push notifications with cooldowns
 ├── search.py                     Search-tab query language and ranking
 ├── schema_migrations.py          forward-only DB migrations, runs on startup
-├── config_validator.py           startup validation of config.yaml
+├── config_validator.py           config.yaml validation (Settings saves, imports)
 ├── capacity.py                   disk and growth projection helpers
 ├── distance.py                   haversine + unit conversion
 ├── categorize.py                 military / watchlist / civil classification
@@ -174,18 +175,20 @@ aerodrome/
 ├── test_categorize.py            unit tests — military/civil classification
 ├── test_check_installers.py      release tests — installer-consistency gate
 ├── test_check_release_zip.py     release tests — zip checker, package + publish scripts
+├── test_config_page_b4b.py       unit tests — Settings-page recovery notice, save and upload refusals (static)
+├── test_config_write_safety.py   unit tests — all-or-nothing config writes, recovery, private files
 ├── test_designators.py           unit tests — aircraft type and operator decoders
 ├── test_destructive_endpoints.py unit tests — switch-to-real + watchlist-history deletes
 ├── test_icao_hex.py              unit tests — ICAO hex ingest validation
 ├── test_install_sh.py            installer tests — install.sh + recover-sudoers.sh under stub sudo
-├── test_maintenance_locks.py     unit tests — one maintenance operation at a time
+├── test_maintenance_locks.py     unit tests — one maintenance operation at a time, backups leave nothing behind
 ├── test_map_carto_key.py         unit tests — map.carto_api_key validation
 ├── test_migration_v7.py          unit tests — schema migration v7
 ├── test_ntfy_yaml.py             unit tests — notification-server settings (validation, server.yml, restore, Notifications tab, message cache)
 ├── test_photo_resolver.py        unit tests — photo enrichment cache logic
 ├── test_poll_robustness.py       unit tests — collector poll resilience to bad records
 ├── test_preflight.py             unit tests — startup config validation
-├── test_request_limits_offload.py unit tests — update paths off the event loop, zip size cap
+├── test_request_limits_offload.py unit tests — request-size caps, the upload gate, handlers off the event loop
 ├── test_route_resolver.py        unit tests — route enrichment + current-leg inference
 ├── test_schema_migrations.py     unit tests — migration framework
 ├── test_search.py                unit tests — search query language

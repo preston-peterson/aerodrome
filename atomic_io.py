@@ -35,11 +35,14 @@ def fsync_dir(d):
         pass
 
 
-def stage_bytes(path, data, mode=None):
+def stage_bytes(path, data, mode=None, keep_mode=True, keep_owner=False):
     """Write `data` to a temp file beside `path` (fsynced) and return its
-    name. The temp file takes the existing file's permission bits, else
-    `mode`, else 0644. On any error the temp file is removed and the error
-    re-raised; `path` itself is never touched here."""
+    name. The temp file takes the existing file's permission bits
+    (keep_mode), else `mode`, else 0644. keep_owner: when running as root,
+    it also takes the existing file's owner and group, so a root-run command
+    never leaves the service account's file owned by root. On any error the
+    temp file is removed and the error re-raised; `path` itself is never
+    touched here."""
     path = Path(path)
     if isinstance(data, str):
         data = data.encode("utf-8")
@@ -47,10 +50,16 @@ def stage_bytes(path, data, mode=None):
                                suffix=".tmp")
     try:
         try:
-            perm = os.stat(path).st_mode & 0o7777
+            st = os.stat(path)
         except OSError:
+            st = None
+        if keep_mode and st is not None:
+            perm = st.st_mode & 0o7777
+        else:
             perm = 0o644 if mode is None else mode
         os.fchmod(fd, perm)
+        if keep_owner and st is not None and os.geteuid() == 0:
+            os.fchown(fd, st.st_uid, st.st_gid)
         with os.fdopen(fd, "wb") as f:
             fd = None
             f.write(data)
@@ -80,12 +89,53 @@ def discard(tmp):
         pass
 
 
-def write_atomic(path, data, mode=None):
-    tmp = stage_bytes(path, data, mode)
+def write_atomic(path, data, mode=None, keep_mode=True, keep_owner=False):
+    tmp = stage_bytes(path, data, mode, keep_mode=keep_mode, keep_owner=keep_owner)
     try:
         commit(tmp, path)
     except BaseException:
         discard(tmp)
+        raise
+
+
+# --- Private files (v3.4.148) ---
+# Backups, upload spools and config.yaml hold the receiver's location, API
+# keys and notification credentials, so they are created readable by the
+# account Aerodrome runs as only: directories 0700, files 0600.
+PRIVATE_DIR_MODE = 0o700
+PRIVATE_FILE_MODE = 0o600
+
+
+def ensure_private_dir(d):
+    """Create directory `d` if it's missing (parents as needed). A directory
+    this call creates is 0700; an existing one is left exactly as it is.
+    Returns Path(d)."""
+    d = Path(d)
+    if d.is_dir():
+        return d
+    d.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.mkdir(d, PRIVATE_DIR_MODE)
+    except FileExistsError:
+        if not d.is_dir():
+            raise
+        return d
+    os.chmod(d, PRIVATE_DIR_MODE)   # exact, whatever the umask
+    return d
+
+
+def open_private(path):
+    """Create `path` as a new 0600 file (whatever the umask) and open it for
+    writing. It must not exist yet — never follows a symlink or truncates
+    another file planted under the name (FileExistsError). Returns a binary
+    file."""
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                 | getattr(os, "O_NOFOLLOW", 0), PRIVATE_FILE_MODE)
+    try:
+        os.fchmod(fd, PRIVATE_FILE_MODE)
+        return os.fdopen(fd, "wb")
+    except BaseException:
+        os.close(fd)
         raise
 
 

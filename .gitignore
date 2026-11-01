@@ -55,6 +55,10 @@ logs/
 # created by main.py during config-merge-on-startup also stay out.
 config.yaml
 config.yaml.bak.*
+# A config.yaml (or config.yaml.bak.*) save writes .config.yaml.<random>.tmp
+# beside it and renames it into place; a kill mid-write can leave one (the
+# next start removes it). It is a full copy of the live config.
+/.config.yaml.*.tmp
 
 # --- Install backup snapshots ---
 # A confirmed in-app update keeps the previous release in

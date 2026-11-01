@@ -848,6 +848,14 @@ def _old_to_backups(install_dir, old_name, ts):
     try:
         children = list(old_dir.iterdir())
         if children:
+            # .backups/ is private (0700) when this creates it — the same
+            # rule as atomic_io.ensure_private_dir, kept here as a private
+            # copy (this module imports no app module).
+            try:
+                os.mkdir(install_dir / ".backups", 0o700)
+                os.chmod(install_dir / ".backups", 0o700)
+            except FileExistsError:
+                pass
             dest.mkdir(parents=True, exist_ok=True)
         for child in children:
             target = dest / child.name

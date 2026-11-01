@@ -45,7 +45,8 @@ The collector thread polls your local ADS-B receiver every N seconds (default 60
 | `designators.py` | ICAO aircraft type + airline lookup tables | ~400 lines |
 | `ntfy_installer.py` | Self-hosted ntfy server install/upgrade helper; validates and renders its `server.yml` | ~1,300 lines |
 | `updater.py` | In-app update: staged apply, test-load, switch-in, and the boot-time guard that rolls a release back (stdlib only; imports no app module) | ~1,100 lines |
-| `atomic_io.py` | Crash-safe small-file writes: temp file + fsync + rename + directory fsync, disk-full detection (stdlib only) | ~100 lines |
+| `atomic_io.py` | Crash-safe small-file writes: temp file + fsync + rename + directory fsync, disk-full detection, private (0600/0700) files and folders (stdlib only) | ~150 lines |
+| `config_io.py` | The one way `config.yaml` is written (all or nothing, under one lock), the last config that worked, and startup recovery of an unreadable `config.yaml` | ~580 lines |
 | `templates/*.html` | 11 admin pages — vanilla HTML/CSS/JS, no framework | ~13,500 lines |
 | `static/theme.css`, `static/theme.js` | Shared theme system across all templates | ~660 lines |
 
@@ -59,7 +60,7 @@ The consequence is that each module can be read in isolation. You don't need to 
 
 ## Startup sequence
 
-What `python3 main.py start` does, in order (v3.4.147):
+What `python3 main.py start` does, in order (v3.4.148):
 
 ```
 main.py import   update guard (before any third-party import): updater.on_boot()
@@ -73,17 +74,43 @@ main.py import   update guard (before any third-party import): updater.on_boot()
                      (unless its copy in .update-old-<ts>/ is gone: nothing to put back)
                  import yaml, uvicorn, collector, server
 main()           restart = stop, then exec a fresh `main.py start`
+                 load_config: config.yaml can't be read (empty, cut short, a YAML
+                   mistake) → the last copy that worked (.backups/config.yaml.last-good,
+                   else a config.yaml.bak.<date> whose database exists; never a
+                   .pre-restore copy; on the first start of an update from a release
+                   older than 3.4.148 last-good takes its place among them by date)
+                   is put in its place, the unreadable file kept as
+                   .backups/config.yaml.broken.<date>, the WARNING and a notice for
+                   Settings written first; then the migration to this release's
+                   keys (all or nothing). While another Aerodrome owns the install
+                   neither runs: an unreadable file → exit 1, nothing changed; a
+                   readable one is used as it is, unmigrated.
+                   stop / status only read it.
 start()          another live Aerodrome on this install (identity-checked) → exit 1
+                 .backups/.tmp (0700) emptied of leftovers and made the temp dir;
+                   once (.backups/.private-modes-applied), not while an update or
+                   a restore is pending: files earlier versions left readable by
+                   others made private
                  init_db(): creates the schema, then the one-time rollup backfills,
                    synchronously (migrations v1, v5 and v16 read those rollups)
                  gate: a backfill didn't finish AND migrations are pending → exit 1,
                    nothing changed (the next start retries)
                  apply_schema_migrations()  (BEGIN IMMEDIATE, 60 s busy timeout)
-                 collector thread, get_app(), bind pre-flight
+                 collector thread, get_app(), bind pre-flight — can't listen on
+                   config.yaml's address but last-good's works → last-good put in
+                   place (file kept, notice) and a fresh `main.py start` exec'd;
+                   never when last-good listens more widely (all addresses, or a
+                   network address instead of loopback) or may be stale — exit 2,
+                   systemd retries
+                 config.yaml → .backups/config.yaml.last-good ("this config
+                   started"; while an update is pending, the confirm thread
+                   writes this same text after the commit — not config.yaml as
+                   a save may have left it by then)
                  update-confirm thread, only while an update is pending: waits for
                    GET /api/version to answer with the new version, then commits
                    the update 30 s later (a restart the new version's UI asks for
-                   after that first answer commits it first)
+                   after that first answer commits it first), then runs the
+                   once-only private-files step above
                  uvicorn.run
 ```
 
@@ -176,7 +203,9 @@ Listing these is as useful as listing what is:
 A few invariants worth knowing because violating them breaks things in non-obvious ways:
 
 - **Nothing in the collector thread makes long blocking calls.** The poll loop has a budget — it must finish before the next interval tick. If you add a network call, it gets a timeout.
-- **No new config keys without updating `config_validator.py` and `config.yaml.example`.** The validator runs at startup and refuses to boot with an unknown or malformed config key. It is strict on purpose. See `CONTRIBUTING.md` for the doc-update rules.
+- **No new config keys without updating `config_validator.py` and `config.yaml.example`.** The full validator (`validate_config`) runs on every Settings save, config import and config restore; it checks types and ranges strictly and ignores keys it doesn't know (so an unlisted key is simply never checked). `main.py` never runs it: at startup only the five required sections are checked (`config_io.check_loadable`), and a `config.yaml` that can't be read falls back to the last config that worked. See `CONTRIBUTING.md` for the doc-update rules.
+- **Every `config.yaml` write goes through `config_io`, under `config_io.CONFIG_LOCK`.** Render → check it loads the way startup reads it → temp file beside it → fsync → rename → fsync the directory, so the file is the old one or the new one, never a mix; a failed write raises and changes nothing (the running config is only swapped after the file is saved). Hold the lock across the whole read-modify-write. It may be taken while the maintenance lock is held, never the other way round. No call that writes, copies, moves or renames onto a config path except through `config_io` — a static (AST) test forbids it in `server.py`, `collector.py` and `main.py`. A `config.yaml` symlinked into a folder the service can't write, or owned by another account that lets it write, is written in place; one it can't write is refused. `.backups/config.yaml.last-good` is the last config that *started*: refreshed by a start that got past the bind check and by the update-confirm step (with the text that start read), never by a save, never while an update or a restore is pending.
+- **Temporary files live in `.backups/.tmp` (0700), never the system temp dir**, and `main.start` empties it — a crash or an abandoned download never leaves a large file behind. Nothing that must survive a restart belongs there. Backups, uploads and `config.yaml` are created readable by the service account only (0600, in 0700 folders).
 - **Template changes need matching screenshot updates under some rules.** See CONTRIBUTING.md.
 - **The schema migration path is versioned.** New schema changes for existing installs go through `schema_migrations.py`, which runs versioned `_migration_NN_*` functions in order against the `schema_version` table. Each migration step must be idempotent (safe to re-run) and forward-only (never drop a column; add a new one). `init_db()` in `collector.py` handles fresh installs by creating the current schema directly. Together they must be safe to run against any prior database version and a fresh empty file. Pre-v2.50.x changes were handled inline in `init_db()` via `CREATE TABLE IF NOT EXISTS` / `ALTER TABLE ADD COLUMN` inside try/except — that path is preserved for the migrations already there, but new schema changes go through the versioned framework.
 - **Rollup backfills run before migrations, synchronously, and a failed one blocks them.** `init_db()` finishes the one-time rollup backfills before it returns; `main.start()` refuses to migrate (exit 1, nothing changed) while a backfill flag is unset and migrations are pending, because migrations v1, v5 and v16 compute from those rollups and nothing recomputes them afterwards.

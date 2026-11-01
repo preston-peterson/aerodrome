@@ -1033,9 +1033,14 @@ class _MainCase(unittest.TestCase):
     def setUp(self):
         self.inst = _tmpdir(self)
         (self.inst / "main.py").write_text("# fixture\n")
-        p = mock.patch.object(self.main, "PID_FILE", self.inst / ".tracker.pid")
-        p.start()
-        self.addCleanup(p.stop)
+        # main.start points tempfile.tempdir at the install's .backups/.tmp
+        # (v3.4.148): put it back, or later tests make temp files in a
+        # directory that was deleted with this install.
+        self.addCleanup(setattr, tempfile, "tempdir", tempfile.tempdir)
+        for p in (mock.patch.object(self.main, "PID_FILE", self.inst / ".tracker.pid"),
+                  mock.patch.object(self.main, "CONFIG_PATH", self.inst / "config.yaml")):
+            p.start()
+            self.addCleanup(p.stop)
 
 
 class _StopStart(Exception):
@@ -1151,6 +1156,7 @@ class _ConfirmCase(_MainCase):
         staging = updater.stage(self.install, staged, PRESERVE, "20261021-140000")
         updater.swap_in(self.install, staging, "20261021-140000", OLD, NEW)
         for p in (mock.patch.object(self.main, "BASE_DIR", self.install),
+                  mock.patch.object(self.main, "CONFIG_PATH", self.install / "config.yaml"),
                   mock.patch.object(updater, "SERVE_DEADLINE_SEC", 0.6),
                   mock.patch.object(updater, "HEALTHY_AFTER_SEC", 0.05)):
             p.start()
@@ -1171,6 +1177,71 @@ class TestConfirmThread(_ConfirmCase):
         self.exit.assert_not_called()
         self.assertIsNone(updater.pending(self.install))
         self.assertEqual(updater.last_result(self.install)["result"], "applied")
+
+    def started_config(self, port=18241):
+        """config.yaml as this release started with it; returns its text."""
+        import yaml
+        cfg = yaml.safe_load((REPO / "config.yaml.example").read_text())
+        cfg["receiver"]["ip"] = "192.0.2.31"
+        cfg["web"]["port"] = port
+        text = yaml.safe_dump(cfg, sort_keys=False)
+        (self.install / "config.yaml").write_text(text)
+        return text
+
+    def test_the_confirmed_config_becomes_last_good(self):
+        # Guard (dropping this write survived the suite before): v3.4.148 —
+        # the config the confirmed release started with is the last one that
+        # worked (skipped while the update was pending).
+        import config_io
+        import yaml
+        text = self.started_config()
+        lg = self.install / ".backups" / config_io.LAST_GOOD_NAME
+        self.assertFalse(lg.exists())
+        srv = _VersionServer()
+        self.addCleanup(srv.close)
+        self.run_confirm("127.0.0.1", srv.port, started_text=text)
+        self.assertIsNone(updater.pending(self.install))
+        self.assertEqual(yaml.safe_load(lg.read_text())["receiver"]["ip"], "192.0.2.31")
+
+    def test_a_save_before_the_confirm_is_not_recorded_as_started(self):
+        # A Settings save made while the update was still unconfirmed (the
+        # tens of seconds after the new release first answers) hasn't
+        # started. Before, the confirm recorded config.yaml as it was at the
+        # commit — the saved port — and a restart that then found that port
+        # busy had nothing to fall back to (exit 2, web UI gone).
+        import config_io
+        import yaml
+        text = self.started_config(18241)
+        path = self.install / "config.yaml"
+        lg = self.install / ".backups" / config_io.LAST_GOOD_NAME
+        srv = _VersionServer()
+        self.addCleanup(srv.close)
+        saved = []
+
+        def sleep(s):
+            if not saved:
+                cfg = yaml.safe_load(text)
+                cfg["web"]["port"] = 18242                 # saved, not started
+                saved.append(config_io.save_config(path, cfg))
+            time.sleep(min(s, 0.05))
+        self.run_confirm("127.0.0.1", srv.port, sleep=sleep, started_text=text)
+        self.assertIsNone(updater.pending(self.install))
+        self.assertTrue(saved)
+        self.assertEqual(yaml.safe_load(path.read_text())["web"]["port"], 18242)
+        self.assertEqual(lg.read_text(), text, "last-good holds a port that never started")
+
+    def test_without_the_started_text_nothing_is_recorded(self):
+        # Guard: when start couldn't read the config it started with, the
+        # confirm records nothing rather than whatever config.yaml holds by
+        # then.
+        import config_io
+        self.started_config()
+        lg = self.install / ".backups" / config_io.LAST_GOOD_NAME
+        srv = _VersionServer()
+        self.addCleanup(srv.close)
+        self.run_confirm("127.0.0.1", srv.port, started_text=None)
+        self.assertIsNone(updater.pending(self.install))
+        self.assertFalse(lg.exists())
 
     def test_bad_http_for_the_whole_deadline_exits_1(self):
         srv = _VersionServer(status=500)
@@ -1498,7 +1569,8 @@ class TestApplyEndpoint(_EndpointCase):
 
     def test_maintenance_status_and_ack(self):
         status = self.ep("/api/maintenance/status", "GET")
-        self.assertEqual(status(), {"busy": None, "update": None, "update_pending": None})
+        self.assertEqual(status(), {"busy": None, "update": None, "update_pending": None,
+                                    "config": None})
         self.assertTrue(_body(self.apply())["ok"])
         s = status()
         self.assertEqual(s["busy"]["op"], "restarting after an update")
@@ -2399,7 +2471,7 @@ class TestMainReviewFixes(_MainCase):
             sys.path.insert(0, {str(REPO)!r})
             sys.argv = ["main.py", "restart"]
             import main
-            main.load_config = lambda: {{}}
+            main.load_config = lambda *a: {{}}
             main.setup_logging = lambda c: None
             main.stop = lambda c: print("Sent stop signal (PID 4242).")
             real = os.execv
@@ -2501,6 +2573,59 @@ class TestStartStartsTheConfirmThread(_MainCase):
         self.assertTrue(called.wait(5), "the confirm thread never started")
         self.assertEqual(got["args"], ("127.0.0.1", 18299, NEW))
         self.assertEqual(got["thread"], "aerodrome-update-confirm")
+
+    def test_the_confirm_records_the_config_that_started(self):
+        # start → a Settings save before the update is confirmed → the
+        # confirm: last-good is the config this release STARTED with.
+        import config_io
+        import yaml
+        install = _fake_release(self.inst / "i", OLD)
+        staged = _fake_release(self.inst / "staged", NEW)
+        staging = updater.stage(install, staged, PRESERVE, "20261021-140000")
+        updater.swap_in(install, staging, "20261021-140000", OLD, NEW)
+        path = install / "config.yaml"
+        cfg = yaml.safe_load((REPO / "config.yaml.example").read_text())
+        cfg["data"]["db_file"] = str(self.inst / "x.db")
+        cfg["web"].update(host="127.0.0.1", port=18241)
+        cfg["receiver"].update(ip="192.0.2.10", port=8080, poll_interval=1)
+        started = yaml.safe_dump(cfg, sort_keys=False)
+        path.write_text(started)
+        lg = install / ".backups" / config_io.LAST_GOOD_NAME
+        got = {}
+        called = threading.Event()
+
+        def confirm(*a, **kw):
+            got["args"], got["kw"] = a, kw
+            called.set()
+        with mock.patch.object(self.main, "BASE_DIR", install), \
+                mock.patch.object(self.main, "CONFIG_PATH", path), \
+                mock.patch.object(self.main, "_confirm_update_when_serving", confirm), \
+                mock.patch.object(self.main, "run_collector", lambda *a, **k: None), \
+                mock.patch.object(self.main, "set_db_path"), \
+                mock.patch.object(self.main, "set_receiver_location"), \
+                mock.patch.object(self.main, "get_app", return_value=object()), \
+                mock.patch.object(self.main, "_preflight_bind_check", return_value=(True, "")), \
+                mock.patch.object(self.main.signal, "signal"), \
+                mock.patch.object(self.main.uvicorn, "run", side_effect=_Stop), \
+                contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(_Stop):
+                self.main.start(yaml.safe_load(started))
+        self.assertTrue(called.wait(5), "the confirm thread never started")
+        self.assertFalse(lg.exists(), "last-good written while the update was pending")
+        # The user saves a new web port while the update is unconfirmed.
+        saved = dict(cfg, web=dict(cfg["web"], port=18242))
+        config_io.save_config(path, saved)
+        with mock.patch.object(self.main, "BASE_DIR", install), \
+                mock.patch.object(self.main, "CONFIG_PATH", path), \
+                mock.patch.object(updater, "HEALTHY_AFTER_SEC", 0.05):
+            self.main._confirm_update_when_serving(
+                *got["args"], **got["kw"], probe=lambda a, h, p: ("ok", NEW),
+                sleep=lambda s: time.sleep(min(s, 0.01)), exit_fn=mock.Mock())
+        self.assertIsNone(updater.pending(install))
+        self.assertEqual(yaml.safe_load(path.read_text())["web"]["port"], 18242)
+        self.assertEqual(yaml.safe_load(lg.read_text())["web"]["port"], 18241,
+                         "last-good holds a port that never started")
+        self.assertEqual(lg.read_text(), started)
 
 
 def _bzip2_bomb(declared=8, real=4 * 1024 * 1024, name="aerodrome-v3.4.199/VERSION"):

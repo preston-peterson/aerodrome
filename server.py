@@ -1,4 +1,4 @@
-# Version: 3.4.147
+# Version: 3.4.148
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -15,6 +15,7 @@ Endpoints:
   GET  /api/status              System status
 """
 
+import asyncio
 import logging
 import math
 import re
@@ -28,7 +29,7 @@ from contextlib import contextmanager
 
 import requests as req
 import yaml
-from fastapi import FastAPI, Query, UploadFile, File, HTTPException, Request, BackgroundTasks
+from fastapi import FastAPI, Query, UploadFile, File, HTTPException, Request, BackgroundTasks, Depends
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from pydantic import BaseModel
 from urllib.parse import urlsplit
@@ -47,8 +48,13 @@ from collector import _open_db_conn, aircraft_type_for
 from distance import haversine as _dist_haversine, to_user_unit as _dist_to_user_unit, compass_bearing as _dist_compass_bearing
 # v3.4.147: staged update apply + boot guard (stdlib only; imports no app
 # module, so main.py can run it first) and crash-safe small-file writes.
+import threading
+
 import updater
 import atomic_io
+# v3.4.148: every config.yaml write goes through config_io (all or nothing,
+# under CONFIG_LOCK).
+import config_io
 
 logger = logging.getLogger("adsb.server")
 
@@ -325,6 +331,80 @@ def _install_dir() -> Path:
 
 def _pre_restore_install_dir() -> Path:
     return _install_dir()
+
+
+# The web address this process was started to serve (set by get_app):
+# its own listening socket holds that port until the next restart.
+_SERVING_WEB = (None, None)
+
+
+def _machine_key_problems(new_cfg: dict, old_cfg: dict) -> List[tuple]:
+    """v3.4.148: [(path, message)] for settings that can't work on THIS
+    machine, checked only where they changed from the running config (so a
+    save that doesn't touch them is never refused, and config_validator —
+    which also checks other machines' backups — stays machine-independent):
+
+      web.host      must be an address of this machine (a bind to port 0
+                    gives EADDRNOTAVAIL otherwise; 0.0.0.0 and :: always pass)
+      web.port      must be free for Aerodrome to listen on: not held by
+                    another program (EADDRINUSE) and not a port this account
+                    may not use (EACCES, below 1024). Not checked when it is
+                    the port this process already listens on.
+      data.db_file  its folder must exist and be writable"""
+    import errno as _errno
+    import socket as _socket
+    problems = []
+    new_web, old_web = new_cfg.get("web") or {}, old_cfg.get("web") or {}
+    host = new_web.get("host")
+    if isinstance(host, str) and host.strip() and host != old_web.get("host"):
+        h = host.strip()
+        fam = _socket.AF_INET6 if ":" in h else _socket.AF_INET
+        try:
+            s = _socket.socket(fam, _socket.SOCK_STREAM)
+            try:
+                s.bind((h.strip("[]"), 0))
+            finally:
+                s.close()
+        except _socket.gaierror:
+            problems.append(("web.host", f"{h} can't be found from this machine — use "
+                                         f"0.0.0.0 to listen on all addresses"))
+        except OSError as e:
+            if e.errno == _errno.EADDRNOTAVAIL:
+                problems.append(("web.host", f"{h} isn't an address on this machine — use "
+                                             f"0.0.0.0 to listen on all"))
+    port = new_web.get("port")
+    if (type(port) is int and 0 < port < 65536 and not problems
+            and port != old_web.get("port") and port != _SERVING_WEB[1]):
+        h = (host.strip() if isinstance(host, str) and host.strip() else "0.0.0.0").strip("[]")
+        try:
+            s = _socket.socket(_socket.AF_INET6 if ":" in h else _socket.AF_INET,
+                               _socket.SOCK_STREAM)
+            try:
+                # As the restart will: SO_REUSEADDR, so only a socket that is
+                # really in use (not a closed one in TIME_WAIT) counts.
+                s.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+                s.bind((h, port))
+            finally:
+                s.close()
+        except OSError as e:
+            if e.errno == _errno.EADDRINUSE:
+                problems.append(("web.port", f"Port {port} is already used by another "
+                                             f"program on this machine — pick another port"))
+            elif e.errno in (_errno.EACCES, _errno.EPERM):
+                problems.append(("web.port", f"Port {port} needs administrator rights on "
+                                             f"this machine — use a port above 1023"))
+    new_db = (new_cfg.get("data") or {}).get("db_file")
+    old_db = (old_cfg.get("data") or {}).get("db_file")
+    if isinstance(new_db, str) and new_db.strip() and new_db != old_db:
+        p = Path(new_db.strip())
+        if not p.is_absolute():
+            p = _install_dir() / p
+        folder = p.parent
+        if not folder.is_dir():
+            problems.append(("data.db_file", f"The folder {folder} doesn't exist on this machine"))
+        elif not os.access(folder, os.W_OK | os.X_OK):
+            problems.append(("data.db_file", f"Aerodrome can't write to the folder {folder}"))
+    return problems
 
 
 # --- One maintenance operation at a time (v3.4.147) ---
@@ -754,6 +834,277 @@ def _heal_install_snapshots():
     return deleted_count, freed_bytes
 
 
+# --- Temporary files in .backups/.tmp (v3.4.148) ---
+# Upload spools, the browser backup download, the database snapshot inside
+# a backup and a server-side backup's unfinished zip all live in
+# <install>/.backups/.tmp (0700): on the install's own disk (not a RAM-backed
+# /tmp), private to the account Aerodrome runs as, and emptied at startup,
+# so a crash, a kill or an abandoned download never leaves a database-sized
+# file behind for good.
+_BACKUP_TMP_NAME = ".tmp"
+# NamedTemporaryFile leftovers earlier versions could leave in .backups/
+# (the export's zip and the snapshot it took of the database).
+_LEGACY_TMP_RE = re.compile(r"^tmp[a-z0-9_]{8}\.(zip|db)(-journal|-wal|-shm)?$")
+# atomic_io's temp files (".<name>.<8 random chars>.tmp", beside the file)
+# for a write cut short by a kill: config.yaml and its automatic copies at
+# the top of the install, ...
+_CONFIG_STAGE_RE = re.compile(
+    r"^\.config\.yaml(\.bak\.[0-9]{8}-[0-9]{6}(\.pre-restore)?)?\.[a-z0-9_]{8}\.tmp\Z")
+# ... and last-good, the recovery notice, a broken copy and a backup's
+# sha256 sidecar in .backups/.
+_BACKUPS_STAGE_RE = re.compile(
+    r"^\.(config\.yaml\.last-good|config-recovery\.json"
+    r"|config\.yaml\.broken\.[0-9]{8}-[0-9]{6}(-[0-9]+)?"
+    r"|aerodrome-backup-[0-9]{8}-[0-9]{6}(-[0-9]+)?\.zip\.sha256)\.[a-z0-9_]{8}\.tmp\Z")
+
+
+def _backup_tmp_dir(install_dir: Optional[Path] = None) -> Path:
+    """<install>/.backups/.tmp, created 0700 if missing (never system temp).
+    A .tmp that is a symlink is refused (OSError): spools and backups are
+    never written into a folder somewhere else."""
+    inst = Path(install_dir) if install_dir is not None else _install_dir()
+    atomic_io.ensure_private_dir(inst / ".backups")
+    d = atomic_io.ensure_private_dir(inst / ".backups" / _BACKUP_TMP_NAME)
+    if os.path.islink(d):
+        import errno as _errno
+        raise OSError(_errno.ELOOP, f"{d} is a symbolic link")
+    return d
+
+
+def _sweep_backup_temp_files(install_dir) -> tuple:
+    """Delete leftover temporary files (startup only — nothing else of this
+    install runs then). Returns (count, bytes freed).
+
+    Removes: everything in .backups/.tmp/; legacy .backups/.uploads/
+    upload-*.zip; NamedTemporaryFile leftovers and atomic-write temp files
+    (last-good, notice, broken copy, sha256 sidecar) at the top of
+    .backups/; the temp file of a config.yaml or config.yaml.bak.* write
+    next to config.yaml. Never touches backup zips, update snapshots
+    (.backups/<date>/), last-good or broken config copies, or markers, and
+    never looks outside the install (a symlinked config.yaml's folder)."""
+    inst = Path(install_dir)
+    bdir = inst / ".backups"
+    victims = []
+    tmp = bdir / _BACKUP_TMP_NAME
+    if tmp.is_dir() and not tmp.is_symlink():
+        victims += list(tmp.iterdir())
+    up = bdir / ".uploads"
+    if up.is_dir() and not up.is_symlink():
+        victims += [p for p in up.glob("upload-*.zip")]
+    if bdir.is_dir():
+        victims += [p for p in bdir.iterdir()
+                    if _LEGACY_TMP_RE.match(p.name) or _BACKUPS_STAGE_RE.match(p.name)]
+    try:
+        victims += [p for p in inst.iterdir() if _CONFIG_STAGE_RE.match(p.name)]
+    except OSError:
+        pass
+    count = freed = 0
+    for p in victims:
+        try:
+            if p.is_dir() and not p.is_symlink():
+                size = sum(q.lstat().st_size for q in p.rglob("*") if q.is_file())
+                shutil.rmtree(p)
+            else:
+                size = p.lstat().st_size
+                p.unlink()
+            count += 1
+            freed += size
+        except OSError as e:
+            logger.warning(f"Startup cleanup: could not remove {p}: {e}")
+    if count:
+        logger.info(f"Startup cleanup: removed {count} leftover temporary file(s) "
+                    f"from earlier runs ({_human_bytes(freed)} freed)")
+    return count, freed
+
+
+def _human_bytes(n: int) -> str:
+    n = float(n or 0)
+    for unit in ("bytes", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit == "bytes" else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} GB"
+
+
+def _db_size_bytes(install_dir) -> int:
+    """The live database's size on disk (with its -wal), 0 when missing."""
+    db = Path((CONFIG.get("data") or {}).get("db_file", "aircraft_history.db"))
+    if not db.is_absolute():
+        db = Path(install_dir) / db
+    total = 0
+    for sfx in ("", "-wal"):
+        try:
+            total += os.stat(str(db) + sfx).st_size
+        except OSError:
+            pass
+    return total
+
+
+def _no_space_response(need: int, free: int, what: str) -> JSONResponse:
+    mb = 1024 * 1024
+    msg = (f"Not enough free disk space to {what}: it needs about {need // mb} MB, "
+           f"{free // mb} MB available. Nothing was changed.")
+    return JSONResponse(status_code=507, content={
+        "ok": False, "code": "no_space", "error": msg, "message": msg})
+
+
+def _upload_disk_filled_response() -> JSONResponse:
+    """507 for a restore upload the disk filled up under (while it was
+    received or staged)."""
+    msg = ("Not enough free disk space for this upload: the disk filled up "
+           "while it was being stored. Nothing was changed.")
+    return JSONResponse(status_code=507, content={
+        "ok": False, "code": "no_space", "error": msg, "message": msg})
+
+
+def _cross_site_refusal(request: Request) -> Optional[JSONResponse]:
+    """v3.4.148: the backup download is a GET (so a typed URL and scripts
+    keep working), which the same-origin guard doesn't cover. Refuse it
+    (403) when the browser says another website's page asked for it:
+    Sec-Fetch-Site other than same-origin / none, or an Origin / Referer
+    for a different host:port. Clients that send none of these (curl) and
+    the page itself are unaffected."""
+    site = (request.headers.get("sec-fetch-site") or "").lower()
+    bad = bool(site) and site not in ("same-origin", "none")
+    for h in ("origin", "referer"):
+        v = request.headers.get(h)
+        if v and v != "null" and urlsplit(v).netloc != request.url.netloc:
+            bad = True
+        elif v == "null":
+            bad = True
+    if not bad:
+        return None
+    msg = ("Requests that come from other websites are refused. Download the "
+           "backup from Aerodrome's own Settings page.")
+    return JSONResponse(status_code=403, content={
+        "ok": False, "code": "cross_site", "error": msg, "message": msg})
+
+
+def _open_file_response(fobj, size: int, filename: str):
+    """A response that streams an already-open (and already-unlinked) file
+    and ALWAYS closes it when the response ends — sent, client gone, or
+    failed — so its disk space is freed deterministically, not whenever a
+    generator happens to be collected. Reads run in the threadpool. (The
+    class is built here, not at import: release checks import this module
+    with the web framework stubbed out.)"""
+    from fastapi.responses import StreamingResponse
+    from starlette.concurrency import iterate_in_threadpool
+
+    class _OpenFileResponse(StreamingResponse):
+        async def __call__(self, scope, receive, send):
+            try:
+                await super().__call__(scope, receive, send)
+            finally:
+                fobj.close()
+
+    def chunks():
+        while True:
+            c = fobj.read(1024 * 1024)
+            if not c:
+                return
+            yield c
+    return _OpenFileResponse(
+        iterate_in_threadpool(chunks()), media_type="application/zip",
+        headers={"Content-Length": str(size),
+                 "Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+def prepare_backup_tmp(install_dir) -> Optional[Path]:
+    """main.start: create .backups/.tmp (0700), sweep leftovers, and check a
+    file can be created there. Returns the directory, or None when it can't
+    be used (the caller keeps the system temp dir then)."""
+    try:
+        d = _backup_tmp_dir(install_dir)
+        os.chmod(d, atomic_io.PRIVATE_DIR_MODE)
+        _sweep_backup_temp_files(install_dir)
+        import tempfile
+        fd, probe = tempfile.mkstemp(dir=str(d), prefix="probe-")
+        os.close(fd)
+        os.unlink(probe)
+        return d
+    except OSError as e:
+        logger.warning(f"Can't use {Path(install_dir) / '.backups' / _BACKUP_TMP_NAME} "
+                       f"for temporary files: {e}")
+        return None
+
+
+# Written in .backups/ once the step below has run, so it runs only once.
+PRIVATE_MODES_MARKER = ".private-modes-applied"
+
+
+def tighten_existing_private_files(install_dir, force: bool = False) -> list:
+    """DECISION (v3.4.148, the maintainer's call — main calls this at a
+    start with no update or restore pending, and once an update is
+    confirmed; main.TIGHTEN_EXISTING_PRIVATE_FILES = False switches it off):
+    earlier versions left .backups/ 0755 and the backup zips, config.yaml
+    and the copies of it kept next to it 0644, readable by every local
+    account (and install.sh still creates .backups/ with `mkdir -p` and
+    copies config.yaml 0644). Aerodrome now creates its own files private;
+    this makes the existing ones private too — ONCE (recorded in
+    .backups/.private-modes-applied), so a mode an admin opens up later on
+    purpose is kept. Pass force=True to run it again.
+
+    Changed where group- or world-readable: .backups/ → 0700;
+    .backups/aerodrome-backup-*.zip → 0600; config.yaml (through a symlink:
+    its target), config.yaml.bak.* (including .pre-restore copies) and
+    ntfy-server.yml.from-backup.* in the install folder → 0600. Files of
+    another account are skipped (they can't be changed; DEBUG line); no
+    other symlink is followed — a .backups/ that links to another folder is
+    left as it is, zips included. The database files are left alone (other
+    local tools may read the database). One INFO line per path changed.
+    Never raises. Returns the paths changed."""
+    import stat as _stat
+    inst = Path(install_dir)
+    bdir = inst / ".backups"
+    marker = bdir / PRIVATE_MODES_MARKER
+    if not force and os.path.lexists(marker):
+        return []
+    todo = []
+    try:
+        if bdir.is_dir() and not bdir.is_symlink():
+            todo.append((bdir, atomic_io.PRIVATE_DIR_MODE, True))
+            todo += [(p, atomic_io.PRIVATE_FILE_MODE, False)
+                     for p in sorted(bdir.glob("aerodrome-backup-*.zip"))]
+        cfg = inst / "config.yaml"
+        if os.path.lexists(cfg):
+            todo.append((Path(os.path.realpath(cfg)), atomic_io.PRIVATE_FILE_MODE, False))
+        todo += [(p, atomic_io.PRIVATE_FILE_MODE, False)
+                 for pat in ("config.yaml.bak.*", "ntfy-server.yml.from-backup.*")
+                 for p in sorted(inst.glob(pat))]
+    except OSError as e:
+        logger.warning(f"Could not check file permissions in {inst}: {e}")
+    me = os.geteuid()
+    changed = []
+    for p, mode, is_dir in todo:
+        try:
+            st = p.lstat()
+            if (_stat.S_ISDIR(st.st_mode) != is_dir
+                    or not (_stat.S_ISDIR(st.st_mode) or _stat.S_ISREG(st.st_mode))):
+                continue
+            old = _stat.S_IMODE(st.st_mode)
+            if not old & 0o077:
+                continue
+            if me != 0 and st.st_uid != me:
+                logger.debug(f"Left {p} as it is: it belongs to another account")
+                continue
+            os.chmod(p, mode)
+            changed.append(p)
+            logger.info(f"Made {p} readable by this account only "
+                        f"(was {old:04o}, now {_stat.S_IMODE(p.stat().st_mode):04o})")
+        except OSError as e:
+            logger.warning(f"Could not make {p} private: {e}")
+    try:
+        atomic_io.ensure_private_dir(bdir)
+        with atomic_io.open_private(marker) as f:
+            f.write(b"Existing backups and config copies were made private once "
+                    b"(v3.4.148). Delete this file to do it again at the next start.\n")
+    except FileExistsError:
+        pass
+    except OSError as e:
+        logger.debug(f"Could not record {marker}: {e} (the check runs again next start)")
+    return changed
+
+
 # --- Config-only auto-backup retention (v2.50.9) ---
 # `_apply_config_from_text` writes a snapshot of the previous config to
 # `config.yaml.bak.YYYYMMDD-HHMMSS` every time the config is saved (whether
@@ -766,7 +1117,7 @@ def _heal_install_snapshots():
 # now, see _list_config_backups).
 _CONFIG_AUTO_BACKUP_KEEP = 5
 _CONFIG_AUTO_BACKUP_RE = re.compile(
-    r"^config\.yaml\.bak\.\d{8}-\d{6}$"
+    r"^config\.yaml\.bak\.[0-9]{8}-[0-9]{6}\Z"     # v3.4.148: ASCII digits, no trailing newline
 )
 
 
@@ -1346,28 +1697,156 @@ def compose_daily_summary_data(db_path: str, config: dict,
     return result
 
 
-# v3.4.87: cap the in-memory request body for non-multipart requests. JSON/form
-# bodies are buffered whole and parsed (~2x peak RAM), so an unbounded POST can
-# exhaust memory on a small host (e.g. a 4 GB Pi) and crash-loop the service.
-# Multipart uploads are EXEMPT — Starlette streams those to a spooled temp file
-# and the upload endpoints enforce their own (larger) caps (_read_upload_bounded
-# / the 2 GB backup cap). We reject an oversized Content-Length up front, and
-# also count bytes as the body streams (so a chunked or mis-declared request
-# can't slip past), returning 413 before the body ever reaches an endpoint. The
-# read-ahead buffer is itself bounded by max_bytes, so the guard can't OOM.
+# v3.4.87: cap the in-memory request body (DoS guard). JSON/form bodies are
+# buffered whole and parsed (~2x peak RAM), so an unbounded POST can exhaust
+# memory on a small host (e.g. a 4 GB Pi) and crash-loop the service.
+#
+# v3.4.148: the cap applies to EVERY content type and is chosen per path.
+# Before, anything labelled multipart/form-data skipped it: a JSON route then
+# buffered the whole body in RAM, and the three upload routes only checked
+# their own limits after Starlette had spooled the entire upload to disk.
+# Upload routes get their endpoint limit plus multipart framing slack;
+# everything else (including multipart sent to a JSON route) gets 2 MB.
+# Small caps are read ahead and replayed; the two large upload routes are
+# counted while they stream (never buffered) and answered 413 the moment
+# the count passes the cap. Before a large upload's first byte is read it
+# is refused (409) while a maintenance task runs or another large upload is
+# in progress, and (507) when its declared size wouldn't fit on the disk (a
+# restore upload needs about three times its size plus the database: the
+# spool, the staged copy, and the room the restore itself checks for). A
+# Host or Origin the same-origin guard refuses is handed straight to it
+# (403, body unread) — no refusal here may tell another site's page what is
+# running or how much disk is free. An upload that stops arriving for
+# UPLOAD_STALL_TIMEOUT_SEC is ended (408) so it can't hold the one-upload
+# gate and its spool until the service restarts.
 _MAX_JSON_BODY_BYTES = 2 * 1024 * 1024  # 2 MB — config.yaml is documented < 256 KB
+CONFIG_IMPORT_MAX_BYTES = 256 * 1024
+UPDATE_UPLOAD_MAX_BYTES = 50 * 1024 * 1024
+BACKUP_UPLOAD_MAX_BYTES = 2 * 1024 * 1024 * 1024
+_MULTIPART_SLACK_BYTES = 64 * 1024          # boundary + part headers
+UPLOAD_FREE_HEADROOM_BYTES = 256 * 1024 * 1024
+_SPACE_RECHECK_BYTES = 64 * 1024 * 1024     # chunked bodies: re-check free space this often
+UPLOAD_STALL_TIMEOUT_SEC = 120              # no body bytes for this long → 408
+_UPDATE_UPLOAD_PATH = "/api/updates/local/upload"
+_BACKUP_UPLOAD_PATH = "/api/backup/import"
+_UPLOAD_ROUTE_CAPS = {
+    "/api/config/import": (
+        CONFIG_IMPORT_MAX_BYTES,
+        "This file is too large to be a config.yaml (the limit is 256 KB). "
+        "Did you pick the right file?"),
+    _UPDATE_UPLOAD_PATH: (
+        UPDATE_UPLOAD_MAX_BYTES,
+        "Upload is larger than 50 MB. Aerodrome release zips are a few MB; "
+        "did you upload a full backup?"),
+    _BACKUP_UPLOAD_PATH: (
+        BACKUP_UPLOAD_MAX_BYTES,
+        "Backup is too large for browser upload (over 2 GB). Copy it into "
+        "<install_dir>/.backups/ with scp or rsync, then restore it from the "
+        "Existing server-side backups list (click Rescan)."),
+}
+# One large upload at a time: two 2 GB restore uploads at once would spool
+# 4 GB before either endpoint could refuse the second.
+_LARGE_UPLOAD = threading.Lock()
+
+
+class _RequestBodyTooLarge(OSError):
+    """Raised into the app's receive() once an upload is refused mid-body.
+    An OSError on purpose: Starlette's multipart parser closes (and so
+    frees) every spooled upload file on OSError."""
+
+
+def _refusal_body(code: str, message: str, **extra) -> bytes:
+    import json as _json
+    return _json.dumps({"ok": False, "code": code, "error": message,
+                        "message": message, **extra}).encode()
+
+
+def _spool_free_bytes() -> Optional[int]:
+    import tempfile
+    try:
+        return shutil.disk_usage(tempfile.gettempdir()).free
+    except OSError:
+        return None
+
+
+def _no_space_message(need: int, free: int) -> str:
+    mb = 1024 * 1024
+    return (f"Not enough free disk space for this upload: it needs about "
+            f"{(need + UPLOAD_FREE_HEADROOM_BYTES) // mb} MB, {max(0, free) // mb} MB "
+            f"available. Nothing was changed.")
+
+
+def _upload_space_need(path: str, size: int) -> int:
+    """Free space (before headroom) an upload of `size` bytes to `path`
+    needs. A restore upload: its spool, the staged copy in .backups/.uploads
+    and the room the restore checks for (its size again plus the
+    database's). An update upload: its spool."""
+    if path != _BACKUP_UPLOAD_PATH:
+        return size
+    try:
+        db = _db_size_bytes(_install_dir())
+    except Exception:
+        db = 0
+    return 3 * size + db
+
+
+# The machine's own name (always an allowed Host) — set by get_app.
+_OWN_HOSTNAME: Optional[str] = None
+
+
+def _remember_this_server(config: dict) -> None:
+    """get_app: this machine's name, and the web address this process was
+    started to serve (CONFIG can change under it until the next restart)."""
+    global _OWN_HOSTNAME, _SERVING_WEB
+    import socket as _socket
+    _OWN_HOSTNAME = _socket.gethostname()
+    web = config.get("web") or {}
+    _SERVING_WEB = (web.get("host"), web.get("port"))
+
+
+def _own_hostname() -> str:
+    global _OWN_HOSTNAME
+    if _OWN_HOSTNAME is None:
+        import socket as _socket
+        _OWN_HOSTNAME = _socket.gethostname()
+    return _OWN_HOSTNAME
+
+
+def _origin_refusal(host_header: str, source: Optional[str], netloc: str,
+                    unsafe: bool) -> Optional[str]:
+    """The same-origin guard's rules (v3.4.82 / v3.4.140), in one place so
+    the upload gate applies exactly the same ones: "host" when the request
+    is addressed to a name Aerodrome doesn't answer to, "origin" when an
+    unsafe request came from another site's page (Origin / Referer), else
+    None."""
+    if not _host_allowed(host_header, _configured_hosts(CONFIG), _own_hostname()):
+        return "host"
+    if unsafe and source and urlsplit(source).netloc != netloc:
+        return "origin"
+    return None
 
 
 class _BodySizeLimitMiddleware:
-    def __init__(self, app, max_bytes: int = _MAX_JSON_BODY_BYTES):
+    def __init__(self, app, max_bytes: int = _MAX_JSON_BODY_BYTES, route_caps=None):
         self.app = app
         self.max_bytes = max_bytes
+        self.route_caps = _UPLOAD_ROUTE_CAPS if route_caps is None else route_caps
 
-    async def _reject(self, send):
-        await send({"type": "http.response.start", "status": 413,
-                    "headers": [(b"content-type", b"application/json")]})
-        await send({"type": "http.response.body",
-                    "body": b'{"error":"Request body too large."}'})
+    @staticmethod
+    async def _answer(send, status, body: bytes):
+        await send({"type": "http.response.start", "status": status,
+                    "headers": [(b"content-type", b"application/json"),
+                                (b"content-length", str(len(body)).encode())]})
+        await send({"type": "http.response.body", "body": body})
+
+    async def _reject(self, send, message="Request body too large."):
+        await self._answer(send, 413, _refusal_body("too_large", message))
+
+    def _cap_for(self, path, content_type):
+        route = self.route_caps.get(path)
+        if route and content_type.lower().startswith("multipart/form-data"):
+            return route[0] + _MULTIPART_SLACK_BYTES, route[1]
+        return self.max_bytes, "Request body too large."
 
     async def __call__(self, scope, receive, send):
         if scope.get("type") != "http" or scope.get("method") in ("GET", "HEAD", "OPTIONS", "TRACE"):
@@ -1375,30 +1854,85 @@ class _BodySizeLimitMiddleware:
             return
         headers = {k.decode("latin-1").lower(): v.decode("latin-1")
                    for k, v in scope.get("headers", [])}
-        # Multipart uploads stream to disk and are bounded at the endpoint.
-        if headers.get("content-type", "").startswith("multipart/form-data"):
+        path = scope.get("path", "")
+        cap, message = self._cap_for(path, headers.get("content-type", ""))
+        # Fast path: reject an oversized declared length before reading a
+        # byte. Browsers always declare it for FormData uploads.
+        clen = headers.get("content-length")
+        declared = int(clen) if clen and clen.isdigit() else None
+        if declared is not None and declared > cap:
+            await self._reject(send, message)
+            return
+        if cap <= self.max_bytes:
+            await self._buffered(scope, receive, send, cap, message)
+            return
+        # A request the same-origin guard refuses never reaches the gate:
+        # the guard answers 403 without reading the body, and nothing about
+        # what is running or the free disk space leaks to another site.
+        from starlette.requests import Request as _Request
+        req = _Request(scope)
+        if _origin_refusal(req.headers.get("host", ""),
+                           req.headers.get("origin") or req.headers.get("referer"),
+                           req.url.netloc, True):
             await self.app(scope, receive, send)
             return
-        # Fast path: reject an oversized declared length before reading a byte.
-        clen = headers.get("content-length")
-        if clen and clen.isdigit() and int(clen) > self.max_bytes:
-            await self._reject(send)
+        # A large upload: refused before its first byte is read when it
+        # couldn't be used anyway.
+        refusal = self._large_upload_refusal(path, declared)
+        if refusal is not None:
+            await self._answer(send, *refusal)
             return
+        if not _LARGE_UPLOAD.acquire(blocking=False):
+            msg = ("Another upload is in progress. Wait for it to finish, "
+                   "then try again.")
+            await self._answer(send, 409, _refusal_body("upload_in_progress", msg))
+            return
+        try:
+            await self._counted(scope, receive, send, cap, message, declared)
+        finally:
+            _LARGE_UPLOAD.release()
+
+    @staticmethod
+    def _large_upload_refusal(path, declared):
+        """(status, body) when a large upload must be refused before it is
+        read: a maintenance task is running (or, for an update upload, the
+        last update is still being confirmed), or it won't fit on the disk."""
+        holder = _MAINT.holder()
+        if holder:
+            b = _Busy(holder)
+            return 409, _refusal_body(b.code, str(b), busy={
+                k: holder.get(k) for k in ("op", "since", "age_sec", "parked")})
+        if path == _UPDATE_UPLOAD_PATH:
+            try:
+                pending = updater.pending(_install_dir())
+            except Exception:
+                pending = None
+            if pending:
+                msg = "The last update is still being confirmed — try again in a minute."
+                return 409, _refusal_body("update_pending", msg)
+        if declared is not None:
+            free = _spool_free_bytes()
+            need = _upload_space_need(path, declared)
+            if free is not None and need > free - UPLOAD_FREE_HEADROOM_BYTES:
+                return 507, _refusal_body("no_space", _no_space_message(need, free))
+        return None
+
+    async def _buffered(self, scope, receive, send, cap, message):
         # Read-ahead: buffer up to the cap (covers chunked / mis-declared
         # length), counting bytes; reject if exceeded, else replay to the app.
         buffered = []
         total = 0
         while True:
-            message = await receive()
-            if message["type"] != "http.request":
-                buffered.append(message)
+            msg = await receive()
+            if msg["type"] != "http.request":
+                buffered.append(msg)
                 break
-            total += len(message.get("body", b""))
-            if total > self.max_bytes:
-                await self._reject(send)
+            total += len(msg.get("body", b""))
+            if total > cap:
+                await self._reject(send, message)
                 return
-            buffered.append(message)
-            if not message.get("more_body", False):
+            buffered.append(msg)
+            if not msg.get("more_body", False):
                 break
 
         async def replay():
@@ -1406,6 +1940,80 @@ class _BodySizeLimitMiddleware:
                 return buffered.pop(0)
             return await receive()
         await self.app(scope, replay, send)
+
+    async def _counted(self, scope, receive, send, cap, message, declared):
+        # Pass chunks straight through (Starlette spools them) but count
+        # them. Past the cap — or, for a body without a declared length,
+        # when the disk is about to run out, or when the body stops arriving
+        # — answer ourselves and raise into the app so the multipart parser
+        # stops writing and frees its spool.
+        path = scope.get("path", "")
+        state = {"total": 0, "tripped": False, "started": False, "aborted": False,
+                 "body_done": False, "next_check": _SPACE_RECHECK_BYTES}
+
+        async def trip(status, body):
+            state["tripped"] = True
+            if not state["started"]:
+                await self._answer(send, status, body)
+            raise _RequestBodyTooLarge(message)
+
+        async def counted_receive():
+            if state["tripped"]:
+                raise _RequestBodyTooLarge(message)
+            if state["body_done"]:
+                # The body is in; the app only waits for a disconnect now
+                # (no deadline: a long restore may still be running).
+                return await receive()
+            try:
+                # The deadline restarts with every chunk: a slow but live
+                # upload is fine, one whose sender vanished (lid closed, Wi-Fi
+                # gone — no FIN ever arrives) is ended.
+                msg = await asyncio.wait_for(receive(), UPLOAD_STALL_TIMEOUT_SEC)
+            except asyncio.TimeoutError:
+                await trip(408, _refusal_body(
+                    "upload_stalled", "The upload stopped arriving, so it was cancelled. "
+                    "Nothing was changed. Check the connection and try again."))
+            if msg["type"] == "http.disconnect":
+                state["aborted"] = True        # the user cancelled mid-upload
+                state["body_done"] = True
+            if msg["type"] == "http.request":
+                state["total"] += len(msg.get("body", b""))
+                if not msg.get("more_body", False):
+                    state["body_done"] = True
+                if state["total"] > cap:
+                    await trip(413, _refusal_body("too_large", message))
+                if declared is None and state["total"] >= state["next_check"]:
+                    state["next_check"] = state["total"] + _SPACE_RECHECK_BYTES
+                    free = _spool_free_bytes()
+                    # What is still to come: the rest of a restore's room
+                    # (its staged copy, the restore check) beyond the spool.
+                    still = _upload_space_need(path, state["total"]) - state["total"]
+                    if free is not None and free < still + UPLOAD_FREE_HEADROOM_BYTES:
+                        await trip(507, _refusal_body("no_space", _no_space_message(
+                            still, free)))
+            return msg
+
+        async def guarded_send(msg):
+            if state["tripped"]:
+                return  # we already answered
+            if msg["type"] == "http.response.start":
+                state["started"] = True
+            await send(msg)
+
+        try:
+            await self.app(scope, counted_receive, guarded_send)
+        except Exception:      # incl. an ExceptionGroup from a TaskGroup (3.11+)
+            if not state["tripped"]:
+                raise
+        finally:
+            if state["tripped"] or state["aborted"]:
+                # Starlette's parser only closes its spooled upload files on
+                # its own errors. A cancelled upload never gets there, and our
+                # OSError can arrive wrapped by the same-origin middleware's
+                # task group — either way a spool of up to 2 GB would be left
+                # as cyclic garbage until some later GC. Collect it now.
+                import gc
+                gc.collect()
 
 
 # v3.4.140: DNS-rebinding guard. The same-origin check below compares Origin
@@ -1557,23 +2165,23 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     # browsers do send Origin on cross-origin mutations. Same-origin UI fetches
     # send a matching Origin, so the dashboard is unaffected.
     _UNSAFE_METHODS = {"POST", "PUT", "DELETE", "PATCH"}
-    import socket as _socket
-    _own_hostname = _socket.gethostname()
+    _remember_this_server(config)
 
     @app.middleware("http")
     async def _same_origin_and_headers(request: Request, call_next):
         # v3.4.140: Host allowlist first, on EVERY method — a rebinding page
         # is same-origin, so it could otherwise read as well as write.
-        if not _host_allowed(request.headers.get("host", ""),
-                             _configured_hosts(CONFIG), _own_hostname):
+        # (_origin_refusal: the upload gate applies the same rules.)
+        why = _origin_refusal(request.headers.get("host", ""),
+                              request.headers.get("origin") or request.headers.get("referer"),
+                              request.url.netloc, request.method in _UNSAFE_METHODS)
+        if why == "host":
             return _host_rejected_response(request)
-        if request.method in _UNSAFE_METHODS:
-            source = request.headers.get("origin") or request.headers.get("referer")
-            if source and urlsplit(source).netloc != request.url.netloc:
-                return JSONResponse(
-                    status_code=403,
-                    content={"error": "Cross-origin request rejected."},
-                )
+        if why == "origin":
+            return JSONResponse(
+                status_code=403,
+                content={"error": "Cross-origin request rejected."},
+            )
         response = await call_next(request)
         # Defense-in-depth headers on every response. No Aerodrome page is ever
         # framed (the admin UI is always top-level), so DENY is safe and blocks
@@ -2528,8 +3136,6 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
     @app.post("/api/watchlist/add")
     def add_watchlist_entry(entry: WatchlistEntry):
-        watchlist = CONFIG.get("watchlist") or []
-
         new_entry = {"label": entry.label or entry.identifier}
         if entry.id_type == "icao":
             new_entry["icao"] = entry.identifier.upper()
@@ -2543,17 +3149,24 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         else:
             return JSONResponse(status_code=400, content={"error": f"Unknown id_type: {entry.id_type}"})
 
-        # Duplicate check — compare case-insensitively across all identifier types
-        for existing in watchlist:
-            if (existing.get("icao", "").upper() == new_entry.get("icao", "").upper() and
-                existing.get("tail", "").upper() == new_entry.get("tail", "").upper() and
-                existing.get("callsign", "").upper() == new_entry.get("callsign", "").upper() and
-                existing.get("model", "").lower() == new_entry.get("model", "").lower()):
-                return JSONResponse(status_code=409, content={"error": "Already in watchlist"})
+        # v3.4.148: the read-modify-write holds CONFIG_LOCK, and config.yaml
+        # is saved (all or nothing) BEFORE the running config changes — a
+        # failed save leaves both as they were and says why.
+        with config_io.CONFIG_LOCK:
+            watchlist = list(CONFIG.get("watchlist") or [])
+            # Duplicate check — compare case-insensitively across all identifier types
+            for existing in watchlist:
+                if (existing.get("icao", "").upper() == new_entry.get("icao", "").upper() and
+                    existing.get("tail", "").upper() == new_entry.get("tail", "").upper() and
+                    existing.get("callsign", "").upper() == new_entry.get("callsign", "").upper() and
+                    existing.get("model", "").lower() == new_entry.get("model", "").lower()):
+                    return JSONResponse(status_code=409, content={"error": "Already in watchlist"})
 
-        watchlist.append(new_entry)
-        CONFIG["watchlist"] = watchlist
-        _save_config()
+            watchlist.append(new_entry)
+            failed = _save_config_or_response({**CONFIG, "watchlist": watchlist})
+            if failed is not None:
+                return failed
+            CONFIG["watchlist"] = watchlist
         # v2.57.1: re-resolve tail-only entries so a new {tail: "..."}
         # entry surfaces in search filtering as soon as it's added,
         # provided hexdb_cache has the tail. Cheap (one SELECT per
@@ -2565,42 +3178,47 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
     @app.post("/api/watchlist/remove")
     def remove_watchlist_entry(entry: WatchlistEntry):
-        watchlist = CONFIG.get("watchlist") or []
         identifier = entry.identifier
         ident_upper = identifier.upper()
         ident_lower = identifier.lower()
 
-        # Find the matching entry first so we can grab its label for the
-        # optional history delete. If delete_history is false we'll just
-        # discard the label. Two entries could match (e.g. someone typed
-        # the same ICAO twice in different cases) — unlikely, but we take
-        # the first hit since the list comprehension below will drop all
-        # matches anyway.
-        matched = None
-        for e in watchlist:
-            if (e.get("icao", "").upper() == ident_upper or
-                    e.get("tail", "").upper() == ident_upper or
-                    e.get("callsign", "").upper() == ident_upper or
-                    e.get("model", "").lower() == ident_lower):
-                matched = e
-                break
+        # v3.4.148: same locked save-then-swap as add (the history delete
+        # below stays outside the lock).
+        with config_io.CONFIG_LOCK:
+            watchlist = CONFIG.get("watchlist") or []
+            # Find the matching entry first so we can grab its label for the
+            # optional history delete. If delete_history is false we'll just
+            # discard the label. Two entries could match (e.g. someone typed
+            # the same ICAO twice in different cases) — unlikely, but we take
+            # the first hit since the list comprehension below will drop all
+            # matches anyway.
+            matched = None
+            for e in watchlist:
+                if (e.get("icao", "").upper() == ident_upper or
+                        e.get("tail", "").upper() == ident_upper or
+                        e.get("callsign", "").upper() == ident_upper or
+                        e.get("model", "").lower() == ident_lower):
+                    matched = e
+                    break
 
-        if matched is None:
-            return JSONResponse(status_code=404, content={"error": f"'{identifier}' not found"})
+            if matched is None:
+                return JSONResponse(status_code=404, content={"error": f"'{identifier}' not found"})
 
-        matched_label = matched.get("label", "")
+            matched_label = matched.get("label", "")
 
-        # Filter out all matching entries from the config. Using the same
-        # predicate as the original loop so behavior is unchanged for the
-        # config side.
-        watchlist = [e for e in watchlist if not (
-            e.get("icao", "").upper() == ident_upper or
-            e.get("tail", "").upper() == ident_upper or
-            e.get("callsign", "").upper() == ident_upper or
-            e.get("model", "").lower() == ident_lower
-        )]
-        CONFIG["watchlist"] = watchlist
-        _save_config()
+            # Filter out all matching entries from the config. Using the same
+            # predicate as the original loop so behavior is unchanged for the
+            # config side.
+            watchlist = [e for e in watchlist if not (
+                e.get("icao", "").upper() == ident_upper or
+                e.get("tail", "").upper() == ident_upper or
+                e.get("callsign", "").upper() == ident_upper or
+                e.get("model", "").lower() == ident_lower
+            )]
+            failed = _save_config_or_response({**CONFIG, "watchlist": watchlist})
+            if failed is not None:
+                return failed
+            CONFIG["watchlist"] = watchlist
         # v2.57.1: re-resolve tail-only entries — same rationale as in
         # the add path. After a remove, the resolved-tails map should
         # no longer carry the removed tail.
@@ -7023,6 +7641,18 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 except Exception:
                     pass  # don't block config save on a check failure
 
+        # v3.4.148: settings that only make sense on THIS machine — a listen
+        # address that isn't one of its addresses, a database folder that
+        # doesn't exist — are refused here instead of failing at the next
+        # restart (with the web UI gone). Only keys that changed are checked.
+        problems = _machine_key_problems(new_cfg, CONFIG)
+        if problems:
+            msg = "Some settings don't work on this machine."
+            return JSONResponse(status_code=400, content={
+                "ok": False, "error": msg, "message": msg,
+                "errors": [{"path": p, "message": m} for p, m in problems],
+            })
+
         # Diff against current config to determine what changed
         changed_paths = diff_keys(CONFIG, new_cfg)
         needs_restart = requires_restart(changed_paths)
@@ -7041,21 +7671,28 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             _old_rcv.get("longitude") != _new_rcv.get("longitude")
         )
 
-        # Apply in-memory for live keys
-        for key in list(CONFIG.keys()):
-            if key not in new_cfg:
-                CONFIG.pop(key)
-        CONFIG.update(new_cfg)
-
-        # Persist to disk (preserving comments via ruamel.yaml if available)
-        try:
-            _save_config_preserving_comments()
-        except Exception as e:
-            logger.error(f"Failed to persist config: {e}")
-            return JSONResponse(
-                status_code=500,
-                content={"ok": False, "errors": [{"path": "", "message": str(e)}]},
-            )
+        # v3.4.148: persist FIRST (all or nothing; comments kept), then swap
+        # the running config — a failed write leaves both the file and the
+        # running config exactly as they were, and says why. update() before
+        # pop() so a reader never sees a required section missing.
+        with config_io.CONFIG_LOCK:
+            try:
+                _save_config(new_cfg)
+            except (config_io.ConfigWriteError, ValueError) as e:
+                logger.error(f"Failed to persist config: {e}")
+                msg = str(e)
+                if isinstance(e, ValueError):
+                    msg = f"Couldn't save config.yaml: {e}. Nothing was changed."
+                return JSONResponse(
+                    status_code=(507 if getattr(e, "disk_full", False)
+                                 else 400 if isinstance(e, ValueError) else 500),
+                    content={"ok": False, "error": msg, "message": msg,
+                             "errors": [{"path": "", "message": msg}]},
+                )
+            CONFIG.update(new_cfg)
+            for key in list(CONFIG.keys()):
+                if key not in new_cfg:
+                    CONFIG.pop(key)
 
         # Refresh the notifier with the new config. Cheap and idempotent;
         # always safe to call even if notifications.* didn't actually change.
@@ -7296,25 +7933,48 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 "errors": [{"path": p, "message": m} for p, m in errors],
             }
 
-        # Back up current config
+        # v3.4.148: it must also load the way the next start reads it, and
+        # its machine-specific settings (listen address, database folder)
+        # must work on this machine where they differ from the running ones.
+        try:
+            config_io.check_loadable(new_text)
+        except ValueError as e:
+            msg = f"This config couldn't start Aerodrome: {e}."
+            return False, {"ok": False, "error": msg, "message": msg}
+        problems = _machine_key_problems(parsed, CONFIG)
+        if problems:
+            msg = "Some settings don't work on this machine."
+            return False, {"ok": False, "error": msg, "message": msg,
+                           "errors": [{"path": p, "message": m} for p, m in problems]}
+
         ts = time.strftime("%Y%m%d-%H%M%S")
         backup_name = f"config.yaml.bak.{ts}"
         backup_path = Path(CONFIG_PATH).with_name(backup_name)
-        try:
-            shutil.copy2(CONFIG_PATH, backup_path)
-        except Exception as e:
-            return False, {"ok": False, "error": f"Could not back up current config: {e}"}
+        with config_io.CONFIG_LOCK:
+            # Back up current config — atomically, so a half-written .bak is
+            # never later offered as a restore point (or used by recovery).
+            try:
+                config_io.write_text(backup_path, Path(CONFIG_PATH).read_text(encoding="utf-8"),
+                                     check=False)
+            except (OSError, ValueError, config_io.ConfigWriteError) as e:
+                msg = f"Could not back up the current config: {e}"
+                return False, {"ok": False, "error": msg, "message": msg,
+                               "_status": 507 if getattr(e, "disk_full", False) else 500}
 
-        # Write the new config
-        try:
-            Path(CONFIG_PATH).write_text(new_text)
-        except Exception as e:
-            return False, {"ok": False, "error": f"Could not write new config: {e}"}
+            # Write the new config — verbatim (the user's comments kept), all
+            # or nothing.
+            try:
+                config_io.write_text(CONFIG_PATH, new_text, check=False)
+            except config_io.ConfigWriteError as e:
+                return False, {"ok": False, "error": str(e), "message": str(e),
+                               "_status": 507 if e.disk_full else 500}
 
-        # Reload into in-memory CONFIG so subsequent API calls see the new values
-        for k in list(CONFIG.keys()):
-            CONFIG.pop(k, None)
-        CONFIG.update(parsed)
+            # Reload into in-memory CONFIG so subsequent API calls see the
+            # new values (update before pop: no reader sees a section missing)
+            CONFIG.update(parsed)
+            for k in list(CONFIG.keys()):
+                if k not in parsed:
+                    CONFIG.pop(k, None)
 
         logger.info(f"Config replaced from {source_label}; prior config saved as {backup_name}")
 
@@ -7351,7 +8011,8 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
                 ok, payload = _apply_config_from_text(text, f"backup {name}")
                 if not ok:
-                    return JSONResponse(status_code=400, content=payload)
+                    return JSONResponse(status_code=payload.pop("_status", 400),
+                                        content=payload)
 
                 # Trigger restart via helper (handles --no-block + fallback)
                 restart_ok, note = _do_restart()
@@ -7411,14 +8072,16 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 # v3.4.9: size-bounded stream-read. Was unbounded `await file.read()`
                 # followed by post-hoc len() check, which allocated full upload
                 # before rejection. Now aborts as soon as the 256 KB cap is hit.
-                raw, err = _read_upload_bounded(file, 256 * 1024)
+                raw, err = _read_upload_bounded(file, CONFIG_IMPORT_MAX_BYTES)
                 if err is not None:
-                    return JSONResponse(status_code=413, content={"ok": False, "error": err})
+                    return JSONResponse(status_code=413, content={
+                        "ok": False, "error": err, "message": err})
                 text = raw.decode("utf-8", errors="replace")
 
                 ok, payload = _apply_config_from_text(text, f"upload {file.filename!r}")
                 if not ok:
-                    return JSONResponse(status_code=400, content=payload)
+                    return JSONResponse(status_code=payload.pop("_status", 400),
+                                        content=payload)
 
                 # Trigger restart via helper (handles --no-block + fallback)
                 restart_ok, note = _do_restart()
@@ -7454,60 +8117,47 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     #     installed first (v3.3.1); an external one is never touched
 
     @app.get("/api/backup/export")
-    def backup_export():
-        """Build + stream a zip containing config + DB + ntfy config.
-        Size depends on the database; can be large (100MB+ for a year of
-        history). Streamed rather than built-in-memory to avoid OOM."""
-        import io, json, zipfile, tempfile
-        from fastapi.responses import StreamingResponse
+    def backup_export(request: Request):
+        """Build a zip of config + DB + ntfy config and send it.
 
-        install_dir = Path(__file__).parent
-
-        # v3.4.0: zip-build uses the shared helper. The helper writes
-        # streamed to the destination file-object; for browser download
-        # we use a temp file on disk rather than BytesIO so we don't
-        # hold a 100GB zip in memory just to stream it out.
-        with tempfile.NamedTemporaryFile(suffix=".zip", delete=False,
-                                          dir=str(install_dir / ".backups")
-                                          if (install_dir / ".backups").is_dir()
-                                          else None) as tmp:
-            tmp_path = tmp.name
+        v3.4.148: only for this page, one at a time, and never leaves a file
+        behind. A request another website's page made (Sec-Fetch-Site /
+        Origin / Referer say so) gets 403 before anything is built; the UI,
+        a typed URL and curl are unaffected. The zip is built in
+        .backups/.tmp (0600) under the maintenance lock, opened, and its
+        name removed BEFORE the response starts: an abandoned download, a
+        dropped connection or a crash can no longer leave a database-sized
+        file behind (the space is freed when the response closes the file,
+        whatever happens to the client)."""
+        import uuid
+        refusal = _cross_site_refusal(request)
+        if refusal is not None:
+            return refusal
         try:
-            result = _build_backup_zip(install_dir, tmp_path)
-            if not result["ok"]:
-                try: os.unlink(tmp_path)
-                except OSError: pass
-                return JSONResponse(status_code=500, content=result)
-            ts = time.strftime("%Y%m%d-%H%M%S")
-            size = os.path.getsize(tmp_path)
-
-            # Stream the temp file out, then delete it. FastAPI's
-            # StreamingResponse can consume an iterator; we yield in
-            # chunks so we never load the whole zip into memory.
-            def _stream_and_cleanup():
+            with _maintenance("a backup download"):
+                install_dir = _install_dir()
+                need = 2 * _db_size_bytes(install_dir) + UPLOAD_FREE_HEADROOM_BYTES
+                tmp_dir = _backup_tmp_dir(install_dir)
+                free = shutil.disk_usage(str(tmp_dir)).free
+                if free < need:
+                    return _no_space_response(need, free, "build this backup")
+                tmp_path = tmp_dir / f"export-{uuid.uuid4().hex}.zip"
                 try:
-                    with open(tmp_path, "rb") as f:
-                        while True:
-                            chunk = f.read(1024 * 1024)  # 1 MB chunks
-                            if not chunk:
-                                break
-                            yield chunk
+                    result = _build_backup_zip(install_dir, str(tmp_path))
+                    if not result["ok"]:
+                        return JSONResponse(status_code=507 if result.get("disk_full") else 500,
+                                            content={**result, "error": result.get("message")})
+                    f = open(tmp_path, "rb")
+                    size = os.fstat(f.fileno()).st_size
                 finally:
-                    try: os.unlink(tmp_path)
-                    except OSError: pass
-
-            return StreamingResponse(
-                _stream_and_cleanup(),
-                media_type="application/zip",
-                headers={
-                    "Content-Disposition": f'attachment; filename="aerodrome-backup-{ts}.zip"',
-                    "Content-Length": str(size),
-                },
-            )
-        except Exception:
-            try: os.unlink(tmp_path)
-            except OSError: pass
-            raise
+                    try:
+                        os.unlink(tmp_path)        # the name is gone before we return
+                    except OSError:
+                        pass
+        except _Busy as b:
+            return _busy_response(b)
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        return _open_file_response(f, size, f"aerodrome-backup-{ts}.zip")
 
     def _build_backup_zip(install_dir, dest_path, progress_callback=None):
         """v3.4.0 shared backup-build logic. Writes the zip incrementally to
@@ -7570,7 +8220,8 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         # incrementally as we add entries, so the zip never exists
         # fully in memory.
         try:
-            with open(dest_path, "wb") as dest_f:
+            # v3.4.148: 0600 — a backup holds the config and the database.
+            with atomic_io.open_private(dest_path) as dest_f:
                 with zipfile.ZipFile(dest_f, "w",
                                      compression=zipfile.ZIP_DEFLATED,
                                      compresslevel=6) as zf:
@@ -7583,13 +8234,13 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                     if manifest["includes"]["database"]:
                         # SQLite online backup → temp file → zip it in.
                         # The temp file is the DB-sized intermediate; it
-                        # gets removed after zf.write reads it.
-                        with tempfile.NamedTemporaryFile(
-                            suffix=".db", delete=False,
-                            dir=str(install_dir / ".backups")
-                            if (install_dir / ".backups").is_dir() else None
-                        ) as tmp_db:
-                            tmp_db_path = tmp_db.name
+                        # gets removed after zf.write reads it. v3.4.148:
+                        # always in .backups/.tmp (0600; swept at startup),
+                        # never the system temp dir.
+                        _fd, tmp_db_path = tempfile.mkstemp(
+                            dir=str(_backup_tmp_dir(install_dir)), prefix="snapshot-",
+                            suffix=".db")
+                        os.close(_fd)
                         try:
                             if progress_callback:
                                 progress_callback("db_snapshot", 15,
@@ -7608,8 +8259,9 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                                 progress_callback("db_zipped", 90,
                                                   os.path.getsize(dest_path))
                         finally:
-                            try: os.unlink(tmp_db_path)
-                            except OSError: pass
+                            for _sfx in ("", "-journal", "-wal", "-shm"):
+                                try: os.unlink(tmp_db_path + _sfx)
+                                except OSError: pass
 
                     if ntfy_config_text is not None:
                         zf.writestr("ntfy/server.yml", ntfy_config_text)
@@ -7629,7 +8281,10 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             logger.error(f"Backup build failed: {e}")
             try: os.unlink(dest_path)
             except OSError: pass
-            return {"ok": False, "message": str(e)}
+            full = atomic_io.is_disk_full(e) or "database or disk is full" in str(e)
+            msg = ("Not enough free disk space to build the backup. Nothing was kept."
+                   if full else str(e))
+            return {"ok": False, "message": msg, "disk_full": full}
 
     @app.get("/api/backup/preview")
     def backup_preview():
@@ -7698,12 +8353,50 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         warnings: List[str]
         restart_note: Optional[str] = None
 
+    async def _one_backup_file(request: Request):
+        """v3.4.148: the restore upload's form, parsed with at most ONE file
+        part and no other fields. FastAPI's File() parses with Starlette's
+        defaults (1000 files and 1000 fields, each up to 1 MB held in
+        memory), so one request of many small parts could hold gigabytes of
+        RAM within the 2 GB cap. Yields the UploadFile, a message saying
+        what was wrong with the form (400), or the 507 response when the
+        disk filled while the upload was being received."""
+        from starlette.datastructures import UploadFile as _UploadFile
+        from starlette.exceptions import HTTPException as _FormError
+        problem = None
+        try:
+            form = await request.form(max_files=1, max_fields=0)
+        except _FormError as e:
+            problem = f"This upload isn't a single backup file ({e.detail}). Choose one backup zip."
+        except Exception as e:
+            # As FastAPI's own form parsing did: a body that didn't arrive in
+            # full (the user cancelled, or the size gate stopped it) becomes a
+            # 400 nobody reads — not an exception whose traceback would keep
+            # the partial spool open until some later garbage collection.
+            # The disk filling up (from elsewhere) while the upload was being
+            # spooled is a 507, as when it fills while the upload is staged.
+            problem = (_upload_disk_filled_response() if atomic_io.is_disk_full(e)
+                       else "The upload didn't arrive in full. Nothing was changed.")
+        if problem is not None:            # (outside the except: nothing kept alive)
+            yield problem
+            return
+        try:
+            f = form.get("file")
+            yield f if isinstance(f, _UploadFile) else "No backup file was uploaded."
+        finally:
+            await form.close()
+
     @app.post("/api/backup/import")
-    async def backup_import(file: UploadFile = File(...),
+    async def backup_import(file=Depends(_one_backup_file),
                             background_tasks: BackgroundTasks = None):
         """Restore from a zip produced by /api/backup/export (see
         _backup_import_locked). v3.4.147: one maintenance operation at a
         time; the lock is kept for a while once the restart is scheduled."""
+        if isinstance(file, str):
+            return JSONResponse(status_code=400, content={
+                "ok": False, "code": "bad_upload", "error": file, "message": file})
+        if isinstance(file, JSONResponse):
+            return file
         try:
             with _maintenance("a restore") as tok:
                 result = await _backup_import_locked(file, background_tasks)
@@ -7741,7 +8434,10 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         # (avoids cross-fs rename later).
         uploads_dir = install_dir / ".backups" / ".uploads"
         try:
-            uploads_dir.mkdir(parents=True, exist_ok=True)
+            # v3.4.148: .backups/ and .uploads/ are created 0700, the staged
+            # upload 0600 (a backup holds the config and the database).
+            atomic_io.ensure_private_dir(install_dir / ".backups")
+            atomic_io.ensure_private_dir(uploads_dir)
         except OSError as e:
             return JSONResponse(status_code=500, content={
                 "ok": False,
@@ -7756,22 +8452,30 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         # transport. The cap is checked progressively during the
         # stream so we abort early rather than after fully receiving
         # a 50 GB upload that's going to be rejected anyway.
-        MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB
+        MAX_UPLOAD_BYTES = BACKUP_UPLOAD_MAX_BYTES  # 2 GB (the middleware's cap too)
 
         upload_tmp = uploads_dir / f"upload-{int(time.time()*1000)}-{os.getpid()}.zip"
         bytes_written = 0
         try:
-            with open(upload_tmp, "wb") as out:
-                while True:
-                    chunk = await file.read(1024 * 1024)  # 1 MB chunks
-                    if not chunk:
-                        break
-                    out.write(chunk)
-                    bytes_written += len(chunk)
-                    # v3.4.1: progressive cap check — abort early
-                    if bytes_written > MAX_UPLOAD_BYTES:
-                        # Close out cleanly before delete
-                        break
+            try:
+                with atomic_io.open_private(upload_tmp) as out:
+                    while True:
+                        chunk = await file.read(1024 * 1024)  # 1 MB chunks
+                        if not chunk:
+                            break
+                        out.write(chunk)
+                        bytes_written += len(chunk)
+                        # v3.4.1: progressive cap check — abort early
+                        if bytes_written > MAX_UPLOAD_BYTES:
+                            # Close out cleanly before delete
+                            break
+            except OSError as e:
+                if not atomic_io.is_disk_full(e):
+                    raise
+                # v3.4.148: the disk filled while the upload was staged.
+                try: upload_tmp.unlink()
+                except OSError: pass
+                return _upload_disk_filled_response()
 
             if bytes_written > MAX_UPLOAD_BYTES:
                 try: upload_tmp.unlink()
@@ -7961,9 +8665,18 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             # Back up the current config before overwriting
             cfg_backup_name = f"config.yaml.bak.{ts}.pre-restore"
             cfg_backup_path = Path(CONFIG_PATH).with_name(cfg_backup_name)
-            if Path(CONFIG_PATH).is_file():
-                shutil.copy2(CONFIG_PATH, cfg_backup_path)
-            Path(CONFIG_PATH).write_text(cfg_text)
+            # v3.4.148: both writes all or nothing, 0600, under CONFIG_LOCK —
+            # in the threadpool, so the event loop never waits for the lock
+            # (the collector may hold it across a `sudo tee`).
+            def _write_restored_config():
+                with config_io.CONFIG_LOCK:
+                    if Path(CONFIG_PATH).is_file():
+                        config_io.write_text(cfg_backup_path,
+                                             Path(CONFIG_PATH).read_text(encoding="utf-8"),
+                                             check=False)
+                    config_io.write_text(CONFIG_PATH, cfg_text, check=False)
+            from starlette.concurrency import run_in_threadpool
+            await run_in_threadpool(_write_restored_config)
             # Reload in-memory CONFIG so subsequent calls see new values
             # (restart picks it up properly, but this keeps the next few
             # API calls coherent while restart is queued)
@@ -8323,37 +9036,31 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             return _busy_response(b)
 
     def _create_server_side_backup_locked():
+        """v3.4.148: the zip is built as .backups/.tmp/aerodrome-backup-<ts>
+        .zip.partial (0600) and only renamed into .backups/ once it is
+        complete and hashed — a full disk, a crash or a kill never leaves a
+        cut-short zip in the backup list (the next start clears the
+        partial). The space check counts the database snapshot AND the zip
+        (2x the database + 256 MB)."""
+        import hashlib
         install_dir = _install_dir()
         backups_dir = install_dir / ".backups"
         try:
-            backups_dir.mkdir(parents=True, exist_ok=True)
+            atomic_io.ensure_private_dir(backups_dir)
+            tmp_dir = _backup_tmp_dir(install_dir)
         except OSError as e:
+            msg = f"Could not create the .backups folder: {e}"
             return JSONResponse(status_code=500, content={
-                "ok": False, "message": f"Could not create .backups dir: {e}",
-            })
+                "ok": False, "error": msg, "message": msg})
 
-        # Disk-space pre-check. The zip won't exceed the DB size +
-        # a few KB for manifest/config/ntfy, so use DB size + 1GB
-        # headroom as an honest lower bound.
-        db_path = Path(CONFIG.get("data", {}).get("db_file", "aircraft_history.db"))
-        if not db_path.is_absolute():
-            db_path = install_dir / db_path
-        current_db_size = db_path.stat().st_size if db_path.is_file() else 0
-        free_bytes = shutil.disk_usage(str(install_dir)).free
-        need_bytes = current_db_size + (1024 * 1024 * 1024)  # +1GB safety
+        need_bytes = 2 * _db_size_bytes(install_dir) + UPLOAD_FREE_HEADROOM_BYTES
+        free_bytes = shutil.disk_usage(str(backups_dir)).free
         if free_bytes < need_bytes:
-            return JSONResponse(status_code=507, content={
-                "ok": False,
-                "message": (
-                    f"Not enough free disk space. Backup needs ~"
-                    f"{need_bytes // (1024*1024)} MB free, "
-                    f"have {free_bytes // (1024*1024)} MB."
-                ),
-            })
+            return _no_space_response(need_bytes, free_bytes, "build this backup")
 
         ts = time.strftime("%Y%m%d-%H%M%S")
+        partial = tmp_dir / f"aerodrome-backup-{ts}.zip.partial"
         dest_path = backups_dir / f"aerodrome-backup-{ts}.zip"
-        sha_path = backups_dir / f"aerodrome-backup-{ts}.zip.sha256"
 
         _server_side_backup_state.update({
             "running": True, "phase": "starting", "percent": 0,
@@ -8369,29 +9076,49 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
         started = time.time()
         try:
-            result = _build_backup_zip(install_dir, str(dest_path),
-                                       progress_callback=_progress)
-        finally:
-            _server_side_backup_state["running"] = False
+            try:
+                try:
+                    os.unlink(partial)     # a stale one (same second); it's created afresh
+                except FileNotFoundError:
+                    pass
+                result = _build_backup_zip(install_dir, str(partial),
+                                           progress_callback=_progress)
+                if not result.get("ok"):
+                    return JSONResponse(status_code=507 if result.get("disk_full") else 500,
+                                        content={**result, "error": result.get("message")})
+                # The sidecar hash is computed on the finished partial, so the
+                # listed zip and its hash always match.
+                h = hashlib.sha256()
+                with open(partial, "rb") as f:
+                    for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                        h.update(chunk)
+                sha_hex = h.hexdigest()
+                n = 1
+                while os.path.lexists(dest_path):      # same second as another one
+                    n += 1
+                    dest_path = backups_dir / f"aerodrome-backup-{ts}-{n}.zip"
+                os.replace(partial, dest_path)
+                atomic_io.fsync_dir(backups_dir)
+            finally:
+                _server_side_backup_state["running"] = False
+                try:
+                    os.unlink(partial)
+                except OSError:
+                    pass
+        except OSError as e:
+            msg = ("Not enough free disk space to build the backup. Nothing was kept."
+                   if atomic_io.is_disk_full(e) else f"Backup failed: {e}")
+            return JSONResponse(status_code=507 if atomic_io.is_disk_full(e) else 500,
+                                content={"ok": False, "error": msg, "message": msg})
 
-        if not result.get("ok"):
-            try: dest_path.unlink()
-            except OSError: pass
-            return JSONResponse(status_code=500, content=result)
-
-        # Compute and cache sha256 as a sidecar file so subsequent
-        # list operations don't have to re-hash multi-GB zips.
+        # Cache the sha256 as a sidecar file so list operations don't have
+        # to re-hash multi-GB zips.
+        sha_path = dest_path.with_name(dest_path.name + ".sha256")
         try:
-            import hashlib
-            h = hashlib.sha256()
-            with open(dest_path, "rb") as f:
-                for chunk in iter(lambda: f.read(1024 * 1024), b""):
-                    h.update(chunk)
-            sha_hex = h.hexdigest()
             atomic_io.write_atomic(sha_path, f"{sha_hex}  {dest_path.name}\n")
-        except Exception as e:
+        except OSError as e:
             logger.warning(f"sha256 sidecar write failed: {e}")
-            sha_hex = None
+        _server_side_backup_state["path"] = str(dest_path)
 
         duration = time.time() - started
         return {
@@ -9703,7 +10430,10 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         maintenance. `busy`: the operation holding the lock, or null.
         `update`: the last update result (.update-last-result.json: applied,
         rolled_back or refused), or null. `update_pending`: the update
-        being confirmed right now, or null."""
+        being confirmed right now, or null. v3.4.148 `config`: what the last
+        startup did when config.yaml couldn't be used (config-recovery.json:
+        kind "unreadable" or "bind", reason, source, source_date, web_host,
+        web_port, broken_copy, acknowledged), or null."""
         inst = _install_dir()
         j = updater.pending(inst)
         pend = None
@@ -9714,14 +10444,24 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             # restart call returned OK but no restart has come (yet).
             pend["waiting_for_restart"] = j.get("applier_pid") == os.getpid()
         return {"busy": _MAINT.holder(), "update": updater.last_result(inst),
-                "update_pending": pend}
+                "update_pending": pend,
+                "config": config_io.read_recovery_notice(CONFIG_PATH)}
 
     class MaintenanceAck(BaseModel):
         kind: str
 
     @app.post("/api/maintenance/ack")
     def maintenance_ack(body: MaintenanceAck):
-        """v3.4.147: dismiss a shown result (kind "update")."""
+        """v3.4.147: dismiss a shown result (kind "update"; v3.4.148 also
+        "config")."""
+        if body.kind == "config":
+            try:
+                done = config_io.ack_recovery_notice(CONFIG_PATH)
+            except OSError as e:
+                msg = f"Could not record that: {e}"
+                return JSONResponse(status_code=507 if atomic_io.is_disk_full(e) else 500,
+                                    content={"ok": False, "error": msg, "message": msg})
+            return {"ok": True, "acknowledged": done}
         if body.kind != "update":
             return JSONResponse(status_code=400, content={
                 "ok": False, "error": f"Unknown kind {body.kind!r}.",
@@ -9976,18 +10716,17 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
         install_dir = _install_dir()
         update_dir = install_dir / "update"
-        MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
+        MAX_UPLOAD_BYTES = UPDATE_UPLOAD_MAX_BYTES  # 50 MB (the middleware's cap too)
 
         # v3.4.9: size-bounded stream-read. Was unbounded `await file.read()`
         # followed by post-hoc len() check, which allocated full upload
         # before rejection. Now aborts as soon as the 50 MB cap is hit.
         raw, err = _read_upload_bounded(file, MAX_UPLOAD_BYTES)
         if err is not None:
+            _msg = (f"{err}. Aerodrome release zips are a few MB; "
+                    f"did you upload a full backup?")
             return JSONResponse(status_code=413, content={
-                "ok": False,
-                "error": (f"{err}. Aerodrome release zips are a few MB; "
-                          f"did you upload a full backup?")
-            })
+                "ok": False, "error": _msg, "message": _msg})
         if not raw:
             return JSONResponse(status_code=400, content={
                 "ok": False, "error": "Uploaded file is empty"
@@ -10520,6 +11259,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         never touched by an update)."""
         try:
             if db_path.exists():
+                atomic_io.ensure_private_dir(backup_dir.parent)   # .backups/: 0700 when new
                 backup_dir.mkdir(parents=True, exist_ok=True)
                 _snapshot_path = backup_dir / f"{db_path.name}.snapshot"
                 _t0 = time.time()
@@ -11385,12 +12125,32 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
     @app.post("/api/setup/switch-to-real")
     async def switch_to_real_execute(request: Request):
-        """Run the demo→real transition (see _switch_to_real_locked).
+        """Run the demo→real transition (see _switch_to_real_work).
         v3.4.147: one maintenance operation at a time; the lock is kept for
-        a while once the restart is requested."""
+        a while once the restart is requested. v3.4.148: a thin async shell
+        — it reads the JSON body (that needs await) and runs the blocking
+        work (the receiver probe, systemctl, file writes) in the threadpool,
+        so the page and every other request stay responsive meanwhile. The
+        lock is try-only, so taking it here on the event loop is safe."""
+        from starlette.concurrency import run_in_threadpool
         try:
             with _maintenance("switching to real data") as tok:
-                result = await _switch_to_real_locked(request)
+                # Refuse if not actually in demo mode — defensive guard
+                # against accidental nukes via stale browser state or
+                # scripted retries.
+                if not bool((CONFIG.get("demo") or {}).get("enabled", False)):
+                    return {
+                        "ok": False,
+                        "error": "Refusing to run switch-to-real on a non-demo install.",
+                        "steps": [],
+                    }
+                try:
+                    body = await request.json()
+                except Exception:
+                    return {"ok": False, "error": "Invalid JSON body.", "steps": []}
+                if not isinstance(body, dict):
+                    return {"ok": False, "error": "Invalid JSON body.", "steps": []}
+                result = await run_in_threadpool(_switch_to_real_work, body)
                 if isinstance(result, dict) and result.get("ok"):
                     _MAINT.park(tok, "restarting after switching to real data",
                                 _RESTART_HOLD_SEC)
@@ -11398,8 +12158,8 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         except _Busy as b:
             return _busy_response(b)
 
-    async def _switch_to_real_locked(request: Request):
-        """Execute the demo→real transition.
+    def _switch_to_real_work(body: dict):
+        """Execute the demo→real transition (runs in the threadpool).
 
         Step 0 — reachability test on the new receiver. If unreachable,
             abort without touching anything (defends against typo'd IPs
@@ -11414,25 +12174,17 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
         Returns {ok: bool, error: str|None, steps: [...]} so the wizard
         can advance or display the failure point.
+
+        v3.4.148: the new config.yaml is rendered and STAGED (written to a
+        synced temp file — every step that can fail for lack of space)
+        before the feeder is stopped or the demo database deleted; step 3
+        only renames it into place. A full disk now stops the switch with
+        nothing touched.
         """
         import os as _os
         import subprocess as _subprocess
         import requests as _req
         import yaml as _yaml
-
-        # Refuse if not actually in demo mode — defensive guard against
-        # accidental nukes via stale browser state or scripted retries.
-        if not bool((CONFIG.get("demo") or {}).get("enabled", False)):
-            return {
-                "ok": False,
-                "error": "Refusing to run switch-to-real on a non-demo install.",
-                "steps": [],
-            }
-
-        try:
-            body = await request.json()
-        except Exception:
-            return {"ok": False, "error": "Invalid JSON body.", "steps": []}
 
         new_ip = (body.get("receiver_ip") or "").strip()
         new_port = body.get("receiver_port")
@@ -11525,6 +12277,16 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                     "error": ("These settings aren't valid: "
                               + "; ".join(f"{p}: {m}" for p, m in errors[:3])),
                     "steps": steps}
+        # v3.4.148: stage the new config.yaml now (comments kept where they
+        # read back the same), before the feeder or the database is touched.
+        try:
+            _staged_cfg = config_io.stage_text(CONFIG_PATH,
+                                               config_io.render_config(CONFIG_PATH, cfg))
+        except (config_io.ConfigWriteError, ValueError) as e:
+            msg = str(e) if isinstance(e, config_io.ConfigWriteError) \
+                else f"Couldn't save config.yaml: {e}. Nothing was changed."
+            _step("update_config", False, msg)
+            return {"ok": False, "error": msg, "steps": steps}
 
         # ----- Step 1: stop + disable + remove the feeder service -----
         feeder_unit = "aerodrome-synthetic-feeder"
@@ -11542,6 +12304,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                   "Synthetic feeder stopped, disabled, and removed.")
         except Exception as e:
             _step("stop_feeder_service", False, str(e))
+            config_io.discard(_staged_cfg)
             return {"ok": False,
                     "error": "Failed to remove feeder service.",
                     "steps": steps}
@@ -11569,14 +12332,17 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                   f"Removed: {', '.join(removed) if removed else '(nothing to remove)'}")
         except Exception as e:
             _step("nuke_demo_db", False, str(e))
+            config_io.discard(_staged_cfg)
             return {"ok": False,
                     "error": "Failed to clear demo database.",
                     "steps": steps}
 
         # ----- Step 3: clear watchlist + update config -----
+        # A rename of the file staged above: it needs no free space.
         try:
-            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-                _yaml.safe_dump(cfg, f, default_flow_style=False, sort_keys=False)
+            with config_io.CONFIG_LOCK:
+                config_io.commit(_staged_cfg, CONFIG_PATH)
+            # (last-good is written once this config has started — step 4.)
             _step("update_config", True,
                   "Receiver pointed at real address, demo flag off, watchlist cleared.")
         except Exception as e:
@@ -12477,53 +13243,29 @@ except Exception:
     pass
 
 
-def _save_config():
+def _save_config(cfg=None):
+    """v3.4.148: persist `cfg` (default: CONFIG) to config.yaml — all or
+    nothing, comments kept when possible, through config_io under
+    CONFIG_LOCK. RAISES config_io.ConfigWriteError (the file is untouched;
+    .disk_full → 507) or ValueError (the config couldn't start the
+    service): callers tell the user. Before, a failed save was only logged,
+    so a full disk could report success with config.yaml cut short."""
+    config_io.save_config(CONFIG_PATH, CONFIG if cfg is None else cfg)
+    logger.info("Config saved")
+
+
+def _save_config_or_response(cfg):
+    """_save_config for handlers: None on success, else the error response
+    ({ok: false, error, message}; 507 disk full, 400 refused, 500 other)."""
     try:
-        with open(CONFIG_PATH, "w") as f:
-            yaml.dump(CONFIG, f, default_flow_style=False, sort_keys=False)
-        logger.info("Config saved")
-    except Exception as e:
+        _save_config(cfg)
+        return None
+    except config_io.ConfigWriteError as e:
         logger.error(f"Failed to save config: {e}")
-
-
-def _save_config_preserving_comments():
-    """Save CONFIG to disk, preserving comments and formatting from the live file
-    when possible (via ruamel.yaml). Falls back to plain PyYAML if unavailable."""
-    try:
-        from ruamel.yaml import YAML
-        ry = YAML()
-        ry.preserve_quotes = True
-        ry.indent(mapping=2, sequence=4, offset=2)
-
-        # Load existing file with ruamel so we keep its comments, then overwrite
-        # values with our in-memory config recursively.
-        with open(CONFIG_PATH) as f:
-            doc = ry.load(f)
-
-        def _overlay(target, source):
-            """Apply source values onto target, preserving comments in target.
-            Removes keys from target that don't exist in source."""
-            # Remove keys no longer present
-            for k in list(target.keys()):
-                if k not in source:
-                    del target[k]
-            # Apply values from source
-            for k, v in source.items():
-                if k in target and isinstance(target[k], dict) and isinstance(v, dict):
-                    _overlay(target[k], v)
-                else:
-                    target[k] = v
-
-        if doc is None:
-            doc = {}
-        _overlay(doc, CONFIG)
-
-        with open(CONFIG_PATH, "w") as f:
-            ry.dump(doc, f)
-        logger.info("Config saved (comments preserved)")
-    except ImportError:
-        # ruamel.yaml not installed — fall back to plain save
-        _save_config()
-    except Exception as e:
-        logger.error(f"Failed to persist config via ruamel: {e}; falling back")
-        _save_config()
+        return JSONResponse(status_code=507 if e.disk_full else 500,
+                            content={"ok": False, "error": str(e), "message": str(e)})
+    except ValueError as e:
+        logger.error(f"Refused to save config: {e}")
+        msg = f"Couldn't save config.yaml: {e}. Nothing was changed."
+        return JSONResponse(status_code=400,
+                            content={"ok": False, "error": msg, "message": msg})

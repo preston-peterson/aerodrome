@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Version: 3.4.147
+# Version: 3.4.148
 """
 main.py — Aerodrome ADS-B Tracker
 
@@ -13,7 +13,6 @@ Usage:
 import argparse
 import logging
 import os
-import shutil
 import signal
 import sys
 import threading
@@ -38,11 +37,12 @@ except Exception as _e:          # never let the guard be what stops startup
 import yaml
 import uvicorn
 
+import config_io
 from collector import (init_db, build_watchlist_lookup, fetch_and_store,
                        set_db_path, _open_db_conn, set_db_tuning_profile,
                        set_receiver_location, check_capacity_alerts,
                        refresh_query_planner_stats)
-from server import get_app
+from server import get_app, prepare_backup_tmp, tighten_existing_private_files
 
 BASE_DIR = Path(__file__).parent
 CONFIG_PATH = BASE_DIR / "config.yaml"
@@ -142,11 +142,27 @@ def migrate_config(config: dict) -> dict:
     if not added and not removed:
         return config
 
-    # Back up first
+    # v3.4.148: render the merge to text and check it loads the way the next
+    # start reads it BEFORE anything is written. ruamel writes YAML 1.2 and
+    # this file is read with PyYAML (1.1), so a merge that wouldn't read back
+    # exactly as the plain-dict merge takes the plain path instead.
+    import io
+    buf = io.StringIO()
+    try:
+        ryaml.dump(live, buf)
+        merged = config_io.check_loadable(buf.getvalue())
+        if merged != _plain_merged(config):
+            raise ValueError("the merged config doesn't read back the same")
+    except Exception:
+        return _migrate_config_plain(config)
+
+    # Back up first. Both writes go through config_io: a failed write leaves
+    # config.yaml byte-identical, except in the two in-place cases that
+    # config_io.ConfigWriteError describes.
     ts = time.strftime("%Y%m%d-%H%M%S")
     backup_path = CONFIG_PATH.with_name(f"config.yaml.bak.{ts}")
     try:
-        shutil.copy2(CONFIG_PATH, backup_path)
+        config_io.write_text(backup_path, CONFIG_PATH.read_text(encoding="utf-8"), check=False)
     except Exception as e:
         print(f"WARNING: Could not back up config before migration: {e}")
         return config
@@ -154,9 +170,8 @@ def migrate_config(config: dict) -> dict:
 
     # Write merged config back (preserves comments from the user's original)
     try:
-        with open(CONFIG_PATH, "w") as f:
-            ryaml.dump(live, f)
-    except Exception as e:
+        config_io.write_text(CONFIG_PATH, buf.getvalue(), check=False)
+    except config_io.ConfigWriteError as e:
         print(f"ERROR: Could not write merged config: {e}")
         return config
 
@@ -173,9 +188,20 @@ def migrate_config(config: dict) -> dict:
     print(f"Your existing settings and comments were preserved.")
     print("=" * 60)
 
-    # Reload via plain PyYAML so the rest of the app gets a vanilla dict
-    with open(CONFIG_PATH) as f:
-        return yaml.safe_load(f)
+    # The merged text as plain PyYAML reads it (checked above), so the rest
+    # of the app gets a vanilla dict.
+    return merged
+
+
+def _plain_merged(config: dict) -> dict:
+    """What the migration should produce, computed on plain dicts."""
+    import copy
+    with open(CONFIG_EXAMPLE_PATH) as f:
+        example = yaml.safe_load(f) or {}
+    out = copy.deepcopy(config)
+    _deep_merge_missing(out, example)
+    _strip_deprecated_keys(out)
+    return out
 
 
 def _migrate_config_plain(config: dict) -> dict:
@@ -195,16 +221,16 @@ def _migrate_config_plain(config: dict) -> dict:
     ts = time.strftime("%Y%m%d-%H%M%S")
     backup_path = CONFIG_PATH.with_name(f"config.yaml.bak.{ts}")
     try:
-        shutil.copy2(CONFIG_PATH, backup_path)
+        config_io.write_text(backup_path, CONFIG_PATH.read_text(encoding="utf-8"), check=False)
     except Exception as e:
         print(f"WARNING: Could not back up config before migration: {e}")
         return config
     _prune_config_backups()
 
     try:
-        with open(CONFIG_PATH, "w") as f:
-            yaml.dump(config, f, default_flow_style=False, sort_keys=False)
-    except Exception as e:
+        config_io.write_text(CONFIG_PATH, yaml.safe_dump(
+            config, default_flow_style=False, sort_keys=False, allow_unicode=True))
+    except (config_io.ConfigWriteError, ValueError) as e:
         print(f"ERROR: Could not write merged config: {e}")
         return config
 
@@ -254,27 +280,77 @@ def _strip_deprecated_keys(config) -> list:
     return removed
 
 
-def load_config() -> dict:
+def load_config(command: str = "start") -> dict:
+    """The config to run with.
+
+    start: config.yaml is read, migrated to this release's keys, and — when
+    it can't be read at all (empty, cut short, a YAML mistake in a hand
+    edit) — replaced by the last copy that worked (config_io.recover); the
+    unreadable file is kept in .backups/ and the Settings page says so.
+    stop / status / restart only read it: they run while the service is
+    running (systemd's ExecStop is `main.py stop`), so they never write
+    install files."""
     if not CONFIG_PATH.exists():
-        # First-run convenience: copy the example if present
-        if CONFIG_EXAMPLE_PATH.exists():
-            shutil.copy2(CONFIG_EXAMPLE_PATH, CONFIG_PATH)
+        # First-run convenience: copy the example if present (`start` only:
+        # stop/status never write install files).
+        if CONFIG_EXAMPLE_PATH.exists() and command == "start":
+            # v3.4.148: through config_io like every other write — all or
+            # nothing (a cut-short copy can't leave an unreadable config.yaml
+            # with nothing to recover from) and 0600.
+            try:
+                config_io.write_text(CONFIG_PATH,
+                                     CONFIG_EXAMPLE_PATH.read_text(encoding="utf-8"),
+                                     check=False)
+            except (config_io.ConfigWriteError, OSError) as e:
+                print(f"ERROR: Could not create {CONFIG_PATH.name}: {e}")
+                sys.exit(1)
             print(f"Created config.yaml from config.yaml.example — edit it before starting.")
         else:
             print(f"ERROR: {CONFIG_PATH} not found.")
             sys.exit(1)
 
-    with open(CONFIG_PATH) as f:
-        config = yaml.safe_load(f)
-    for section in ["receiver", "web", "data", "logging", "retention"]:
-        if section not in config:
-            print(f"ERROR: Missing '{section}' in config.yaml")
+    if command != "start":
+        try:
+            return config_io.check_loadable(CONFIG_PATH.read_text(encoding="utf-8"))
+        except ValueError as e:
+            print(f"ERROR: {CONFIG_PATH.name} couldn't be read ({e}). Fix it by hand, or "
+                  f"start Aerodrome: it puts the last copy that worked back in its place.")
             sys.exit(1)
+
+    try:
+        config = config_io.check_loadable(CONFIG_PATH.read_text(encoding="utf-8"))
+    except ValueError as e:
+        # ValueError includes UnicodeDecodeError. Never OSError: a
+        # permission problem must not get a (maybe root-owned) file replaced.
+        config = _recover_config(e)
+
+    # Another Aerodrome owns this install: change nothing (start() refuses
+    # to run a second copy anyway).
+    if _running_instance_pid():
+        return config
 
     # Auto-merge any new keys from the shipped example (handles upgrades)
     config = migrate_config(config)
 
     return config
+
+
+def _recover_config(err) -> dict:
+    """config.yaml can't be read: run on the last copy that worked."""
+    other = _running_instance_pid()
+    if other:
+        print(f"ERROR: {CONFIG_PATH.name} couldn't be read ({err}). Another Aerodrome "
+              f"(PID {other}) is using this install, so nothing was changed.")
+        sys.exit(1)
+    cfg, _info = config_io.recover(CONFIG_PATH, err, log=print,
+                                   last_good_by_date=_last_good_untrusted())
+    if cfg is None:
+        print(f"ERROR: {CONFIG_PATH.name} couldn't be read ({err}), and no usable copy was "
+              f"found (.backups/{config_io.LAST_GOOD_NAME}, or a config.yaml.bak.<date> whose "
+              f"database still exists; pre-restore copies are never used). Fix "
+              f"{CONFIG_PATH} by hand, or copy config.yaml.example over it, then restart.")
+        sys.exit(1)
+    return cfg
 
 
 def setup_logging(config: dict):
@@ -434,8 +510,8 @@ def _probe_version(addr: str, host_hdr: str, port: int, timeout: float = 5.0):
 
 
 def _confirm_update_when_serving(host: str, port: int, to_version: str,
-                                 *, probe=None, sleep=time.sleep, exit_fn=os._exit,
-                                 monotonic=time.monotonic, logger=None):
+                                 *, started_text=None, probe=None, sleep=time.sleep,
+                                 exit_fn=os._exit, monotonic=time.monotonic, logger=None):
     """Confirm a just-applied update from inside the new version.
 
     1. Probe GET /api/version until it answers 200 with `to_version`, then
@@ -447,7 +523,11 @@ def _confirm_update_when_serving(host: str, port: int, to_version: str,
        (nothing of Aerodrome's runs between this thread's start and the
        bind), so confirm on uptime instead, with a WARNING.
     2. HEALTHY_AFTER_SEC later, commit() (retried with backoff). Every
-       deadline here uses time.monotonic()."""
+       deadline here uses time.monotonic().
+    3. Record `started_text` — config.yaml as this release STARTED with it
+       (read by start) — as last-good. Never config.yaml as it is by then:
+       a Settings save made while the update was unconfirmed hasn't
+       started. None: nothing is recorded."""
     log = logger or logging.getLogger("adsb.main")
     probe = probe or _probe_version
     upd = _updater
@@ -493,6 +573,14 @@ def _confirm_update_when_serving(host: str, port: int, to_version: str,
             if upd.commit(BASE_DIR):
                 log.info(f"Update to {to_version} confirmed; the previous version "
                          f"is kept in .backups/")
+                # v3.4.148: the config this confirmed release started with is
+                # now the last one that worked, and the files earlier versions
+                # left readable by others are made private (see
+                # TIGHTEN_EXISTING_PRIVATE_FILES) — both skipped while pending.
+                if started_text is not None:
+                    config_io.write_last_good(CONFIG_PATH, started_text)
+                if TIGHTEN_EXISTING_PRIVATE_FILES:
+                    tighten_existing_private_files(BASE_DIR)
             else:
                 log.warning("The update journal is in an unexpected state; "
                             "leaving it for the next start")
@@ -504,6 +592,134 @@ def _confirm_update_when_serving(host: str, port: int, to_version: str,
                 log.warning(f"Could not confirm the update to {to_version} yet "
                             f"({e}); retrying")
             sleep(delays.pop(0) if delays else 600)
+
+
+# DECISION (v3.4.148, the maintainer's call): once — at the first start of
+# this release with no update or restore still to be confirmed; after an
+# update, once it is confirmed — make .backups/, the backup zips in it,
+# config.yaml and the copies of it kept next to it readable by this account
+# only, where an earlier version (or install.sh) left them readable by other
+# local accounts; modes changed later on purpose are kept. The database
+# files are left alone. Set this to False to switch it off.
+TIGHTEN_EXISTING_PRIVATE_FILES = True
+
+
+def _prepare_install_files(inst: Path):
+    """Startup housekeeping for the install whose .tracker.pid this process
+    has just claimed (BASE_DIR in production), so no other Aerodrome is
+    using it. `start` only."""
+    import tempfile
+    logger = logging.getLogger("adsb.main")
+    # Not while an update or a restore is pending: one that fails is rolled
+    # back, putting config.yaml back with its old mode, and the step would
+    # already be recorded as done. An update's confirm runs it
+    # (_confirm_update_when_serving); otherwise the next start does.
+    if TIGHTEN_EXISTING_PRIVATE_FILES and not config_io.pending(inst / "config.yaml"):
+        tighten_existing_private_files(inst)
+    # Upload spools and other temporary files go to .backups/.tmp (0700) on
+    # the install's own disk: on distros whose /tmp is RAM (tmpfs) a 2 GB
+    # restore upload would otherwise sit in memory. Leftovers from a crash
+    # are cleared here.
+    spool = prepare_backup_tmp(inst)
+    if spool is not None:
+        tempfile.tempdir = str(spool)
+    else:
+        logger.warning(f"Temporary files stay in {tempfile.gettempdir()}: "
+                       f"{inst / '.backups' / '.tmp'} can't be used")
+
+
+def _exec_start():
+    """Replace this process with a fresh `main.py start` (same PID)."""
+    # execv replaces the process without flushing Python's buffers: under
+    # systemd, nohup or a log file the lines logged so far would be lost.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    for h in logging.getLogger().handlers:
+        try:
+            h.flush()
+        except Exception:
+            pass
+    os.execv(sys.executable, [sys.executable, str(BASE_DIR / "main.py"), "start"])
+
+
+# The first release that keeps .backups/config.yaml.last-good up to date.
+_LAST_GOOD_SINCE = (3, 4, 148)
+
+
+def _last_good_untrusted() -> bool:
+    """True on the first start(s) of an update FROM a release older than
+    3.4.148. Those never refresh last-good, so after a downgrade (or a
+    rollback) and a new upgrade it can hold settings older than config.yaml
+    — it must not then replace a config that merely can't bind, nor be
+    preferred over newer automatic backups."""
+    if _updater is None:
+        return False
+    try:
+        j = _updater.pending(BASE_DIR)
+        if not j:
+            return False
+        v = _updater.parse_version(j.get("from_version"))
+        return v is not None and v < _LAST_GOOD_SINCE
+    except Exception:
+        return False
+
+
+def _exposure(host) -> int:
+    """How widely a web.host listens: 0 this machine only (loopback), 1 one
+    address, 2 every address (0.0.0.0, ::, empty)."""
+    import ipaddress
+    h = str(host if host is not None else "").strip().strip("[]").lower()
+    if h in ("", "0.0.0.0", "::", "*"):
+        return 2
+    if h == "localhost":
+        return 0
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        return 1
+    return 0 if ip.is_loopback else 2 if ip.is_unspecified else 1
+
+
+def _recover_unbindable_config(host, port, err, logger) -> bool:
+    """config.yaml's web address can't be listened on. When the last
+    settings that worked (last-good) use a different address that can be,
+    put them in place (the unusable file is kept as a broken copy and the
+    Settings page shows a notice) and return True: the caller re-execs.
+    Otherwise False, and the caller exits as before (systemd retries).
+
+    Never when last-good would listen MORE widely than config.yaml (all
+    addresses instead of one, a network address instead of this machine
+    only): an address narrowed on purpose that is just late at boot (a VLAN,
+    Wi-Fi or VPN address) must not open the web UI to every network — and
+    for good, since config.yaml would be rewritten. Nor while last-good may
+    be stale (_last_good_untrusted)."""
+    lg, _text = config_io.read_last_good(CONFIG_PATH)
+    if lg is None:
+        return False
+    lg_web = lg.get("web") or {}
+    lg_host, lg_port = lg_web.get("host"), lg_web.get("port")
+    if (lg_host, lg_port) == (host, port):
+        return False
+    if _exposure(lg_host) > _exposure(host):
+        logger.warning(f"Not falling back to the last settings that worked: they listen on "
+                       f"{lg_host}, more widely than {host} in {CONFIG_PATH.name}, which is "
+                       f"kept as it is. Aerodrome starts once {host}:{port} can be used.")
+        return False
+    if _last_good_untrusted():
+        logger.warning(f"Not falling back to {config_io.LAST_GOOD_NAME}: it was kept by a newer "
+                       f"release before an older one ran, so it may be out of date.")
+        return False
+    try:
+        ok, _ = _preflight_bind_check(str(lg_host), int(lg_port))
+    except (TypeError, ValueError):
+        return False
+    if not ok:
+        return False
+    _cfg, info = config_io.recover(
+        CONFIG_PATH, err, log=lambda m: logger.warning(m.replace("WARNING: ", "", 1)),
+        kind="bind", detail=f"{host}:{port}",
+        sources={f".backups/{config_io.LAST_GOOD_NAME}"})
+    return bool(info and info.get("rewritten"))
 
 
 def start(config: dict):
@@ -518,6 +734,7 @@ def start(config: dict):
         sys.exit(1)
     PID_FILE.unlink(missing_ok=True)
     PID_FILE.write_text(str(os.getpid()))
+    _prepare_install_files(PID_FILE.parent)
     # v2.50.13: set the SQLite tuning profile BEFORE init_db so the
     # init connection itself uses the right cache_size/mmap_size/temp_store.
     # init_db's connection mostly does schema setup so cache benefit is
@@ -705,7 +922,26 @@ def start(config: dict):
             f"to listen on all interfaces (recommended), or to a value "
             f"that matches an actual IP on this machine. Then restart."
         )
+        # v3.4.148: when the last settings that worked listen somewhere else
+        # that IS free, start on those instead (the unusable file is kept in
+        # .backups/ and the Settings page says so) rather than exiting into
+        # a restart loop with the web UI gone.
+        if _recover_unbindable_config(host, port, _bind_err, logger):
+            stop_event.set()
+            collector_thread.join(timeout=15)
+            _exec_start()
         sys.exit(2)
+
+    # This config started: remember it as the last one that worked. Not
+    # while an update or restore is still pending — the step that confirms
+    # it writes it then, from this same text (a Settings save made before
+    # the confirm hasn't started).
+    try:
+        _started_text = CONFIG_PATH.read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        _started_text = None
+    if _started_text is not None:
+        config_io.write_last_good(CONFIG_PATH, _started_text)
 
     r = config["retention"]
     # v2.50.2: read version dynamically rather than hardcoding. The banner
@@ -749,6 +985,7 @@ def start(config: dict):
                     f"once the web UI answers")
         threading.Thread(target=_confirm_update_when_serving,
                          args=(host, port, str(_journal.get("to_version") or "")),
+                         kwargs={"started_text": _started_text},
                          name="aerodrome-update-confirm", daemon=True).start()
 
     uvicorn.run(app, host=host, port=port, log_level="warning")
@@ -892,7 +1129,7 @@ def main():
     parser = argparse.ArgumentParser(description="Aerodrome — ADS-B Tracker")
     parser.add_argument("command", choices=["start", "stop", "status", "restart"])
     args = parser.parse_args()
-    config = load_config()
+    config = load_config(args.command)
     setup_logging(config)
 
     if args.command == "start":
@@ -905,11 +1142,7 @@ def main():
         # Stop, then start in a FRESH process (same PID) so this start gets
         # the update guard and an empty in-memory state like any other.
         stop(config)
-        # execv replaces the process without flushing Python's buffers: under
-        # systemd, nohup or a log file stop()'s lines would be lost.
-        sys.stdout.flush()
-        sys.stderr.flush()
-        os.execv(sys.executable, [sys.executable, str(BASE_DIR / "main.py"), "start"])
+        _exec_start()
 
 
 if __name__ == "__main__":

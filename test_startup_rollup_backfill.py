@@ -45,6 +45,9 @@ TMP = os.environ.get("TMPDIR") or None
 
 
 def _tmpdb(test):
+    # main.start points tempfile.tempdir at the install's .backups/.tmp
+    # (v3.4.148); the tests here run it in this directory: put it back.
+    test.addCleanup(setattr, tempfile, "tempdir", tempfile.tempdir)
     d = tempfile.TemporaryDirectory(dir=TMP)
     test.addCleanup(d.cleanup)
     return os.path.join(d.name, "t.db")

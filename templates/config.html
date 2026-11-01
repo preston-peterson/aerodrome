@@ -1,4 +1,4 @@
-<!-- Version: 3.4.147 -->
+<!-- Version: 3.4.148 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -82,6 +82,20 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
     background:var(--amber); color:var(--bg0); border:none; cursor:pointer;
 }
 .banner .btn-restart:hover { filter:brightness(1.1); }
+/* v3.4.148: notice after a startup config recovery (same look as the
+   restart banner; the text is regular colour so the paths stay readable) */
+.banner.notice-banner { align-items:flex-start; }
+/* min-width:0 + overflow-wrap: the kept file's long path must wrap on a
+   phone instead of pushing Dismiss off the screen */
+.banner.notice-banner .text { color:var(--t1); line-height:1.55; min-width:0; overflow-wrap:anywhere; }
+.banner.notice-banner code { font-family:var(--mono); font-size:12px; }
+.banner .btn-dismiss {
+    font-family:var(--font); font-size:12px; font-weight:500;
+    padding:6px 14px; border-radius:6px; cursor:pointer;
+    background:transparent; color:var(--amber); border:1px solid rgba(245,158,11,.5);
+}
+.banner .btn-dismiss:hover { background:rgba(245,158,11,.12); }
+.busy-note { font-size:11px; color:var(--amber); font-family:var(--mono); margin:-8px 0 14px; }
 
 /* Tab bar — horizontal, matches the main dashboard's style */
 /* v2.41.32: tab-bar scroll affordances.
@@ -265,6 +279,7 @@ input[disabled] { opacity:.5; cursor:not-allowed; }
 .toast.show { opacity:1; transform:translateY(0); }
 .toast.ok { border-color:var(--green); }
 .toast.err { border-color:var(--red); }
+.toast.warn { border-color:var(--amber); }   /* v3.4.148 */
 
 .loading { text-align:center; padding:40px; color:var(--t2); font-size:13px; }
 
@@ -414,6 +429,12 @@ input[disabled] { opacity:.5; cursor:not-allowed; }
         <span class="icon">⚠</span>
         <div class="text" id="restartBannerText">Some changes require a service restart to take effect.</div>
         <button class="btn-restart" onclick="restartService()">Restart now</button>
+    </div>
+
+    <div class="banner notice-banner" id="configRecoveryBanner" role="status">
+        <span class="icon">⚠</span>
+        <div class="text" id="configRecoveryText"></div>
+        <button class="btn-dismiss" id="configRecoveryDismiss" onclick="dismissConfigRecovery()">Dismiss</button>
     </div>
 
     <div id="content">
@@ -2109,6 +2130,15 @@ async function saveChanges() {
         const j = await r.json();
 
         if (!r.ok) {
+            // v3.4.148: a save that failed as a whole (e.g. the disk is full —
+            // nothing was changed) comes back as one error with no field
+            // path: show its text instead of "1 validation error(s)".
+            const errs = j.errors || [];
+            if (errs.length === 1 && !errs[0].path) {
+                toast(errs[0].message || j.message || j.error || 'Save failed', 'err');
+                renderAll();
+                return;
+            }
             validationErrors = {};
             (j.errors || []).forEach(e => { validationErrors[e.path] = e.message; });
             // If the current tab has no errors but another tab does, jump to it
@@ -4730,6 +4760,7 @@ function sectionBackupRestore() {
     queueMicrotask(loadFullBackupPreview);
     queueMicrotask(loadPreRestoreList);
     queueMicrotask(loadServerSideBackups);  // v3.4.0
+    queueMicrotask(loadMaintenanceStatus);  // v3.4.148: busy → download disabled
 
     return `
     <div class="section">
@@ -4754,13 +4785,14 @@ function sectionBackupRestore() {
             </div>
 
             <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px">
-                <button class="btn btn-primary" onclick="downloadFullBackup()">
+                <button class="btn btn-primary" id="fbDownloadBtn" onclick="downloadFullBackup(this)">
                     Download full backup
                 </button>
                 <button class="btn btn-ghost" onclick="loadFullBackupPreview()" style="font-size:11px">
                     ↻ Refresh size estimate
                 </button>
             </div>
+            <div class="busy-note" id="fbBusyNote" style="display:none"></div>
 
             <div style="border-top:1px solid var(--bdr);padding-top:14px;margin-top:4px">
                 <div style="font-size:13px;font-weight:500;color:var(--t1);margin-bottom:4px;">
@@ -5187,12 +5219,25 @@ async function loadFullBackupPreview() {
     }
 }
 
-function downloadFullBackup() {
+async function downloadFullBackup(btn) {
+    // v3.4.148: one maintenance task at a time — say what's running instead
+    // of starting a download the server would refuse.
+    const m = await loadMaintenanceStatus();
+    if (m && m.busy) {
+        toast(`The backup download isn't available right now. ${_busyText(m.busy)}`, 'warn');
+        return;
+    }
     // Direct browser download — server streams the zip with a Content-Disposition
     // header so the filename is set automatically.
     const a = document.createElement('a');
     a.href = '/api/backup/export';
+    a.download = '';
     a.click();
+    if (btn) {
+        // The backup is built before the download starts: no double clicks.
+        btn.disabled = true;
+        setTimeout(() => { btn.disabled = false; loadMaintenanceStatus(); }, 5000);
+    }
     toast('Building backup — download will start shortly. This may take a moment for large databases.', 'ok');
 }
 
@@ -5216,6 +5261,21 @@ async function fullRestore() {
     if (!input.files || !input.files.length) return;
     const file = input.files[0];
 
+    // v3.4.148: the server refuses these before the upload starts; say so
+    // without sending gigabytes first.
+    if (file.size > 2 * 1024 * 1024 * 1024) {
+        await alertModal('Backup too large for browser upload',
+            'This backup is larger than 2 GB. Copy it into <install_dir>/.backups/ ' +
+            'with scp or rsync, then restore it from the Existing server-side backups ' +
+            'list below (click Rescan).', 'error');
+        return;
+    }
+    const busy = await loadMaintenanceStatus();
+    if (busy && busy.busy) {
+        await alertModal('Restore not started', _busyText(busy.busy), 'error');
+        return;
+    }
+
     if (!confirm(
         `Restore from "${file.name}"?\n\n` +
         `This is DESTRUCTIVE. The following will be replaced:\n` +
@@ -5234,10 +5294,10 @@ async function fullRestore() {
         const fd = new FormData();
         fd.append('file', file);
         const r = await fetch('/api/backup/import', {method: 'POST', body: fd});
-        const j = await r.json();
+        const j = await r.json().catch(() => ({}));
         if (!j.ok) {
             await alertModal('Restore failed',
-                j.message || 'Unknown error. Check logs for details.',
+                j.message || j.error || j.detail || 'Unknown error. Check logs for details.',
                 'error');
             return;
         }
@@ -5602,6 +5662,14 @@ async function uploadConfig(){
     if(!input.files || !input.files.length) return;
     const file = input.files[0];
 
+    // v3.4.148: the server's limit (256 KB) — say so before uploading.
+    if(file.size > 256 * 1024){
+        await alertModal('Upload failed',
+            'This file is too large to be a config.yaml (the limit is 256 KB). ' +
+            'Did you pick the right file?', 'error');
+        return;
+    }
+
     if(!confirm(
         `Replace the current config.yaml with the uploaded file?\n\n` +
         `File: ${file.name} (${(file.size/1024).toFixed(1)} KB)\n\n` +
@@ -5615,9 +5683,9 @@ async function uploadConfig(){
         const form = new FormData();
         form.append('file', file);
         const r = await fetch('/api/config/import', { method:'POST', body:form });
-        const j = await r.json();
+        const j = await r.json().catch(() => ({}));
         if(!r.ok || !j.ok){
-            let msg = j.error || 'Upload failed';
+            let msg = j.message || j.error || j.detail || 'Upload failed';
             if(j.errors && j.errors.length){
                 msg += ':\n' + j.errors.map(e => `  • ${e.path}: ${e.message}`).join('\n');
             }
@@ -5801,6 +5869,86 @@ function updateTabScrollArrows(wrap){
 }
 
 // =============================================================================
+// Maintenance status (v3.4.148): the startup config-recovery notice, and
+// what's running (the backup download is unavailable meanwhile).
+// =============================================================================
+let _maint = null;
+
+async function loadMaintenanceStatus() {
+    try {
+        const r = await fetch('/api/maintenance/status');
+        if (!r.ok) return null;
+        _maint = (await r.json()) || {};
+    } catch (e) {
+        return null;
+    }
+    renderConfigRecovery();
+    renderBackupBusy();
+    return _maint;
+}
+
+function _agoText(sec) {
+    sec = Math.max(0, Math.floor(sec || 0));
+    if (sec < 60) return 'just now';
+    if (sec < 3600) return `${Math.floor(sec / 60)} min ago`;
+    return `${Math.floor(sec / 3600)} h ${Math.floor(sec % 3600 / 60)} min ago`;
+}
+
+// Same wording as the server's 409 body (server._busy_message).
+function _busyText(b) {
+    const op = String((b && b.op) || 'another maintenance task');
+    if (b && b.parked) return `Aerodrome is ${op} — try again in a minute.`;
+    return `${op.charAt(0).toUpperCase()}${op.slice(1)} is running (started ${_agoText(b && b.age_sec)}). Try again when it finishes.`;
+}
+
+function _whenText(ts) {
+    if (!ts) return 'date unknown';
+    try { return formatDateTime(new Date(ts * 1000)); } catch (e) { return 'date unknown'; }
+}
+
+function renderConfigRecovery() {
+    const el = document.getElementById('configRecoveryBanner');
+    if (!el) return;
+    const c = _maint && _maint.config;
+    if (!c || c.acknowledged) { el.classList.remove('show'); return; }
+    const src = `${escapeAttr(c.source || 'a saved copy')}, ${escapeAttr(_whenText(c.source_date))}`;
+    const kept = c.broken_copy
+        ? ` Your file was kept as <code>${escapeAttr(c.broken_copy)}</code>.` : '';
+    let msg;
+    if (c.kind === 'bind') {
+        msg = `Aerodrome couldn't listen on ${escapeAttr(c.tried || 'the address')} from config.yaml, ` +
+              `so it started on the last settings that worked ` +
+              `(${escapeAttr(c.web_host)}:${escapeAttr(c.web_port)}; ${src}).${kept}`;
+    } else {
+        msg = `config.yaml couldn't be read when Aerodrome started (${escapeAttr(c.reason)}). ` +
+              `It's running on the last settings that worked ` +
+              `(${src}; web port ${escapeAttr(c.web_port)}).${kept}`;
+    }
+    document.getElementById('configRecoveryText').innerHTML = msg;
+    el.classList.add('show');
+}
+
+async function dismissConfigRecovery() {
+    document.getElementById('configRecoveryBanner').classList.remove('show');
+    try {
+        await fetch('/api/maintenance/ack', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({kind: 'config'}),
+        });
+    } catch (e) { /* shown again on the next load: harmless */ }
+}
+
+function renderBackupBusy() {
+    const btn = document.getElementById('fbDownloadBtn');
+    const note = document.getElementById('fbBusyNote');
+    if (!btn || !note) return;
+    const b = _maint && _maint.busy;
+    btn.disabled = !!b;
+    note.style.display = b ? '' : 'none';
+    note.textContent = b ? `Download unavailable: ${_busyText(b)}` : '';
+}
+
+// =============================================================================
 // Init
 // =============================================================================
 async function load() {
@@ -5810,6 +5958,7 @@ async function load() {
         originalConfig = deepClone(cfg);
         workingConfig = deepClone(cfg);
         renderAll();
+        loadMaintenanceStatus();
     } catch (e) {
         document.getElementById('content').innerHTML =
             `<div class="section"><div class="field-error">Failed to load configuration: ${e.message}</div></div>`;

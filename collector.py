@@ -1,4 +1,4 @@
-# Version: 3.4.147
+# Version: 3.4.148
 """
 collector.py — ADS-B data fetcher and classifier.
 
@@ -301,6 +301,33 @@ def _attempt_demo_port_recovery(config: dict):
     cfg_path = pathlib.Path(config["data"].get("config_path") or "config.yaml")
     if not cfg_path.is_absolute():
         cfg_path = pathlib.Path(__file__).parent / cfg_path
+    # v3.4.148: the config.yaml read-modify-write holds config_io's
+    # CONFIG_LOCK (Settings saves run on other threads), and the new file is
+    # staged before the unit file is touched (see _demo_port_recovery_write).
+    # The feeder restart (up to 25 s) runs after the lock is released.
+    import config_io
+    staged = []
+    with config_io.CONFIG_LOCK:
+        try:
+            port = _demo_port_recovery_write(config, unit_path, current_unit, new_unit,
+                                             cfg_path, new_port, staged)
+        finally:
+            for tmp in staged:            # not committed: drop the staged file
+                config_io.discard(tmp)
+    if port is None:
+        return None
+    return _restart_demo_feeder(config, port)
+
+
+def _demo_port_recovery_write(config, unit_path, current_unit, new_unit, cfg_path,
+                              new_port, staged):
+    """The writes of _attempt_demo_port_recovery, under CONFIG_LOCK. Order:
+    stage config.yaml (every step that can fail for lack of space) → write
+    the unit file → commit config.yaml (a rename) — so a full disk aborts
+    before the unit file is touched. `staged` holds a staged temp file
+    until it is committed; the caller discards whatever is left in it.
+    Returns the new port (the caller restarts the feeder), or None."""
+    import config_io
     try:
         cfg_text = cfg_path.read_text()
     except Exception as e:
@@ -314,6 +341,12 @@ def _attempt_demo_port_recovery(config: dict):
             "the receiver section). Aborting BEFORE any writes so the "
             "install stays in its pre-recovery (consistent) state."
         )
+        return None
+    try:
+        staged.append(config_io.stage_text(cfg_path, new_cfg_text))
+    except (config_io.ConfigWriteError, ValueError) as e:
+        logger.error("Auto-recovery: could not stage config.yaml (%s). Aborting "
+                     "BEFORE any writes; the install is unchanged.", e)
         return None
 
     # Both contents validated. Now do the writes.
@@ -343,7 +376,7 @@ def _attempt_demo_port_recovery(config: dict):
     # Write config.yaml. Pre-validated above, so this should succeed
     # unless something raced us to the file.
     try:
-        cfg_path.write_text(new_cfg_text)
+        config_io.commit(staged.pop(), cfg_path)
     except Exception as e:
         logger.error(
             "Auto-recovery: config.yaml write failed AFTER unit-file "
@@ -362,7 +395,12 @@ def _attempt_demo_port_recovery(config: dict):
     # loop in main.py passes the same reference each tick), so this
     # mutation propagates.
     config["receiver"]["port"] = new_port
+    return new_port
 
+
+def _restart_demo_feeder(config, new_port):
+    """After _demo_port_recovery_write (and outside CONFIG_LOCK): pick up
+    the new unit file and restart the feeder. Returns new_port, or None."""
     # daemon-reload to pick up the new unit file, then restart the feeder.
     # NOT restarting aerodrome itself — the in-memory config mutation
     # above means the next poll uses the new URL, no process restart

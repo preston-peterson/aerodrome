@@ -32,6 +32,7 @@ something specific, the table of contents below has direct links.
   - [Military detection](#military-detection)
   - [Watchlist](#watchlist)
   - [Notifications](#notifications)
+  - [If config.yaml can't be read](#if-configyaml-cant-be-read)
 - [Performance diagnostic](#performance-diagnostic)
 - [Backup and restore](#backup-and-restore)
 - [Project structure](#project-structure)
@@ -851,7 +852,9 @@ your `config.yaml` doesn't have yet, they're auto-merged in with their
 defaults and your previous config is backed up as
 `config.yaml.bak.<timestamp>`.** Your existing values are never
 overwritten. The 5 most recent backups are kept; older ones are pruned
-automatically.
+automatically. Both the backup and the merged config are written all or
+nothing: if the disk is full, `config.yaml` is left exactly as it was
+(and the new keys use their defaults until there is space).
 
 The service logs what was added, so you can see new settings at:
 
@@ -1099,6 +1102,63 @@ sudo systemctl restart aerodrome
 
 Either way, your edits are preserved on upgrade via the auto-merge
 described in the [Updating](#updating) section.
+
+Saving in the web UI (and adding or removing a watchlist entry) writes
+`config.yaml` all or nothing: if the disk is full, nothing changes and
+the save is reported as failed, with the reason. Settings that can only work on this machine are
+checked when you change them: the web server's listen address must be
+one of this machine's addresses (use `0.0.0.0` to listen on all of them),
+its port must be free (not used by another program, and above 1023
+unless Aerodrome's account may use lower ones), and the database file's
+folder must exist. `config.yaml` is kept
+readable by the account Aerodrome runs as only — it can hold API keys
+and notification credentials.
+
+A save replaces `config.yaml` with a new file. Two layouts are written
+in place instead: a `config.yaml` that is a symlink into a folder
+Aerodrome's account can't write, and a `config.yaml` that belongs to
+another account but that Aerodrome's account may write (its owner and
+mode are kept). A `config.yaml` Aerodrome's account can't write at all —
+another account's, or one you made read-only — is never changed: the
+save fails and says why.
+
+### If config.yaml can't be read
+
+If `config.yaml` is empty, cut short or has a YAML mistake when
+Aerodrome starts — typically a hand edit with a typo — Aerodrome doesn't
+stop. It starts on the last settings that worked
+(`.backups/config.yaml.last-good`, refreshed every time Aerodrome starts
+and can listen on its address — a save in the web UI changes it only at
+the next start), keeps your file as
+`.backups/config.yaml.broken.<date>`, logs a warning naming the copy
+it used and its web port (`journalctl -u aerodrome`), and shows a notice
+in Settings until you dismiss it. If there is no
+last-good copy yet, it uses the newest automatic
+`config.yaml.bak.<date>` that loads and whose database still exists.
+`.pre-restore` copies — configs you deliberately replaced with a
+restore — are never used. If nothing usable is found, Aerodrome stops
+with a message saying so, as before.
+
+To apply a hand edit that was set aside this way, fix it in
+`.backups/config.yaml.broken.<date>` (`<install_dir>/venv/bin/python3 -c
+"import yaml,sys; yaml.safe_load(open(sys.argv[1]))" <file>` shows where
+the mistake is), copy it over `config.yaml` and restart.
+
+The same applies to a listen address that can't be used: if
+`web.host`/`web.port` in `config.yaml` can't be listened on (for
+example, a port another program has taken since you saved it) and the
+last settings that worked listen somewhere that can, Aerodrome starts
+on those instead — again keeping your file in `.backups/`, logging a
+warning and showing a notice in Settings until you dismiss it. Otherwise
+it stops with the address error, as before, and
+systemd tries again every 15 seconds. It never falls back to settings
+that listen more widely than yours — all addresses (`0.0.0.0`) instead
+of the one address you set, or a network address instead of
+`127.0.0.1`: an address you narrowed on purpose that isn't up yet at
+boot (a VLAN, Wi-Fi or VPN address) is waited for, not replaced.
+
+`main.py stop` and `main.py status` only read `config.yaml`; they never
+change it.
 
 ### Receiver location (for the Distance column)
 
@@ -1484,6 +1544,46 @@ is running the same Aerodrome version or a newer one. Different
 Aerodrome versions handle config auto-migration the same way they
 do on an in-place upgrade.
 
+**Disk space.** Building a backup needs about twice the database's
+size free (a consistent copy of the database plus the zip), plus
+256 MB; a backup that wouldn't fit is refused instead of filling the
+disk. A browser download is built in `<install_dir>/.backups/.tmp` and
+its file is removed before the download starts, so a cancelled or
+dropped download never leaves a database-sized file behind. Only one
+backup download, server-side backup, restore or update runs at a time;
+the others say what's running.
+
+**Uploads.** A restore upload and an update upload are received into
+`<install_dir>/.backups/.tmp` on the install's own disk instead of the
+system temp folder (which is memory on some systems). A restore upload
+needs about three times its size free there, plus the database's size
+and 256 MB: the received file, its staged copy, and the room the
+restore itself needs. One large upload is received at a time: a second
+one, an upload while another maintenance task runs, or one that
+wouldn't fit on the disk is refused straight away — before anything is
+stored — with a message saying why. An upload that stops arriving for
+two minutes (the browser's computer went to sleep, Wi-Fi dropped) is
+cancelled, so it can't block the next one. A restore upload must be a
+single backup file. Anything left in `.backups/.tmp` by a crash is
+removed when Aerodrome starts.
+
+**Privacy.** Backup zips hold your config and your database, so they
+are created readable by the account Aerodrome runs as only, in a
+`.backups/` folder only that account can open. Copy them off the
+machine as that account (or with `sudo`). The first time v3.4.148 or
+later starts (after an update to it, once the update is confirmed —
+about 30 seconds after the new version answers), Aerodrome also makes
+an existing `.backups/` folder, the backup zips in it, `config.yaml`
+and the copies of it kept next to it
+(`config.yaml.bak.<date>`, `.pre-restore` copies,
+`ntfy-server.yml.from-backup.<date>`) private where they are readable by
+other local accounts, and logs each change. It does this once (recorded
+in `.backups/.private-modes-applied`): if you later open a mode up on
+purpose — say, so a backup job running as another account can read the
+zips — it is kept. Files that belong to another account, a `.backups/`
+that is a link to another folder, and the database files are left as
+they are.
+
 ### Server-side backup (v3.4.0)
 
 The browser-mediated Full backup flow works well for small databases
@@ -1497,7 +1597,9 @@ per day and retention is months or years.
 **Creating a server-side backup:** open Configuration → Backup &
 Restore → Server-side backup → "Create server-side backup". The
 backup writes to `<install_dir>/.backups/aerodrome-backup-<timestamp>.zip`
-with a sidecar `.sha256` file. Uses the same SQLite online-backup API
+with a sidecar `.sha256` file. It is built under `.backups/.tmp` and
+only moved into place once complete, so an interrupted backup never
+appears in the list (the next start removes what it left). Uses the same SQLite online-backup API
 as the browser flow, so the service keeps running. The UI shows live
 progress; on a busy host with 50 GB of history, expect 10–20 minutes.
 
