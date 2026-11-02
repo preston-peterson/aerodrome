@@ -1919,8 +1919,9 @@ On a demo install, do the same for `aerodrome-synthetic-feeder`.
 
 **Watchlist tail number not resolving**
 
-- Server needs internet for hexdb.io lookups.
-- Use ICAO hex directly as a fallback if a tail can't be resolved.
+- US tail numbers (N-numbers) are worked out locally and always resolve.
+- Other tail numbers are looked up on hexdb.io, so the server needs internet. An entry that can't be matched shows **not found** or **lookup failed** on its chip on the Watchlist tab, and Aerodrome keeps retrying without a restart.
+- Use the ICAO hex directly if hexdb.io doesn't know the aircraft.
 
 **Database getting too large**
 

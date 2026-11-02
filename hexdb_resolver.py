@@ -24,6 +24,8 @@ module that both the collector and server.py can import and use:
     for tabs that need urgent resolution (Live, Watchlist, etc).
   - Both producers feed the same single worker, which calls
     collector.resolve_icao_to_tail at ~2 req/sec.
+  - The same worker settles watchlist tail numbers
+    (collector.run_due_tail_lookup), so they share that pace.
 
 Architecture notes:
 
@@ -54,6 +56,7 @@ logger = logging.getLogger(__name__)
 # hexdb.io is a free API with no published rate limit — this rate
 # is "polite respect" rather than a hard ceiling.
 _WORKER_SLEEP_SEC = 0.5
+_IDLE_SLEEP_SEC = 1.0
 
 
 # Queues. Primary serves the hot path (UI requests, freshly-seen
@@ -167,28 +170,40 @@ def _worker_loop() -> None:
     # collector at module load. The worker only ever runs after
     # everything has imported, so a deferred import is safe.
     try:
-        from collector import resolve_icao_to_tail, _ICAO_CACHE
+        import collector
     except ImportError as e:
         logger.error(f"hexdb resolver worker: cannot import collector: {e}")
         return
 
     while True:
-        icao = _next_icao()
-        if icao is None:
-            # Both queues empty — wait briefly then re-check
-            time.sleep(1.0)
-            continue
-        try:
-            resolve_icao_to_tail(icao)
-        except Exception as e:
-            logger.warning(f"hexdb resolver worker: error resolving {icao}: {e}")
-        # A transient failure (network error) leaves no answer cached —
-        # forget the ICAO so its next sighting can re-enqueue it, rather
-        # than leaving it unresolved for the rest of the process life.
-        if icao not in _ICAO_CACHE:
-            with _seen_lock:
-                _seen.discard(icao)
-        time.sleep(_WORKER_SLEEP_SEC)
+        _worker_turn(collector)
+
+
+def _worker_turn(collector) -> None:
+    """One pass: a watchlist tail that is due, then one queued ICAO. Tails go
+    first because someone is waiting on them, and the queue can hold hours of
+    backlog. Each hexdb request is followed by the same pause."""
+    try:
+        if collector.run_due_tail_lookup():
+            time.sleep(_WORKER_SLEEP_SEC)
+    except Exception as e:
+        logger.warning(f"hexdb resolver worker: error resolving a tail: {e}")
+    icao = _next_icao()
+    if icao is None:
+        # Both queues empty — wait briefly then re-check
+        time.sleep(_IDLE_SLEEP_SEC)
+        return
+    try:
+        collector.resolve_icao_to_tail(icao)
+    except Exception as e:
+        logger.warning(f"hexdb resolver worker: error resolving {icao}: {e}")
+    # A transient failure (network error) leaves no answer cached —
+    # forget the ICAO so its next sighting can re-enqueue it, rather
+    # than leaving it unresolved for the rest of the process life.
+    if icao not in collector._ICAO_CACHE:
+        with _seen_lock:
+            _seen.discard(icao)
+    time.sleep(_WORKER_SLEEP_SEC)
 
 
 def _next_icao() -> Optional[str]:

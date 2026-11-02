@@ -1,4 +1,4 @@
-<!-- Version: 3.4.150 -->
+<!-- Version: 3.4.151 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -222,6 +222,10 @@
         /* Chips */
         .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
         .chip { display: inline-flex; align-items: center; gap: 4px; background: var(--bg2); border: 1px solid var(--bdr); border-radius: 999px; padding: 3px 6px 3px 10px; font-size: 11px; font-family: var(--mono); color: var(--t2); }
+        .chip-unmatched { border-color: #f59e0b; }
+        .chip-why { color: #f59e0b; font-size: 10px; }
+        html[data-theme="light"] .chip-unmatched { border-color: #b45309; }
+        html[data-theme="light"] .chip-why { color: #b45309; }
         .chip-x { cursor: pointer; color: var(--t3); width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; border-radius: 50%; font-size: 10px; }
         .chip-x:hover { background: rgba(239,68,68,.2); color: var(--red); }
 
@@ -6931,6 +6935,19 @@ function _searchOnOpen(){
 // =========================================================================
 // Watchlist management
 // =========================================================================
+// A tail entry Aerodrome can't match says so on its chip (only tails need a
+// lookup: US N-numbers are worked out locally, so they never show these).
+const WL_TAIL_PROBLEMS = {
+    unknown: {
+        text: 'not found',
+        hover: "hexdb.io doesn't know this tail number, so Aerodrome can't match it yet. It checks again every few hours. If you know the aircraft's ICAO hex, add that instead.",
+    },
+    error: {
+        text: 'lookup failed',
+        hover: "Aerodrome couldn't reach hexdb.io to look up this tail number. It tries again every few minutes.",
+    },
+};
+let _wlPendingChecks = 0;
 async function loadWLChips(){
     try{
         let r=await fetch('/api/watchlist/entries'); let j=await r.json();
@@ -6941,9 +6958,21 @@ async function loadWLChips(){
         wlIcaos = new Set();
         for(const e of entries){
             if(e.icao) wlIcaos.add(String(e.icao).toUpperCase());
+            // A tail entry's hexes, once known: the "added" state and the
+            // Live alert both go by hex.
+            for(const hex of (e.tail_icaos || [])) wlIcaos.add(String(hex).toUpperCase());
         }
         // Also catch ICAOs that were added via the modal but whose server lookup is pending
         // (we add to the set eagerly on confirm; this re-reads truth after restart)
+
+        // A tail still being looked up: check back shortly, so "not found" or
+        // the Live alert doesn't wait for a reload.
+        if(entries.some(e => e.tail_status === 'pending') && _wlPendingChecks < 5){
+            _wlPendingChecks++;
+            setTimeout(loadWLChips, 3000);
+        }else if(!entries.some(e => e.tail_status === 'pending')){
+            _wlPendingChecks = 0;
+        }
 
         if(!entries.length){c.innerHTML='<span style="color:var(--t3);font-size:12px">No watchlist entries</span>';return;}
         c.innerHTML=entries.map(e=>{
@@ -6962,7 +6991,9 @@ async function loadWLChips(){
             const safeLabel = escHtml(String(e.label || id));
             const safeId = escHtml(String(id));
             const safeTp = escHtml(String(tp));
-            return`<div class="chip"><span>${safeLabel}</span><span style="color:var(--t3);font-size:10px">(${safeTp}: ${safeId})</span><span class="chip-x" onclick="rmWL(${rmArgs})" title="Remove">✕</span></div>`;
+            const why = WL_TAIL_PROBLEMS[e.tail_status];
+            const whyHtml = why ? `<span class="chip-why" title="${escHtml(why.hover)}">${escHtml(why.text)}</span>` : '';
+            return`<div class="chip${why ? ' chip-unmatched' : ''}"><span>${safeLabel}</span><span style="color:var(--t3);font-size:10px">(${safeTp}: ${safeId})</span>${whyHtml}<span class="chip-x" onclick="rmWL(${rmArgs})" title="Remove">✕</span></div>`;
         }).join('');
     }catch(e){console.error(e);}
 }

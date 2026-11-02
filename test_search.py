@@ -1075,7 +1075,7 @@ class TestExecutor(unittest.TestCase):
         """Tail-only entries match when resolved_tails maps them to ICAO."""
         # Watchlist has only a tail; resolved_tails translates it to A12345.
         watchlist = [{"tail": "N12345", "label": "Friend's plane"}]
-        resolved = {"N12345": "A12345"}
+        resolved = {"N12345": ["A12345"]}
         r = execute_search(self.conn, parse_query("watchlist"),
                             watchlist_config=watchlist,
                             resolved_tails=resolved)
@@ -1101,7 +1101,7 @@ class TestExecutor(unittest.TestCase):
             {"icao": "A22222", "label": "VIP"},
             {"tail": "N12345", "label": "Friend's plane"},
         ]
-        resolved = {"N12345": "A12345"}
+        resolved = {"N12345": ["A12345"]}
         r = execute_search(self.conn, parse_query("watchlist"),
                             watchlist_config=watchlist,
                             resolved_tails=resolved)

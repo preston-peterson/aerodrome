@@ -94,9 +94,9 @@ config. Combine with other tokens to narrow further:
 - `mil watchlist` — military aircraft on your watchlist
 
 Tail-number-only watchlist entries (entries that specify only `tail:` and
-not `icao:`) require hexdb lookup to translate to an ICAO, which isn't
-done at search time. To make tail-only entries searchable, also add the
-`icao:` to the watchlist entry once you know it.
+not `icao:`) match once their tail is resolved. US tail numbers resolve
+straight away; others need a hexdb.io lookup, and the entry's chip on the
+Watchlist tab says if that failed.
 
 ### First seen today
 Match aircraft whose first-ever sighting on this receiver was today:

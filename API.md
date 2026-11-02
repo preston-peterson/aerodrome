@@ -47,7 +47,7 @@ Core endpoints the dashboard's tabs consume. All return a list of aircraft objec
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/watchlist/entries` | Current watchlist config (ICAO/tail/callsign/model patterns + labels) |
+| GET | `/api/watchlist/entries` | Current watchlist config (ICAO/tail/callsign/model patterns + labels). Tail-only entries also carry `tail_status` (`found`, `pending`, `unknown` = hexdb.io has no record, `error` = no usable answer, retried soon) and `tail_icaos` |
 | POST | `/api/watchlist/add` | Add an entry. Body: `{identifier, label}` |
 | POST | `/api/watchlist/remove` | Remove an entry. Body: `{identifier}` |
 | GET | `/api/watchlist/history/count` | Row count in `watchlist_sightings` — used to confirm the bulk-delete dialog |

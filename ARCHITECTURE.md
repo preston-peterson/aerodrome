@@ -169,7 +169,7 @@ Four long-running background threads, each with a single responsibility:
 7. Fires notification events where applicable
 8. Sleeps for the remaining interval
 
-**2. Tail-resolve worker** (started in `server.py`): pulls ICAOs off an in-process queue and resolves them against the hexdb.io API at ~2 req/sec, populating the `hexdb_cache` table. Rate-limited deliberately — the API is free and has no published limit, but respect is cheaper than apology.
+**2. Tail-resolve worker** (started in `server.py`): pulls ICAOs off an in-process queue and resolves them against the hexdb.io API at ~2 req/sec, populating the `hexdb_cache` table. It also looks up watchlist tail numbers (US N-numbers are worked out locally and need no lookup), retrying failures without a restart. Rate-limited deliberately — the API is free and has no published limit, but respect is cheaper than apology.
 
 **3. Daily summary scheduler** (started in `server.py`): wakes once per day at the configured local-time hour, builds the daily summary, and fires the `daily_summary` ntfy event. Configurable via `notifications.events.daily_summary` and `notifications.daily_summary_hour`.
 
@@ -291,7 +291,7 @@ The drop-in is written by `install.sh`'s `install_privileged()` (the refresh's a
 
 Three places in the code that have caught even the author off-guard and will catch you too:
 
-1. **hexdb.io URL path.** The correct path is `/api/v1/aircraft/{hex}`. An earlier version used `/api/v1/aircraft/icao/{hex}` (mirroring the tail→ICAO resolver), which 404'd every request for four releases because the health-check treated 404 as "service up." Don't change this URL without reading the comment on `resolve_icao_to_tail()`.
+1. **hexdb.io URL path.** The correct path is `/api/v1/aircraft/{hex}`. An earlier version used `/api/v1/aircraft/icao/{hex}`, which 404'd every request for four releases because the health-check treated 404 as "service up." Don't change this URL without reading the comment on `resolve_icao_to_tail()`.
 2. **Null distances in sort.** The Live tab defaults to distance-ascending when a receiver location is configured. `cmp()` in index.html puts null distances at the *bottom* specifically for the distance column and at the *top* for every other numeric column. This is an intentional asymmetry.
 3. **Update flow filename collision.** Historical: `update/README.md` used to collide with the release root `README.md` during staging, causing the Updates tab to render the wrong content. Fixed by renaming the staged file to `update/UPDATE_README.md`. There's a startup self-heal step in `server.py` that removes legacy `update/README.md` files from older installs. If you see that file mentioned in code, it's the self-heal, not a mistake.
 

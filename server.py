@@ -1,4 +1,4 @@
-# Version: 3.4.150
+# Version: 3.4.151
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -37,7 +37,8 @@ from urllib.parse import urlsplit
 # Local — ICAO code → friendly display name lookups for the Stats cards.
 from designators import airline_name, aircraft_type_name
 # v2.50.13: central DB-connection helper that applies tuning pragmas
-from collector import _open_db_conn, aircraft_type_for
+from collector import (_open_db_conn, aircraft_type_for, sync_watchlist_tails,
+                       watchlist_tail_map, watchlist_tail_status)
 # v2.79.0 (Phase 3 polish): centralized distance + bearing helpers.
 # Pre-v2.79.0 the haversine math was duplicated across four sites
 # (this file's _haversine, the stats endpoint local def, the records
@@ -89,7 +90,6 @@ _NOTIFIER = None
 # watchlist filter / pill annotation paths read this map alongside the
 # raw config, so resolved tails behave identically to icao-direct
 # entries from the user's perspective.
-_RESOLVED_WATCHLIST_TAILS: Dict[str, str] = {}
 
 
 def _dp_simplify_track(pts: list, eps_deg: float) -> list:
@@ -179,88 +179,6 @@ def _attach_airline_name(row: dict, operator_code: str | None) -> dict:
     if nm:
         row["name"] = nm
     return row
-
-
-def _resolve_watchlist_tails(config: dict, db_path: str) -> Dict[str, str]:
-    """v2.57.1: resolve any tail-only watchlist entries to ICAOs by
-    querying hexdb_cache (the collector's local registration cache).
-
-    Returns a mapping {tail_upper: icao_upper}. Entries whose tail
-    isn't in hexdb_cache are logged as warnings and omitted —
-    typically that means the aircraft has never been seen on this
-    install, so it wouldn't appear in search results either way.
-
-    Called at server startup and on every config reload. Cheap: one
-    SELECT per tail-only entry, indexed lookup against
-    hexdb_cache.registration. With 10s of watchlist entries (typical),
-    total cost is <1ms. Network-free."""
-    resolved: Dict[str, str] = {}
-    watchlist = config.get("watchlist") or []
-    if not watchlist:
-        return resolved
-
-    # Collect the tails we need to resolve — entries with `tail:` set
-    # but no `icao:` (entries with both already work without
-    # resolution).
-    tails_to_resolve: List[str] = []
-    for entry in watchlist:
-        if not isinstance(entry, dict):
-            continue
-        if entry.get("icao"):
-            continue  # already has an ICAO, no resolution needed
-        tail = entry.get("tail")
-        if tail:
-            tails_to_resolve.append(str(tail).strip().upper())
-
-    if not tails_to_resolve:
-        return resolved
-
-    try:
-        conn = sqlite3.connect(db_path)
-        try:
-            for tail in tails_to_resolve:
-                # Reverse lookup: registration → icao. UPPER on both
-                # sides because hexdb_cache stores registrations in the
-                # form aircraft broadcast them (often uppercase but not
-                # guaranteed), and the user's config tail might be
-                # mixed case.
-                row = conn.execute(
-                    "SELECT icao FROM hexdb_cache "
-                    "WHERE UPPER(registration) = UPPER(?) "
-                    "  AND last_outcome = 'positive' "
-                    "LIMIT 1",
-                    (tail,),
-                ).fetchone()
-                if row and row[0]:
-                    resolved[tail] = row[0].upper()
-                    logger.info(
-                        f"Watchlist tail-resolution: {tail} → {row[0].upper()} "
-                        f"(via hexdb_cache)"
-                    )
-                else:
-                    # Same warning shape the collector logs at startup
-                    # when resolve_tail_to_icao misses. Honest: we
-                    # can't search-filter or pill-annotate this entry.
-                    logger.warning(
-                        f"Watchlist tail-resolution: could not resolve '{tail}' "
-                        f"via hexdb_cache — aircraft may not have been seen "
-                        f"yet on this install. Add the ICAO directly to the "
-                        f"watchlist entry to enable search filtering."
-                    )
-        finally:
-            conn.close()
-    except sqlite3.OperationalError as e:
-        # hexdb_cache table doesn't exist (very fresh install before
-        # collector has run). Same outcome as no resolutions — log
-        # once at info level rather than warning per tail.
-        logger.info(
-            f"Watchlist tail-resolution: hexdb_cache not available ({e}); "
-            f"tail-only entries will not be search-filterable until the "
-            f"collector populates the cache."
-        )
-
-    return resolved
-
 
 
 def _build_notifier():
@@ -1520,17 +1438,13 @@ def _annotate_watchlist(entry: dict):
     row dict.
 
     Mirrors the matching logic in collector.match_watchlist across all
-    four entry kinds: icao (exact), tail (resolved via the
-    _RESOLVED_WATCHLIST_TAILS map), callsign prefix, and model
-    substring.
+    four entry kinds: icao (exact), tail (via the collector's shared
+    tail map), callsign prefix, and model substring.
 
-    v2.57.1: tail-only entries now match via the resolved-tails map
-    populated at server startup from hexdb_cache. An entry like
-    `{tail: "N12345", label: "My plane"}` now annotates is_watchlist
-    on the corresponding ICAO row, exactly the same as if the user
-    had specified `{icao: "A12345"}` directly. If hexdb_cache didn't
-    contain the tail at startup (logged as a warning), tail entries
-    won't match — same outcome as v2.57.0 for that edge case.
+    An entry like `{tail: "N12345", label: "My plane"}` annotates
+    is_watchlist on the corresponding ICAO row, exactly the same as if
+    the user had specified `{icao: "A12345"}` directly. A tail not
+    resolved yet doesn't match, and its chip on the Watchlist tab says why.
 
     Reads CONFIG['watchlist'] (the list of entry dicts as the user
     configured them). Stops at the first match and returns the
@@ -1554,11 +1468,9 @@ def _annotate_watchlist(entry: dict):
             if icao == wl_icao:
                 is_wl = True; label = wl_label; break
         elif wl_entry.get("tail"):
-            # v2.57.1: tail entries match via the resolved-tails map.
-            # _RESOLVED_WATCHLIST_TAILS maps uppercase tail → ICAO.
+            # Uppercase tail → its ICAO hexes.
             tail = str(wl_entry["tail"]).strip().upper()
-            resolved_icao = _RESOLVED_WATCHLIST_TAILS.get(tail)
-            if resolved_icao and icao == resolved_icao:
+            if icao in watchlist_tail_map().get(tail, ()):
                 is_wl = True; label = wl_label; break
         elif wl_entry.get("callsign"):
             prefix = str(wl_entry["callsign"]).strip().upper()
@@ -2283,7 +2195,7 @@ def _live_recovery_command(install_dir: Optional[Path] = None) -> str:
 
 
 def get_app(config: dict, config_path: str) -> FastAPI:
-    global CONFIG, CONFIG_PATH, _RESOLVED_WATCHLIST_TAILS, _MAINT, _SCHEDULERS_STOP
+    global CONFIG, CONFIG_PATH, _MAINT, _SCHEDULERS_STOP
     if _SCHEDULERS_STOP is not None:
         _SCHEDULERS_STOP.set()    # the replaced app's schedulers end at their wait
     _SCHEDULERS_STOP = schedulers_stop = threading.Event()
@@ -2291,12 +2203,9 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     CONFIG_PATH = config_path
     _MAINT = _SingleRun()     # v3.4.147: one maintenance lock per app
 
-    # v2.57.1: resolve any tail-only watchlist entries to ICAOs once
-    # at startup so subsequent search-filter and pill-annotation paths
-    # see them as if the user had specified ICAO directly. See
-    # _resolve_watchlist_tails docstring for the resolution mechanism.
-    db_path = (config.get("data") or {}).get("db_file", "aerodrome.db")
-    _RESOLVED_WATCHLIST_TAILS = _resolve_watchlist_tails(config, db_path)
+    # Tail-only watchlist entries, so search and the row pills see them as
+    # if the user had specified ICAO directly from the first request on.
+    sync_watchlist_tails(config)
 
     app = FastAPI(title="Aerodrome")
 
@@ -3107,11 +3016,9 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 conn, parsed, limit=limit, offset=offset,
                 mil_config=mil_config,
                 watchlist_config=watchlist_config,
-                # v2.57.1: pass the resolved-tails map so tail-only
-                # watchlist entries participate in `wl` / `watchlist`
-                # filtering. Map is populated at server startup and
-                # refreshed on watchlist add/remove.
-                resolved_tails=_RESOLVED_WATCHLIST_TAILS,
+                # So tail-only watchlist entries participate in `wl` /
+                # `watchlist` filtering.
+                resolved_tails=watchlist_tail_map(),
                 # v2.60.0: user-specified sort. execute_search validates
                 # both against allowlists and falls back to relevance on
                 # invalid input.
@@ -3289,7 +3196,18 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
     @app.get("/api/watchlist/entries")
     def get_watchlist_entries():
-        return {"entries": CONFIG.get("watchlist", []) or []}
+        # Tail entries carry how their lookup went, for the chip and the Live
+        # alert. On a copy: these fields are for display and never reach
+        # config.yaml.
+        entries = []
+        for entry in CONFIG.get("watchlist", []) or []:
+            if isinstance(entry, dict) and entry.get("tail") and not entry.get("icao"):
+                key = str(entry["tail"]).strip().upper()
+                entry = {**entry,
+                         "tail_status": watchlist_tail_status(key),
+                         "tail_icaos": watchlist_tail_map().get(key, [])}
+            entries.append(entry)
+        return {"entries": entries}
 
     @app.post("/api/watchlist/add")
     def add_watchlist_entry(entry: WatchlistEntry):
@@ -3329,13 +3247,9 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             if failed is not None:
                 return failed
             CONFIG["watchlist"] = watchlist
-        # v2.57.1: re-resolve tail-only entries so a new {tail: "..."}
-        # entry surfaces in search filtering as soon as it's added,
-        # provided hexdb_cache has the tail. Cheap (one SELECT per
-        # tail entry).
-        global _RESOLVED_WATCHLIST_TAILS
-        db_path = (CONFIG.get("data") or {}).get("db_file", "aerodrome.db")
-        _RESOLVED_WATCHLIST_TAILS = _resolve_watchlist_tails(CONFIG, db_path)
+        # So a new {tail: "..."} entry surfaces in search filtering as soon
+        # as it's added, and the chip can tell a lookup is under way.
+        sync_watchlist_tails(CONFIG)
         return {"status": "added", "entry": new_entry, "message": "Live within one poll cycle"}
 
     @app.post("/api/watchlist/remove")
@@ -3384,12 +3298,8 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             if failed is not None:
                 return failed
             CONFIG["watchlist"] = watchlist
-        # v2.57.1: re-resolve tail-only entries — same rationale as in
-        # the add path. After a remove, the resolved-tails map should
-        # no longer carry the removed tail.
-        global _RESOLVED_WATCHLIST_TAILS
-        db_path = (CONFIG.get("data") or {}).get("db_file", "aerodrome.db")
-        _RESOLVED_WATCHLIST_TAILS = _resolve_watchlist_tails(CONFIG, db_path)
+        # After a remove, the shared map no longer carries the removed tail.
+        sync_watchlist_tails(CONFIG)
 
         # Optionally delete history rows matching the removed entry's label.
         # Label-match semantics: rows written by the collector carry the
@@ -4357,10 +4267,9 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         # nothing in this install needs the resolver).
         #
         # Edge case: a user with tail-based watchlist entries on an
-        # airplanes_live install does need hexdb for resolve_tail_to_icao,
-        # but only at startup/config-reload (not at runtime). Watchlist-
-        # tail resolution failures show up in the startup log; they
-        # don't need a continuous reachability probe. The probe gate
+        # airplanes_live install can need hexdb for tails that aren't US
+        # N-numbers. Those failures show on the entry's chip on the Watchlist
+        # tab, so they don't need a continuous reachability probe. The probe gate
         # follows the runtime usage signal (track_link provider) rather
         # than the start-time usage signal (watchlist tails).
         try:

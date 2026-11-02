@@ -1,4 +1,4 @@
-# Version: 3.4.150
+# Version: 3.4.151
 """
 collector.py — ADS-B data fetcher and classifier.
 
@@ -1069,9 +1069,18 @@ def clean_icao_hex(raw) -> str:
     return v if _ICAO_HEX_RE.match(v) else ""
 
 
-# Cache of tail → ICAO lookups so we don't hammer hexdb.io when the collector
-# rebuilds the watchlist every poll. None value means "looked up, not found".
-_TAIL_CACHE: Dict[str, Optional[str]] = {}
+# Watchlist tail numbers → ICAO hex, shared by the collector and the server
+# (same process, see main.py). KEY → {"icaos": [...], "status": found | pending |
+# unknown | error, "next_try": epoch seconds}. hexdb says a registration can be
+# reused by more than one airframe, so every hex for a tail is watched.
+# _tail_map is replaced whole on any change, so readers need no lock.
+TAIL_RETRY_UNKNOWN_SEC = 6 * 3600   # hexdb answered: it has no such tail
+TAIL_RETRY_ERROR_SEC = 5 * 60       # no usable answer, hexdb is down or struggling
+_tail_lock = threading.Lock()
+_tail_state: Dict[str, Dict[str, Any]] = {}
+_tail_map: Dict[str, List[str]] = {}
+_tail_generation = 0
+_tail_db_path: Optional[str] = None
 
 # v2.49.0: TTLs for the persistent ICAO→registration cache (hexdb_cache table).
 # Positive entries (we got a registration back) are considered fresh for 30
@@ -1123,28 +1132,263 @@ _icao_resolver_stats = {
 # Tail Number → ICAO Hex Lookup
 # =============================================================================
 
-def resolve_tail_to_icao(tail: str) -> Optional[str]:
-    """Look up ICAO hex from tail/registration via hexdb.io."""
-    key = tail.upper().strip()
-    if key in _TAIL_CACHE:
-        return _TAIL_CACHE[key]
+_N_NUMBER_RE = re.compile(r"N([1-9][0-9]{0,4})([A-HJ-NP-Z]{0,2})")
+_N_NUMBER_LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ"   # no I or O
+
+
+def _n_number_to_icao(tail: str) -> Optional[str]:
+    """ICAO hex of a US registration, or None if it isn't a valid N-number.
+
+    The US block is handed out in registration order, N1 = A00001 up to
+    N99999 = ADF7C7, so this is arithmetic: no lookup, no outage, and it covers
+    aircraft hexdb has never heard of. Under each digit come the letter
+    suffixes (601 of them: A, AA, AB .. AZ, B, BA ..) and then one sub-block
+    per next digit."""
+    match = _N_NUMBER_RE.fullmatch(tail)
+    if not match or len(match.group(1)) + len(match.group(2)) > 5:
+        return None
+    digits, letters = match.groups()
+    value = 0xA00001 + (int(digits[0]) - 1) * 101711
+    for digit, block in zip(digits[1:4], (10111, 951, 35)):
+        value += 601 + int(digit) * block
+    if len(digits) == 5:
+        value += 25 + int(digits[4])
+    elif len(digits) == 4:
+        # Only one character is left after four digits, so no two-letter tree.
+        if letters:
+            value += 1 + _N_NUMBER_LETTERS.index(letters[0])
+    elif letters:
+        value += 1 + _N_NUMBER_LETTERS.index(letters[0]) * 25
+        if len(letters) == 2:
+            value += 1 + _N_NUMBER_LETTERS.index(letters[1])
+    return f"{value:06X}"
+
+
+def _tail_key(tail: Any) -> str:
+    return str(tail or "").strip().upper()
+
+
+def _tail_local_icaos(key: str, db_path: Optional[str]) -> List[str]:
+    """Hexes for a tail from local sources: N-number arithmetic plus every
+    positive hexdb_cache row with that registration (an aircraft that kept an
+    older hex through a re-registration shows up here). Never the network, so
+    it is safe on the poll thread and in request handlers."""
+    icaos: List[str] = []
+    n_icao = _n_number_to_icao(key)
+    if n_icao:
+        icaos.append(n_icao)
+    if db_path:
+        try:
+            conn = _open_db_conn(db_path)
+            try:
+                rows = conn.execute(
+                    "SELECT icao FROM hexdb_cache "
+                    "WHERE UPPER(registration) = ? AND last_outcome = 'positive'",
+                    (key,),
+                ).fetchall()
+            finally:
+                conn.close()
+            for (icao,) in rows:
+                icao = (icao or "").upper()
+                if icao and icao not in icaos:
+                    icaos.append(icao)
+        except sqlite3.Error as e:
+            # e.g. no hexdb_cache yet on a brand-new database.
+            logger.debug(f"hexdb_cache read failed for tail {key}: {e}")
+    return icaos
+
+
+def _publish_tail_map_locked() -> None:
+    global _tail_map, _tail_generation
+    new_map = {k: list(v["icaos"]) for k, v in _tail_state.items() if v["icaos"]}
+    if new_map != _tail_map:
+        _tail_map = new_map
+        _tail_generation += 1
+
+
+def sync_watchlist_tails(config: Dict) -> None:
+    """Line the tail table up with the watchlist. Local work only: a new tail
+    is settled here if it can be, otherwise it waits for the hexdb worker
+    (run_due_tail_lookup). Cheap when nothing changed, so it runs every poll."""
+    global _tail_db_path
+    db_path = (config.get("data") or {}).get("db_file") or _db_path
+    _tail_db_path = db_path
+    keys = {
+        _tail_key(e.get("tail"))
+        for e in (config.get("watchlist") or [])
+        if isinstance(e, dict) and e.get("tail") and not e.get("icao")
+    }
+    keys.discard("")
+    with _tail_lock:
+        new_keys = keys - set(_tail_state)
+        gone = set(_tail_state) - keys
+        for key in gone:
+            del _tail_state[key]
+        if gone:
+            _publish_tail_map_locked()
+    if not new_keys:
+        return
+    local = {key: _tail_local_icaos(key, db_path) for key in new_keys}
+    with _tail_lock:
+        for key, icaos in local.items():
+            if key in _tail_state:
+                continue    # the poll thread and a request handler both got here
+            _tail_state[key] = {"icaos": icaos,
+                                "status": "found" if icaos else "pending",
+                                "next_try": 0.0}
+            if icaos:
+                logger.info(f"Watchlist: tail {key} → {', '.join(icaos)}")
+        _publish_tail_map_locked()
+    if not all(local.values()):
+        hexdb_resolver.start_worker()
+
+
+def watchlist_tail_map() -> Dict[str, List[str]]:
+    """{TAIL: [ICAO, ...]} for every tail resolved so far."""
+    return _tail_map
+
+
+def watchlist_tail_status(tail: Any) -> str:
+    """found, pending (not asked yet), unknown (hexdb has no record) or error
+    (hexdb gave no usable answer)."""
+    return _tail_state.get(_tail_key(tail), {}).get("status", "pending")
+
+
+def watchlist_signature(config: Dict) -> tuple:
+    """Changes when the watchlist's lookup needs rebuilding: an entry changed,
+    or a tail has just been resolved."""
+    entries = tuple(sorted(
+        (e.get("icao") or "", e.get("tail") or "", e.get("callsign") or "",
+         e.get("model") or "", e.get("label") or "")
+        for e in (config.get("watchlist") or [])
+    ))
+    return entries, _tail_generation
+
+
+def _hexdb_lookup_tail(key: str) -> Tuple[str, List[str], str]:
+    """Ask hexdb for a registration: (outcome, icaos, why). Only a 200 with no
+    matching result means "unknown". A 404, 429, 5xx, timeout or odd body says
+    nothing about the aircraft, so it is an "error" and is retried sooner.
+
+    v1 has no such route (/api/v1/aircraft/registration/... is a 404 page), so
+    this is v2 even though the hex lookups in resolve_icao_to_tail stay on v1,
+    which hexdb's docs say keeps working."""
+    now_ts = int(time.time())
+    db_path = _tail_db_path
+
+    def log_event(kind: str) -> None:
+        if not db_path:
+            return
+        try:
+            conn = _open_db_conn(db_path)
+            try:
+                _hexdb_event_log(conn, kind, None, now_ts)
+                conn.commit()
+            finally:
+                conn.close()
+        except sqlite3.Error as e:
+            logger.debug(f"hexdb event log failed: {e}")
+
     try:
-        url = f"https://hexdb.io/api/v1/aircraft/registration/{key}"
-        resp = requests.get(url, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            icao = data.get("ModeS", "").strip().upper()
-            if icao:
-                _TAIL_CACHE[key] = icao
-                logger.info(f"Resolved tail {tail} → ICAO {icao}")
-                return icao
-        logger.warning(f"Could not resolve tail number: {tail}")
-        _TAIL_CACHE[key] = None  # cache negative lookups too
-        return None
+        resp = requests.get("https://hexdb.io/api/v2/aircraft",
+                            params={"registration": key}, timeout=10)
+        if resp.status_code != 200:
+            raise ValueError(f"HTTP {resp.status_code}")
+        results = resp.json()["results"]
+        if not isinstance(results, list):
+            raise ValueError("results is not a list")
     except Exception as e:
-        logger.warning(f"Tail lookup failed for {tail}: {e}")
-        # Don't cache transient network errors — let next rebuild retry
-        return None
+        log_event("miss_error")
+        return "error", [], f"{type(e).__name__}: {e}"
+
+    matches: Dict[str, Dict] = {}
+    for row in results:
+        if (isinstance(row, dict)
+                and str(row.get("registration") or "").strip().upper() == key):
+            icao = clean_icao_hex(row.get("hex"))
+            if icao:
+                matches.setdefault(icao, row)
+    if not matches:
+        log_event("miss_negative")
+        return "unknown", [], ""
+
+    # v2 returns what the hex lookup would, so cache it: the server, the detail
+    # page and a later restart can all use it without asking hexdb again.
+    for icao, row in matches.items():
+        tc = str(row.get("icao_type_code") or "").strip().upper()
+        type_code = tc if _TYPE_DESIGNATOR_RE.match(tc) else ""
+        _ICAO_CACHE[icao] = key
+        _TYPE_CODE_CACHE[icao] = type_code
+        if db_path:
+            try:
+                conn = _open_db_conn(db_path)
+                try:
+                    _hexdb_cache_write(
+                        conn, icao, key, "positive", now_ts,
+                        registered_owner=str(row.get("registered_owner") or "").strip() or None,
+                        manufacturer=str(row.get("manufacturer") or "").strip() or None,
+                        type_code=type_code)
+                    _hexdb_event_log(conn, "miss_positive", icao, now_ts)
+                    conn.commit()
+                finally:
+                    conn.close()
+            except sqlite3.Error as e:
+                logger.debug(f"hexdb cache write failed for tail {key}: {e}")
+    return "found", list(matches), ""
+
+
+def _record_tail_outcome(key: str, outcome: str, icaos: List[str], why: str = "") -> None:
+    now = time.time()
+    with _tail_lock:
+        state = _tail_state.get(key)
+        if state is None:
+            return      # removed from the watchlist while we were asking
+        previous = state["status"]
+        state["status"] = outcome
+        state["icaos"] = icaos
+        if outcome == "unknown":
+            state["next_try"] = now + TAIL_RETRY_UNKNOWN_SEC
+        elif outcome == "error":
+            state["next_try"] = now + TAIL_RETRY_ERROR_SEC
+            # hexdb is struggling: hold the rest back rather than wait out a
+            # timeout for each of them in turn.
+            for other in _tail_state.values():
+                if not other["icaos"] and other["next_try"] <= now:
+                    other["next_try"] = now + TAIL_RETRY_ERROR_SEC
+                    if other["status"] == "pending":
+                        other["status"] = "error"
+        _publish_tail_map_locked()
+    if outcome == previous:
+        return
+    if outcome == "found":
+        logger.info(f"Watchlist: tail {key} → {', '.join(icaos)}")
+    elif outcome == "unknown":
+        logger.warning(f"Watchlist: could not resolve tail '{key}': hexdb.io has "
+                       f"no record of it. Checking again every "
+                       f"{TAIL_RETRY_UNKNOWN_SEC // 3600} hours.")
+    else:
+        logger.warning(f"Watchlist: tail lookup failed for '{key}' ({why}). "
+                       f"Retrying every {TAIL_RETRY_ERROR_SEC // 60} minutes.")
+
+
+def run_due_tail_lookup() -> bool:
+    """Settle one tail that is due. Runs on the shared hexdb worker, never the
+    poll thread, so a slow hexdb can't hold up polling and the combined hexdb
+    rate stays at the worker's pace. Returns True if it asked hexdb."""
+    now = time.time()
+    with _tail_lock:
+        key = next((k for k, v in _tail_state.items()
+                    if not v["icaos"] and v["next_try"] <= now), None)
+    if key is None:
+        return False
+    # The cache may have learned this registration since the last try.
+    icaos = _tail_local_icaos(key, _tail_db_path)
+    if icaos:
+        _record_tail_outcome(key, "found", icaos)
+        return False
+    outcome, icaos, why = _hexdb_lookup_tail(key)
+    _record_tail_outcome(key, outcome, icaos, why)
+    return True
 
 
 # =============================================================================
@@ -1437,9 +1681,8 @@ def resolve_icao_to_tail(icao: str) -> Optional[str]:
     try:
         # hexdb.io's aircraft endpoint is /api/v1/aircraft/{hex} — note the
         # hex goes directly after /aircraft/. Earlier versions used an
-        # extraneous /icao/ segment (mirroring the tail→ICAO resolver's
-        # /aircraft/registration/{reg} path), which 404'd for every lookup
-        # and caused every Track ↗ link to fall back. Fixed in v2.36.5.
+        # extraneous /icao/ segment, which 404'd for every lookup and caused
+        # every Track ↗ link to fall back. Fixed in v2.36.5.
         url = f"https://hexdb.io/api/v1/aircraft/{key}"
         resp = requests.get(url, timeout=10)
         if resp.status_code == 200:
@@ -2949,7 +3192,9 @@ def is_military(aircraft: Dict, config: Dict) -> Tuple[bool, str]:
 # =============================================================================
 
 def build_watchlist_lookup(config: Dict) -> Dict:
-    """Build fast lookup from config. Resolves tail numbers at startup."""
+    """Build fast lookup from config. Never touches the network: tails come
+    from the shared tail table, and run_collector rebuilds this when the hexdb
+    worker settles one (see watchlist_signature)."""
     lookup = {
         "icao_map": {},             # exact ICAO hex → label
         "callsign_prefixes": [],    # list of (prefix, label) tuples
@@ -2958,6 +3203,8 @@ def build_watchlist_lookup(config: Dict) -> Dict:
                                     # and type_desc (e.g. "CIRRUS SR-22 Turbo")
     }
     watchlist = config.get("watchlist", []) or []
+    sync_watchlist_tails(config)
+    tail_map = watchlist_tail_map()
 
     for entry in watchlist:
         label = entry.get("label", "Watched")
@@ -2967,11 +3214,8 @@ def build_watchlist_lookup(config: Dict) -> Dict:
             lookup["icao_map"][icao] = label
             logger.info(f"Watchlist: ICAO {icao} → '{label}'")
         elif entry.get("tail"):
-            icao = resolve_tail_to_icao(entry["tail"])
-            if icao:
+            for icao in tail_map.get(_tail_key(entry["tail"]), []):
                 lookup["icao_map"][icao] = label
-            else:
-                logger.warning(f"Watchlist: could not resolve tail '{entry['tail']}'")
         elif entry.get("callsign"):
             prefix = entry["callsign"].strip().upper()
             lookup["callsign_prefixes"].append((prefix, label))

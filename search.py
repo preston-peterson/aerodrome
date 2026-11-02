@@ -969,7 +969,7 @@ def execute_search(conn: sqlite3.Connection, parsed: Dict[str, Any],
                     limit: int = 50, offset: int = 0,
                     mil_config: Optional[Dict[str, Any]] = None,
                     watchlist_config: Optional[List[Dict[str, Any]]] = None,
-                    resolved_tails: Optional[Dict[str, str]] = None,
+                    resolved_tails: Optional[Dict[str, List[str]]] = None,
                     order: Optional[str] = None,
                     direction: Optional[str] = None,
                     from_ts: Optional[int] = None,
@@ -991,7 +991,7 @@ def execute_search(conn: sqlite3.Connection, parsed: Dict[str, Any],
       watchlist_config: v2.57.0 — list of watchlist entry dicts from
                   CONFIG['watchlist']. Required when the query includes
                   a "watchlist" / "wl" filter token; ignored otherwise.
-      resolved_tails: v2.57.1 — map of {tail_upper: icao_upper} for
+      resolved_tails: v2.57.1 — map of {tail_upper: [icao_upper, ...]} for
                   tail-only watchlist entries that the server resolved
                   at startup via hexdb_cache. Optional; when omitted,
                   tail-only entries don't participate in watchlist
@@ -1226,7 +1226,7 @@ def execute_search(conn: sqlite3.Connection, parsed: Dict[str, Any],
 def _build_where(parsed: Dict[str, Any],
                  mil_config: Optional[Dict[str, Any]] = None,
                  watchlist_config: Optional[List[Dict[str, Any]]] = None,
-                 resolved_tails: Optional[Dict[str, str]] = None,
+                 resolved_tails: Optional[Dict[str, List[str]]] = None,
                  distance_unit: str = "mi"
                  ) -> Tuple[List[str], List[Any]]:
     """Translate parsed filters + free text + time range into WHERE clauses.
@@ -1243,7 +1243,7 @@ def _build_where(parsed: Dict[str, Any],
                   CONFIG['watchlist']). Used to expand the "watchlist"
                   boolean filter. Same degradation: None or empty list
                   → "1=0".
-      resolved_tails: v2.57.1 — optional map of {tail_upper: icao_upper}
+      resolved_tails: v2.57.1 — optional map of {tail_upper: [icao_upper, ...]}
                   for tail-only watchlist entries that the server
                   resolved at startup via hexdb_cache. Threaded through
                   to _watchlist_match_clause so tail-only entries
@@ -1353,7 +1353,7 @@ def _build_where(parsed: Dict[str, Any],
 def _boolean_filter_clauses(parsed: Dict[str, Any],
                              mil_config: Optional[Dict[str, Any]],
                              watchlist_config: Optional[List[Dict[str, Any]]],
-                             resolved_tails: Optional[Dict[str, str]] = None
+                             resolved_tails: Optional[Dict[str, List[str]]] = None
                              ) -> Tuple[List[str], List[Any]]:
     """v2.57.0: build SQL clauses for boolean filters (military, watchlist).
 
@@ -1458,7 +1458,7 @@ def _boolean_filter_clauses(parsed: Dict[str, Any],
 
 
 def _watchlist_match_clause(watchlist_config: Optional[List[Dict[str, Any]]],
-                             resolved_tails: Optional[Dict[str, str]] = None
+                             resolved_tails: Optional[Dict[str, List[str]]] = None
                              ) -> Tuple[str, List[Any]]:
     """Build the SQL clause that matches watchlist aircraft.
 
@@ -1477,7 +1477,7 @@ def _watchlist_match_clause(watchlist_config: Optional[List[Dict[str, Any]]],
       watchlist_config: list of dicts as stored in CONFIG['watchlist'].
                         Each entry has one of: icao, tail, callsign,
                         model.
-      resolved_tails: optional map of {tail_upper: icao_upper} for
+      resolved_tails: optional map of {tail_upper: [icao_upper, ...]} for
                       tail-only entries. When None, tail entries are
                       skipped (v2.57.0 behavior preserved for
                       callers that don't pass the map — e.g. tests).
@@ -1502,14 +1502,11 @@ def _watchlist_match_clause(watchlist_config: Optional[List[Dict[str, Any]]],
         if entry.get("icao"):
             icaos.append(str(entry["icao"]).strip().upper())
         elif entry.get("tail"):
-            # v2.57.1: tail entries resolve to ICAOs via the cache.
-            # Falls into the same icaos list as direct ICAO entries
-            # so they share the IN-clause. Unresolved tails (not in
-            # the map) silently skip — startup logged the warning.
+            # Tail entries fall into the same icaos list as direct ICAO
+            # entries so they share the IN-clause. Unresolved tails (not in
+            # the map) skip; the entry's chip on the Watchlist tab says why.
             tail = str(entry["tail"]).strip().upper()
-            resolved_icao = resolved_tails.get(tail)
-            if resolved_icao:
-                icaos.append(resolved_icao)
+            icaos.extend(resolved_tails.get(tail, []))
         elif entry.get("callsign"):
             callsign_prefixes.append(str(entry["callsign"]).strip().upper())
         elif entry.get("model"):

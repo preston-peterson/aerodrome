@@ -19,6 +19,25 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.151] — 2026-11-02
+
+**Watchlist entries by tail number now work.** Adding an aircraft by tail number, the default in the Watchlist tab's add form, looked fine but the entry never matched: the aircraft stayed off the Watchlist tab and no notification was sent, however often it flew overhead. The online lookup that turns a tail number into the aircraft's ICAO hex was failing every time. Your existing tail entries start matching after this update with nothing to change. Earlier flights aren't added back, because they were never recorded as watchlist sightings.
+
+US tail numbers (N-numbers) are now worked out on the spot, so they need no lookup and work for aircraft hexdb.io has never heard of. Other countries' tail numbers are looked up on hexdb.io again, and a failed lookup is retried on its own: every few minutes if hexdb.io can't be reached, every few hours if it doesn't know the aircraft. Nothing needs a restart any more.
+
+**The Watchlist tab now says when an entry can't be matched.** Its chip gets an amber outline and reads **not found** (hexdb.io doesn't know the tail number) or **lookup failed** (Aerodrome couldn't reach hexdb.io). Hover over the words for what it means and what to do. All other chips look as before. The workaround still holds if hexdb.io doesn't know an aircraft: add it by its ICAO hex.
+
+**Live, Search and the Watchlist tab now agree on tail entries.** Once a tail number is resolved, the Live list shows the aircraft as already added, the Live alert on the Watchlist tab fires for it, and the `watchlist` search finds it, all without a restart. Before, each of these could disagree with the others, and the Live alert never fired for a tail entry at all.
+
+### Behind the scenes
+
+- Registration lookups now use hexdb's `/api/v2/aircraft?registration=`, the documented route; the path used before returned a 404 page. Hex lookups stay on v1, which hexdb's docs say keeps working. Only a 200 with no matching registration counts as "doesn't know this aircraft"; a 404, 429, 5xx, timeout or unreadable reply is retried soon rather than remembered as "not found".
+- hexdb's docs note that a registration can be reused by more than one airframe, so every exact match is watched, not only the first. An answer also fills `hexdb_cache` (owner, manufacturer, type), which saves a later hex lookup. No schema change.
+- US hexes come from the registration by arithmetic (the block runs in registration order, N1 = A00001 to N99999 = ADF7C7), checked against hexdb's answers for real aircraft. A positive `hexdb_cache` row with that registration is watched as well, which covers an aircraft that kept an older hex through a re-registration.
+- Lookups moved off the poll thread onto the shared hexdb worker, so they share its pace of about two requests a second. Before, an unreachable hexdb.io could hold up polling for up to 10 seconds per tail entry. One failed lookup also holds back the other due tails, rather than waiting out a timeout for each.
+- The server's own tail resolver is gone. The collector and server run in one process, so Search, the row pills and Live badges now read the collector's map, which also follows watchlist changes made outside the Watchlist tab.
+- `/api/watchlist/entries` adds `tail_status` and `tail_icaos` to tail-only entries, on a copy, so they never reach `config.yaml`.
+
 ## [3.4.150] — 2026-11-01
 
 **Aerodrome now does its system tasks through one small, dedicated helper.** Installing, upgrading or reconfiguring the local notification server, and moving the demo feeder to a free port, now go through a single helper that accepts only a fixed set of checked actions. The local notification server now runs under its own restricted, sandboxed system account. Its address, port, listen address and iPhone-relay setting carry over, and your phone subscriptions keep working.

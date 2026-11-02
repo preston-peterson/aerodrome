@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Version: 3.4.150
+# Version: 3.4.151
 """
 main.py — Aerodrome ADS-B Tracker
 
@@ -40,6 +40,7 @@ import uvicorn
 import config_io
 import restore_io
 from collector import (init_db, build_watchlist_lookup, fetch_and_store,
+                       sync_watchlist_tails, watchlist_signature,
                        set_db_path, _open_db_conn, set_db_tuning_profile,
                        set_receiver_location, check_capacity_alerts,
                        refresh_query_planner_stats)
@@ -428,14 +429,12 @@ def run_collector(config: dict, stop_event: threading.Event):
 
     while not stop_event.is_set():
         try:
-            # Rebuild watchlist on every poll so UI/config changes take effect live.
-            # Tail-number resolution is cached, so this is cheap after the first run.
+            # Check the watchlist every poll so UI/config changes take effect
+            # live, and rebuild when it changed or the hexdb worker has just
+            # resolved a tail. No network here: lookups happen on that worker.
             current_watchlist = config.get("watchlist") or []
-            sig = tuple(sorted(
-                (e.get("icao") or "", e.get("tail") or "", e.get("callsign") or "",
-                 e.get("model") or "", e.get("label") or "")
-                for e in current_watchlist
-            ))
+            sync_watchlist_tails(config)
+            sig = watchlist_signature(config)
             if sig != last_watchlist_sig:
                 logger.info(f"Watchlist changed ({len(current_watchlist)} entries) — rebuilding lookup")
                 watchlist_lookup = build_watchlist_lookup(config)
