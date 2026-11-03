@@ -90,6 +90,25 @@ rotation. What you lose with shorter retention is the ability to
 search or browse aircraft history beyond that window via the Search
 tab — which queries the `all_sightings` table directly.
 
+Lowering a setting is safe on a big database. Old rows are removed in
+short steps, two seconds at a time with a pause between, so collection and
+the web UI carry on. Cleanup otherwise runs every 10 minutes.
+
+## Indexes built on the first start after an upgrade
+
+Two indexes make per-aircraft pages and Search's sort by Sightings faster:
+`idx_all_icao_seen` on `all_sightings` (it replaces `idx_all_icao`) and
+`idx_hourly_icao_sum` on `sightings_hourly`. Aerodrome builds them once, on
+the first start of a release that has them:
+
+- The web UI is up during the build. Collection pauses until it's done:
+  seven seconds on 11 million rows on a fast disk, longer on a slower one.
+  The log says when it starts and finishes.
+- Together they add about 6 bytes per row of `all_sightings`.
+- They need free space while building, about 70 bytes per row. With less
+  than that plus 256 MB free, the build waits for a later start and the log
+  says so. Everything still works, more slowly, without them.
+
 ## Storage recommendations
 
 **If you're on an SD card and seeing slowness, a USB SSD is the single

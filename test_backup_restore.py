@@ -3133,23 +3133,26 @@ class TestRestoreChecksThatHadNoTest(_Restore):
         self.assert_untouched()
 
     def test_a_valid_header_with_damaged_pages_is_400(self):
-        src = self.work / "damaged.db"
-        make_history_db(src, 0xC00000, 4000)
-        c = sqlite3.connect(str(src))
-        page_size = c.execute("PRAGMA page_size").fetchone()[0]
-        page_count = c.execute("PRAGMA page_count").fetchone()[0]
-        root = c.execute("SELECT rootpage FROM sqlite_master WHERE name='all_sightings'"
-                         ).fetchone()[0]
-        c.close()
-        page = max(root + 1, page_count // 2)
-        raw = bytearray(src.read_bytes())
-        raw[(page - 1) * page_size:page * page_size] = b"\xA5" * page_size
-        make_backup_zip(self.zip, self.backup_text(), bytes(raw))
-        status, body = self.restore()
-        self.assertEqual(status, 400, body)
-        self.assertIn("quick_check", body["message"])
-        self.assertEqual(self.restart_calls(), [])
-        self.assert_untouched()
+        # quick_check reports a damaged index page, and raises on a damaged table
+        # page. Either way the backup is refused.
+        for name, wanted in (("idx_all_seen", "quick_check"), ("all_sightings", "can't be opened")):
+            with self.subTest(damaged=name):
+                src = self.work / f"damaged-{name}.db"
+                make_history_db(src, 0xC00000, 4000)
+                c = sqlite3.connect(str(src))
+                page_size = c.execute("PRAGMA page_size").fetchone()[0]
+                leaves = [r[0] for r in c.execute("SELECT pageno FROM dbstat WHERE name=? "
+                                                  "AND pagetype='leaf' ORDER BY pageno", (name,))]
+                c.close()
+                page = leaves[len(leaves) // 2]
+                raw = bytearray(src.read_bytes())
+                raw[(page - 1) * page_size:page * page_size] = b"\xA5" * page_size
+                make_backup_zip(self.zip, self.backup_text(), bytes(raw))
+                status, body = self.restore()
+                self.assertEqual(status, 400, body)
+                self.assertIn(wanted, body["message"])
+                self.assertEqual(self.restart_calls(), [])
+                self.assert_untouched()
 
 
 class TestSmallGuards(_Restore):

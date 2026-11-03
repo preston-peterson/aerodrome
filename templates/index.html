@@ -1,4 +1,4 @@
-<!-- Version: 3.4.152 -->
+<!-- Version: 3.4.153 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -3823,7 +3823,9 @@ function _radarBuildIcon(ac){
     // + not rotorcraft/balloon); empty string = chevron fallback.
     const typeSvg = (isHeli || isBalloon) ? '' : _radarTypeSvg(ac, color, size);
     const track = (ac.track != null && !isNaN(ac.track)) ? Number(ac.track) : null;
-    const rot = (isHeli || isBalloon || track == null) ? 0 : track;
+    // Whole degrees: no one can see less on a marker this size, and most small
+    // heading changes then leave the icon as it was (see _radarSetIcon).
+    const rot = (isHeli || isBalloon || track == null) ? 0 : Math.round(track);
     const cls = 'radar-marker' + (isMil ? ' mil' : '') + (isWl ? ' wl' : '')
         + (radarLabelsMode() === 'all' ? ' labeled' : '')
         + (ac.icao === _radar.selectedIcao ? ' selected' : '');
@@ -3850,6 +3852,19 @@ function _radarBuildIcon(ac){
         className: cls, html,
         iconSize: [size, size], iconAnchor: [size/2, size/2],
     });
+}
+
+function _radarIconKey(icon){ return icon.options.className + icon.options.html; }
+
+// setIcon replaces the marker's DOM (and loses its hover state), so only when
+// the icon really changed: on a real feed about 3 in 4 don't, from one 5 s tick
+// to the next.
+function _radarSetIcon(m, ac){
+    const icon = _radarBuildIcon(ac);
+    const key = _radarIconKey(icon);
+    if(m._iconKey === key) return;
+    m.setIcon(icon);
+    m._iconKey = key;
 }
 
 // Reconcile markers against the current D.live: update existing, add new,
@@ -3881,14 +3896,17 @@ function radarSync(liveJ){
         bounds.push(ll);
         let m = _radar.markers[ac.icao];
         if(!m){
-            m = L.marker(ll, { icon: _radarBuildIcon(ac), riseOnHover: true });
+            const icon = _radarBuildIcon(ac);
+            m = L.marker(ll, { icon, riseOnHover: true });
+            m._iconKey = _radarIconKey(icon);
             const hex = ac.icao;
             m.on('click', e => { L.DomEvent.stopPropagation(e); openRadarOverlay(hex); });
             m.addTo(_radar.map);
             _radar.markers[ac.icao] = m;
         } else {
-            m.setLatLng(ll);
-            m.setIcon(_radarBuildIcon(ac));
+            const was = m.getLatLng();
+            if(was.lat !== ac.lat || was.lng !== ac.lon) m.setLatLng(ll);
+            _radarSetIcon(m, ac);
         }
     });
     // Remove markers for aircraft no longer present.
@@ -3957,7 +3975,7 @@ function radarSync(liveJ){
 function _radarReskin(){
     Object.keys(_radar.markers).forEach(ic => {
         const a = (D.live || []).find(x => x.icao === ic);
-        if(a) _radar.markers[ic].setIcon(_radarBuildIcon(a));
+        if(a) _radarSetIcon(_radar.markers[ic], a);
     });
 }
 
@@ -4187,13 +4205,17 @@ function _radarSetRoute(info){
 // Add one altitude-coloured trail segment (p1→p2) for the selected aircraft.
 // Colour follows the same _radarAltColor scale as the markers, so the track
 // reads as an altitude profile. Segments are tracked in _radar.trailSegs.
+const RADAR_TRAIL_MAX_SEGS = 3000;
 function _radarAddTrailSeg(p1, p2, alt){
     if(!_radar.map) return;
     const line = L.polyline([p1, p2], {
         renderer: _radar.canvasRenderer, color: _radarAltColor(alt),
         weight: 2, opacity: 0.75, interactive: false,
     }).addTo(_radar.map);
-    (_radar.trailSegs = _radar.trailSegs || []).push(line);
+    const segs = (_radar.trailSegs = _radar.trailSegs || []);
+    segs.push(line);
+    // A long loiter with an open panel: drop the oldest instead of growing forever.
+    while(segs.length > RADAR_TRAIL_MAX_SEGS) _radar.map.removeLayer(segs.shift());
 }
 
 // Selected-aircraft trail: its recent (24h) track drawn on the main map,

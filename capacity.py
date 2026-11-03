@@ -73,34 +73,28 @@ CAPACITY_DEFAULT_BYTES_PER_ROW = 170  # used only when measurement isn't availab
 # is NOT cached here — it's a cheap index seek (see v3.4.45) and oldest-row
 # freshness matters more for the days-of-data figure.
 _ROWCOUNT_CACHE_TTL_SEC = 600  # 10 minutes
-_rowcount_cache = {"total_rows": None, "ts": 0.0}
+_rowcount_cache: Dict[Any, Any] = {}   # (db_path, name) -> (count, ts)
 _rowcount_lock = threading.Lock()
 
 
-def _get_cached_total_rows(conn) -> int:
-    """Return COUNT(*) of all_sightings, cached process-wide for
-    _ROWCOUNT_CACHE_TTL_SEC with double-checked locking so the underlying
-    full-index scan runs at most once per TTL and never concurrently.
-
-    See the _rowcount_cache comment above for why this exists.
-    """
-    now = time.time()
-    c = _rowcount_cache
+def _cached_count(conn, db_path: str, name: str, sql: str, params: tuple = ()) -> int:
+    """A row count, cached process-wide for _ROWCOUNT_CACHE_TTL_SEC with
+    double-checked locking, so its index scan runs at most once per TTL and never
+    concurrently. See the _rowcount_cache comment above for why this exists."""
+    key = (db_path, name)
+    hit = _rowcount_cache.get(key)
     # Fast path: fresh cached value, no lock needed.
-    if c["total_rows"] is not None and (now - c["ts"]) < _ROWCOUNT_CACHE_TTL_SEC:
-        return c["total_rows"]
+    if hit and time.time() - hit[1] < _ROWCOUNT_CACHE_TTL_SEC:
+        return hit[0]
     # Slow path: acquire the lock, re-check (another thread may have just
     # refreshed while we waited), then scan if still stale.
     with _rowcount_lock:
-        now = time.time()
-        if c["total_rows"] is not None and (now - c["ts"]) < _ROWCOUNT_CACHE_TTL_SEC:
-            return c["total_rows"]
-        total_rows = int(conn.execute(
-            "SELECT COUNT(*) FROM all_sightings"
-        ).fetchone()[0] or 0)
-        c["total_rows"] = total_rows
-        c["ts"] = now
-        return total_rows
+        hit = _rowcount_cache.get(key)
+        if hit and time.time() - hit[1] < _ROWCOUNT_CACHE_TTL_SEC:
+            return hit[0]
+        count = int(conn.execute(sql, params).fetchone()[0] or 0)
+        _rowcount_cache[key] = (count, time.time())
+        return count
 
 
 # v2.50.31: alert thresholds. The defaults are also the values that the
@@ -186,8 +180,8 @@ def _compute_capacity_metrics(db_path: str, retention_days: int = 30) -> Dict[st
             # for 10 min with a lock so it never runs concurrently — this is
             # the v3.4.46 fix for the residual admin-page/collector stalls
             # that v3.4.45's query split didn't fully resolve. See the
-            # _get_cached_total_rows / _rowcount_cache comments at module top.
-            total_rows = _get_cached_total_rows(conn)
+            # _cached_count / _rowcount_cache comments at module top.
+            total_rows = _cached_count(conn, db_path, "total", "SELECT COUNT(*) FROM all_sightings")
 
             if total_rows == 0 or min_ts is None:
                 out["data_source"] = "insufficient"
@@ -208,11 +202,11 @@ def _compute_capacity_metrics(db_path: str, retention_days: int = 30) -> Dict[st
             # otherwise use everything we have.
             if days_present >= 7:
                 seven_days_ago = now_ts - 7 * 86400
-                recent_rows = conn.execute(
-                    "SELECT COUNT(*) FROM all_sightings WHERE seen_at >= ?",
-                    (seven_days_ago,)
-                ).fetchone()[0]
-                out["rows_per_day"] = round(int(recent_rows) / 7.0, 0)
+                # A week's rows is an index scan too, and this rate moves slowly.
+                recent_rows = _cached_count(
+                    conn, db_path, "last_7_days",
+                    "SELECT COUNT(*) FROM all_sightings WHERE seen_at >= ?", (seven_days_ago,))
+                out["rows_per_day"] = round(recent_rows / 7.0, 0)
             else:
                 out["rows_per_day"] = round(total_rows / days_present, 0)
 

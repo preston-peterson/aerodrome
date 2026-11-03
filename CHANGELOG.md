@@ -19,6 +19,26 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.153] — 2026-11-02
+
+**Aircraft pages and Search open much faster, especially the first time.** A busy aircraft's page and its trail on the map no longer read every sighting that aircraft has ever had. Search reads speed, altitude and squawk only for the page of results you're looking at, not for every match. On a test database of 11 million sightings, first-time numbers went like this: a busy aircraft's recent sightings from 355 ms to 1 ms, its 24-hour trail from 341 ms to 5 ms, browsing all aircraft from 814 ms to 25 ms, and a whole year sorted by Sightings from 1.9 s to 0.3 s. Your results don't change, apart from the order of rows that tie on every sort key. A few narrow searches, such as one old day sorted by Sightings, can take about 15 ms longer once cached.
+
+**The first start after this update builds two indexes, once.** The web UI is up as usual, and collecting pauses until they're done: seven seconds on 11 million sightings on a fast disk, longer on a slower one. The log says when it starts and finishes. They add about 6 bytes per sighting, so about 70 MB on 11 million. The build needs about 70 bytes per sighting plus 256 MB free. With less than that it waits for a later start and the log says so. Everything still works in the meantime, more slowly.
+
+**Lowering a retention setting no longer ties up the database.** Old rows are now removed in short steps instead of one huge delete. Removing 9.7 million rows in one go took 13 s, wrote a 1.5 GB temporary file, and made other database writes fail while it ran. Through the app it now takes about two minutes, the temporary file stayed under 25 MB, no other write failed, and collecting and pages carried on. Cleanup otherwise runs every 10 minutes, and at once when you change a retention setting. The daily longest-track rows are now removed along with old sightings too. They used to be kept forever, and each aircraft's all-time longest track is kept either way.
+
+**A notification server that doesn't answer no longer holds up collecting.** Notifications now go out after each poll has finished writing to the database. In a test with a server that never answered, polling every 2 s, the old version completed 3 polls in 45 s and made other database writes wait up to 15 s. This version completed 20 polls and made them wait no time at all. After a failed send, watchlist and special-aircraft alerts wait a minute before trying the server again, doubling up to 10 minutes. A successful send or saving your settings ends the wait. Emergency squawks and other one-time alerts are always tried.
+
+**The Live map redraws less.** A marker is now redrawn only when its icon changes, and headings are rounded to whole degrees so tiny changes don't count. On a real feed most icons don't change from one 5-second update to the next. The trail of a selected aircraft now keeps its latest 3,000 segments instead of growing for as long as the panel stays open.
+
+### Behind the scenes
+
+`idx_all_icao_seen` (icao, seen_at) replaces `idx_all_icao`, and `idx_hourly_icao_sum` (icao, hour_bucket, sighting_count) serves the Sightings sort without reading table rows. Neither is a numbered migration, and the schema version doesn't change: a migration runs before the web UI starts and a failed one stops Aerodrome, while these are optional. `ensure_lookup_indexes` builds them on the collector thread before its first poll, sorts on disk, and leaves the database as it was on any failure. A downgrade works: the older version rebuilds its index at start, and coming back removes it again.
+
+With statistics for the new indexes, SQLite's planner skip-scanned them for plain date ranges (0.1 ms became 39 ms), so every ANALYZE now goes through `analyze_db`, which marks them `noskipscan` in `sqlite_stat1`. Across 406 distinct statements recorded from the running app, 123 plans changed, none is a new skip-scan, and those statements' total time went from 1,643 ms to 777 ms. 234 searches gave the same answers on 3.4.152 and this release, on the same database.
+
+Smaller changes: rollup retention goes by the indexed hour bucket instead of scanning for `last_seen_at`; the capacity card's weekly row count is cached like the total, and the cache is per database; a restart writes `last_distance` only where it changed.
+
 ## [3.4.152] — 2026-11-02
 
 **A date in Search now finds every aircraft seen on that date.** Before, a date only matched aircraft whose *last* sighting fell on it, so an aircraft seen in March and again in April was missing from a search for March, and old dates looked almost empty. Hourly history is kept past your raw-sighting retention, so old dates work too. Very broad searches can take a little longer on a large install, and the wider results are the correct ones.

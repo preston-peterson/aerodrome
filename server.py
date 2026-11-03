@@ -1,4 +1,4 @@
-# Version: 3.4.152
+# Version: 3.4.153
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -39,7 +39,7 @@ from designators import airline_name, aircraft_type_name
 # v2.50.13: central DB-connection helper that applies tuning pragmas
 import tzwindow
 from search import window_sources
-from collector import (_open_db_conn, aircraft_type_for, sync_watchlist_tails,
+from collector import (_open_db_conn, aircraft_type_for, analyze_db, sync_watchlist_tails,
                        watchlist_tail_map, watchlist_tail_status)
 # v2.79.0 (Phase 3 polish): centralized distance + bearing helpers.
 # Pre-v2.79.0 the haversine math was duplicated across four sites
@@ -1327,17 +1327,15 @@ def _distance_km_to_user_unit(km):
 # populated. Callers pass None/None when the receiver isn't
 # configured — function clears all last_distance to NULL in that case.
 #
-# Side-effects: writes to seen_aircraft.last_distance for every row
-# where last_lat / last_lon are non-NULL. Rows without coords keep
-# last_distance = NULL (ORDER BY puts those last regardless of dir).
+# Side-effects: writes seen_aircraft.last_distance where the stored value
+# differs. Rows without coords keep last_distance = NULL (ORDER BY puts
+# those last regardless of dir).
 #
-# Cost: ~6,800 haversines + 6,800 UPDATEs on a typical install. On a
-# Pi this completes in single-digit seconds; not parallelized
-# because SQLite serializes writes anyway. The function is
-# intentionally synchronous so callers know the column is consistent
-# when it returns.
+# The function is intentionally synchronous so callers know the column
+# is consistent when it returns.
 #
 # Returns the count of rows updated for logging.
+_DISTANCE_SAME_KM = 0.001   # the collector computes the same formula independently
 def _recompute_all_last_distance(db_path: str,
                                   rlat: Optional[float] = None,
                                   rlon: Optional[float] = None) -> int:
@@ -1357,22 +1355,26 @@ def _recompute_all_last_distance(db_path: str,
         # ("we don't know") rather than misleading (0 km would imply
         # "everything is here").
         if rlat is None or rlon is None:
-            conn.execute("UPDATE seen_aircraft SET last_distance = NULL")
+            conn.execute("UPDATE seen_aircraft SET last_distance = NULL "
+                         "WHERE last_distance IS NOT NULL")
             conn.commit()
             logger.info("Distance recompute: receiver location not set; "
                         "cleared all last_distance values")
             return 0
 
-        # Pull every row with coordinates and recompute.
+        # Pull every row with coordinates and recompute. Only what changed is
+        # written: on an ordinary restart that's nothing, so a start no longer
+        # rewrites every row (and its index entry) to the same value.
         rows = conn.execute("""
-            SELECT icao, last_lat, last_lon FROM seen_aircraft
+            SELECT icao, last_lat, last_lon, last_distance FROM seen_aircraft
             WHERE last_lat IS NOT NULL AND last_lon IS NOT NULL
         """).fetchall()
 
         updates = []
-        for icao, lat, lon in rows:
+        for icao, lat, lon, stored in rows:
             km = _haversine(rlat, rlon, lat, lon)
-            updates.append((km, icao))
+            if stored is None or abs(km - stored) > _DISTANCE_SAME_KM:
+                updates.append((km, icao))
 
         if updates:
             conn.executemany(
@@ -1384,10 +1386,10 @@ def _recompute_all_last_distance(db_path: str,
         # a row was ever populated by an older code path).
         conn.execute("""
             UPDATE seen_aircraft SET last_distance = NULL
-            WHERE last_lat IS NULL OR last_lon IS NULL
+            WHERE (last_lat IS NULL OR last_lon IS NULL) AND last_distance IS NOT NULL
         """)
         conn.commit()
-        logger.info(f"Distance recompute: updated {len(updates)} rows "
+        logger.info(f"Distance recompute: updated {len(updates)} of {len(rows)} rows "
                     f"with distance from receiver ({rlat}, {rlon})")
         return len(updates)
     finally:
@@ -2844,7 +2846,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         # captures timing and plan when these queries cross the slow
         # threshold. Both queries are suspects for the from_ts=0 query
         # planner pathology — the SELECT may pick idx_all_seen_icao
-        # over idx_all_icao, scanning the full table; the COUNT has the
+        # over idx_all_icao_seen, scanning the full table; the COUNT has the
         # same risk and isn't probed by the perf-diag at all.
         from slow_query_log import time_query as _slow_q
         rows = _slow_q(conn, f"""
@@ -10108,8 +10110,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         t0 = _t.time()
         try:
             conn = _open_db_conn(db_path, timeout=60.0)
-            conn.execute("ANALYZE")
-            conn.commit()
+            analyze_db(conn)
             conn.close()
         except Exception as e:
             logger.error(f"Manual ANALYZE failed: {e}")

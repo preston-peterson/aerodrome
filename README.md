@@ -1,5 +1,5 @@
 # Aerodrome
-<!-- Version: 3.4.152 -->
+<!-- Version: 3.4.153 -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -182,6 +182,7 @@ aerodrome/
 ├── test_check_installers.py      release tests — installer-consistency gate
 ├── test_check_release_zip.py     release tests — zip checker, package + publish scripts
 ├── test_collector_recovery.py    unit tests — demo feeder port recovery through the helper
+├── test_collector_upkeep.py      tests — retention batches, lookup indexes, notification timing
 ├── test_config_page_b4b.py       unit tests — Settings-page recovery notice, save and upload refusals (static)
 ├── test_config_page_b4c.py       unit tests — Backup & restore page: problem list, restore notices, Cancel, Put this back (static)
 ├── test_config_write_safety.py   unit tests — all-or-nothing config writes, recovery, private files

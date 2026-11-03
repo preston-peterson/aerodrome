@@ -1561,6 +1561,10 @@ the reason for each suppression (cooldown, rate limit, quiet hours,
 etc.), which is the fastest way to debug why a notification didn't
 arrive.
 
+If a send fails, watchlist and special-aircraft alerts wait a minute
+before trying the server again, doubling up to 10 minutes. A successful
+send or saving your settings ends the wait. Other alerts are always tried.
+
 ## Performance diagnostic
 
 A moderate urban or suburban receiver sees a few thousand unique
@@ -1926,7 +1930,8 @@ On a demo install, do the same for `aerodrome-synthetic-feeder`.
 **Database getting too large**
 
 - Reduce `all_days` in `config.yaml`.
-- Cleanup runs automatically on every poll cycle.
+- Cleanup runs automatically every 10 minutes, and at once when you change a retention setting. A big cut is removed in short steps, so Aerodrome keeps collecting and answering while it happens. It took about two minutes per 10 million rows on a fast disk; a slower disk takes longer.
+- Removed rows free space inside the database for new data. The file itself doesn't get smaller.
 
 **Performance feels slow**
 

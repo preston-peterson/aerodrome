@@ -606,5 +606,81 @@ class TestDigestTimes(unittest.TestCase):
         self.assertEqual(n._format_hhmm(utc(2026, 6, 15, 1)), "20:00")
 
 
+class TestLastStateOnThePage(_DbCase):
+    """Speed, altitude and squawk are read for the page of results, not for every match."""
+
+    def setUp(self):
+        super().setUp()
+        for i, icao in enumerate(("A00001", "A00002", "A00003")):
+            self.aircraft(icao, 100, 7200 + i, count=10 - i)
+        self.conn.executemany(
+            "INSERT INTO sightings_hourly (icao, hour_bucket, sighting_count, first_seen_at, last_seen_at,"
+            " last_speed, last_altitude, last_squawk) VALUES (?,?,1,?,?,?,?,?)",
+            [("A00001", 3600, 3600, 3600, 111, 1000, "1111"),   # older hour: must not be used
+             ("A00001", 7200, 7200, 7200, 300, 30000, "1200"),
+             ("A00002", 7200, 7200, 7200, 500, 20000, "7000")])
+        self.conn.commit()
+
+    def rows(self, **kwargs):
+        return execute_search(self.conn, parse_query(""), **kwargs)["rows"]
+
+    def test_each_row_gets_its_latest_hours_state(self):
+        by_icao = {r["icao"]: r for r in self.rows()}
+        self.assertEqual((by_icao["A00001"]["last_speed"], by_icao["A00001"]["last_altitude"],
+                          by_icao["A00001"]["last_squawk"]), (300, 30000, "1200"))
+        self.assertEqual(by_icao["A00002"]["last_speed"], 500)
+
+    def test_an_aircraft_with_no_hourly_row_is_still_listed(self):
+        by_icao = {r["icao"]: r for r in self.rows()}
+        self.assertIsNone(by_icao["A00003"]["last_speed"])
+        self.assertIsNone(by_icao["A00003"]["last_squawk"])
+
+    def test_sorting_by_a_last_state_column_ranks_every_match(self):
+        self.assertEqual([r["icao"] for r in self.rows(order="speed", direction="desc")],
+                         ["A00002", "A00001", "A00003"])
+        self.assertEqual([r["icao"] for r in self.rows(order="speed", direction="asc")],
+                         ["A00001", "A00002", "A00003"])
+        self.assertEqual(self.rows(order="speed", direction="desc", limit=1)[0]["last_altitude"], 20000)
+
+    def test_only_those_sorts_join_it_and_the_lookup_covers_only_the_page(self):
+        sql = []
+        self.conn.set_trace_callback(sql.append)
+        try:
+            rows = self.rows(limit=1)
+        finally:
+            self.conn.set_trace_callback(None)
+        self.assertEqual(len(rows), 1)
+        self.assertFalse([s for s in sql if "latest_h" in s], "the ranking query joined the latest hour")
+        lookups = [s for s in sql if "h.last_speed" in s]
+        self.assertEqual(len(lookups), 1)
+        self.assertEqual(lookups[0].count("'A0000"), 1)
+        sql.clear()
+        self.conn.set_trace_callback(sql.append)
+        try:
+            self.rows(order="altitude", direction="desc")
+        finally:
+            self.conn.set_trace_callback(None)
+        self.assertTrue([s for s in sql if "latest_h" in s])
+
+    def test_free_text_with_its_relevance_join_still_gets_state(self):
+        self.conn.execute("INSERT INTO seen_aircraft_fts (rowid, icao, registration, last_callsign, aircraft_type,"
+                          " aircraft_type_desc, operator, country) SELECT rowid, icao, 'N1', 'TESTCALL', '', '', '', ''"
+                          " FROM seen_aircraft WHERE icao = 'A00002'")
+        self.conn.commit()
+        rows = execute_search(self.conn, parse_query("testcall"))["rows"]
+        self.assertEqual([r["icao"] for r in rows], ["A00002"])
+        self.assertEqual(rows[0]["last_squawk"], "7000")
+
+    def test_a_date_range_sort_runs_its_sum_once_per_row(self):
+        sql = []
+        self.conn.set_trace_callback(sql.append)
+        try:
+            execute_search(self.conn, parse_query("1970-01-01", tz=timezone.utc), order="sightings", direction="desc")
+        finally:
+            self.conn.set_trace_callback(None)
+        ranking = next(s for s in sql if "ORDER BY" in s and "score" in s)
+        self.assertEqual(ranking.count("SUM(w.sighting_count)"), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

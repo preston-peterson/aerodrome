@@ -129,8 +129,8 @@ _AIRLINE_NAMES = _build_airline_names()
 # the `data-c` attribute on the Search column-header strip in
 # templates/index.html) to the actual SQL ORDER BY expression. The
 # expressions reference the same tables joined by the search query —
-# seen_aircraft and (for last-state columns) the latest_h subquery
-# alias `lh`.
+# seen_aircraft and (for last-state columns) latest_h, which execute_search
+# joins only for those sorts.
 #
 # IMPORTANT: never interpolate user input into the SQL — the user's
 # `?order=` parameter is matched against this dict's KEYS and the
@@ -912,6 +912,24 @@ def _window_sum_expr(t0: int, t1: int) -> str:
     return " + ".join(parts) or "0"
 
 
+def _attach_last_state(conn: sqlite3.Connection, rows: List[Dict[str, Any]]) -> None:
+    """Add speed, altitude and squawk from each aircraft's latest hour to a page of
+    rows: the "latest known state" a Search card shows. None when an aircraft has
+    no hourly row yet."""
+    for r in rows:
+        r["last_speed"] = r["last_altitude"] = r["last_squawk"] = None
+    if not rows:
+        return
+    by_icao = {r["icao"]: r for r in rows}
+    marks = ",".join("?" * len(by_icao))
+    for icao, speed, altitude, squawk in conn.execute(
+            f"SELECT h.icao, h.last_speed, h.last_altitude, h.last_squawk "
+            f"FROM sightings_hourly h WHERE h.icao IN ({marks}) AND h.hour_bucket = "
+            f"(SELECT MAX(hour_bucket) FROM sightings_hourly WHERE icao = h.icao)",
+            list(by_icao)):
+        by_icao[icao].update(last_speed=speed, last_altitude=altitude, last_squawk=squawk)
+
+
 def _attach_window_sightings(conn: sqlite3.Connection, rows: List[Dict[str, Any]],
                              t0: int, t1: int) -> None:
     """Add window_sightings to a page of rows. A second query rather than a SELECT
@@ -1145,31 +1163,11 @@ def execute_search(conn: sqlite3.Connection, parsed: Dict[str, Any],
         bm25_score = "MIN(MAX(-bm25(seen_aircraft_fts) * 20, 0), 200)"
         score_expr = f"({score_expr} + {bm25_score})"
 
-    # v2.56.0: extended SELECT to include last-state fields (speed,
-    # altitude, squawk) so Search cards can render the same data
-    # density as All-tab rows. Previously only the metadata fields
-    # (icao, callsign, type, country, etc.) were surfaced; speed/
-    # altitude/squawk were missing, forcing Search to render a
-    # sparse card. With these fields available, the Search card
-    # becomes a viable lookup surface — same per-card semantics as
-    # All-tab rows: "latest known state of this aircraft."
-    #
-    # last_speed/last_altitude/last_squawk live on sightings_hourly,
-    # not seen_aircraft (they're not denormalized to seen_aircraft
-    # because they change continuously and would invalidate FTS more
-    # often than necessary). We JOIN to sightings_hourly's latest
-    # bucket per icao via a correlated subquery — same pattern that
-    # the v2.40.1 All-tab page query introduced (since-removed in
-    # Phase 1D; Search inherited the join shape). The subquery is
-    # bounded by the outer LIMIT (max 500) so the join cost is small.
-    #
-    # Distance is NOT computed in SQL — it's a haversine of (last_lat,
-    # last_lon) against the receiver's location, computed at result-
-    # construction time after the query returns. last_lat / last_lon
-    # are already in the SELECT, so distance is essentially free.
-    # v2.60.1: last_distance is a stored column (canonical km) so
-    # sort-by-distance can ORDER BY the full result set; column is
-    # added to SELECT here for both the row dict and the ORDER BY.
+    # Distance is NOT computed in SQL: last_distance is a stored column (canonical
+    # km), so sort-by-distance can ORDER BY the full result set. Speed, altitude
+    # and squawk live on sightings_hourly and are read for the page only
+    # (_attach_last_state): reading them here ran one lookup for every match,
+    # before ORDER BY and LIMIT, which was most of a search's time.
     select_cols = """
         seen_aircraft.icao, seen_aircraft.registration, seen_aircraft.last_callsign,
         seen_aircraft.aircraft_type, seen_aircraft.aircraft_type_desc,
@@ -1177,15 +1175,12 @@ def execute_search(conn: sqlite3.Connection, parsed: Dict[str, Any],
         seen_aircraft.last_lat, seen_aircraft.last_lon,
         seen_aircraft.last_seen_at, seen_aircraft.sighting_count,
         seen_aircraft.first_seen_at,
-        latest_h.last_speed, latest_h.last_altitude, latest_h.last_squawk,
         seen_aircraft.last_distance, seen_aircraft.best_track_seconds
     """
 
-    # Correlated subquery: per-icao, the most recent hour_bucket's
-    # last-state. LEFT JOIN so aircraft with no sightings_hourly rows
-    # (rare — typically only fresh installs before the first rollup
-    # cycle completes) still appear in results, just with NULL last-
-    # state fields.
+    # Sorting by speed, altitude or squawk has to rank every match by its latest
+    # hour, so only those sorts join it. LEFT JOIN: an aircraft with no hourly row
+    # yet (a fresh install before the first rollup) still appears, and sorts last.
     latest_h_join = """
         LEFT JOIN sightings_hourly latest_h ON latest_h.icao = seen_aircraft.icao
             AND latest_h.hour_bucket = (
@@ -1211,9 +1206,13 @@ def execute_search(conn: sqlite3.Connection, parsed: Dict[str, Any],
     sort_sql_expr, sort_dir = _resolve_order_direction(order, direction)
     window = parsed["time_range"]
     if order == "sightings" and window:
-        # Inside a date range, "most sightings" means most in that range.
-        sort_sql_expr = f"({_window_sum_expr(window[0], window[1])})"
-    if sort_sql_expr:
+        # Inside a date range, "most sightings" means most in that range. A sum is
+        # never NULL, so no `IS NULL` key: that would run the sum twice per row.
+        order_by = (
+            f"{_window_sum_expr(window[0], window[1])} {sort_dir}, "
+            f"score DESC, seen_aircraft.last_seen_at DESC"
+        )
+    elif sort_sql_expr:
         # User-chosen sort. Score still in tie-break position so equally-
         # ranked rows on the chosen column maintain a stable order.
         order_by = (
@@ -1223,11 +1222,12 @@ def execute_search(conn: sqlite3.Connection, parsed: Dict[str, Any],
     else:
         # Default: relevance order (score DESC) — same as pre-v2.60.0.
         order_by = "score DESC, seen_aircraft.last_seen_at DESC"
+    sort_join = latest_h_join if "latest_h." in order_by else ""
 
     sql = f"""
         SELECT {select_cols}, ({score_expr}) AS score
         FROM seen_aircraft{bm25_join}
-        {latest_h_join}
+        {sort_join}
         WHERE {where_sql}
         ORDER BY {order_by}
         LIMIT ? OFFSET ?
@@ -1261,20 +1261,17 @@ def execute_search(conn: sqlite3.Connection, parsed: Dict[str, Any],
                 "last_seen_at": r[9],
                 "sighting_count": r[10] or 0,
                 "first_seen_at": r[11],
-                # v2.56.0: last-state fields for Search card column parity
-                "last_speed": r[12],
-                "last_altitude": r[13],
-                "last_squawk": r[14],
                 # v2.60.1: stored last_distance in canonical km. server.py
                 # converts to user-unit at response-annotation time.
-                "last_distance_km": r[15],
+                "last_distance_km": r[12],
                 # v3.4.62: all-time longest single continuous track, in
                 # seconds (NULL if no session has been tracked). Replaces
                 # the client-side last_seen_at − first_seen_at computation
                 # that used to back the Search "Track length" column.
-                "track_length_sec": r[16],
-                "score": r[17],
+                "track_length_sec": r[13],
+                "score": r[14],
             })
+        _attach_last_state(conn, rows)
         if window:
             _attach_window_sightings(conn, rows, window[0], window[1])
         return {
@@ -1814,7 +1811,7 @@ def detail_page_data_for_aircraft(conn: sqlite3.Connection, icao: str,
     a single ICAO (typically a few dozen to a few thousand buckets),
     indexed by the (icao, hour_bucket) primary key. Sub-millisecond on
     any plausible install. The recent-sightings query touches
-    all_sightings filtered to one ICAO, also fast via idx_all_icao.
+    all_sightings filtered to one ICAO, also fast via idx_all_icao_seen.
 
     The 'mode' field in the response is either 'full' or 'sparse':
       - 'full'   — sighting_count >= LOW_SIGHTING_THRESHOLD; all sections render
@@ -1846,7 +1843,7 @@ def detail_page_data_for_aircraft(conn: sqlite3.Connection, icao: str,
     # captures timing and plan if this query crosses the slow threshold.
     # Suspect for the same query-planner pathology as the /api/all/drill
     # SELECT — without a seen_at range here the plan should pick
-    # idx_all_icao cleanly, but on installs with millions of rows we
+    # idx_all_icao_seen cleanly, but on installs with millions of rows we
     # want visible evidence rather than assumption.
     from slow_query_log import time_query as _slow_q
     recent = _slow_q(conn, """

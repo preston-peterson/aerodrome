@@ -85,6 +85,15 @@ NEVER_COOLDOWN = {"receiver_offline", "receiver_recovered", "new_record",
                   "update_available", "test"}
 
 
+# Events the collector raises again on every poll while their aircraft stays in
+# range, because a failed send sets no cooldown. After a failure they wait, so an
+# unreachable server costs one 5 s timeout now and then, not one per aircraft per
+# poll. Everything else fires once, so it always gets its attempt.
+RETRIES_BY_ITSELF = {"watchlist_hit", "special_aircraft"}
+SEND_HOLD_FIRST_SEC = 60
+SEND_HOLD_MAX_SEC = 600
+
+
 def _to_latin1_safe(s: str) -> str:
     """Ensure a string is safely representable as a latin-1 (ISO-8859-1)
     HTTP header value. Characters outside latin-1 (em-dash, ellipsis, smart
@@ -160,6 +169,10 @@ class Notifier:
         # Rolling log of timestamps for rate-limit-per-hour enforcement.
         # deque so prune-old is O(k) where k is events older than 1h.
         self._send_timestamps: Deque[float] = deque()
+        # After a failed send: when RETRIES_BY_ITSELF events may try again, and
+        # how long the next hold is. Any successful send clears both.
+        self._send_hold_until: float = 0.0
+        self._send_hold_sec: float = SEND_HOLD_FIRST_SEC
         # Ring buffer of recent notification records for UI display.
         # Each entry is a dict with keys: ts, event, title, body, priority,
         # icao (opt), sent (bool), reason (str if not sent), response_code
@@ -197,6 +210,9 @@ class Notifier:
         """
         with self._lock:
             self._cfg = dict(config or {})
+            # The server's address may have just been fixed.
+            self._send_hold_until = 0.0
+            self._send_hold_sec = SEND_HOLD_FIRST_SEC
             if stats_timezone:
                 try:
                     self._stats_tz = ZoneInfo(stats_timezone)
@@ -366,6 +382,11 @@ class Notifier:
                 self._drop("cooldown")
                 return False
 
+            # Gate 4b: the server just failed, and this event will fire again
+            if event in RETRIES_BY_ITSELF and now_ts < self._send_hold_until:
+                self._drop("send_hold")
+                return False
+
             # Gate 5: rate limit
             if self._rate_limited(now_ts):
                 self._drop("rate_limit")
@@ -396,6 +417,8 @@ class Notifier:
 
         with self._lock:
             if ok:
+                self._send_hold_until = 0.0
+                self._send_hold_sec = SEND_HOLD_FIRST_SEC
                 self._send_timestamps.append(now_ts)
                 if aircraft_icao and event not in NEVER_COOLDOWN:
                     self._cooldowns[(event, aircraft_icao.upper())] = now_ts
@@ -404,6 +427,8 @@ class Notifier:
                              response_code=http_code)
                 return True
             else:
+                self._send_hold_until = time.time() + self._send_hold_sec
+                self._send_hold_sec = min(self._send_hold_sec * 2, SEND_HOLD_MAX_SEC)
                 self._drop("send_failed")
                 self._record(now_ts, event, title, body, effective_priority,
                              aircraft_icao, sent=False,

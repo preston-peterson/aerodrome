@@ -37,7 +37,7 @@ SLICE_DRILLS = ["fastest", "slowest", "highest_altitude", "lowest_altitude",
 
 
 def _stats(n, per_seen_at, per_icao):
-    return {"idx_all_seen_icao": f"{n} {per_seen_at} 1", "idx_all_icao": f"{n} {per_icao}",
+    return {"idx_all_seen_icao": f"{n} {per_seen_at} 1", "idx_all_icao_seen": f"{n} {per_icao} 1 noskipscan",
             "idx_all_seen": f"{n} {per_seen_at}", "idx_all_seen_lat_lon": f"{n} {per_seen_at} 1 1"}
 
 
@@ -70,6 +70,7 @@ class _DrillCase(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.dir, True)
         self.db = str(self.dir / "history.db")
         collector.init_db(self.db)
+        collector.ensure_lookup_indexes(self.db)
         conn = sqlite3.connect(self.db)
         apply_schema_migrations(conn, "test")
         # Seed and drill on the same UTC day: right before midnight, wait

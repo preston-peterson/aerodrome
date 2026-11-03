@@ -1,4 +1,4 @@
-# Version: 3.4.152
+# Version: 3.4.153
 """
 collector.py — ADS-B data fetcher and classifier.
 
@@ -8,9 +8,11 @@ and additionally tags military + watchlist matches into their own tables.
 
 import logging
 import math
+import os
 import pathlib
 import re
 import requests
+import shutil
 import sqlite3
 import subprocess
 import threading
@@ -653,9 +655,20 @@ def _open_db_conn(db_path, **kwargs) -> sqlite3.Connection:
     return conn
 
 
+# Notifications raised during a poll wait here until the poll has finished: a send
+# can take 5 s, and the poll's write transaction was open, so a slow or unreachable
+# notification server kept every other writer out of the database. Per-thread, so
+# only the collector's own notifications wait.
+_poll_notifications = threading.local()
+
+
 def _safe_notify(event: str, title: str, body: str, **kwargs) -> None:
     """Best-effort call to the notifier. Never raises."""
     if _notifier is None:
+        return
+    pending = getattr(_poll_notifications, "pending", None)
+    if pending is not None:
+        pending.append((event, title, body, kwargs))
         return
     try:
         _notifier.notify(event, title, body, **kwargs)
@@ -841,6 +854,96 @@ def check_capacity_alerts(config: Dict[str, Any]) -> None:
         logger.warning("Capacity alert check failed (ignoring): %s", e)
 
 
+# Indexes that only make reads faster. Not a schema migration, on purpose: a
+# migration runs before the web UI starts and a failed one stops Aerodrome, and these
+# take a while on a big database, need disk space, and Aerodrome works without them.
+# (name, what it indexes, the index it replaces). Dropped in the same transaction.
+LOOKUP_INDEXES = (
+    # One aircraft's latest sightings, its positions over a window, its drill pages.
+    ("idx_all_icao_seen", "all_sightings(icao, seen_at)", "idx_all_icao"),
+    # One aircraft's sightings in a date range, for Search's sort by Sightings,
+    # without reading the table's rows.
+    ("idx_hourly_icao_sum", "sightings_hourly(icao, hour_bucket, sighting_count)", None),
+)
+# A build needs the index, its sort files and its WAL at once: about 3 x 23 bytes a
+# row (measured: 222 MB on 11.5M rows), and some room left over.
+_INDEX_BUILD_BYTES_PER_ROW = 70
+_INDEX_BUILD_SPARE_BYTES = 256 * 1024 * 1024
+
+
+def analyze_db(conn: sqlite3.Connection, target: str = "") -> None:
+    """ANALYZE, and keep the planner from skip-scanning LOOKUP_INDEXES. With numbers
+    for them it would seek them once per aircraft to answer a date range: 40 ms where
+    idx_all_seen_icao takes 0.1 ms. ANALYZE rewrites sqlite_stat1, so every ANALYZE
+    goes through here. One transaction, so no connection can load the numbers without
+    the mark."""
+    if not conn.in_transaction:
+        conn.execute("BEGIN")
+    conn.execute(f"ANALYZE {target}".strip())
+    names = [entry[0] for entry in LOOKUP_INDEXES]
+    conn.execute(f"UPDATE sqlite_stat1 SET stat = stat || ' noskipscan' "
+                 f"WHERE idx IN ({','.join('?' * len(names))}) AND stat NOT LIKE '%noskipscan%'", names)
+    conn.commit()
+
+
+def ensure_lookup_indexes(db_path: str) -> None:
+    """Build any missing LOOKUP_INDEXES. The collector calls this before its first
+    poll, so the web UI is already up (reads go on during a build in WAL mode) and
+    collection resumes when it's done. Instant on a new install. Never raises: on any
+    failure the database is as it was, and the next start tries again."""
+    try:
+        conn = sqlite3.connect(db_path, timeout=_STARTUP_DB_TIMEOUT)
+    except sqlite3.Error as e:
+        logger.warning(f"Could not check indexes ({e}); trying again at the next start")
+        return
+    try:
+        have = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
+        # An older release's start after a downgrade brings a replaced index back.
+        for name, _target, replaces in LOOKUP_INDEXES:
+            if name in have and replaces in have:
+                conn.execute(f"DROP INDEX IF EXISTS {replaces}")
+                conn.commit()
+        missing = [entry for entry in LOOKUP_INDEXES if entry[0] not in have]
+        if not missing:
+            return
+        # Sort on disk: the tuning profiles' in-memory temp store would hold every
+        # row of the sort in RAM.
+        conn.execute("PRAGMA temp_store = FILE")
+        conn.execute("PRAGMA cache_size = -65536")
+        for name, target, replaces in missing:
+            table = target.split("(")[0]
+            rows = conn.execute(f"SELECT COALESCE(MAX(rowid), 0) FROM {table}").fetchone()[0]
+            free = shutil.disk_usage(os.path.dirname(os.path.abspath(db_path))).free
+            if free < rows * _INDEX_BUILD_BYTES_PER_ROW + _INDEX_BUILD_SPARE_BYTES:
+                logger.warning(f"Not building index {name}: only {free // (1024 * 1024)} MB free. "
+                               f"Searches and aircraft pages work without it, more slowly. "
+                               f"Trying again at the next start.")
+                continue
+            if rows > 100_000:
+                logger.warning(f"Building index {name} on {rows:,} rows, once. The web UI stays up; "
+                               f"collection pauses until it's done.")
+            started = time.time()
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(f"CREATE INDEX IF NOT EXISTS {name} ON {target}")
+                if replaces:
+                    conn.execute(f"DROP INDEX IF EXISTS {replaces}")
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
+            # The planner needs numbers for the new index straight away.
+            conn.execute(f"PRAGMA analysis_limit = {STATS_OPTIMIZE_ANALYSIS_LIMIT}")
+            analyze_db(conn, table)
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+            logger.info(f"Index {name} built in {time.time() - started:.1f}s")
+    except (sqlite3.Error, OSError) as e:
+        logger.warning(f"Could not build an index ({e}). Searches and aircraft pages work "
+                       f"without it, more slowly. Trying again at the next start.")
+    finally:
+        conn.close()
+
+
 def refresh_query_planner_stats(config: Dict[str, Any]) -> None:
     """v3.4.53: periodically refresh SQLite's query-planner statistics.
 
@@ -864,8 +967,7 @@ def refresh_query_planner_stats(config: Dict[str, Any]) -> None:
         try:
             conn.execute(f"PRAGMA analysis_limit={STATS_OPTIMIZE_ANALYSIS_LIMIT}")
             t0 = time.time()
-            conn.execute("ANALYZE")
-            conn.commit()
+            analyze_db(conn)
             logger.info(
                 "Query-planner stats refreshed (sampled ANALYZE, %.2fs)",
                 time.time() - t0,
@@ -2083,7 +2185,7 @@ def init_db(db_path: str):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_watch_hourly_bucket_label ON watchlist_hourly(hour_bucket, watchlist_label)")
 
     conn.execute("CREATE INDEX IF NOT EXISTS idx_all_seen ON all_sightings(seen_at)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_all_icao ON all_sightings(icao)")
+    # The per-aircraft index is idx_all_icao_seen: see ensure_lookup_indexes.
     # v2.50.17: covering indexes for the military_count and watchlist_count
     # Stats card paths. Same shape as the v2.50.11 idx_hourly_bucket_icao
     # fix on sightings_hourly: COUNT(DISTINCT icao) WHERE seen_at BETWEEN ?
@@ -2249,7 +2351,7 @@ def init_db(db_path: str):
         # service is doing something during that window.
         logger.info(f"Running ANALYZE (marker {current_marker} → {_ANALYZE_MARKER_VERSION})…")
         _t_start = time.time()
-        conn.execute("ANALYZE")
+        analyze_db(conn)
         _t_elapsed = time.time() - _t_start
         logger.info(f"ANALYZE complete in {_t_elapsed:.1f}s — query planner stats refreshed")
         conn.execute(
@@ -2664,7 +2766,7 @@ def _run_hourly_backfill(db_path: str, n_rows: int) -> None:
         # to provide the last_* snapshot fields. Joined inline.
         #
         # SQLite handles a CTE-with-window-function efficiently here because
-        # all_sightings has idx_all_seen / idx_all_icao that the planner
+        # all_sightings has idx_all_seen / idx_all_icao_seen that the planner
         # can use for the partition. The output is pre-grouped — no
         # post-INSERT dedup needed.
         # IMMEDIATE: take the write lock up front, so another writer waits
@@ -3089,64 +3191,96 @@ def _run_watchlist_backfill(db_path: str, n_rows: int) -> None:
             })
 
 
-def cleanup_old_data(db_path: str, retention: dict):
-    """Remove data older than each tab's retention window."""
-    now = int(time.time())
-    conn = _open_db_conn(db_path)
+# Retention. Usually almost nothing is due, so this runs every 10 minutes. After a
+# retention setting is lowered millions of rows can be due at once: one DELETE of
+# 9.7M rows wrote a 1.5 GB WAL and shut every other writer out for as long as it
+# ran. So: short transactions, a time budget, and the rest on the next round.
+CLEANUP_INTERVAL_SEC = 600
+CLEANUP_CATCH_UP_SEC = 10     # between rounds while rows are still due
+CLEANUP_BUDGET_SEC = 2.0
+CLEANUP_BATCH_ROWS = 5000
+_next_cleanup_at = 0.0
+_last_cleanup_retention = None
 
+
+def _prune(conn: sqlite3.Connection, table: str, column: str, cutoff: int, deadline: float) -> Tuple[int, bool]:
+    """Delete rows with `column` below cutoff, one committed batch at a time, until
+    none are left or the deadline passes. `column` must be indexed. Returns
+    (rows removed, finished). A table an old database doesn't have is finished."""
+    removed = 0
+    while True:
+        try:
+            n = conn.execute(
+                f"DELETE FROM {table} WHERE rowid IN "
+                f"(SELECT rowid FROM {table} WHERE {column} < ? LIMIT {CLEANUP_BATCH_ROWS})",
+                (cutoff,)).rowcount
+        except sqlite3.OperationalError as e:
+            if "no such table" in str(e):
+                return removed, True
+            raise
+        conn.commit()
+        removed += n
+        if n < CLEANUP_BATCH_ROWS:
+            return removed, True
+        if time.monotonic() >= deadline:
+            return removed, False
+
+
+def cleanup_old_data(db_path: str, retention: dict) -> bool:
+    """Remove data older than each tab's retention window, for up to
+    CLEANUP_BUDGET_SEC. Returns True when nothing is left to remove."""
+    now = int(time.time())
     mil_cutoff = now - (retention["military_days"] * 86400)
     watch_cutoff = now - (retention["watchlist_days"] * 86400)
     all_cutoff = now - (retention["all_days"] * 86400)
-
-    d1 = conn.execute("DELETE FROM military_sightings WHERE seen_at < ?", (mil_cutoff,)).rowcount
-    d2 = conn.execute("DELETE FROM watchlist_sightings WHERE seen_at < ?", (watch_cutoff,)).rowcount
-    d3 = conn.execute("DELETE FROM all_sightings WHERE seen_at < ?", (all_cutoff,)).rowcount
-
-    # v3.4.6: prune the military_hourly and watchlist_hourly rollups
-    # in parallel with their raw parent tables. Same cutoff each so
-    # the rollup retention always matches what its count queries see
-    # — no orphaned rollup rows past the raw retention boundary.
-    # last_seen_at is used as the cutoff key (mirrors how the raw
-    # tables use seen_at) so a bucket's most-recent observation
-    # determines whether the bucket survives.
-    try:
-        d1b = conn.execute("DELETE FROM military_hourly WHERE last_seen_at < ?", (mil_cutoff,)).rowcount
-    except sqlite3.OperationalError:
-        d1b = 0  # table doesn't exist on truly pre-v3.4.6 installs
-    try:
-        d2b = conn.execute("DELETE FROM watchlist_hourly WHERE last_seen_at < ?", (watch_cutoff,)).rowcount
-    except sqlite3.OperationalError:
-        d2b = 0
-
-    # v2.49.0: prune hexdb_events to keep the rolling log bounded. Cache
-    # entries in hexdb_cache are NOT pruned here — they expire by TTL via
-    # the freshness check in _hexdb_cache_check, and dropping stale entries
-    # from the cache would just cause unnecessary hexdb re-fetches. We
-    # tolerate "stale rows I haven't refreshed yet" as a cheap idle state.
     events_cutoff = now - (HEXDB_EVENTS_RETENTION_DAYS * 86400)
-    d4 = conn.execute("DELETE FROM hexdb_events WHERE ts < ?", (events_cutoff,)).rowcount
-
-    # v2.87.0: prune concurrent_minute rollup rows. Same retention as
-    # all_sightings since the rollup mirrors that table's coverage —
-    # a Stats card querying historical days won't see anything in
-    # concurrent_minute for days that have aged out of all_sightings
-    # anyway, so keeping the rollup beyond all_days would just be
-    # storage waste. Tiny table (~1440 rows/day) so the impact is
-    # small either way; matching all_days is the cleaner invariant.
-    d5 = conn.execute(
-        "DELETE FROM concurrent_minute WHERE minute_bucket < ?",
-        (all_cutoff,)
-    ).rowcount
-
-    conn.commit()
-    conn.close()
-
-    if d1 or d2 or d3 or d4 or d5 or d1b or d2b:
+    # Small tables first, so a long catch-up on all_sightings can't starve them.
+    # The rollups go by their indexed bucket, once the whole bucket is past the
+    # cutoff. aircraft_track_daily was never pruned: only today's rows are read, for
+    # the Stats longest-track card, and each aircraft's best is kept on seen_aircraft.
+    jobs = (
+        ("hexdb_events", "ts", events_cutoff),
+        ("concurrent_minute", "minute_bucket", all_cutoff),
+        ("military_hourly", "hour_bucket", mil_cutoff - 3599),
+        ("watchlist_hourly", "hour_bucket", watch_cutoff - 3599),
+        ("aircraft_track_daily", "day_bucket", all_cutoff - 86399),
+        ("military_sightings", "seen_at", mil_cutoff),
+        ("watchlist_sightings", "seen_at", watch_cutoff),
+        ("all_sightings", "seen_at", all_cutoff),
+    )
+    deadline = time.monotonic() + CLEANUP_BUDGET_SEC
+    removed = {}
+    finished = True
+    conn = _open_db_conn(db_path)
+    try:
+        for table, column, cutoff in jobs:
+            removed[table], finished = _prune(conn, table, column, cutoff, deadline)
+            if not finished:
+                break
+    finally:
+        conn.close()
+    if any(removed.values()):
+        n = removed.get
         logger.info(
-            f"Cleanup: removed {d1} military ({d1b} rollup), "
-            f"{d2} watchlist ({d2b} rollup), {d3} all, "
-            f"{d4} hexdb-events, {d5} concurrent-minute old entries"
+            f"Cleanup: removed {n('military_sightings', 0)} military "
+            f"({n('military_hourly', 0)} rollup), {n('watchlist_sightings', 0)} watchlist "
+            f"({n('watchlist_hourly', 0)} rollup), {n('all_sightings', 0)} all, "
+            f"{n('hexdb_events', 0)} hexdb-events, {n('concurrent_minute', 0)} concurrent-minute, "
+            f"{n('aircraft_track_daily', 0)} track-day old entries"
+            + ("" if finished else "; more next round")
         )
+    return finished
+
+
+def run_due_cleanup(db_path: str, retention: dict) -> None:
+    """Run cleanup when it's due, or at once when a retention setting has changed.
+    If it raises it stays due, so the next poll tries again."""
+    global _next_cleanup_at, _last_cleanup_retention
+    if time.monotonic() < _next_cleanup_at and retention == _last_cleanup_retention:
+        return
+    finished = cleanup_old_data(db_path, retention)
+    _last_cleanup_retention = dict(retention)
+    _next_cleanup_at = time.monotonic() + (CLEANUP_INTERVAL_SEC if finished else CLEANUP_CATCH_UP_SEC)
 
 
 # =============================================================================
@@ -3529,6 +3663,17 @@ def _fire_new_record_notification(record_type: str, new_value: float,
 # =============================================================================
 
 def fetch_and_store(config: Dict, watchlist_lookup: Dict):
+    """One poll cycle, then the notifications it raised (see _poll_notifications)."""
+    _poll_notifications.pending = []
+    try:
+        _poll_once(config, watchlist_lookup)
+    finally:
+        pending, _poll_notifications.pending = _poll_notifications.pending, None
+        for event, title, body, kwargs in pending:
+            _safe_notify(event, title, body, **kwargs)
+
+
+def _poll_once(config: Dict, watchlist_lookup: Dict):
     """
     One poll cycle:
       1. Fetch all aircraft from receiver
@@ -4222,4 +4367,4 @@ def fetch_and_store(config: Dict, watchlist_lookup: Dict):
     logger.info(f"Stored {all_count} total, {mil_count} military, {watch_count} watchlist")
 
     # Cleanup
-    cleanup_old_data(db_path, config["retention"])
+    run_due_cleanup(db_path, config["retention"])
