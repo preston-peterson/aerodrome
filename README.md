@@ -1,5 +1,5 @@
 # Aerodrome
-<!-- Version: 3.4.151 -->
+<!-- Version: 3.4.152 -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -132,6 +132,7 @@ aerodrome/
 ├── server.py                     FastAPI app — dashboard routes + ~80 JSON endpoints
 ├── notifier.py                   ntfy push notifications with cooldowns
 ├── search.py                     Search-tab query language and ranking
+├── tzwindow.py                   local days, hours and clock changes, in one place
 ├── schema_migrations.py          forward-only DB migrations, runs on startup
 ├── config_validator.py           config.yaml validation (Settings saves, imports)
 ├── capacity.py                   disk and growth projection helpers
@@ -201,6 +202,9 @@ aerodrome/
 ├── test_route_resolver.py        unit tests — route enrichment + current-leg inference
 ├── test_schema_migrations.py     unit tests — migration framework
 ├── test_search.py                unit tests — search query language
+├── test_search_windows.py        tests — date windows, names, card and drill parity
+├── test_tzwindow.py              unit tests — local days, hours and clock changes
+├── test_watchlist_tail.py        tests — watchlist entries by tail number
 ├── test_search_v2_91_tokens.py   unit tests — search token grammar (v2.91 additions)
 ├── test_service_account.py       unit tests — no privileged call names an account or a group
 ├── test_session_track.py         unit tests — session-aware track stitching

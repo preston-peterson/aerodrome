@@ -19,6 +19,38 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.152] — 2026-11-02
+
+**A date in Search now finds every aircraft seen on that date.** Before, a date only matched aircraft whose *last* sighting fell on it, so an aircraft seen in March and again in April was missing from a search for March, and old dates looked almost empty. Hourly history is kept past your raw-sighting retention, so old dates work too. Very broad searches can take a little longer on a large install, and the wider results are the correct ones.
+
+**One timezone everywhere.** Search dates, `today`, `hour:`, the hourly histogram and its drill, the 7-day card and its drill, the aircraft page's patterns and notification times all now follow Configuration → Display → Time zone. **If that setting is empty, they all use the server's system timezone.** Before, some of these used UTC, so at 8 pm in Chicago, `today hour:14` could mean tomorrow. If you left it empty on a server set to UTC nothing changes; otherwise those screens and notification times move to your local time, and the aircraft page's hour and weekday patterns shift to match. A Stats card, its drill and a Search for the same day or hour now find the same aircraft, including on the days the clocks change.
+
+**Counts and sorting follow the date range.** With a date active, each result's count reads like `12 in range` (hover for the lifetime total), the Sightings sort goes by that count, and the CSV export adds a `sightings_in_range` column.
+
+**Full airline names work.** `United Airlines`, `Air Canada` and `Japan Airlines` now show one Operator chip for that airline, and close spellings work: `Delta Airlines` finds Delta Air Lines. Other words match by how they start, so `Sky` finds SkyWest. **Free text no longer searches the country column:** that's what stops `United Airlines` matching every US aircraft. Use the country's full name instead (`South Korea`, not `Korea`).
+
+**Date chips say what they mean, and removing a chip no longer changes your date.** Chips read `April 2026`, `Last 7 days` or `2026-04-29 14:00–14:59`. Before, removing any other chip rewrote the date: `last:7d` became a single day and `hour:14` a whole day.
+
+### Also fixed
+
+- `2026-04-29 hour:14` is now that hour on that date; the date used to vanish and you got 14:00 today. With several days (`2026-04 hour:14`) there's no single day to apply it to, so `hour:14` shows as a dashed free-text chip and the search finds nothing until you remove it or pick one day.
+- Dates that aren't on the calendar, like `2026-02-30`, are treated as free text rather than rolling over to March 2.
+- Enormous numbers in a search no longer cause a server error, and a stray NUL character in a search no longer shows an error banner.
+- The aircraft page's "Active N of M days" can no longer read something like "2 of 1 days". Both numbers now count calendar days.
+- The Search help and `docs/SEARCH_SYNTAX.md` now match all of this.
+
+### Behind the scenes
+
+- New `tzwindow.py` holds the time rules. Windows are built from wall-clock datetimes, not `+ 86400`, so 23- and 25-hour days and half-hour timezones are right. On a clock-change day, a skipped hour is an empty window and a repeated hour holds both of its passes, as the histogram now counts them.
+- The window clause is `last_seen_at >= t0 AND (last_seen_at < t1 OR EXISTS (a sightings_hourly row in the window))`, so aircraft last seen inside the window need no lookup. On 28,000 invented aircraft and 1.38M hourly rows the slowest ordinary search took 75 ms, and sorting a whole year by in-range count about 250 ms. `sightings_hourly` buckets are UTC hours, so in a half-hour timezone the partial hours at each end of a window come from `all_sightings`: exact within raw retention, whole hours only after it.
+- `/api/search` adds `time_label` and `time_tokens`, each filter carries the `token` the user typed, and a window adds `window_sightings` to each row. `sighting_count` stays lifetime. `parse_query()` takes `tz` in place of `tz_offset_sec`.
+- No schema change.
+
+### Operational notes
+
+- `stats.timezone` keeps its name and place in `config.yaml`.
+- Search's date presets (Today, Last 7 days, Last 30 days) and the times shown on result rows still follow your browser's timezone. This only differs if the browser and the server are in different zones.
+
 ## [3.4.151] — 2026-11-02
 
 **Watchlist entries by tail number now work.** Adding an aircraft by tail number, the default in the Watchlist tab's add form, looked fine but the entry never matched: the aircraft stayed off the Watchlist tab and no notification was sent, however often it flew overhead. The online lookup that turns a tail number into the aircraft's ICAO hex was failing every time. Your existing tail entries start matching after this update with nothing to change. Earlier flights aren't added back, because they were never recorded as watchlist sightings.

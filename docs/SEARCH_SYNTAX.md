@@ -34,7 +34,8 @@ not type=B738 + free-text "United" + free-text "States".
 The airline derived from a callsign's 3-letter prefix. Search matches
 both the ICAO code and the full airline name:
 
-- `UAL` or `United Airlines` — same airline
+- `UAL` or `United Airlines` — same airline. The full name becomes an
+  Operator chip. Close spellings work too: `Delta Airlines` finds Delta Air Lines.
 - `Delta` or `DAL`
 - `Southwest` or `SWA`
 - `JetBlue` or `JBU`
@@ -162,21 +163,30 @@ configurable from the Configuration → Display tab).
 Two-digit years follow POSIX strptime convention: `00`-`69` resolve to
 2000-2069, `70`-`99` resolve to 1970-1999.
 
-A date matches aircraft whose `last_seen_at` falls within that window
-(day, month, or year). Combining a date with another filter narrows
-results further:
+A date matches aircraft seen during that window (day, month, or year), in
+the timezone set by `stats.timezone`, or the system's timezone if that's empty.
+Hourly history is kept past the raw-sighting retention period, so old dates
+still work. Combining a date with another filter narrows results further:
 
-- `B738 2026-04-29` — Boeing 737-800s last seen on April 29
-- `Canada 2026-04` — Canadian aircraft last seen during April 2026
-- `Delta 2026` — Delta aircraft last seen at any point in 2026
+- `B738 2026-04-29` — Boeing 737-800s seen on April 29
+- `Canada 2026-04` — Canadian aircraft seen during April 2026
+- `Delta 2026` — Delta aircraft seen at any point in 2026
 
-The bare `today` token resolves to today's local-day window (per
-`stats.timezone`). Same window the Stats tab's "today" sections use.
+A date that isn't on the calendar, like `2026-02-30`, is treated as free text.
+
+The bare `today` token resolves to today's local-day window. Same window
+the Stats tab's "today" sections use. `last:7d` is today and the 6 calendar
+days before it (any number of days works).
+
+While a date is active, each result's count reads like `12 in range`, the
+Sightings sort goes by that count, and the CSV export adds a
+`sightings_in_range` column. Hover over the count for the lifetime total.
 
 ### Hour of day
-Filter to a specific hour bucket on today's date:
+Filter to a specific hour bucket of today, or of a single date you add:
 
 - `hour:14` — aircraft seen during 14:00–14:59 today
+- `2026-04-29 hour:14` — aircraft seen during 14:00–14:59 on that date
 - `hour:8-10` — aircraft seen during 08:00–10:59 today (inclusive on
   both ends — the window covers all of hours 8, 9, AND 10)
 - `hour:0-23` — full day, equivalent to `today`
@@ -184,8 +194,9 @@ Filter to a specific hour bucket on today's date:
 The hour value follows the configured `stats.timezone` so the bucket
 matches the Stats tab's hourly histogram exactly. `hour:14` without
 `today` still applies to today (single-hour windows narrower than a
-day; "today" is implicit). Wraparound (`hour:23-1`) is rejected — run
-two queries instead.
+day; "today" is implicit). With a window of several days (`2026-04 hour:14`)
+there's no single day to apply it to, so it shows as a dashed free-text chip.
+Wraparound (`hour:23-1`) is rejected — run two queries instead.
 
 Range syntax is **inclusive on both ends** because hour ranges read
 as calendar intervals ("hours 14 through 16" naturally includes hour
@@ -217,13 +228,14 @@ All tokens space-separated; conditions AND together:
 B738 Canada 2026-04
 ```
 
-Returns: Boeing 737-800s registered in Canada whose last sighting was
-in April 2026.
+Returns: Boeing 737-800s registered in Canada seen during April 2026.
 
 Tokens that don't match any field type fall through to free-text
 search, which uses SQLite FTS5 against the searchable columns
-(operator, country, callsign, type description, etc.). FTS5 handles
-casing and partial matching automatically.
+(operator, callsign, tail, type description, etc.). Words match by how they
+start, so `Sky` finds SkyWest. Country has its own token (`Canada`,
+`United States`) rather than being part of free text, so `United Airlines`
+doesn't also match every US aircraft.
 
 ## Filter chips
 
@@ -261,7 +273,7 @@ input shows examples matching the current setting.
 | `A12345` | Aircraft with that ICAO hex address |
 | `B738 Canada` | Canadian Boeing 737-800s |
 | `Delta 2026-04` | Delta aircraft seen in April 2026 |
-| `2026-04-29` | All aircraft last seen on April 29, 2026 |
+| `2026-04-29` | All aircraft seen on April 29, 2026 |
 | `4/29/26` (MDY locale) | Same as above |
 | `29/4/26` (DMY locale) | Same as above |
 

@@ -508,12 +508,12 @@ class Notifier:
 
     def _format_hhmm(self, ts: float) -> str:
         """Format a unix timestamp as HH:MM in the user's configured
-        timezone. Falls back to UTC if no timezone is configured."""
+        timezone. Falls back to system time if no timezone is configured."""
         import datetime as _dt
         if not ts:
             return "—"
         try:
-            dt = _dt.datetime.fromtimestamp(ts, tz=self._stats_tz or _dt.timezone.utc)
+            dt = _dt.datetime.fromtimestamp(ts, tz=self._stats_tz)
             return dt.strftime("%H:%M")
         except (ValueError, OSError):
             return "—"

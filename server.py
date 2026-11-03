@@ -1,4 +1,4 @@
-# Version: 3.4.151
+# Version: 3.4.152
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -37,6 +37,8 @@ from urllib.parse import urlsplit
 # Local — ICAO code → friendly display name lookups for the Stats cards.
 from designators import airline_name, aircraft_type_name
 # v2.50.13: central DB-connection helper that applies tuning pragmas
+import tzwindow
+from search import window_sources
 from collector import (_open_db_conn, aircraft_type_for, sync_watchlist_tails,
                        watchlist_tail_map, watchlist_tail_status)
 # v2.79.0 (Phase 3 polish): centralized distance + bearing helpers.
@@ -179,6 +181,20 @@ def _attach_airline_name(row: dict, operator_code: str | None) -> dict:
     if nm:
         row["name"] = nm
     return row
+
+
+# Largest offset / from_ts / to_ts /api/search passes on to SQLite.
+_SEARCH_INT_MAX = 2 ** 53
+
+
+def _histogram_offset_sql(segments):
+    """SQL for seen_at's UTC offset across tzwindow.offset_segments. Computed
+    integers, so safe to inline."""
+    if len(segments) == 1:
+        return str(int(segments[0][2]))
+    whens = " ".join(f"WHEN seen_at < {int(end)} THEN {int(off)}"
+                     for _, end, off in segments[:-1])
+    return f"CASE {whens} ELSE {int(segments[-1][2])} END"
 
 
 def _build_notifier():
@@ -2959,35 +2975,20 @@ def get_app(config: dict, config_path: str) -> FastAPI:
           locked design decision from the v2.62.0 mockup review.
         """
         from search import parse_query, execute_search
-        # Defensive caps. limit=50 default, hard ceiling of 500. offset
-        # has no upper bound but is bounded indirectly by total_count.
+        # Defensive caps. limit=50 default, hard ceiling of 500. The others
+        # only need to fit SQLite's integers: past that a request would be a
+        # 500 rather than simply finding nothing.
         limit = max(1, min(int(limit), 500))
-        offset = max(0, int(offset))
+        offset = max(0, min(int(offset), _SEARCH_INT_MAX))
+        from_ts = min(int(from_ts), _SEARCH_INT_MAX)
+        to_ts = min(int(to_ts), _SEARCH_INT_MAX)
 
         # v2.52.0: read date format preference from config so the parser
         # accepts the locale's slash-date convention. Defaults to MDY
         # if the section/key is missing (older configs that haven't
         # been merged with the example config yet).
         date_fmt = (CONFIG.get("display") or {}).get("date_format", "MDY")
-        # v2.66.2: compute the user's tz offset from CONFIG['stats']['timezone']
-        # so the parser's `today` and `hour:N` tokens build windows in
-        # the same timezone as the Patterns hourly_histogram (which is
-        # the source of truth for "hour 12" semantics in this app).
-        # Same logic as the histogram's stats endpoint — sample the
-        # offset at "now" so DST is handled correctly. Falls back to
-        # 0 (server-local) if zoneinfo is missing or the config is unset.
-        import datetime as _dt
-        tz_offset_sec = 0
-        st_tz_name = ((CONFIG.get("stats") or {}).get("timezone") or "").strip()
-        if st_tz_name:
-            try:
-                from zoneinfo import ZoneInfo
-                _now_dt = _dt.datetime.now(ZoneInfo(st_tz_name))
-                tz_offset_sec = int(_now_dt.utcoffset().total_seconds())
-            except Exception:
-                pass  # bad zone name or zoneinfo missing — leave at 0
-        parsed = parse_query(q, date_format=date_fmt,
-                              tz_offset_sec=tz_offset_sec)
+        parsed = parse_query(q, date_format=date_fmt, tz=tzwindow.resolve_tz(CONFIG))
         # v2.57.0: pass military + watchlist configuration into the
         # executor so boolean-filter tokens "mil"/"military"/"watchlist"
         # can build proper WHERE clauses from the configured prefixes
@@ -3069,6 +3070,10 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             "parsed_filters": parsed["filters"],
             "free_text": parsed["free_text"],
             "time_range": parsed["time_range"],
+            # The window in words for its chip, and the tokens that made it, so
+            # removing another chip keeps the date as typed.
+            "time_label": parsed["time_label"],
+            "time_tokens": parsed["time_tokens"],
             "total_count": result["total_count"],
             "rows": result["rows"],
             "execution_ms": result["execution_ms"],
@@ -5039,20 +5044,9 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     def _day_bounds_ts():
         """Return (start_ts, end_ts) for 'today' in the configured timezone as
         Unix timestamps. start_ts = local midnight. end_ts = now."""
-        import time as _time
-        from datetime import datetime, timedelta
-        st = CONFIG.get("stats") or {}
-        tz_name = (st.get("timezone") or "").strip()
-        tz = None
-        if tz_name:
-            try:
-                from zoneinfo import ZoneInfo
-                tz = ZoneInfo(tz_name)
-            except Exception:
-                tz = None  # fall back to system tz
-        now = datetime.now(tz) if tz else datetime.now()
-        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        return int(start.timestamp()), int(now.timestamp())
+        now = time.time()
+        start, _ = tzwindow.today_bounds(tzwindow.resolve_tz(CONFIG), now)
+        return start, int(now)
 
     # Canonical mapping of stat cards to their category/group. Used to:
     # (1) suppress cards whose parent group is disabled (backend)
@@ -5902,33 +5896,21 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 # on a busy-airspace Pi and bucketed in a dict-of-sets.
                 # Observed 1.8 seconds.
                 #
-                # Timezone handling: the stats.timezone config can shift
-                # the "day" so hour-0 aligns with local midnight. Rather
-                # than compute strftime-with-tz inside SQL (inconsistent
-                # across SQLite builds), we precompute the tz offset in
-                # seconds and add it to seen_at inside the GROUP BY.
-                # The bucket is then ((seen_at + offset) / 3600) % 24.
-                import datetime as _dt
-                st_tz_name = (st.get("timezone") or "").strip()
-                tz_offset_sec = 0
-                try:
-                    from zoneinfo import ZoneInfo
-                    if st_tz_name:
-                        tz = ZoneInfo(st_tz_name)
-                        # Use the offset at start_ts \u2014 handles DST edge
-                        # cases by sampling the offset at the window start.
-                        tz_offset_sec = int(
-                            tz.utcoffset(_dt.datetime.fromtimestamp(start_ts)).total_seconds()
-                        )
-                except Exception:
-                    pass
-                rows = q("""
-                    SELECT ((seen_at + :off) / 3600) % 24 AS hour,
+                # Timezone handling: rather than compute strftime-with-tz
+                # inside SQL (inconsistent across SQLite builds), the bucket
+                # is ((seen_at + offset) / 3600) % 24 with today's offset, or
+                # offsets on a clock-change day, so both passes of a repeated
+                # hour land in its bar, as the hour drill finds them.
+                offset_sql = _histogram_offset_sql(
+                    tzwindow.offset_segments(start_ts, end_ts + 1,
+                                             tzwindow.resolve_tz(CONFIG)))
+                rows = q(f"""
+                    SELECT ((seen_at + {offset_sql}) / 3600) % 24 AS hour,
                            COUNT(DISTINCT icao) AS n
                     FROM all_sightings INDEXED BY idx_all_seen_icao
                     WHERE seen_at >= :start_ts
                     GROUP BY hour
-                """, {"off": tz_offset_sec, "start_ts": start_ts})
+                """, {"start_ts": start_ts})
                 # Normalize \u2014 SQL returns only hours that have data; fill
                 # the rest with zero so the frontend gets a 24-element array.
                 by_hour = {int(r["hour"]): int(r["n"]) for r in rows}
@@ -5974,12 +5956,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 # dependent; the number of queries matters less than the
                 # per-query plan.
                 import datetime as _dt
-                st_tz_name = (st.get("timezone") or "").strip()
-                try:
-                    from zoneinfo import ZoneInfo
-                    tz = ZoneInfo(st_tz_name) if st_tz_name else None
-                except Exception:
-                    tz = None
+                tz = tzwindow.resolve_tz(CONFIG)
                 now_dt = _dt.datetime.fromtimestamp(end_ts, tz=tz)
                 midnight = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
                 # Pull last 7 day boundaries
@@ -6017,11 +5994,16 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 # small > 1 big" is unchanged, so we keep the proven
                 # shape.
                 for b in buckets:
-                    row = q("""
-                        SELECT COUNT(DISTINCT icao) AS n
-                        FROM sightings_hourly
-                        WHERE hour_bucket >= ? AND hour_bucket < ?
-                    """, (b["start_ts"], b["end_ts"]))
+                    # A half-hour timezone's day starts mid-bucket: its partial
+                    # edge hours come from raw sightings, so this count, the
+                    # day drill and Search agree. Other zones have no edges.
+                    whole, edges = window_sources(b["start_ts"], b["end_ts"])
+                    selects = ["SELECT icao FROM sightings_hourly "
+                               "WHERE hour_bucket >= ? AND hour_bucket < ?"] if whole else []
+                    selects += ["SELECT icao FROM all_sightings "
+                                "WHERE seen_at >= ? AND seen_at < ?"] * len(edges)
+                    row = q(f"SELECT COUNT(*) AS n FROM ({' UNION '.join(selects)})",
+                            tuple(v for pair in ([whole] if whole else []) + edges for v in pair))
                     b["n"] = row[0]["n"] if row else 0
                     # Strip internal fields the frontend doesn't need
                     del b["start_ts"], b["end_ts"]
@@ -6710,7 +6692,8 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                             "metric": 0,  # no per-aircraft value here
                             "metric_label": "",  # col hidden for this card
                             "seen_at": r["first_seen"],
-                            "extra": f"peak at {time.strftime('%H:%M', time.localtime(peak_start))}",
+                            "extra": "peak at " + tzwindow.local_dt(
+                                peak_start, tzwindow.resolve_tz(CONFIG)).strftime("%H:%M"),
                         })
 
             elif card == "military_today":
@@ -7017,10 +7000,12 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                     conn.close()
                     return JSONResponse(status_code=400,
                                         content={"error": "value must be an integer 0-23"})
-                # Compute the hour window in the configured timezone, consistent
-                # with how the hourly_histogram card bins its data.
-                hour_start = start_ts + hour * 3600
-                hour_end = hour_start + 3600
+                # The hour window in the configured timezone, consistent with
+                # how the hourly_histogram card bins its data (and right on a
+                # clock-change day, where start_ts + hour * 3600 isn't).
+                drill_tz = tzwindow.resolve_tz(CONFIG)
+                hour_start, hour_end = tzwindow.hour_bounds(
+                    tzwindow.local_dt(start_ts, drill_tz).date(), hour, hour, drill_tz)
                 raw = q("""
                     SELECT icao,
                            MAX(callsign) AS callsign,
@@ -7052,22 +7037,11 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                     return JSONResponse(status_code=400,
                                         content={"error": "value parameter required (YYYY-MM-DD)"})
                 try:
-                    from datetime import datetime, timezone
-                    try:
-                        from zoneinfo import ZoneInfo
-                    except ImportError:
-                        ZoneInfo = None
-                    # Parse the date in the configured timezone so boundaries align
-                    tz_name = (st.get("timezone") or "").strip()
-                    tzinfo = ZoneInfo(tz_name) if (ZoneInfo and tz_name) else None
+                    from datetime import date as _date
+                    # In the configured timezone, like the card's day boundaries.
                     y, m, d = [int(x) for x in value.split("-")]
-                    if tzinfo:
-                        day_start_dt = datetime(y, m, d, 0, 0, 0, tzinfo=tzinfo)
-                    else:
-                        day_start_dt = datetime(y, m, d, 0, 0, 0)
-                        day_start_dt = day_start_dt.replace(tzinfo=timezone.utc)
-                    day_start_ts = int(day_start_dt.timestamp())
-                    day_end_ts = day_start_ts + 86400
+                    day_start_ts, day_end_ts = tzwindow.day_bounds(
+                        _date(y, m, d), tzwindow.resolve_tz(CONFIG))
                 except Exception as e:
                     conn.close()
                     return JSONResponse(status_code=400,
@@ -12583,7 +12557,8 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         # a connection-tuning audit.
         conn = _open_db_conn(CONFIG["data"]["db_file"])
         try:
-            d = detail_page_data_for_aircraft(conn, icao.upper())
+            d = detail_page_data_for_aircraft(conn, icao.upper(),
+                                              tzwindow.resolve_tz(CONFIG))
         finally:
             conn.close()
         if d is None:

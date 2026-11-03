@@ -1,4 +1,4 @@
-<!-- Version: 3.4.151 -->
+<!-- Version: 3.4.152 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -5091,6 +5091,8 @@ let _searchState = {
     parsedFilters: [],
     freeText: [],
     timeRange: null,
+    timeLabel: null,
+    timeTokens: [],
     // v2.52.0: install's configured date format (MDY/DMY/ISO). Loaded
     // from /api/search/suggestions on first tab open. Drives the help
     // panel example. MDY is the default until we hear otherwise.
@@ -5587,6 +5589,8 @@ function clearSearch(){
     _searchState.parsedFilters = [];
     _searchState.freeText = [];
     _searchState.timeRange = null;
+    _searchState.timeLabel = null;
+    _searchState.timeTokens = [];
     // Hide results + load-more + chips, show empty state
     const emptyEl = document.getElementById('searchEmpty');
     const resultsEl = document.getElementById('searchResults');
@@ -5710,6 +5714,8 @@ async function _fetchSearchPage(){
             _searchState.parsedFilters = j.parsed_filters || [];
             _searchState.freeText = j.free_text || [];
             _searchState.timeRange = j.time_range || null;
+            _searchState.timeLabel = j.time_label || null;
+            _searchState.timeTokens = j.time_tokens || [];
         } else {
             _searchState.rows = _searchState.rows.concat(j.rows || []);
         }
@@ -5990,7 +5996,7 @@ function _renderFilterChips(){
         }
         chips.push(`<span class="filter-chip">
             <span class="label">${escapeHtml(label)}</span>
-            <span class="value">${escapeHtml(f.value)}</span>
+            <span class="value">${escapeHtml(f.display || f.value)}</span>
             <button type="button" class="remove-btn" title="Remove this filter"
                     onclick="removeFilterChip('filter', ${f._idx})">×</button>
         </span>`);
@@ -6012,41 +6018,13 @@ function _renderFilterChips(){
         </span>`);
     }
 
-    // Time-range chip (if present). The parsed time_range is a tuple
-    // [start_ts, end_ts] in unix seconds; we don't currently track
-    // which token produced it, so the X button removes the range and
-    // the user has to re-add it. Single chip per range.
-    //
-    // v2.62.0: when a date-range preset is active, the backend
-    // overrides parser time_range — so showing the parser chip would
-    // mislead. Skip it. The preset chip above is the source of truth.
-    //
-    // v2.65.0 (Phase 2): detect special-case windows for friendlier
-    // labels. A 1-hour window starting at exactly HH:00 today is
-    // labeled "Hour HH:00 today" (matches the user's `hour:14` input).
-    // A 24-hour window starting at local midnight today is labeled
-    // "Today" (matches the `today` token). Falls back to the date
-    // range label otherwise.
+    // Time-range chip (if present). The server words it, in the install's
+    // timezone. When a date-range preset is active, the backend overrides the
+    // parser's time_range, so showing that chip would mislead. The preset chip
+    // above is the source of truth.
     if (timeRange && !dateRange){
-        const t0 = timeRange[0], t1 = timeRange[1];
-        const delta = t1 - t0;
-        const startD = new Date(t0 * 1000);
-        const todayD = new Date();
-        const sameDay = startD.getFullYear() === todayD.getFullYear()
-            && startD.getMonth() === todayD.getMonth()
-            && startD.getDate() === todayD.getDate();
-        let label;
-        if (delta === 86400 && sameDay && startD.getHours() === 0
-            && startD.getMinutes() === 0){
-            label = 'Today';
-        } else if (delta === 3600 && sameDay && startD.getMinutes() === 0){
-            const hh = String(startD.getHours()).padStart(2, '0');
-            label = `Hour ${hh}:00 today`;
-        } else {
-            const start = startD.toISOString().slice(0, 10);
-            const end = new Date(t1 * 1000).toISOString().slice(0, 10);
-            label = (start === end) ? start : `${start} → ${end}`;
-        }
+        const label = _searchState.timeLabel
+            || new Date(timeRange[0] * 1000).toISOString().slice(0, 10);
         chips.push(`<span class="filter-chip">
             <span class="label">Date</span>
             <span class="value">${escapeHtml(label)}</span>
@@ -6079,7 +6057,7 @@ function _renderFilterChips(){
             type_desc: 'Type', operator: 'Operator', country: 'Country',
             speed: 'Speed', altitude: 'Altitude', squawk: 'Squawk',
             distance: 'Distance', seen_at: 'Last seen',
-            track_length: 'Track length',
+            track_length: 'Track length', sightings: 'Sightings',
         };
         const colLabel = colLabels[sort.col] || sort.col;
         const dirArrow = (sort.dir === 'asc') ? '↑' : '↓';
@@ -6116,7 +6094,7 @@ function removeFilterChip(kind, indexOrIndices){
 
     const filters = (_searchState.parsedFilters || []).slice();
     let freeText = (_searchState.freeText || []).slice();
-    let timeRange = _searchState.timeRange;
+    let timeTokens = (_searchState.timeTokens || []).slice();
 
     if (kind === 'filter'){
         const i = parseInt(indexOrIndices, 10);
@@ -6131,7 +6109,7 @@ function removeFilterChip(kind, indexOrIndices){
             filters.splice(i, 1);
         }
     } else if (kind === 'time'){
-        timeRange = null;
+        timeTokens = [];
     } else if (kind === 'free'){
         const i = parseInt(indexOrIndices, 10);
         freeText.splice(i, 1);
@@ -6140,7 +6118,7 @@ function removeFilterChip(kind, indexOrIndices){
     // Rebuild the query string from the remaining pieces and run it.
     // The rebuilt query is what would re-parse to this same state on
     // the server side — which is what we want for a clean re-run.
-    const newQuery = _rebuildQueryString(filters, freeText, timeRange);
+    const newQuery = _rebuildQueryString(filters, freeText, timeTokens);
     const input = document.getElementById('searchInput');
     if (input) input.value = newQuery;
     // _searchInputChanged would normally fire on user input, but we set
@@ -6154,44 +6132,19 @@ function removeFilterChip(kind, indexOrIndices){
     }
 }
 
-// Rebuild a query string from parsed structure. The parser is
-// forgiving and case/whitespace-insensitive, so we just space-join the
-// values; multi-word countries like "United States" round-trip cleanly
-// because the parser does greedy multi-token country matching first.
-//
-// v2.57.0: boolean filters use the field name as the token (e.g.
-// "military" or "watchlist"), not the value (which is `true` and would
-// produce nonsense). The parser recognizes both keyword aliases on the
-// way back in.
-function _rebuildQueryString(filters, freeText, timeRange){
+// Rebuild a query string from what the user typed: the parser hands back each
+// filter's token and the date and time tokens, so "last:7d" stays "last:7d" and
+// "distance:50-100" stays that, rather than being worked back from parsed values.
+function _rebuildQueryString(filters, freeText, timeTokens){
     const parts = [];
-    const seenValues = new Set();
+    const seen = new Set();
     for (const f of filters){
-        if (f.match === 'boolean'){
-            // Emit the field name as the token. Parser recognizes
-            // "military" and "watchlist" as boolean filter aliases.
-            const tok = f.field;
-            if (seenValues.has(tok)) continue;
-            seenValues.add(tok);
-            parts.push(tok);
-            continue;
-        }
-        const v = f.value;
-        if (seenValues.has(v)) continue;
-        seenValues.add(v);
-        parts.push(v);
+        // An ambiguous token arrives as several filters with one token.
+        if (seen.has(f.token)) continue;
+        seen.add(f.token);
+        parts.push(f.token);
     }
-    // Free text just goes in as-is
-    for (const tok of freeText){
-        parts.push(tok);
-    }
-    // Time range: emit a representative token. We don't have the
-    // original token form (the parser doesn't preserve it), so use
-    // ISO-date which the parser accepts. Could be improved later.
-    if (timeRange){
-        const start = new Date(timeRange[0] * 1000).toISOString().slice(0, 10);
-        parts.push(start);
-    }
+    parts.push(...freeText, ...(timeTokens || []));
     return parts.join(' ').trim();
 }
 
@@ -6284,10 +6237,18 @@ function _renderSearchCard(r){
     // the right edge. v2.64.0: country chip removed from this cell —
     // country is now its own column. Sightings chip stays here as
     // informational metadata, not a sort target.
-    const sightingsChipText = `${sightings} ${sightings===1?'sighting':'sightings'}`;
+    // With a date range active, the count that matters is the one in the range
+    // (it's also what the Sightings sort goes by); the lifetime count is on hover.
+    const inRange = r.window_sightings;
+    const sightingsChipText = (inRange != null)
+        ? `${inRange} in range`
+        : `${sightings} ${sightings===1?'sighting':'sightings'}`;
+    const sightingsChipTitle = (inRange != null)
+        ? ` title="${inRange} ${inRange===1?'sighting':'sightings'} in this date range, ${sightings} in all"`
+        : '';
     const descCell = `<span class="c-desc">
         <span class="desc-text">${escapeHtml(desc || '—')}</span>
-        <span class="sightings-chip">${escapeHtml(sightingsChipText)}</span>
+        <span class="sightings-chip"${sightingsChipTitle}>${escapeHtml(sightingsChipText)}</span>
     </span>`;
 
     // v2.64.0: Operator + Country cells. Both ellipsis-truncate via CSS;
@@ -6714,6 +6675,11 @@ async function doSearchExport(mode){
             fmtSeenAtCSV(r.first_seen_at),
             fmtSeenAtCSV(r.last_seen_at),
         ]);
+        // Only with a date range active: sighting_count stays lifetime.
+        if (rows.some(r => r.window_sightings != null)){
+            headers.push('sightings_in_range');
+            rows.forEach((r, i) => csvRows[i].push(r.window_sightings || 0));
+        }
         // Slugify the query for the filename. Keep only alphanumeric and
         // a few separators; cap to 40 chars so the filename doesn't get
         // unwieldy. "B738 Canada" → "B738_Canada".
@@ -6887,11 +6853,15 @@ function _renderSearchHelp(){
         </div>
         <div class="help-row">
             <span class="help-label">Today</span>
-            <span class="help-examples"><code>today</code> <span style="color:var(--t3);font-family:var(--font);">— filters to today's local-day window</span></span>
+            <span class="help-examples"><code>today</code> <span style="color:var(--t3);font-family:var(--font);">— aircraft seen today</span></span>
+        </div>
+        <div class="help-row">
+            <span class="help-label">Recent days</span>
+            <span class="help-examples"><code>last:7d</code> <span style="color:var(--t3);font-family:var(--font);">— today and the 6 days before it</span></span>
         </div>
         <div class="help-row">
             <span class="help-label">Hour of day</span>
-            <span class="help-examples"><code>hour:14</code><code>hour:8-10</code> <span style="color:var(--t3);font-family:var(--font);">— specific hour or inclusive range (0–23)</span></span>
+            <span class="help-examples"><code>hour:14</code><code>hour:8-10</code> <span style="color:var(--t3);font-family:var(--font);">— an hour of today, or of a date you add: <code>2026-04-29 hour:14</code></span></span>
         </div>
         <div class="help-row">
             <span class="help-label">Distance</span>

@@ -267,8 +267,9 @@ one of these patterns, in priority order:
 | Anything else             | Free text     | FTS5 MATCH |
 
 A query string `B738 Canada last week` produces three filters:
-`aircraft_type = 'B738'`, `country = 'Canada'`, `last_seen_at >=
-(now - 7 days)`. AND-ed together.
+`aircraft_type = 'B738'`, `country = 'Canada'`, and seen during the last 7
+days (`search._window_clause`: last seen in the window, or last seen after it
+with a `sightings_hourly` row in it). AND-ed together.
 
 A query string with ambiguous tokens uses OR within that token's
 candidates. E.g., `A320` matches both "type A320" and "starts with

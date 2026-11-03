@@ -1,5 +1,5 @@
 # =============================================================================
-# Version: 3.4.151
+# Version: 3.4.152
 # Aerodrome — Example/Reference Configuration
 # =============================================================================
 # This is the canonical default config shipped with each Aerodrome release.
@@ -430,9 +430,10 @@ notifications:
 stats:
   enabled: true                # Set false to hide the Stats tab entirely
 
-  # Timezone used for "today" calculations. Must be an IANA name (e.g.
-  # "America/Los_Angeles", "Europe/London", "UTC"). If invalid or empty,
-  # the server's system timezone is used.
+  # Timezone for everything date- and time-based: "today", dates typed in Search,
+  # the hourly histogram, the aircraft page's patterns, digest times. Must be an
+  # IANA name (e.g. "America/Los_Angeles", "Europe/London", "UTC"). If invalid or
+  # empty, the server's system timezone is used.
   timezone: ""
 
   # Auto-refresh interval for the Stats page, in seconds.

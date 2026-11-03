@@ -13,9 +13,11 @@ Two layers:
 Run:
     python3 test_search_v2_91_tokens.py
 """
+import os
 import sys
 import time
 import unittest
+from datetime import timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -26,6 +28,26 @@ from search import parse_query, _filter_clause
 # ============================================================================
 # Layer 1: parse_query produces correct filter/time_range output
 # ============================================================================
+
+_SAVED_TZ = None
+
+
+def setUpModule():
+    """Fixed system time: with no tz argument the parser reads dates in system
+    time, and these tests were written for UTC."""
+    global _SAVED_TZ
+    _SAVED_TZ = os.environ.get("TZ")
+    os.environ["TZ"] = "UTC"
+    time.tzset()
+
+
+def tearDownModule():
+    if _SAVED_TZ is None:
+        os.environ.pop("TZ", None)
+    else:
+        os.environ["TZ"] = _SAVED_TZ
+    time.tzset()
+
 
 class TestCategoryTokens(unittest.TestCase):
     """Each category keyword should produce a {field: 'category', match:
@@ -195,10 +217,10 @@ class TestLastNdToken(unittest.TestCase):
         self.assertLessEqual(end_ts - start_ts, 86400 + 5)
 
     def test_tz_offset_applied(self):
-        """tz_offset_sec shifts the local-midnight boundary correctly.
+        """tz shifts the local-midnight boundary correctly.
         For UTC-5 (e.g. -18000), local midnight is 5 hours later than UTC
         midnight, so start_ts should reflect that."""
-        out = parse_query("last:7d", tz_offset_sec=-18000)
+        out = parse_query("last:7d", tz=timezone(timedelta(seconds=-18000)))
         start_ts, end_ts = out["time_range"]
         now = int(time.time())
         today_local_start = ((now + (-18000)) // 86400) * 86400 - (-18000)

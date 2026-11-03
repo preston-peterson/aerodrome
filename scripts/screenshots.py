@@ -346,6 +346,8 @@ SEARCH_RESPONSE = {
     ],
     "free_text": [],
     "time_range": [_SEARCH_T0 - (_SEARCH_T0 % 86400), _SEARCH_T0 + 86400],
+    "time_label": "Today",
+    "time_tokens": ["today"],
     "total_count": len(SEARCH_ROWS),
     "rows": SEARCH_ROWS,
     "execution_ms": 14.2,

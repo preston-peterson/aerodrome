@@ -27,16 +27,11 @@ Design notes (also captured in docs/SEARCH_DESIGN.md):
   semantics across columns.
 - The ranking expression is computed in SQL as part of the SELECT,
   not in Python, so ORDER BY can use indexes when possible.
-- Date tokens parse to a [start_ts, end_ts) range and become a
-  last_seen_at filter. We deliberately use last_seen_at rather than
-  joining to sightings_hourly — the question "did I see X in March?"
-  for a typical aircraft is answered correctly by checking whether
-  its last sighting was in March. Edge case: an aircraft seen daily
-  from January through April will have last_seen_at in April, so
-  searching "March 2026" wouldn't return it. This is a known limit
-  acknowledged in the design doc — the alternative (join to rollup
-  for time-range filtering) would cost the per-result join we
-  worked hard to eliminate. Filed for Phase 5+ if it bites.
+- Date tokens parse to a [start_ts, end_ts) range in the install's
+  timezone (tzwindow.py) and mean "seen during this window", not "last
+  seen during it": an aircraft seen daily from January through April
+  is found by "2026-03". See _window_clause. The rollup behind it is
+  never pruned, so old windows work past raw-sighting retention.
 
 The module is intentionally pure-Python with no FastAPI dependency.
 The endpoint glue lives in server.py.
@@ -45,8 +40,10 @@ import logging
 import re
 import sqlite3
 import time
+from datetime import date, tzinfo
 from typing import Any, Dict, List, Optional, Tuple
 
+import tzwindow
 from countries import known_countries
 from designators import AIRCRAFT_TYPES, AIRLINES, aircraft_type_name, airline_name
 
@@ -94,6 +91,37 @@ _CALLSIGN_PREFIX_RE = re.compile(r"^([A-Z]{3})$")               # UAL alone
 # defend against pathological inputs (a user pasting a paragraph) —
 # beyond these we just stop classifying and treat the rest as free text.
 MAX_TOKENS = 16
+MAX_LAST_DAYS = 36500   # last:Nd beyond this is free text, not a date overflow
+
+# Free text searches every indexed column except country. "United Airlines"
+# must not mean country "United ..." plus any "... Airlines" operator; a country
+# has its own token (`United States`, `Canada`).
+_FTS_TEXT_COLUMNS = "{icao registration last_callsign aircraft_type aircraft_type_desc operator}"
+
+_MONTH_NAMES = ("January", "February", "March", "April", "May", "June", "July",
+                "August", "September", "October", "November", "December")
+
+
+def _airline_key(name: str) -> str:
+    """Airline name for matching: "Delta Airlines" finds "Delta Air Lines" and
+    "British Airlines" finds "British Airways"."""
+    words = " ".join(re.sub(r"[^a-z0-9 ]", " ", name.lower()).split())
+    return words.replace("air lines", "airlines").replace("airways", "airlines")
+
+
+def _build_airline_names() -> Dict[str, Tuple[str, str]]:
+    """{key: (code, name)} for names of two words or more. One-word names are left
+    to free text, and a key two airlines share matches neither."""
+    names: Dict[str, Optional[Tuple[str, str]]] = {}
+    for code, name in AIRLINES.items():
+        if " " not in name:
+            continue
+        key = _airline_key(name)
+        names[key] = None if key in names else (code, name)
+    return {k: v for k, v in names.items() if v}
+
+
+_AIRLINE_NAMES = _build_airline_names()
 
 
 # v2.60.0: allowlist of column identifiers that are valid in the
@@ -198,7 +226,7 @@ def _resolve_order_direction(order: Optional[str],
 # ---------------------------------------------------------------------------
 
 def parse_query(q: str, date_format: str = "MDY",
-                 tz_offset_sec: int = 0) -> Dict[str, Any]:
+                 tz: Optional[tzinfo] = None) -> Dict[str, Any]:
     """Parse a search query string into a structured filter set.
 
     Args:
@@ -206,19 +234,16 @@ def parse_query(q: str, date_format: str = "MDY",
       date_format: locale for slash-separated dates. "MDY" (US, default),
                    "DMY" (European), or "ISO" (rejects slash dates entirely).
                    Case-insensitive. Invalid values fall back to MDY.
-      tz_offset_sec: v2.66.2 — UTC offset in seconds for the user's
-                   configured timezone (stats.timezone in config). Used
-                   by the relative-date `today` and `hour:N` tokens to
-                   compute window boundaries that match the Patterns
-                   hourly histogram's tz semantics. Default 0 means
-                   server-local time (the v2.65.0 behavior). Caller
-                   typically computes this from CONFIG['stats']['timezone']
-                   the same way the histogram backend does.
+      tz: the install's timezone (tzwindow.resolve_tz); None is system time.
+          Every date and time token is read in it.
 
     Returns a dict with:
-      filters:    list of {field, match, value} for indexed-column filters
+      filters:    list of {field, match, value, token} for indexed-column
+                  filters; token is what the user typed, for rebuilding the query
       free_text:  list of strings for FTS5 MATCH (combined with implicit AND)
       time_range: optional (start_ts, end_ts) tuple from a date token
+      time_label: the time_range in words, for its chip
+      time_tokens: the date and time tokens as typed, for rebuilding the query
       raw_tokens: original token list for debugging
 
     The parser is forgiving: unrecognized tokens fall through to free
@@ -234,9 +259,13 @@ def parse_query(q: str, date_format: str = "MDY",
         "filters": [],
         "free_text": [],
         "time_range": None,
+        "time_label": None,
+        "time_tokens": [],
         "raw_tokens": [],
     }
-    if not q or not q.strip():
+    # A NUL can't be stored in any column and upsets the FTS5 query string.
+    q = (q or "").replace("\x00", "")
+    if not q.strip():
         return out
 
     # Split on whitespace, normalize. We don't lowercase — case matters
@@ -257,6 +286,24 @@ def parse_query(q: str, date_format: str = "MDY",
 
     consumed = [False] * len(tokens)
 
+    # Airline names go first, so "Air Canada" isn't country Canada plus "Air".
+    for span_len in (4, 3, 2):
+        for i in range(len(tokens) - span_len + 1):
+            if any(consumed[i:i + span_len]):
+                continue
+            phrase = " ".join(tokens[i:i + span_len])
+            airline = _AIRLINE_NAMES.get(_airline_key(phrase))
+            if airline:
+                out["filters"].append({
+                    "field": "operator",
+                    "match": "exact",
+                    "value": airline[0],
+                    "display": airline[1],
+                    "token": phrase,
+                })
+                for j in range(i, i + span_len):
+                    consumed[j] = True
+
     # First pass: greedy multi-token country match. We try 2-, 3-,
     # 4-token spans. "United States Air Force" wouldn't be a country —
     # but "United States" would consume two tokens and the rest fall
@@ -271,35 +318,27 @@ def parse_query(q: str, date_format: str = "MDY",
                     "field": "country",
                     "match": "exact",
                     "value": countries_lower[phrase],
+                    "token": " ".join(tokens[i:i + span_len]),
                 })
                 for j in range(i, i + span_len):
                     consumed[j] = True
                 break  # restart this span_len scan with one fewer position
 
     # Second pass: single-token classification on remaining tokens
+    windows: List[Dict[str, Any]] = []
+    hours: List[Dict[str, Any]] = []
     for i, tok in enumerate(tokens):
         if consumed[i]:
             continue
-        classified = _classify_single_token(tok, countries_lower, date_format,
-                                              tz_offset_sec=tz_offset_sec)
+        classified = _classify_single_token(tok, countries_lower, date_format, tz=tz)
         if classified is None:
             out["free_text"].append(tok)
         elif classified["kind"] == "filter":
-            out["filters"].append(classified["filter"])
+            out["filters"].append({**classified["filter"], "token": tok})
         elif classified["kind"] == "time_range":
-            # v2.65.0: was "last time range wins"; now "narrower wins"
-            # so combinations like `today hour:14` work regardless of
-            # token order. The narrower window has the smaller delta
-            # (end - start). Same window → keep current (no-op).
-            new_range = classified["range"]
-            cur = out["time_range"]
-            if cur is None:
-                out["time_range"] = new_range
-            else:
-                cur_delta = cur[1] - cur[0]
-                new_delta = new_range[1] - new_range[0]
-                if new_delta < cur_delta:
-                    out["time_range"] = new_range
+            windows.append({**classified, "token": tok})
+        elif classified["kind"] == "hour":
+            hours.append({**classified, "token": tok})
         elif classified["kind"] == "ambiguous":
             # For ambiguous tokens (e.g. could be type OR registration),
             # add both filters with an `ambiguous_group` key so the SQL
@@ -307,7 +346,10 @@ def parse_query(q: str, date_format: str = "MDY",
             # meanings" case the design doc calls out.
             for f in classified["filters"]:
                 f["ambiguous_group"] = i  # group ID = original token position
+                f["token"] = tok
                 out["filters"].append(f)
+
+    _settle_time_tokens(out, windows, hours, tz)
 
     # v2.91.0: merge multiple same-field "in" filters into one. The
     # category tokens (commercial / general_aviation / helicopter / unknown)
@@ -333,11 +375,13 @@ def parse_query(q: str, date_format: str = "MDY",
                 for v in f.get("value", []):
                     if v not in existing:
                         existing.append(v)
+                _in_merged[field]["token"] += " " + f.get("token", "")
             else:
                 # Copy so subsequent merges don't mutate the caller's data.
                 _in_merged[field] = {
                     "field": field, "match": "in",
                     "value": list(f.get("value", [])),
+                    "token": f.get("token", ""),
                 }
         else:
             _other_filters.append(f)
@@ -346,9 +390,38 @@ def parse_query(q: str, date_format: str = "MDY",
     return out
 
 
+def _settle_time_tokens(out: Dict[str, Any], windows: List[Dict[str, Any]],
+                        hours: List[Dict[str, Any]], tz: Optional[tzinfo]) -> None:
+    """Turn the query's date and time tokens into one window. The narrowest date
+    wins, regardless of order, and so does the narrowest hour. `hour:` means an
+    hour of one day: of the date typed, or of today with no date. With a window
+    of several days there's no single day to apply it to, so it stays in the
+    query as a free-text term rather than silently replacing the dates."""
+    window = min(windows, key=lambda w: w["range"][1] - w["range"][0]) if windows else None
+    hour = min(hours, key=lambda h: h["last"] - h["first"]) if hours else None
+    if hour and window and window.get("day") is None:
+        out["free_text"].extend(h["token"] for h in hours)
+        hours = []
+        hour = None
+    if hour:
+        day = window["day"] if window else tzwindow.today(tz)
+        first, last = hour["first"], hour["last"]
+        out["time_range"] = tzwindow.hour_bounds(day, first, last, tz)
+        if window and window.get("typed_date"):
+            out["time_label"] = f"{day.isoformat()} {first:02d}:00–{last:02d}:59"
+        elif first == last:
+            out["time_label"] = f"Hour {first:02d}:00 today"
+        else:
+            out["time_label"] = f"Hours {first:02d}:00–{last:02d}:59 today"
+    elif window:
+        out["time_range"] = window["range"]
+        out["time_label"] = window["label"]
+    out["time_tokens"] = [w["token"] for w in windows] + [h["token"] for h in hours]
+
+
 def _classify_single_token(tok: str, countries_lower: Dict[str, str],
                             date_format: str = "MDY",
-                            tz_offset_sec: int = 0
+                            tz: Optional[tzinfo] = None
                             ) -> Optional[Dict[str, Any]]:
     """Classify a single whitespace-delimited token.
 
@@ -356,13 +429,14 @@ def _classify_single_token(tok: str, countries_lower: Dict[str, str],
         tok: the token to classify
         countries_lower: case-insensitive country lookup map
         date_format: locale for slash-separated dates ("MDY", "DMY", or "ISO")
-        tz_offset_sec: v2.66.2 — UTC offset for `today` / `hour:N` window
-            computation. Default 0 = server-local time (v2.65.0 behavior).
+        tz: the install's timezone; None is system time.
 
     Returns:
         None              — fall through to free text
         {kind: 'filter', filter: {...}}
-        {kind: 'time_range', range: (start_ts, end_ts)}
+        {kind: 'time_range', range: (start_ts, end_ts), label, day}
+            day is the local date for a one-day window, else None
+        {kind: 'hour', first, last} — needs a day; see _settle_time_tokens
         {kind: 'ambiguous', filters: [{...}, {...}]}
     """
     # v2.57.0: boolean filter tokens for special derived attributes
@@ -447,13 +521,9 @@ def _classify_single_token(tok: str, countries_lower: Dict[str, str],
     # boolean+precomputed-range shape mirrors how military/watchlist
     # work — the value is a flag, the actual SQL needs additional
     # state which travels alongside on the filter dict (here, the
-    # day boundary timestamps so _boolean_filter_clauses doesn't
-    # need tz_offset_sec re-injected).
+    # day boundary timestamps).
     if lower == "first_seen_today":
-        import time as _t
-        now = int(_t.time())
-        start_ts = ((now + tz_offset_sec) // 86400) * 86400 - tz_offset_sec
-        end_ts = start_ts + 86400
+        start_ts, end_ts = tzwindow.today_bounds(tz)
         return {"kind": "filter", "filter": {
             "field": "first_seen_today",
             "match": "boolean",
@@ -484,10 +554,7 @@ def _classify_single_token(tok: str, countries_lower: Dict[str, str],
     # watchlist aircraft at the peak. AND'd against the existing query
     # — same shape as first_seen_today + military.
     if lower == "peak_today":
-        import time as _t
-        now = int(_t.time())
-        start_ts = ((now + tz_offset_sec) // 86400) * 86400 - tz_offset_sec
-        end_ts = start_ts + 86400
+        start_ts, end_ts = tzwindow.today_bounds(tz)
         return {"kind": "filter", "filter": {
             "field": "peak_today",
             "match": "boolean",
@@ -497,22 +564,12 @@ def _classify_single_token(tok: str, countries_lower: Dict[str, str],
             # at query time via _resolve_peak_today_if_present.
         }}
 
-    # v2.65.0 (Phase 2): relative-date `today` token. Resolves at parse
-    # time to the local-day window — same semantics as the Stats "Today"
-    # date preset.
-    # v2.66.2: now timezone-aware via tz_offset_sec parameter — matches
-    # the Patterns histogram's tz semantics so chart-drill redirects with
-    # `today hour:N` actually return the same aircraft the histogram
-    # bucket showed. tz_offset_sec=0 (default) preserves v2.65.0
-    # server-local behavior. Compute "today midnight in user-tz" as a
-    # unix timestamp by shifting now into user-tz, taking the date
-    # boundary, and shifting back: `(now + tz_off) // 86400 * 86400 - tz_off`.
+    # `today`: the local day in the install's timezone, the same window as
+    # the Stats tab's today sections, so a chart drill finds what the bar showed.
     if lower == "today":
-        import time as _t
-        now = int(_t.time())
-        start_ts = ((now + tz_offset_sec) // 86400) * 86400 - tz_offset_sec
-        end_ts = start_ts + 86400
-        return {"kind": "time_range", "range": (start_ts, end_ts)}
+        day = tzwindow.today(tz)
+        return {"kind": "time_range", "range": tzwindow.day_bounds(day, tz),
+                "label": "Today", "day": day}
 
     # v2.91.0: last:Nd time-window token. N is any positive integer of
     # calendar days; the window starts at local midnight (N-1) days
@@ -539,85 +596,36 @@ def _classify_single_token(tok: str, countries_lower: Dict[str, str],
         if rest.endswith("d") and len(rest) > 1:
             try:
                 n = int(rest[:-1])
-                if n >= 1:
-                    import time as _t
-                    now = int(_t.time())
-                    today_start = ((now + tz_offset_sec) // 86400) * 86400 - tz_offset_sec
-                    start_ts = today_start - (n - 1) * 86400
-                    # End at tomorrow's local midnight, matching the
-                    # `today` token's half-open [start, end) shape. Using
-                    # `now` as end_ts here would exclude any aircraft
-                    # whose last_seen_at equals query-time `now` to the
-                    # second (the SQL clause is strict `<`); this happens
-                    # naturally for sightings landing in the same second
-                    # the user submits the query. Tomorrow-midnight as
-                    # end_ts means the entire current day is covered
-                    # inclusively, with no edge case at "now". Future
-                    # rows past `now` don't exist yet, so this doesn't
-                    # over-match anything real.
-                    end_ts = today_start + 86400
-                    return {"kind": "time_range", "range": (start_ts, end_ts)}
-            except (ValueError, TypeError):
-                pass
+            except ValueError:
+                n = 0
+            if 1 <= n <= MAX_LAST_DAYS:
+                # Ends at tomorrow's local midnight, the same half-open shape
+                # as `today`, so nothing is lost at "now".
+                return {"kind": "time_range",
+                        "range": tzwindow.last_days_bounds(n, tz),
+                        "label": "Today" if n == 1 else f"Last {n} days",
+                        "day": tzwindow.today(tz) if n == 1 else None}
         # Anything we can't parse falls through to free text. The parser
         # is forgiving by design — typo-friendly. The user gets a
         # free-text search with "last:foo" as a search term, sees no
         # useful results, and corrects the syntax.
 
-    # v2.65.0 (Phase 2): hour:N filter — single-hour bucket on today's
-    # date. N must be integer 0-23. Composes naturally with `today`
-    # (same time_range shrunk to one hour). Without `today`, the hour
-    # filter still applies to today by default — common case is "show
-    # me what flew at 14:00 today" which doesn't need explicit `today`.
-    # v2.66.2: timezone-aware via tz_offset_sec — built on top of the
-    # same today-midnight-in-user-tz computation above, then shifted by
-    # `h * 3600` for the hour-of-day. The Patterns hourly_histogram
-    # buckets via `((seen_at + tz_off) / 3600) % 24`, so an aircraft at
-    # bucket H matches when seen_at is in `[H_start, H_start + 3600)`
-    # where H_start is the unix timestamp of H:00 in user-tz today.
-    # v2.70.0 (Phase 3): hour:LO-HI range syntax — inclusive on both
-    # ends. `hour:14-16` matches the three-hour window 14:00 through
-    # 16:59:59 (i.e. hour buckets 14, 15, AND 16). The window's unix
-    # range is [midnight + lo*3600, midnight + (hi+1)*3600). Note the
-    # asymmetry with `distance:LO-HI` which is inclusive-exclusive
-    # (matches bucket UX); hours are inclusive-inclusive (matches
-    # calendar UX — "from hour 14 through hour 16" naturally includes
-    # hour 16). Single-hour `hour:14` semantics unchanged. LO must be
-    # ≤ HI; LO == HI degenerates to single-hour behavior. Wraparound
-    # (`hour:23-1`) rejected — user can run two queries.
+    # hour:N and hour:LO-HI (inclusive on both ends: `hour:14-16` is 14:00 through
+    # 16:59:59). An hour of one local day: _settle_time_tokens works out which.
+    # Note the asymmetry with `distance:LO-HI`, which is inclusive-exclusive
+    # (matches bucket UX); hours match calendar UX. LO must be ≤ HI. Wraparound
+    # (`hour:23-1`) is rejected: the user can run two queries.
     if lower.startswith("hour:"):
         rest = tok.split(":", 1)[1].strip()
-        # Range form: "lo-hi"
-        if "-" in rest:
-            parts = rest.split("-", 1)
-            try:
-                lo = int(parts[0])
-                hi = int(parts[1])
-            except ValueError:
-                return None  # malformed, fall through to free text
-            if not (0 <= lo <= 23 and 0 <= hi <= 23):
-                return None  # out of range
-            if lo > hi:
-                return None  # wraparound rejected
-            import time as _t
-            now = int(_t.time())
-            midnight = ((now + tz_offset_sec) // 86400) * 86400 - tz_offset_sec
-            start_ts = midnight + lo * 3600
-            end_ts = midnight + (hi + 1) * 3600  # +1 because hi is inclusive
-            return {"kind": "time_range", "range": (start_ts, end_ts)}
-        # Single-hour form: "n"
+        lo_text, _, hi_text = rest.partition("-")
         try:
-            h = int(rest)
+            first = int(lo_text)
+            last = int(hi_text) if hi_text else first
         except ValueError:
             return None  # malformed, fall through to free text
-        if not (0 <= h <= 23):
-            return None  # out of range, fall through
-        import time as _t
-        now = int(_t.time())
-        midnight = ((now + tz_offset_sec) // 86400) * 86400 - tz_offset_sec
-        start_ts = midnight + h * 3600
-        end_ts = start_ts + 3600
-        return {"kind": "time_range", "range": (start_ts, end_ts)}
+        if not (0 <= first <= last <= 23):
+            return None  # out of range or wraparound
+        return {"kind": "hour", "first": first, "last": last}
 
     # v2.65.0 (Phase 2): distance:LO-HI filter — bucket range in the
     # user's configured display unit. The parser stores raw bounds; the
@@ -693,9 +701,9 @@ def _classify_single_token(tok: str, countries_lower: Dict[str, str],
         return None
 
     # Date patterns
-    date_range = _try_parse_date(tok, date_format)
-    if date_range:
-        return {"kind": "time_range", "range": date_range}
+    date_window = _try_parse_date(tok, date_format, tz)
+    if date_window:
+        return date_window
 
     # Aircraft type code (4-char, looked up in designators)
     upper = tok.upper()
@@ -770,17 +778,19 @@ def _classify_single_token(tok: str, countries_lower: Dict[str, str],
     return None
 
 
-def _try_parse_date(tok: str, date_format: str = "MDY") -> Optional[Tuple[int, int]]:
-    """Parse a date token into a UTC (start_ts, end_ts) range.
+def _try_parse_date(tok: str, date_format: str = "MDY",
+                    tz: Optional[tzinfo] = None) -> Optional[Dict[str, Any]]:
+    """Parse a date token into a {kind: 'time_range', ...} window in `tz`.
 
     Args:
         tok: the token to parse
         date_format: locale for slash-separated dates. "MDY" (US), "DMY"
                      (European), or "ISO" (rejects slash dates).
+        tz: the install's timezone; None is system time.
 
     Supports:
       ISO formats (always accepted regardless of date_format):
-        2026-04-29 → that day, 00:00 to 23:59:59
+        2026-04-29 → that day
         2026-04    → that month
         2026       → that year (only if it looks like a year, not a 4-digit number)
 
@@ -791,86 +801,141 @@ def _try_parse_date(tok: str, date_format: str = "MDY") -> Optional[Tuple[int, i
         Per POSIX strptime convention, 2-digit years 00-69 → 2000-2069
         and 70-99 → 1970-1999.
 
-    Returns None if the token isn't a recognizable date.
+    Returns None if the token isn't a date on the calendar, so 2026-02-30 is
+    free text rather than March 2.
     """
-    m = _DATE_FULL_RE.match(tok)
-    if m:
-        try:
-            y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
-            t0 = _utc_timestamp(y, mo, d)
-            t1 = t0 + 86400
-            return (t0, t1)
-        except Exception:
-            return None
+    try:
+        m = _DATE_FULL_RE.match(tok)
+        if m:
+            return _day_window(date(int(m.group(1)), int(m.group(2)), int(m.group(3))), tz)
 
-    m = _DATE_MONTH_RE.match(tok)
-    if m:
-        try:
+        m = _DATE_MONTH_RE.match(tok)
+        if m:
             y, mo = int(m.group(1)), int(m.group(2))
-            t0 = _utc_timestamp(y, mo, 1)
-            # Add a calendar month — easiest is to compute next month's
-            # start. Handle December rollover.
-            if mo == 12:
-                t1 = _utc_timestamp(y + 1, 1, 1)
-            else:
-                t1 = _utc_timestamp(y, mo + 1, 1)
-            return (t0, t1)
-        except Exception:
-            return None
+            return {"kind": "time_range", "range": tzwindow.month_bounds(y, mo, tz),
+                    "label": f"{_MONTH_NAMES[mo - 1]} {y}", "day": None}
 
-    m = _DATE_YEAR_RE.match(tok)
-    if m:
-        # Disambiguate: a 4-digit number is a year only if it's
-        # plausibly a recent or near-future year. 1700, 2200, 9999
-        # shouldn't classify as a date.
-        try:
+        m = _DATE_YEAR_RE.match(tok)
+        if m:
+            # Disambiguate: a 4-digit number is a year only if it's plausibly
+            # a recent or near-future year. 1700, 2200, 9999 aren't dates.
             y = int(m.group(1))
             if 2000 <= y <= 2099:
-                t0 = _utc_timestamp(y, 1, 1)
-                t1 = _utc_timestamp(y + 1, 1, 1)
-                return (t0, t1)
-        except Exception:
-            pass
+                return {"kind": "time_range", "range": tzwindow.year_bounds(y, tz),
+                        "label": str(y), "day": None}
+            return None
 
-    # v2.52.0: locale-specific slash-separated dates. ISO mode rejects
-    # these entirely (forces unambiguous input). MDY/DMY interpret the
-    # first two numeric parts according to the locale convention.
-    if date_format in ("MDY", "DMY"):
-        m = _DATE_SLASH_RE.match(tok)
-        if m:
-            a, b, y_str = int(m.group(1)), int(m.group(2)), m.group(3)
-            # 2-digit year resolution per POSIX strptime
-            if len(y_str) == 2:
-                y_int = int(y_str)
-                y = (2000 + y_int) if y_int < 70 else (1900 + y_int)
-            else:
-                y = int(y_str)
-            # Apply locale: MDY → (mo, d); DMY → (d, mo)
-            if date_format == "MDY":
-                mo, d = a, b
-            else:  # DMY
-                d, mo = a, b
-            # Validate calendar bounds — reject "13/45/26" etc. so the
-            # token falls through to free-text instead of producing
-            # garbage. month 1-12, day 1-31 (full validation happens
-            # inside _utc_timestamp via calendar.timegm rejecting bad
-            # combinations like Feb 30).
-            if not (1 <= mo <= 12 and 1 <= d <= 31):
-                return None
-            try:
-                t0 = _utc_timestamp(y, mo, d)
-                t1 = t0 + 86400
-                return (t0, t1)
-            except Exception:
-                return None
-
+        # v2.52.0: locale-specific slash-separated dates. ISO mode rejects
+        # these entirely (forces unambiguous input). MDY/DMY interpret the
+        # first two numeric parts according to the locale convention.
+        if date_format in ("MDY", "DMY"):
+            m = _DATE_SLASH_RE.match(tok)
+            if m:
+                a, b, y_str = int(m.group(1)), int(m.group(2)), m.group(3)
+                # 2-digit year resolution per POSIX strptime
+                if len(y_str) == 2:
+                    y_int = int(y_str)
+                    y = (2000 + y_int) if y_int < 70 else (1900 + y_int)
+                else:
+                    y = int(y_str)
+                mo, d = (a, b) if date_format == "MDY" else (b, a)
+                return _day_window(date(y, mo, d), tz)
+    except (ValueError, OverflowError, OSError, IndexError):
+        # Not on the calendar (month 13, Feb 30, year 0) or beyond what the
+        # platform can convert.
+        return None
     return None
 
 
-def _utc_timestamp(y: int, mo: int, d: int) -> int:
-    """Convert a UTC calendar date to a Unix timestamp (start of day)."""
-    import calendar
-    return calendar.timegm((y, mo, d, 0, 0, 0, 0, 0, 0))
+def _day_window(day: date, tz: Optional[tzinfo]) -> Dict[str, Any]:
+    return {"kind": "time_range", "range": tzwindow.day_bounds(day, tz),
+            "label": day.isoformat(), "day": day, "typed_date": True}
+
+
+# ---------------------------------------------------------------------------
+# "Seen during a window"
+# ---------------------------------------------------------------------------
+
+def window_sources(t0: int, t1: int) -> Tuple[Optional[Tuple[int, int]], List[Tuple[int, int]]]:
+    """What holds a window's sightings: (whole_hours, partial_edges). Whole hours
+    come from sightings_hourly, whose buckets are UTC hours and which is never
+    pruned. A half-hour timezone's day starts mid-bucket, so its partial edge
+    hours come from all_sightings: exact within raw retention, whole hours only
+    after it. Whole-hour zones have no edges."""
+    b0 = ((t0 + 3599) // 3600) * 3600
+    b1 = (t1 // 3600) * 3600
+    if b0 >= b1:
+        return None, ([(t0, t1)] if t0 < t1 else [])
+    edges = []
+    if t0 < b0:
+        edges.append((t0, b0))
+    if b1 < t1:
+        edges.append((b1, t1))
+    return (b0, b1), edges
+
+
+def _window_clause(t0: int, t1: int) -> Tuple[str, List[int]]:
+    """Aircraft seen during [t0, t1). An aircraft last seen before the window can't
+    have been seen in it, and one last seen inside it needs no lookup, so only
+    aircraft last seen after the window pay for the rollup probe. One EXISTS form
+    for every window: measured against IN on 28k aircraft and 1.38M hourly rows, its
+    worst case is 28 ms to IN's 140 ms (IN only wins on narrow windows)."""
+    whole, edges = window_sources(t0, t1)
+    params: List[int] = [t0, t1]
+    seen = ["seen_aircraft.last_seen_at < ?"]
+    if whole:
+        seen.append("EXISTS (SELECT 1 FROM sightings_hourly w "
+                    "WHERE w.icao = seen_aircraft.icao "
+                    "AND w.hour_bucket >= ? AND w.hour_bucket < ?)")
+        params.extend(whole)
+    for edge in edges:
+        seen.append("EXISTS (SELECT 1 FROM all_sightings w "
+                    "WHERE w.icao = seen_aircraft.icao "
+                    "AND w.seen_at >= ? AND w.seen_at < ?)")
+        params.extend(edge)
+    return f"seen_aircraft.last_seen_at >= ? AND ({' OR '.join(seen)})", params
+
+
+def _window_sum_expr(t0: int, t1: int) -> str:
+    """SQL for one aircraft's sightings in [t0, t1], for sorting. The bounds are
+    computed integers, inlined so the ORDER BY needs no parameters of its own."""
+    whole, edges = window_sources(int(t0), int(t1))
+    parts = []
+    if whole:
+        parts.append("COALESCE((SELECT SUM(w.sighting_count) FROM sightings_hourly w "
+                     "WHERE w.icao = seen_aircraft.icao "
+                     f"AND w.hour_bucket >= {whole[0]} AND w.hour_bucket < {whole[1]}), 0)")
+    for a, b in edges:
+        parts.append("(SELECT COUNT(*) FROM all_sightings w "
+                     "WHERE w.icao = seen_aircraft.icao "
+                     f"AND w.seen_at >= {a} AND w.seen_at < {b})")
+    return " + ".join(parts) or "0"
+
+
+def _attach_window_sightings(conn: sqlite3.Connection, rows: List[Dict[str, Any]],
+                             t0: int, t1: int) -> None:
+    """Add window_sightings to a page of rows. A second query rather than a SELECT
+    column: a column would run for every match, not just the page."""
+    if not rows:
+        return
+    whole, edges = window_sources(int(t0), int(t1))
+    icaos = [r["icao"] for r in rows]
+    marks = ",".join("?" * len(icaos))
+    counts: Dict[str, int] = {}
+    if whole:
+        for icao, n in conn.execute(
+                f"SELECT icao, SUM(sighting_count) FROM sightings_hourly "
+                f"WHERE icao IN ({marks}) AND hour_bucket >= ? AND hour_bucket < ? GROUP BY icao",
+                icaos + list(whole)):
+            counts[icao] = int(n or 0)
+    for edge in edges:
+        for icao, n in conn.execute(
+                f"SELECT icao, COUNT(*) FROM all_sightings "
+                f"WHERE icao IN ({marks}) AND seen_at >= ? AND seen_at < ? GROUP BY icao",
+                icaos + list(edge)):
+            counts[icao] = counts.get(icao, 0) + int(n or 0)
+    for r in rows:
+        r["window_sightings"] = counts.get(r["icao"], 0)
 
 
 # ---------------------------------------------------------------------------
@@ -1144,6 +1209,10 @@ def execute_search(conn: sqlite3.Connection, parsed: Dict[str, Any],
     # closest aircraft" shouldn't include rows with no known location;
     # "alphabetical by callsign" shouldn't lead with empty callsigns).
     sort_sql_expr, sort_dir = _resolve_order_direction(order, direction)
+    window = parsed["time_range"]
+    if order == "sightings" and window:
+        # Inside a date range, "most sightings" means most in that range.
+        sort_sql_expr = f"({_window_sum_expr(window[0], window[1])})"
     if sort_sql_expr:
         # User-chosen sort. Score still in tie-break position so equally-
         # ranked rows on the chosen column maintain a stable order.
@@ -1206,6 +1275,8 @@ def execute_search(conn: sqlite3.Connection, parsed: Dict[str, Any],
                 "track_length_sec": r[16],
                 "score": r[17],
             })
+        if window:
+            _attach_window_sightings(conn, rows, window[0], window[1])
         return {
             "total_count": total_count,
             "rows": rows,
@@ -1333,17 +1404,19 @@ def _build_where(parsed: Dict[str, Any],
             clauses.append("(" + " OR ".join(sub_clauses) + ")")
 
     if parsed["time_range"]:
-        t0, t1 = parsed["time_range"]
-        clauses.append("seen_aircraft.last_seen_at >= ? AND seen_aircraft.last_seen_at < ?")
-        params.extend([t0, t1])
+        clause, clause_params = _window_clause(*parsed["time_range"])
+        clauses.append(clause)
+        params.extend(clause_params)
 
     if parsed["free_text"]:
         # Combine free-text terms into a single FTS5 query string. Default
         # FTS5 syntax AND's terms together. Quote each term to defend
         # against FTS5 syntax injection from the user — without quotes,
         # a token like 'NEAR("foo")' would be interpreted as an FTS5
-        # operator. Quoting makes them all literal-string matches.
-        fts_query = " ".join(_fts_quote(t) for t in parsed["free_text"])
+        # operator. Quoting makes them all literal-string matches. The *
+        # is prefix matching, outside the quotes where FTS5 reads it.
+        terms = " ".join(_fts_quote(t) + "*" for t in parsed["free_text"])
+        fts_query = f"{_FTS_TEXT_COLUMNS} : ({terms})"
         clauses.append("seen_aircraft_fts MATCH ?")
         params.append(fts_query)
 
@@ -1394,7 +1467,7 @@ def _boolean_filter_clauses(parsed: Dict[str, Any],
     )
     # v2.69.0 (Phase 3): first_seen_today filter. The day-boundary
     # timestamps were precomputed at parse time and ride on the filter
-    # dict's `first_seen_range` field — no tz_offset_sec needed here.
+    # dict's `first_seen_range` field.
     # Find the filter dict (if present) so we can read its precomputed
     # range; if the user happens to type the token twice, we use the
     # first occurrence (same range either way, so it doesn't matter).
@@ -1724,7 +1797,8 @@ def detail_for_aircraft(conn: sqlite3.Connection, icao: str) -> Optional[Dict[st
 LOW_SIGHTING_THRESHOLD = 10
 
 
-def detail_page_data_for_aircraft(conn: sqlite3.Connection, icao: str) -> Optional[Dict[str, Any]]:
+def detail_page_data_for_aircraft(conn: sqlite3.Connection, icao: str,
+                                  tz: Optional[tzinfo] = None) -> Optional[Dict[str, Any]]:
     """Return the rich dataset for the /aircraft/{ICAO} detail page.
 
     This is a superset of detail_for_aircraft() — it returns the same
@@ -1732,6 +1806,9 @@ def detail_page_data_for_aircraft(conn: sqlite3.Connection, icao: str) -> Option
     day-of-week distribution, altitude/speed/sightings ranges, derived
     pattern chips, recent sightings). Returns None if the ICAO isn't
     in seen_aircraft.
+
+    Hours, weekdays and days are local to `tz` (the install's timezone; None
+    is system time).
 
     Cost analysis: every query is bounded by sightings_hourly rows for
     a single ICAO (typically a few dozen to a few thousand buckets),
@@ -1802,44 +1879,30 @@ def detail_page_data_for_aircraft(conn: sqlite3.Connection, icao: str) -> Option
         out["chips"] = []
         return out
 
-    # Hour-of-day distribution: 24-bucket histogram of total sightings
-    # by hour-of-day-UTC. We extract the hour from hour_bucket (which
-    # is unix epoch seconds aligned to hour boundaries) via integer
-    # arithmetic. Indexed by the (icao, hour_bucket) primary key; the
-    # query touches only this aircraft's buckets.
-    hour_rows = conn.execute("""
-        SELECT (hour_bucket / 3600) % 24 AS hour_of_day,
-               SUM(sighting_count) AS hits
-        FROM sightings_hourly
-        WHERE icao = ?
-        GROUP BY hour_of_day
-    """, (icao,)).fetchall()
+    # Hour-of-day (24 buckets), day-of-week (7, Monday=0, which matches the chip
+    # rendering) and per-day totals, all in local time, in one pass over this
+    # aircraft's buckets. Python rather than SQL so a clock change lands on the
+    # right day and hour. Indexed by the (icao, hour_bucket) primary key.
     hour_dist = [0] * 24
-    for h, hits in hour_rows:
-        hour_dist[int(h)] = int(hits or 0)
-    out["hour_of_day"] = hour_dist
-
-    # Day-of-week distribution: 7-bucket. Python's datetime.weekday() is
-    # Monday=0, Sunday=6, which matches the chip rendering convention.
-    # We compute this in Python because SQLite's strftime('%w') is
-    # Sunday=0, which would require an extra +6 mod 7 in SQL. Easier
-    # to just iterate the buckets.
-    import datetime as _dt
     day_dist = [0] * 7
+    per_day: Dict[date, int] = {}
     for hb, hits in conn.execute("""
         SELECT hour_bucket, SUM(sighting_count) AS hits
         FROM sightings_hourly
         WHERE icao = ?
         GROUP BY hour_bucket
     """, (icao,)).fetchall():
-        dow = _dt.datetime.utcfromtimestamp(int(hb)).weekday()
-        day_dist[dow] += int(hits or 0)
+        hits = int(hits or 0)
+        local = tzwindow.local_dt(int(hb), tz)
+        hour_dist[local.hour] += hits
+        day_dist[local.weekday()] += hits
+        per_day[local.date()] = per_day.get(local.date(), 0) + hits
+    out["hour_of_day"] = hour_dist
     out["day_of_week"] = day_dist
 
     # Ranges: min/max altitude, max speed, sightings-per-day stats.
     # The first three come straight from the rollup. Sightings/day
-    # requires bucketing into calendar days first, then taking
-    # min/median/max of the per-day totals.
+    # takes min/median/max of the per-day totals above.
     range_row = conn.execute("""
         SELECT MIN(min_altitude), MAX(max_altitude), MAX(max_speed)
         FROM sightings_hourly WHERE icao = ?
@@ -1852,15 +1915,7 @@ def detail_page_data_for_aircraft(conn: sqlite3.Connection, icao: str) -> Option
         WHERE icao = ? AND max_speed IS NOT NULL
     """, (icao,)).fetchone()
     max_speed = max_speed_row[0] if max_speed_row and max_speed_row[0] is not None else None
-    # Sightings/day: aggregate hour buckets into calendar days (UTC).
-    # 86400 seconds in a day; integer-divide hour_bucket by 86400.
-    daily_rows = conn.execute("""
-        SELECT (hour_bucket / 86400) AS day,
-               SUM(sighting_count) AS hits
-        FROM sightings_hourly WHERE icao = ?
-        GROUP BY day
-    """, (icao,)).fetchall()
-    daily_totals = sorted([int(r[1]) for r in daily_rows if r[1]])
+    daily_totals = sorted(n for n in per_day.values() if n)
     if daily_totals:
         spd_min = daily_totals[0]
         spd_max = daily_totals[-1]
@@ -1974,10 +2029,12 @@ def detail_page_data_for_aircraft(conn: sqlite3.Connection, icao: str) -> Option
                 "value": f"{top_cs} ({cs_pct}%)",
             })
 
-    # Chip: activity span. "Active 23 of last 47 days" — concrete,
-    # always applicable when in full mode. Always emit this one.
+    # Chip: activity span. "Active 23 of 47 days" — concrete, always applicable
+    # when in full mode. Always emit this one. Both numbers count calendar days
+    # in the same timezone, so the first can't exceed the second.
     if base.get("first_seen_at") and base.get("last_seen_at"):
-        span_days = max(1, (base["last_seen_at"] - base["first_seen_at"]) // 86400)
+        span_days = max(days_active, tzwindow.calendar_days(
+            base["first_seen_at"], base["last_seen_at"], tz))
         chips.append({
             "label": "Active",
             "value": f"{days_active} of {span_days} days",

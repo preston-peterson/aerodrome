@@ -21,6 +21,7 @@ import sys
 import tempfile
 import time
 import unittest
+from datetime import timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -34,6 +35,26 @@ from search import (
 # ---------------------------------------------------------------------------
 # Parser tests
 # ---------------------------------------------------------------------------
+
+_SAVED_TZ = None
+
+
+def setUpModule():
+    """Fixed system time: with no tz argument the parser reads dates in system
+    time, and these tests were written for UTC."""
+    global _SAVED_TZ
+    _SAVED_TZ = os.environ.get("TZ")
+    os.environ["TZ"] = "UTC"
+    time.tzset()
+
+
+def tearDownModule():
+    if _SAVED_TZ is None:
+        os.environ.pop("TZ", None)
+    else:
+        os.environ["TZ"] = _SAVED_TZ
+    time.tzset()
+
 
 class TestParser(unittest.TestCase):
     """Unit tests on the token classifier. No DB required."""
@@ -352,11 +373,11 @@ class TestParser(unittest.TestCase):
     # v2.66.2: timezone-aware `today` / `hour:N` tokens
     # ------------------------------------------------------------------
     def test_today_token_tz_offset_aligns_to_user_midnight(self):
-        # tz_offset_sec=-25200 → UTC-7 (e.g. America/Los_Angeles in summer).
+        # tz=timezone(timedelta(seconds=-25200)) → UTC-7 (e.g. America/Los_Angeles in summer).
         # The window's start should be unix midnight in UTC-7. Equivalently,
         # (start_ts + tz_offset) % 86400 == 0.
         offset = -25200
-        r = parse_query("today", tz_offset_sec=offset)
+        r = parse_query("today", tz=timezone(timedelta(seconds=offset)))
         self.assertIsNotNone(r["time_range"])
         t0, t1 = r["time_range"]
         self.assertEqual(t1 - t0, 86400)
@@ -367,7 +388,7 @@ class TestParser(unittest.TestCase):
         # In UTC-7, hour:12 should produce a window where
         # (start_ts + tz_offset) % 86400 == 12 * 3600.
         offset = -25200  # UTC-7
-        r = parse_query("hour:12", tz_offset_sec=offset)
+        r = parse_query("hour:12", tz=timezone(timedelta(seconds=offset)))
         self.assertIsNotNone(r["time_range"])
         t0, t1 = r["time_range"]
         self.assertEqual(t1 - t0, 3600)
@@ -380,7 +401,7 @@ class TestParser(unittest.TestCase):
         # have (seen_at + tz_offset) % 86400 in [14*3600, 15*3600).
         # Verify the parser's hour:14 window matches that exact bucket.
         offset = -18000  # UTC-5
-        r = parse_query("hour:14", tz_offset_sec=offset)
+        r = parse_query("hour:14", tz=timezone(timedelta(seconds=offset)))
         t0, t1 = r["time_range"]
         # An aircraft seen at the parser-window start should bucket at hour 14
         sample_ts = t0
@@ -394,12 +415,11 @@ class TestParser(unittest.TestCase):
         self.assertEqual(bucket_at_end, 15)
 
     def test_today_token_default_offset_is_zero(self):
-        # No tz_offset_sec parameter → server-local UTC behavior (offset=0).
-        # The window should be aligned to UTC midnight.
+        # No tz argument → system time, which setUpModule fixes at UTC.
         r = parse_query("today")
         t0, t1 = r["time_range"]
         self.assertEqual(t0 % 86400, 0,
-                         "default offset=0 → UTC midnight alignment")
+                         "system time here is UTC → UTC midnight alignment")
 
     # ------------------------------------------------------------------
     # v2.69.0 (Phase 3): first_seen_today boolean filter
@@ -424,7 +444,7 @@ class TestParser(unittest.TestCase):
     def test_first_seen_today_token_tz_offset(self):
         # UTC-7: range should be aligned to user-tz midnight.
         offset = -25200
-        r = parse_query("first_seen_today", tz_offset_sec=offset)
+        r = parse_query("first_seen_today", tz=timezone(timedelta(seconds=offset)))
         f = r["filters"][0]
         t0, t1 = f["first_seen_range"]
         self.assertEqual(t1 - t0, 86400)
@@ -552,9 +572,9 @@ class TestParser(unittest.TestCase):
         self.assertIsNone(r2["time_range"])
 
     def test_hour_range_tz_aware(self):
-        # Range alignment also respects tz_offset_sec.
+        # Range alignment also respects tz.
         offset = -25200  # UTC-7
-        r = parse_query("hour:14-16", tz_offset_sec=offset)
+        r = parse_query("hour:14-16", tz=timezone(timedelta(seconds=offset)))
         t0, t1 = r["time_range"]
         self.assertEqual(t1 - t0, 3 * 3600)
         # Window starts at 14:00 in user-tz
@@ -678,6 +698,7 @@ def _make_test_db():
             last_altitude REAL, last_speed REAL, last_squawk TEXT,
             min_altitude REAL, max_altitude REAL, max_speed REAL,
             PRIMARY KEY (icao, hour_bucket));
+        CREATE TABLE all_sightings (icao TEXT, seen_at INTEGER);
     """)
     conn.execute("""CREATE VIRTUAL TABLE seen_aircraft_fts USING fts5(
         icao, registration, last_callsign, aircraft_type, aircraft_type_desc,
@@ -1713,7 +1734,7 @@ class TestPeakToday(unittest.TestCase):
             aircraft_type_desc, operator, country,
             tokenize='unicode61 remove_diacritics 1')""")
         # Anchor "today" to the start of UTC day for the current real
-        # time — so default tz_offset_sec=0 in parse_query produces the
+        # time — so default tz=timezone(timedelta(seconds=0)) in parse_query produces the
         # same window we seed below.
         now = int(time.time())
         self.today_start = (now // 86400) * 86400
