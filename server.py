@@ -1,4 +1,4 @@
-# Version: 3.4.154
+# Version: 3.4.155
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -5463,9 +5463,11 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                     WHERE hour_bucket >= ? AND max_altitude IS NOT NULL
                       AND typeof(max_altitude) IN ('integer', 'real')
                       AND icao NOT LIKE '~%'
-                    ORDER BY max_altitude DESC LIMIT 1
+                    ORDER BY max_altitude DESC LIMIT 50
                 """, (start_ts,))
-                result["cards"]["highest_altitude"] = dict(rows[0]) if rows else None
+                result["cards"]["highest_altitude"] = next(
+                    (dict(r) for r in rows if _collector_mod.altitude_is_plausible(
+                        r["aircraft_type"], r["altitude"])), None)
 
             if card_check("lowest_altitude"):
                 # v2.87.1: rewritten to read from sightings_hourly's
@@ -6526,7 +6528,8 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                     "metric": _to_number(r["metric"]) or 0,
                     "metric_label": f"{int(_to_number(r['metric']) or 0):,} ft",
                     "seen_at": r["seen_at"],
-                } for r in raw]
+                } for r in raw if _collector_mod.altitude_is_plausible(
+                    r["aircraft_type"], _to_number(r["metric"]) or 0)]
 
             elif card == "lowest_altitude":
                 # Exclude ground (altitude 0 / null / "ground"). typeof filter

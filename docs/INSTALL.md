@@ -1290,14 +1290,19 @@ data, and the occasional garbage value sneaks through. Aerodrome
 applies three filters to keep bad data from polluting your records
 and stats:
 
-- **Type-aware speed ceilings.** A 696-kt reading on a Cessna 172 is
-  garbage — a 172's max cruise is ~120 kt. Aerodrome caps each
-  aircraft type at a physically plausible ground speed (e.g. 250 kt
-  for light GA singles, 400 kt for large turboprops, 700 kt for
-  airliners, 1500 kt for fighters and unknown types). Readings above
-  the cap are excluded from the "fastest ever" record. The cap
-  applies only to records; the raw value still appears on the Live
-  tab if you want to see it.
+- **Type-aware speed and altitude ceilings.** A 696-kt reading on a
+  Cessna 172 is garbage — a 172's max cruise is ~120 kt. Aerodrome caps
+  each aircraft type at a physically plausible ground speed (e.g. 250 kt
+  for light GA singles, 500 kt for other piston aircraft, 650 kt for
+  turboprops, 280 kt for helicopters, 700 kt for airliners, 1500 kt for
+  fighters and unknown types) and altitude (50,000 ft for piston aircraft,
+  45,000 ft for helicopters, 60,000 ft for turboprops, airliners and
+  business jets, with no limit for other jets, balloons, gliders and
+  unknown types). Readings above the cap are excluded from the fastest and
+  highest all-time records and from Today's fastest and highest. The caps
+  apply only to those; the raw value still appears on the Live tab, in
+  Search and on the aircraft's page. An aircraft whose type isn't known
+  can still set a wrong record, because there's nothing to compare it with.
 
 - **TIS-B / MLAT pseudo-target exclusion.** Some receivers (via
   dump1090 or readsb) relay aircraft position data they didn't hear
@@ -1308,9 +1313,10 @@ and stats:
   tab).
 
 - **Retroactive self-heal.** When Aerodrome tightens a filter in a
-  future release, previously-stored records that violate the new
-  rule get recomputed from historical data on next startup. A bogus
-  record stored under looser rules will quietly fix itself.
+  future release, a fastest or highest record that violates the new
+  rule gets recomputed from the hourly history on next startup, which
+  is kept however short your retention is. A bogus record stored under
+  looser rules will quietly fix itself, with no notification.
 
 These filters apply to the Stats tab's records and the "Today's
 extremes" cards. They do not affect the Live, Watchlist, or Military

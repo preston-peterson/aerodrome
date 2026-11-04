@@ -1,4 +1,4 @@
-# Version: 3.4.154
+# Version: 3.4.155
 """
 collector.py — ADS-B data fetcher and classifier.
 
@@ -23,7 +23,9 @@ from typing import Any, Dict, List, Optional, Tuple
 # v2.79.0 (Phase 3 polish): centralized haversine. Pre-v2.79.0 the
 # math lived inline at line ~2012; now it's in distance.py with the
 # server-side haversine sites it shared semantics with.
+from categorize import HELICOPTER_TYPES
 from distance import haversine as _dist_haversine
+from type_classes import PISTON_TYPES, TURBOPROP_TYPES
 # v3.4.138: the shared hex→tail resolver queue. Imports nothing from this
 # module at load time (its worker imports collector lazily), so no cycle.
 import hexdb_resolver
@@ -1030,6 +1032,7 @@ def refresh_query_planner_stats(config: Dict[str, Any]) -> None:
 # =============================================================================
 # Stats quality filters
 # =============================================================================
+# Ceilings by type: speed_ceiling_for_type and altitude_is_plausible.
 # Housed here in collector.py so both the collector (for real-time
 # all-time-record updates) and the server (for today's-extremes cards
 # and drill queries) can apply consistent filtering. Defined once.
@@ -1037,6 +1040,8 @@ def refresh_query_planner_stats(config: Dict[str, Any]) -> None:
 # The problem these filters solve:
 #   - Fastest: transponder glitches occasionally report 1000+ kt for
 #     commercial airframes that physically max out around 500 kt.
+#   - Highest: the same glitches report 100,000+ ft for a turboprop whose
+#     ceiling is about 30,000 ft.
 #   - Slowest: airport service vehicles and stopped aircraft broadcast
 #     ADS-B too, producing "slowest: 1 kt" readings.
 #   - Longest track: MIN→MAX per icao doesn't detect gaps, so an ICAO
@@ -1121,6 +1126,14 @@ SUBSONIC_AIRFRAMES = frozenset({
 })
 SUBSONIC_MAX_KT = 700
 PERMISSIVE_MAX_KT = 1500  # for unknown types, fighters, etc.
+# By engine class, for the thousands of types with no entry below. Generous, to
+# leave room for a jet-stream tailwind and for the odd fast or high example of a
+# class: warbirds, X3 / S97 / SB1 compounds, an A400M at speed, a Grob Egrett.
+CLASS_MAX_KT = {"piston": 500, "turboprop": 650, "helicopter": 280}
+CLASS_MAX_FT = {"piston": 50000, "turboprop": 60000, "helicopter": 45000}
+SUBSONIC_MAX_FT = 60000  # airliners and business jets top out near 51,000 ft
+# In SUBSONIC_AIRFRAMES for its speed, but it does fly at 70,000 ft and above.
+NO_ALTITUDE_CEILING = frozenset({"U2"})
 MIN_PLAUSIBLE_SPEED_KT = 40  # below this, it's a ground vehicle or parked
 
 # v2.49.2: fine-grained per-type speed ceilings. The 700 kt subsonic cap
@@ -1171,9 +1184,11 @@ def speed_ceiling_for_type(aircraft_type: Optional[str]) -> int:
     Lookup order:
       1. TYPE_CEILINGS — per-type class-appropriate cap (GA singles at
          250 kt, helicopters at 220 kt, etc.)
-      2. SUBSONIC_MAX_KT (700) — for anything else in SUBSONIC_AIRFRAMES
+      2. CLASS_MAX_KT — piston, turboprop or helicopter, for any other type
+         of that class
+      3. SUBSONIC_MAX_KT (700) — for anything else in SUBSONIC_AIRFRAMES
          (airliners, bizjets)
-      3. PERMISSIVE_MAX_KT (1500) — unknown types, fighters, test aircraft
+      4. PERMISSIVE_MAX_KT (1500) — unknown types, fighters, test aircraft
 
     Used by both the collector's record-update logic and the server's
     stats queries to reject nonsense speed readings like transponder
@@ -1183,9 +1198,110 @@ def speed_ceiling_for_type(aircraft_type: Optional[str]) -> int:
     t = (aircraft_type or "").strip().upper()
     if t in TYPE_CEILINGS:
         return TYPE_CEILINGS[t]
+    cls = _engine_class(t)
+    if cls:
+        return CLASS_MAX_KT[cls]
     if t in SUBSONIC_AIRFRAMES:
         return SUBSONIC_MAX_KT
     return PERMISSIVE_MAX_KT
+
+
+def _engine_class(type_code: str) -> Optional[str]:
+    """piston, turboprop or helicopter; None for jets and unknown types."""
+    if type_code in HELICOPTER_TYPES:
+        return "helicopter"
+    if type_code in TURBOPROP_TYPES:
+        return "turboprop"
+    if type_code in PISTON_TYPES:
+        return "piston"
+    return None
+
+
+def altitude_ceiling_for_type(aircraft_type: Optional[str]) -> Optional[int]:
+    """The highest plausible altitude (ft) for a type, or None for no ceiling.
+
+    Other jets (U-2, Global Hawk, WB-57, fighters), balloons, gliders and
+    unknown types have none: they can really be up there, and a blank type
+    says nothing about the aircraft."""
+    t = (aircraft_type or "").strip().upper()
+    if t in NO_ALTITUDE_CEILING:
+        return None
+    cls = _engine_class(t)
+    if cls:
+        return CLASS_MAX_FT[cls]
+    return SUBSONIC_MAX_FT if t in SUBSONIC_AIRFRAMES else None
+
+
+def altitude_is_plausible(aircraft_type: Optional[str], feet: float) -> bool:
+    cap = altitude_ceiling_for_type(aircraft_type)
+    return cap is None or feet <= cap
+
+
+def _speed_is_plausible(aircraft_type: Optional[str], knots: float) -> bool:
+    return 0 < knots <= speed_ceiling_for_type(aircraft_type)
+
+
+def _known_type(conn, icao: str, aircraft_type: Optional[str]) -> str:
+    """The given type, else the aircraft's latest known one: a type can arrive
+    after the first readings, once hexdb has answered."""
+    if (aircraft_type or "").strip():
+        return aircraft_type
+    row = conn.execute(
+        "SELECT aircraft_type FROM sightings_hourly "
+        "WHERE icao = ? AND aircraft_type != '' ORDER BY hour_bucket DESC LIMIT 1",
+        (icao,)).fetchone()
+    return row[0] if row else ""
+
+
+# record_type -> the sightings_hourly column it comes from, and its check.
+_CHECKED_RECORDS = {
+    "fastest_ever": ("max_speed", _speed_is_plausible),
+    "highest_altitude_ever": ("max_altitude", altitude_is_plausible),
+}
+
+
+def heal_all_time_records(conn) -> None:
+    """Replace a fastest or highest record that fails today's ceilings, or that
+    is missing, with the best reading that passes. Runs on every start, so
+    tightening a ceiling corrects old records.
+
+    Reads sightings_hourly, which is never pruned, so the answer doesn't depend
+    on retention. set_at is the hour it happened (seconds), never now, so the
+    daily summary doesn't report an old reading as new, and nothing is notified.
+    A healthy record costs two lookups; only a rebuild sorts the table."""
+    for record_type, (column, plausible) in _CHECKED_RECORDS.items():
+        stored = conn.execute(
+            "SELECT value, icao, aircraft_type FROM stats_records WHERE record_type = ?",
+            (record_type,)).fetchone()
+        if stored and plausible(_known_type(conn, stored[1], stored[2]), float(stored[0])):
+            continue
+        best = None
+        candidates = conn.execute(f"""
+            SELECT icao, callsign, aircraft_type, {column}, hour_bucket
+            FROM sightings_hourly
+            WHERE typeof({column}) IN ('integer', 'real') AND icao NOT LIKE '~%'
+            ORDER BY {column} DESC
+        """)
+        for icao, callsign, aircraft_type, value, hour_bucket in candidates:
+            known = _known_type(conn, icao, aircraft_type)
+            if plausible(known, value):
+                best = (value, icao, callsign or "", known, hour_bucket)
+                break
+        candidates.close()
+        if stored:
+            conn.execute("DELETE FROM stats_records WHERE record_type = ?", (record_type,))
+            logger.info("Self-healing %s: stored %s for type %s fails the current ceiling",
+                        record_type, stored[0], stored[2] or "(unknown)")
+        if best:
+            conn.execute(
+                """INSERT INTO stats_records
+                   (record_type, value, icao, callsign, aircraft_type, set_at, extra)
+                   VALUES (?, ?, ?, ?, ?, ?, '')""", (record_type, *best))
+            logger.info("New %s after self-heal: %s (%s · %s)", record_type, best[0],
+                        best[2] or "(no callsign)", best[3] or "(unknown type)")
+        elif stored:
+            logger.info("Self-heal found no valid reading for %s: record cleared; "
+                        "the next qualifying sighting sets it", record_type)
 
 
 def is_pseudo_icao(icao: Optional[str]) -> bool:
@@ -2497,7 +2613,7 @@ def init_db(db_path: str):
         """).fetchall()
         for row in rows:
             v = _num_or_none(row[3])
-            if v is not None:
+            if v is not None and altitude_is_plausible(row[2], v):
                 conn.execute("""INSERT INTO stats_records(record_type,value,icao,callsign,aircraft_type,set_at,extra)
                                 VALUES('highest_altitude_ever',?,?,?,?,?,'')""",
                              (v, row[0], row[1], row[2], row[4]))
@@ -2544,68 +2660,11 @@ def init_db(db_path: str):
         if backfilled_recs > 0:
             logger.info(f"Backfilled {backfilled_recs} all-time records from all_sightings history")
 
-    # v2.49.2: self-heal for fastest_ever when the stored record violates
-    # the current type-specific speed ceiling. Runs on EVERY init_db call
-    # (not gated on the "fresh table" flag above) so tightening the cap
-    # in a future release retroactively corrects bad records.
-    #
-    # Scenario: before v2.49.2 the subsonic cap was 700kt and anything
-    # below it (696kt on a Cessna 172, say) was accepted as a valid
-    # "fastest ever". v2.49.2 introduces per-type caps (250kt for a C172);
-    # this block detects records that were valid under the old cap but
-    # aren't under the new one, deletes them, and recomputes from
-    # all_sightings using the new logic.
+    # A record stored under looser rules corrects itself here, on every start.
     try:
-        row = conn.execute(
-            "SELECT value, aircraft_type FROM stats_records WHERE record_type='fastest_ever'"
-        ).fetchone()
-        if row:
-            cur_val, cur_type = row
-            cap = speed_ceiling_for_type(cur_type)
-            if cur_val and cur_val > cap:
-                logger.info(
-                    f"Self-healing fastest_ever: stored {cur_val} kt for type "
-                    f"{cur_type or '(unknown)'} exceeds current ceiling of {cap} kt. "
-                    f"Recomputing from all_sightings with new per-type caps."
-                )
-                conn.execute("DELETE FROM stats_records WHERE record_type='fastest_ever'")
-                # Reuse the same top-40 + first-valid pattern as the pre-Wave-3
-                # migration. The LIMIT 40 is generous enough to skip past a
-                # cluster of glitches at the top and still find real data.
-                rows = conn.execute("""
-                    SELECT icao, callsign, aircraft_type, speed, seen_at
-                    FROM all_sightings WHERE speed IS NOT NULL
-                      AND icao NOT LIKE '~%'
-                    ORDER BY CAST(speed AS REAL) DESC LIMIT 40
-                """).fetchall()
-                for r in rows:
-                    try:
-                        v = float(r[3]) if r[3] is not None else None
-                    except (TypeError, ValueError):
-                        v = None
-                    if v is None or v <= 0:
-                        continue
-                    if v > speed_ceiling_for_type(r[2]):
-                        continue
-                    conn.execute(
-                        """INSERT INTO stats_records
-                           (record_type, value, icao, callsign, aircraft_type, set_at, extra)
-                           VALUES ('fastest_ever', ?, ?, ?, ?, ?, '')""",
-                        (v, r[0], r[1], r[2], r[4]),
-                    )
-                    logger.info(
-                        f"New fastest_ever after self-heal: {v} kt "
-                        f"({r[1] or '(no callsign)'} · {r[2] or '(unknown type)'})"
-                    )
-                    break
-                else:
-                    logger.info(
-                        "Self-heal found no valid candidates for fastest_ever "
-                        "— record cleared; new one will set on next qualifying sighting."
-                    )
+        heal_all_time_records(conn)
     except sqlite3.OperationalError:
-        # Tables don't exist yet (truly fresh install that hasn't even
-        # run the record-backfill block above). Nothing to heal.
+        # Tables don't exist yet: nothing to heal.
         pass
 
     # v2.49.0: persistent cache for ICAO→registration lookups resolved via
@@ -4210,11 +4269,12 @@ def _poll_once(config: Dict, watchlist_lookup: Dict):
             # Quality filters (see stats quality filters section at top of file):
             # - Skip TIS-B/MLAT pseudo-targets entirely. Their data is relayed
             #   and often inaccurate — they shouldn't set permanent records.
-            # - For fastest_ever, enforce the type-aware speed ceiling to
-            #   reject transponder glitches (e.g. a B763 reporting 1010 kt).
-            # - Slowest/lowest-altitude intentionally are NOT all-time records
-            #   (that direction would just trend toward 1 kt / 1 ft over time
-            #   as more ground noise gets caught), so no filter needed there.
+            # - Fastest and highest enforce the type-aware ceilings to reject
+            #   transponder glitches (a B763 reporting 1010 kt, a C130 at
+            #   120,000 ft). Types with no known class stay permissive.
+            # - Slowest is not an all-time record (it would just trend toward
+            #   1 kt as more ground noise gets caught), and a low altitude
+            #   can't be told from a real one by type, so no filter there.
             try:
                 if is_pseudo_icao(ac.get("hex")):
                     pass  # skip all record updates for pseudo-targets
@@ -4224,7 +4284,8 @@ def _poll_once(config: Dict, watchlist_lookup: Dict):
                         if ac["speed"] <= cap:
                             _update_record(conn, "fastest_ever", ac["speed"], "gt", ac, now)
                     if ac["altitude"] is not None:
-                        _update_record(conn, "highest_altitude_ever", ac["altitude"], "gt", ac, now)
+                        if altitude_is_plausible(ac.get("aircraft_type"), ac["altitude"]):
+                            _update_record(conn, "highest_altitude_ever", ac["altitude"], "gt", ac, now)
                         if ac["altitude"] > 0:
                             _update_record(conn, "lowest_altitude_ever", ac["altitude"], "lt", ac, now)
                     # Furthest — only if we know the receiver's location

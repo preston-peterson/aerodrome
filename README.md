@@ -1,5 +1,5 @@
 # Aerodrome
-<!-- Version: 3.4.154 -->
+<!-- Version: 3.4.155 -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -133,6 +133,7 @@ aerodrome/
 ├── notifier.py                   ntfy push notifications with cooldowns
 ├── search.py                     Search-tab query language and ranking
 ├── tzwindow.py                   local days, hours and clock changes, in one place
+├── type_classes.py               engine class of each aircraft type (generated), for the record ceilings
 ├── schema_migrations.py          forward-only DB migrations, runs on startup
 ├── config_validator.py           config.yaml validation (Settings saves, imports)
 ├── capacity.py                   disk and growth projection helpers
@@ -165,6 +166,7 @@ aerodrome/
 │   ├── check_installers.py       installer-consistency release gate
 │   ├── build_overview_pdf.py     rebuilds docs/Aerodrome_Overview.pdf
 │   ├── screenshots.py            Playwright harness for docs/*.png
+│   ├── gen_type_classes.py       rebuilds type_classes.py from a local copy of ICAO DOC 8643
 │   └── check_docs.py             advisory drift detector
 ├── tools/
 │   └── synthetic_feeder/         demo-mode synthetic ADS-B feeder (v3.1.0)
@@ -213,6 +215,7 @@ aerodrome/
 ├── test_startup_rollup_backfill.py unit tests — rollup backfills before migrations, the gate
 ├── test_stats_drills.py          unit tests — Stats detail-panel drill queries
 ├── test_stats_most_seen.py       unit tests — all-time most-seen stats card
+├── test_stats_records.py         unit tests — speed and altitude ceilings, record self-heal, Today's cards
 ├── test_status_and_lookups.py    unit tests — health summary, no-owner and offline lookups, clock after boot
 ├── test_sudoers_boundary.py      unit tests — what the v6 rules grant (sudo's matching) and deny
 ├── test_sudoers_gate_contract.py unit tests — Updates-page sudoers gate + refresh commands
