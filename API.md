@@ -37,7 +37,7 @@ Core endpoints the dashboard's tabs consume. All return a list of aircraft objec
 | GET | `/api/live` | Aircraft currently transmitting (seen within the last minute) |
 | GET | `/api/watchlist` | Historical + current watchlist hits |
 | GET | `/api/military` | Historical + current military hits |
-| GET | `/api/search` | Full-text search across every aircraft (`?q=...&from_ts=...&to_ts=...&limit=...&offset=...`). The response adds `time_label` (the date window in words) and `time_tokens` (the date tokens as typed); with a window active, each row adds `window_sightings` |
+| GET | `/api/search` | Full-text search across every aircraft (`?q=...&from_ts=...&to_ts=...&preset=today&limit=...&offset=...`; `preset=today` starts from midnight in Aerodrome's timezone). The response adds `time_label` (the date window in words) and `time_tokens` (the date tokens as typed); with a window active, each row adds `window_sightings` |
 | GET | `/api/all/drill` | Per-aircraft sighting history (ICAO + window). Used by the aircraft detail page. |
 | GET | `/api/first-seen` | Per-ICAO first-seen timestamps (for "new today" highlighting) |
 

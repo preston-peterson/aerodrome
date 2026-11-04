@@ -19,6 +19,31 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.154] — 2026-11-03
+
+**The wallboard can't show frozen data as LIVE or get stuck on a browser error page.** If the server stops answering, the board now says NO SIGNAL and shows its banner within about 30 seconds. With the server frozen for over a minute, the old version still said LIVE at the end, while the new one changed at 31 s and came back on its own 1 s after the server did. During an outage, and at the daily 4 a.m. reload, the board checks that the server answers before it reloads, so it stays on its page and recovers by itself. Route, photo and owner lookups that failed are tried again after 2 minutes, and ones with no answer after 30. Routes are checked again every 30 minutes, so a flight number on its second leg gets the new route.
+
+**The Live list keeps updating when a status check doesn't.** Every 5-second update used to wait for a status check too, so one that failed or hung froze the list. The list now updates on its own, and a slow answer can't stack up behind the next one. Status checks from the Live tab drop from 17 a minute to 4, and each one also asks your receiver. The health dot updates every 30 seconds, and straight away when the receiver stops or comes back.
+
+**The health dot and gear mean the same on every page.** Live and the other pages used to work this out separately: a disk capacity alert showed amber everywhere except Live, while out-of-date sudoers rules or sustained high load showed amber only on Live. The server now decides, and the Status page banner names the reason. So you may see amber on pages that used to stay green. Other pages now also turn red when the server stops answering, after two checks in a row.
+
+**Search and aircraft pages no longer mix up answers.** In Search, a late answer from an earlier search could replace or join the new results, clearing the box could bring results back, and double-clicking Load more added rows twice. On an aircraft's page, a sort or page size chosen while the list was loading was ignored even though the arrow showed the new sort, and a slow trail could replace the time window you had picked since.
+
+**An open Stats drill stays open when the cards refresh.** It keeps its rows, sort and scroll position, and closes only if its card is gone.
+
+**Search's Today button means today in Aerodrome's timezone,** the same as the Stats cards and the word `today`. This only matters if your browser is in a different timezone. Last 7 days and Last 30 days aren't affected, and row times and custom date ranges still follow your browser.
+
+**Smaller fixes.** An aircraft hexdb knows but has no owner for is no longer looked up again after every restart. Without internet access, the Notifications tab waits at most 5 s for GitHub, once every 10 minutes, instead of up to 10 s every time you open it. On a computer with no battery-backed clock, such as most Raspberry Pis, collection waits for the clock after a boot if it reads more than a minute earlier than the newest sighting, for up to 10 minutes, so new rows don't carry the wrong time. The log says when this happens.
+
+### Operational notes
+
+- `/api/status` adds `health_reason`. `severity` can now be `warn` for out-of-date sudoers rules or sustained load, and `failing` can include `sudoers` and `system_load`. External monitoring that watches `severity` may see `warn` more often.
+- A correction to 3.4.153's notes, which said the two new indexes add about 70 MB on 11 million sightings. That's the data itself. The database file grew 258 MB on 12.6 million sightings, because the replaced index's space stays free inside the file and new rows fill it first. That build took 43 s on a small virtual machine.
+
+### Behind the scenes
+
+`test_frontend_browser.py` drives the real pages in Chromium with scripted answers, so a request can hang, fail or arrive late: 23 of its 30 tests fail on the previous release. It's skipped without Playwright. The backup screenshot now shows example data instead of an error from its test stub, and two invalid-escape warnings in `scripts/screenshots.py` are gone.
+
 ## [3.4.153] — 2026-11-02
 
 **Aircraft pages and Search open much faster, especially the first time.** A busy aircraft's page and its trail on the map no longer read every sighting that aircraft has ever had. Search reads speed, altitude and squawk only for the page of results you're looking at, not for every match. On a test database of 11 million sightings, first-time numbers went like this: a busy aircraft's recent sightings from 355 ms to 1 ms, its 24-hour trail from 341 ms to 5 ms, browsing all aircraft from 814 ms to 25 ms, and a whole year sorted by Sightings from 1.9 s to 0.3 s. Your results don't change, apart from the order of rows that tie on every sort key. A few narrow searches, such as one old day sorted by Sightings, can take about 15 ms longer once cached.

@@ -1,4 +1,4 @@
-# Version: 3.4.153
+# Version: 3.4.154
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -24,7 +24,7 @@ import sqlite3
 import time
 import os
 from pathlib import Path
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Tuple
 from contextlib import contextmanager
 
 import requests as req
@@ -2941,7 +2941,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     @app.get("/api/search")
     def get_search(q: str = "", limit: int = 50, offset: int = 0,
                           order: str = "", dir: str = "",
-                          from_ts: int = 0, to_ts: int = 0):
+                          from_ts: int = 0, to_ts: int = 0, preset: str = ""):
         """Free-form search across aircraft. Returns ranked results.
 
         Query syntax (informal — see docs/SEARCH_DESIGN.md for full grammar):
@@ -2984,6 +2984,11 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         offset = max(0, min(int(offset), _SEARCH_INT_MAX))
         from_ts = min(int(from_ts), _SEARCH_INT_MAX)
         to_ts = min(int(to_ts), _SEARCH_INT_MAX)
+        # The Today button: the start of today in Aerodrome's timezone, so it means
+        # the same as the Stats cards and the word `today`, whatever the browser's.
+        if preset == "today":
+            from_ts = tzwindow.today_bounds(tzwindow.resolve_tz(CONFIG))[0]
+            to_ts = 0
 
         # v2.52.0: read date format preference from config so the parser
         # accepts the locale's slash-date convention. Defaults to MDY
@@ -4542,10 +4547,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         version_file = Path(__file__).parent / "VERSION"
         version = version_file.read_text().strip() if version_file.exists() else "unknown"
 
-        # --- Severity ---
-        # 'ok'    — everything healthy
-        # 'warn'  — only advisory components (hexdb_resolver, capacity) have issues
-        # 'error' — at least one core component is failing
+        # --- Severity: see _health_summary ---
         core_ok = all([
             receiver_check["ok"],
             db_check["ok"],
@@ -4572,24 +4574,12 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             # If we can't read the state, default to OK — the alert
             # itself, if it ever fired, will have notified separately.
             pass
-        if not core_ok:
-            severity = "error"
-        elif not advisory_ok or not capacity_ok:
-            severity = "warn"
-        else:
-            severity = "ok"
-
-        # Collect short names of failing components for display
-        failing = []
-        for name, chk in [
-            ("receiver", receiver_check), ("database", db_check),
-            ("collector", collector_check), ("webserver", webserver_check),
-            ("hexdb_resolver", hexdb_check),
-        ]:
-            if not chk["ok"]:
-                failing.append(name)
-        if not capacity_ok:
-            failing.append("capacity")
+        severity, failing, health_reason = _health_summary(
+            {"receiver": receiver_check["ok"], "database": db_check["ok"],
+             "collector": collector_check["ok"], "webserver": webserver_check["ok"]},
+            hexdb_ok=advisory_ok, capacity_ok=capacity_ok,
+            sudoers=nonlocal_state.get("last_sudoers_check"), system=system_info,
+        )
 
         # v3.0.0: GitHub update availability. The gear-menu badge driver
         # (static/health-indicator.js) reads this and adds 'warn' to the
@@ -4614,6 +4604,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             "overall_ok": core_ok,
             "severity": severity,
             "failing": failing,
+            "health_reason": health_reason,
             "timestamp": int(now),
             "version": version,
             "update_available": _upd_available,
@@ -13227,6 +13218,44 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         )
 
     return app
+
+
+def _health_summary(core: Dict[str, bool], hexdb_ok: bool, capacity_ok: bool,
+                    sudoers: Optional[Dict[str, Any]],
+                    system: Optional[Dict[str, Any]]) -> Tuple[str, List[str], Optional[str]]:
+    """(severity, failing, reason) for /api/status: the one place that decides
+    the colour of the health dot and gear on every page, and the Status banner.
+
+    'error' is a core component failing. 'warn' is everything still running but
+    needing attention: sudoers rules out of date (ntfy and data-purge actions
+    would fail), a degraded tail lookup, a disk capacity alert, or a load over
+    1.5x cores for 15 minutes (not 1 minute, so it doesn't flap on a spike, and
+    not 1x, which is normal on a busy tracker). `reason` says why, for the dot's
+    tooltip and the Live tab's toast."""
+    down = [name for name, ok in core.items() if not ok]
+    if down:
+        failing = down + ([] if hexdb_ok else ["hexdb_resolver"]) + ([] if capacity_ok else ["capacity"])
+        return "error", failing, ", ".join(down) + " offline"
+
+    warnings = []
+    sudoers = sudoers or {}
+    if sudoers.get("can_verify") and sudoers.get("needs_refresh"):
+        warnings.append(("sudoers",
+                         f"sudoers refresh needed (expects v{sudoers.get('expected_version')}, "
+                         f"live v{sudoers.get('live_version')}) — visit Updates page for instructions"))
+    if not hexdb_ok:
+        warnings.append(("hexdb_resolver", "hexdb lookup degraded — tail numbers may be missing"))
+    if not capacity_ok:
+        warnings.append(("capacity", "disk capacity alert — see Status"))
+    load = ((system or {}).get("load_average") or {}).get("15m")
+    cores = (system or {}).get("cpu_cores")
+    if load is not None and cores and load >= cores * 1.5:
+        warnings.append(("system_load",
+                         f"sustained load {load:.2f} on {cores} core{'' if cores == 1 else 's'} "
+                         "— server under pressure for 15+ minutes"))
+    if warnings:
+        return "warn", [name for name, _ in warnings], warnings[0][1]
+    return "ok", [], None
 
 
 def _get_system_info():

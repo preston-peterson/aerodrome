@@ -102,9 +102,13 @@ Two indexes make per-aircraft pages and Search's sort by Sightings faster:
 the first start of a release that has them:
 
 - The web UI is up during the build. Collection pauses until it's done:
-  seven seconds on 11 million rows on a fast disk, longer on a slower one.
-  The log says when it starts and finishes.
-- Together they add about 6 bytes per row of `all_sightings`.
+  43 seconds on 12.6 million rows on a small virtual machine, seven on 11
+  million on a fast SSD, longer on an SD card. The log says when it starts
+  and finishes.
+- The database file grows by about 20 bytes per row of `all_sightings`: 258 MB
+  on 12.6 million rows. Most of that is the replaced index's old space, now
+  free inside the file, and new rows fill it first. The data itself grows by
+  about 5 bytes per row.
 - They need free space while building, about 70 bytes per row. With less
   than that plus 256 MB free, the build waits for a later start and the log
   says so. Everything still works, more slowly, without them.

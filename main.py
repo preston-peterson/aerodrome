@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Version: 3.4.153
+# Version: 3.4.154
 """
 main.py — Aerodrome ADS-B Tracker
 
@@ -43,7 +43,8 @@ from collector import (init_db, build_watchlist_lookup, fetch_and_store,
                        sync_watchlist_tails, watchlist_signature,
                        set_db_path, _open_db_conn, set_db_tuning_profile,
                        set_receiver_location, check_capacity_alerts,
-                       refresh_query_planner_stats, ensure_lookup_indexes)
+                       refresh_query_planner_stats, ensure_lookup_indexes,
+                       wait_for_plausible_clock)
 from server import get_app, prepare_backup_tmp, tighten_existing_private_files
 
 BASE_DIR = Path(__file__).parent
@@ -424,6 +425,7 @@ def run_collector(config: dict, stop_event: threading.Event):
     interval = config["receiver"]["poll_interval"]
     logger.info(f"Collector started — polling every {interval}s")
     ensure_lookup_indexes(config["data"]["db_file"])
+    wait_for_plausible_clock(config["data"]["db_file"])
 
     # Track last-seen watchlist to detect changes and log them
     last_watchlist_sig = None

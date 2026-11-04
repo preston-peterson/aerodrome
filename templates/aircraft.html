@@ -1,4 +1,4 @@
-<!-- Version: 3.4.153 -->
+<!-- Version: 3.4.154 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1469,8 +1469,15 @@ async function initSightings(icao) {
 }
 
 async function fetchSightings() {
-    if (_sightingsState.loading) return;
     if (!_sightingsState.icao) return;
+    // A page being added to the list is left to finish. A new first page (a new sort
+    // or page size) replaces whatever is still on its way.
+    if (_sightingsState.loading) {
+        if (_sightingsState.offset !== 0) return;
+        _sightingsState.request.abort();
+    }
+    const ctl = new AbortController();
+    _sightingsState.request = ctl;
     _sightingsState.loading = true;
     try {
         const params = new URLSearchParams();
@@ -1486,8 +1493,9 @@ async function fetchSightings() {
         // desc, so a stale state won't break the request.
         params.set('order', _sightingsState.sortCol);
         params.set('dir', _sightingsState.sortDir);
-        const r = await fetch(`/api/all/drill?${params.toString()}`);
+        const r = await fetch(`/api/all/drill?${params.toString()}`, {signal: ctl.signal});
         const j = await r.json();
+        if (ctl !== _sightingsState.request) return;
         if (!j.ok) {
             const wrap = document.getElementById('sightingsTableWrap');
             if (wrap) wrap.innerHTML = `<div class="sightings-loading">Could not load sightings.</div>`;
@@ -1502,10 +1510,11 @@ async function fetchSightings() {
         _sightingsState.totalCount = j.total_count || j.sightings?.length || 0;
         _renderSightingsTable();
     } catch (e) {
+        if (ctl !== _sightingsState.request) return;
         const wrap = document.getElementById('sightingsTableWrap');
         if (wrap) wrap.innerHTML = `<div class="sightings-loading">Error: ${escapeHtml(e.message || String(e))}</div>`;
     } finally {
-        _sightingsState.loading = false;
+        if (ctl === _sightingsState.request) _sightingsState.loading = false;
     }
 }
 
@@ -2040,7 +2049,12 @@ function initPositionMap(icao) {
     loadPositions('24h');
 }
 
+// Only the window picked last counts: a late answer for an earlier one is dropped.
+let _positionsRequest = null;
 async function loadPositions(window) {
+    if (_positionsRequest) _positionsRequest.abort();
+    const ctl = new AbortController();
+    _positionsRequest = ctl;
     const meta = document.getElementById('mapMeta');
     if (meta) {
         meta.textContent = 'loading…';
@@ -2050,14 +2064,16 @@ async function loadPositions(window) {
     try {
         const r = await fetch(
             `/api/aircraft/${encodeURIComponent(_posMapState.icao)}` +
-            `/positions?window=${encodeURIComponent(window)}`
+            `/positions?window=${encodeURIComponent(window)}`,
+            {signal: ctl.signal}
         );
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         data = await r.json();
     } catch (e) {
-        if (meta) meta.textContent = `error: ${e.message || e}`;
+        if (ctl === _positionsRequest && meta) meta.textContent = `error: ${e.message || e}`;
         return;
     }
+    if (ctl !== _positionsRequest) return;
 
     // No receiver lat/lon configured → render the config-nudge
     // placeholder. We swap the entire #positionMapBlock contents

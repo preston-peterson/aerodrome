@@ -1,4 +1,4 @@
-<!-- Version: 3.4.153 -->
+<!-- Version: 3.4.154 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -348,6 +348,8 @@ function render(s) {
         webserver: 'web server',
         hexdb_resolver: 'tail resolver',
         capacity: 'disk capacity',
+        sudoers: 'sudoers rules',
+        system_load: 'sustained load',
     };
     const failingNames = (s.failing || []).map(f => failLabels[f] || f);
     const failingStr = failingNames.length === 0 ? '' :

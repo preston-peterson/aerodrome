@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
-<!-- Version: 3.4.153 -->
+<!-- Version: 3.4.154 -->
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Display board — Aerodrome</title>
@@ -549,6 +549,35 @@ function startMode(m){
   _wxRebind();   // weather layers follow the active mode's map
 }
 
+/* ============================ requests ============================ */
+const REQUEST_LIMIT_MS = 15000;
+// fetch() alone waits forever on a server that took the request and went quiet,
+// so every request that matters here has a limit, covering the answer's body too.
+async function timedFetch(url, read){
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), REQUEST_LIMIT_MS);
+  try {
+    const r = await fetch(url, {cache: 'no-store', signal: ctl.signal});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return await read(r);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+const getJson = url => timedFetch(url, r => r.json());
+// A reload while the server is away lands on the browser's own error page, and
+// nothing on that page can come back. So look first, and stay here until it answers.
+const RELOAD_CHECK_MS = 30000;
+let _reloadCheckedAt = 0;
+async function reloadWhenReachable(){
+  if (Date.now() - _reloadCheckedAt < RELOAD_CHECK_MS) return;
+  _reloadCheckedAt = Date.now();
+  try {
+    await timedFetch(location.href, r => r.text());
+    location.reload();
+  } catch (e) { /* still away; the next check tries again */ }
+}
+
 /* ============================ clock + daily reload ============================ */
 function tickClock(){
   const n = new Date();
@@ -557,7 +586,9 @@ function tickClock(){
   document.querySelectorAll('[data-tm]').forEach(e => e.textContent = tm);
   document.querySelectorAll('[data-dt]').forEach(e => e.textContent = dt);
   // Long-running-browser hygiene: one clean reload per day, in the quiet hours.
-  if (n.getHours() === 4 && n.getDate() !== BOOT_DAY) location.reload();
+  if (n.getHours() === 4 && n.getDate() !== BOOT_DAY) reloadWhenReachable();
+  // A request can take a while to fail. The word on screen doesn't wait for it.
+  updateSignal();
 }
 setInterval(tickClock, 1000); tickClock();
 
@@ -566,9 +597,7 @@ const POLL_MS = 5000;
 function pollDelay(){ return Math.min(60000, POLL_MS * Math.pow(2, Math.max(0, FAILURES - 2))); }
 async function poll(){
   try {
-    const r = await fetch('/api/live', {cache: 'no-store'});
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const j = await r.json();
+    const j = await getJson('/api/live');
     LIVE = (j.aircraft || []).filter(a => a && a.icao);
     if (j.receiver) { RX = j.receiver; UNIT = (j.receiver.distance_unit || 'mi'); }
     LAST_OK = Date.now();
@@ -578,7 +607,7 @@ async function poll(){
     renderAll();
   } catch (e) {
     FAILURES++;
-    if (FAILURES >= 20) location.reload();   // ~15+ min dark → hard reset
+    if (FAILURES >= 20) reloadWhenReachable();   // ~15+ min dark → hard reset
   }
   updateSignal();
   setTimeout(poll, pollDelay());
@@ -1389,70 +1418,69 @@ function renderScope(el, opts){
 }
 
 /* ============================ route/photo/owner memos ============================ */
-const routeMemo = new Map();   // callsign → {stops, airline} | null(=none) | 'pending'
-const photoMemo = new Map();   // icao → {url} | null | 'pending'
-const ownerMemo = new Map();   // icao → {owner, reg} | null | 'pending'
+const routeMemo = new Map();   // callsign → {v: {stops, airline} | null, until}
+const photoMemo = new Map();   // icao → {v: {url} | null, until}
+const ownerMemo = new Map();   // icao → {v: {owner, reg} | null, until}
+const LOOKUP_RETRY_MS = 2 * 60000;     // the request failed: ask again soon
+const LOOKUP_RECHECK_MS = 30 * 60000;  // nothing known yet, or a route, which can change
 function capMemo(m){ if (m.size > 500) m.clear(); }
 
+// The answer we have, if any. Past its `until`, ask again and keep showing the old
+// answer meanwhile. `read` turns the response into [answer, how long to keep it].
+function lookup(memo, key, url, read){
+  const now = Date.now();
+  const entry = memo.get(key);
+  if (entry && now < entry.until) return entry.v;
+  const had = entry ? entry.v : null;
+  if (!entry) capMemo(memo);
+  memo.set(key, {v: had, until: now + REQUEST_LIMIT_MS});
+  getJson(url)
+    .then(j => {
+      const [v, keepMs] = read(j);
+      memo.set(key, {v, until: Date.now() + keepMs});
+      renderAll();
+    })
+    .catch(() => memo.set(key, {v: had, until: Date.now() + LOOKUP_RETRY_MS}));
+  return had;
+}
 function routeFor(a){
   if (!SHOW_ROUTES) return null;
   const cs = (a.callsign || '').trim().toUpperCase();
   if (!cs) return null;
-  if (routeMemo.has(cs)) { const v = routeMemo.get(cs); return v === 'pending' ? null : v; }
-  capMemo(routeMemo);
-  routeMemo.set(cs, 'pending');
   let q = '';
   if (a.lat != null && a.lon != null) {
     q = `?lat=${encodeURIComponent(a.lat)}&lon=${encodeURIComponent(a.lon)}`
       + (a.track != null ? `&track=${encodeURIComponent(a.track)}` : '');
   }
-  fetch(`/api/callsign/${encodeURIComponent(cs)}/route${q}`)
-    .then(r => r.ok ? r.json() : null)
-    .then(j => {
-      let v = null;
-      if (j && j.found) {
-        let stops = null;
-        if (j.current_leg && j.current_leg.origin_icao) {
-          stops = [{icao: j.current_leg.origin_icao, name: j.current_leg.origin_name},
-                   {icao: j.current_leg.dest_icao,   name: j.current_leg.dest_name}];
-        } else if (Array.isArray(j.airports) && j.airports.length >= 2) {
-          stops = j.airports;
-        } else if (j.origin_icao && j.dest_icao) {
-          stops = [{icao: j.origin_icao, name: j.origin_name},
-                   {icao: j.dest_icao,   name: j.dest_name}];
-        }
-        if (stops) v = {stops, airline: j.airline || ''};
+  return lookup(routeMemo, cs, `/api/callsign/${encodeURIComponent(cs)}/route${q}`, j => {
+    let v = null;
+    if (j.found) {
+      let stops = null;
+      if (j.current_leg && j.current_leg.origin_icao) {
+        stops = [{icao: j.current_leg.origin_icao, name: j.current_leg.origin_name},
+                 {icao: j.current_leg.dest_icao,   name: j.current_leg.dest_name}];
+      } else if (Array.isArray(j.airports) && j.airports.length >= 2) {
+        stops = j.airports;
+      } else if (j.origin_icao && j.dest_icao) {
+        stops = [{icao: j.origin_icao, name: j.origin_name},
+                 {icao: j.dest_icao,   name: j.dest_name}];
       }
-      routeMemo.set(cs, v);
-      renderAll();
-    })
-    .catch(() => routeMemo.set(cs, null));
-  return null;
+      if (stops) v = {stops, airline: j.airline || ''};
+    }
+    // A flight number can fly more than one leg, so even a good answer is re-asked.
+    return [v, LOOKUP_RECHECK_MS];
+  });
 }
 function photoFor(icao){
-  if (photoMemo.has(icao)) { const v = photoMemo.get(icao); return v === 'pending' ? null : v; }
-  capMemo(photoMemo);
-  photoMemo.set(icao, 'pending');
-  fetch(`/api/aircraft/${encodeURIComponent(icao)}/photo`)
-    .then(r => r.ok ? r.json() : null)
-    .then(j => { photoMemo.set(icao, (j && j.found && j.thumbnail_url) ? {url: j.thumbnail_url} : null); renderAll(); })
-    .catch(() => photoMemo.set(icao, null));
-  return null;
+  return lookup(photoMemo, icao, `/api/aircraft/${encodeURIComponent(icao)}/photo`, j =>
+    (j.found && j.thumbnail_url) ? [{url: j.thumbnail_url}, Infinity] : [null, LOOKUP_RECHECK_MS]);
 }
 // One /enrich call per airframe feeds both the owner line and (v3.4.139) the
 // tail number — the registration rides in the same response.
 function _enrichFor(icao){
-  if (ownerMemo.has(icao)) { const v = ownerMemo.get(icao); return v === 'pending' ? null : v; }
-  capMemo(ownerMemo);
-  ownerMemo.set(icao, 'pending');
-  fetch(`/api/aircraft/${encodeURIComponent(icao)}/enrich`)
-    .then(r => r.ok ? r.json() : null)
-    .then(j => {
-      ownerMemo.set(icao, j ? {owner: j.registered_owner || null, reg: j.registration || null} : null);
-      renderAll();
-    })
-    .catch(() => ownerMemo.set(icao, null));
-  return null;
+  return lookup(ownerMemo, icao, `/api/aircraft/${encodeURIComponent(icao)}/enrich`, j =>
+    [{owner: j.registered_owner || null, reg: j.registration || null},
+     j.registered_owner ? Infinity : LOOKUP_RECHECK_MS]);
 }
 function ownerFor(icao){ const v = _enrichFor(icao); return v ? v.owner : null; }
 function tailFor(icao){ const v = _enrichFor(icao); return v ? v.reg : null; }
@@ -1726,23 +1754,20 @@ window.addEventListener('resize', () => {
 });
 (async function boot(){
   try {
-    const r = await fetch('/api/ui-config');
-    if (r.ok) {
-      const j = await r.json();
-      if (j.distance_unit) UNIT = j.distance_unit;
-      const rg = j.map && j.map.ring_distances;
-      if (Array.isArray(rg) && rg.length) RINGS = rg;
-      if (j.map) {
-        MAPCFG.show_range_rings = j.map.show_range_rings !== false;
-        MAPCFG.default_theme = j.map.default_theme || 'auto';
-        MAPCFG.starting_view = j.map.starting_view || 'fit_all';
-        MAPCFG.fixed_zoom = j.map.fixed_zoom || 9;
-        MAPCFG.carto_api_key = String(j.map.carto_api_key || '').trim();
-        MAPCFG.type_shapes = j.map.type_shapes !== false;
-      }
-      if (j.display && j.display.wallboard_layout) WB_DEFAULT = j.display.wallboard_layout;
-      if (j.display) SHOW_ROUTES = j.display.show_routes !== false;
+    const j = await getJson('/api/ui-config');
+    if (j.distance_unit) UNIT = j.distance_unit;
+    const rg = j.map && j.map.ring_distances;
+    if (Array.isArray(rg) && rg.length) RINGS = rg;
+    if (j.map) {
+      MAPCFG.show_range_rings = j.map.show_range_rings !== false;
+      MAPCFG.default_theme = j.map.default_theme || 'auto';
+      MAPCFG.starting_view = j.map.starting_view || 'fit_all';
+      MAPCFG.fixed_zoom = j.map.fixed_zoom || 9;
+      MAPCFG.carto_api_key = String(j.map.carto_api_key || '').trim();
+      MAPCFG.type_shapes = j.map.type_shapes !== false;
     }
+    if (j.display && j.display.wallboard_layout) WB_DEFAULT = j.display.wallboard_layout;
+    if (j.display) SHOW_ROUTES = j.display.show_routes !== false;
   } catch (e) { /* defaults are fine */ }
   const missing = !String(MAPCFG.carto_api_key || '').trim();
   document.querySelectorAll('[data-carto-banner]').forEach(el => { el.hidden = !missing; });

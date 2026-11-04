@@ -1893,6 +1893,15 @@ aerodrome/
 
 ## Troubleshooting
 
+**The log says the system clock reads earlier than the newest sighting**
+
+A computer with no battery-backed clock, such as most Raspberry Pis, can start
+with the wrong time until it reaches a time server. For the first 15 minutes
+after a boot, if the clock reads more than a minute earlier than the newest
+sighting, Aerodrome waits for it before collecting, for up to 10 minutes, so
+new rows don't carry the wrong time. After that it collects with the time it
+has. The web UI is up throughout.
+
 **No aircraft showing up**
 
 - Check the service is running: `sudo systemctl status aerodrome`

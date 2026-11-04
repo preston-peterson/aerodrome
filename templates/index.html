@@ -1,4 +1,4 @@
-<!-- Version: 3.4.153 -->
+<!-- Version: 3.4.154 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -3369,10 +3369,41 @@ function updateStats(elId, groups) {
     document.getElementById(elId).textContent = `${unique.toLocaleString()} unique aircraft · ${total.toLocaleString()} total sightings`;
 }
 
-async function fetchLive(){
+// fetch() alone waits forever on a server that took the request and went quiet,
+// so the polls below have a limit, covering the answer's body too. /api/live and
+// /api/status can each wait up to 10 s on the receiver, so this has to be longer.
+const POLL_LIMIT_MS = 15000;
+async function getJsonWithin(url, ms){
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), ms);
+    try {
+        const r = await fetch(url, {signal: ctl.signal});
+        if(!r.ok) throw new Error(`HTTP ${r.status}`);
+        return await r.json();
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+// One /api/live at a time: a slow answer never stacks up behind the 5 s tick, and
+// everyone who asks while one is on its way shares it. Health comes separately from
+// _pollSystemStatus, so a slow or broken /api/status can't hold up the list.
+let _liveInflight = null;
+let _liveTrouble = '';       // '' | 'receiver' (no aircraft data) | 'request' (no answer)
+function fetchLive(){
+    if(!_liveInflight){
+        _liveInflight = _fetchLiveOnce().finally(() => { _liveInflight = null; });
+    }
+    return _liveInflight;
+}
+function _noteLiveTrouble(trouble){
+    const changed = trouble !== _liveTrouble;
+    _liveTrouble = trouble;
+    return changed;
+}
+async function _fetchLiveOnce(){
     try{
-        let [liveR, statusR]=await Promise.all([fetch('/api/live'),fetch('/api/status')]);
-        let liveJ=await liveR.json(), statJ=await statusR.json();
+        const liveJ = await getJsonWithin('/api/live', POLL_LIMIT_MS);
         D.live=liveJ.aircraft||[];
         // v3.5.0 (radar, increment C): the set of hexes being received RIGHT
         // NOW, shared across tabs so Watchlist/Military/Search rows + the
@@ -3382,7 +3413,6 @@ async function fetchLive(){
         document.getElementById('cLive').textContent=D.live.length;
         document.getElementById('liveStats').textContent=`${D.live.length.toLocaleString()} aircraft currently visible`;
         applyTabEmergencyState('live', 'cLive', document.getElementById('liveStats'));
-        updateHealthIndicator(statJ);
         document.getElementById('ts').textContent=fmtTime(liveJ.last_updated);
         render('live');
         // v3.5.0 (radar): feed the live map from the same /api/live payload
@@ -3391,8 +3421,11 @@ async function fetchLive(){
         // In "live" trigger mode, the alert depends on D.live — re-evaluate
         // every time the live feed updates so the dot tracks transmission.
         if(waCfg.trigger === 'live') evaluateWatchlistAlert();
+        // Trouble that starts or ends here shows on the dot now, not at the next status poll.
+        if(_noteLiveTrouble(liveJ.error ? 'receiver' : '')) _pollSystemStatus();
     }catch(e){
         console.error(e);
+        _noteLiveTrouble('request');
         updateHealthIndicator(null);  // treat fetch failure as unhealthy
     }
 }
@@ -4856,67 +4889,21 @@ function initLiveResizer(){
 // =========================================================================
 // System health indicator — tri-state dot + gear ring + transition toast
 // =========================================================================
-// Severity levels:
-//   'ok'    — all core components AND hexdb are fine
-//   'warn'  — only hexdb is degraded; core (receiver/db/collector/webserver) is fine
-//   'error' — any core component is failing, OR status fetch itself failed
+// The server decides (severity + health_reason on /api/status), so this page and
+// the others (static/health-indicator.js) always agree. Not reaching it is 'error'.
 let _lastHealthLevel = 'ok';  // for transition toast
 let _healthInitialized = false;
 
 function classifyHealth(statJ){
     if(!statJ) return { level:'error', reason:'Could not reach the server' };
-    const c = statJ.components || {};
-    const coreOk = [
-        c.receiver?.ok, c.database?.ok, c.collector?.ok, c.webserver?.ok
-    ].every(v => v === true);
-    if(!coreOk){
-        // Identify which core component is down for a useful toast message
-        const bad = [];
-        if(c.receiver && !c.receiver.ok)  bad.push('receiver');
-        if(c.database && !c.database.ok)  bad.push('database');
-        if(c.collector && !c.collector.ok) bad.push('collector');
-        if(c.webserver && !c.webserver.ok) bad.push('webserver');
-        return { level:'error', reason: bad.length ? bad.join(', ') + ' offline' : 'core component offline' };
+    if(statJ.severity === 'error' || statJ.severity === 'warn'){
+        return { level: statJ.severity, reason: statJ.health_reason || 'see Status' };
     }
-    // v2.41.2: surface sudoers drift as a warn-level issue. Core service
-    // still works but ntfy install/uninstall and data-purge will silently
-    // fail until the user SSHs and re-runs install.sh. Without this
-    // surfacing, users were going indefinitely without knowing — which
-    // is the whole reason v2.40.1's drift check existed, yet it was
-    // buried inside the Updates page where you only saw it when applying.
-    if(statJ.sudoers && statJ.sudoers.can_verify && statJ.sudoers.needs_refresh){
-        return {
-            level: 'warn',
-            reason: `sudoers refresh needed (expects v${statJ.sudoers.expected_version}, live v${statJ.sudoers.live_version}) — visit Updates page for instructions`
-        };
-    }
-    if(c.hexdb_resolver && c.hexdb_resolver.ok === false){
-        return { level:'warn', reason:'hexdb lookup degraded — tail numbers may be missing' };
-    }
-    // v2.41.6: chronic system overload. Use the 15-minute load average
-    // (not 1m) to avoid flapping on transient spikes — the badge should
-    // only warn when the box has been struggling for a while. Threshold
-    // is 1.5× cores so we don't nag at "at capacity" (load == cores);
-    // that's expected under steady tracking load. Anything sustained at
-    // 1.5× cores or higher means processes are queueing up and the UI
-    // should say so.
-    const sys = statJ.system || {};
-    if(sys.load_average && sys.cpu_cores){
-        const la15 = sys.load_average['15m'];
-        const threshold = sys.cpu_cores * 1.5;
-        if(la15 >= threshold){
-            return {
-                level: 'warn',
-                reason: `sustained load ${la15.toFixed(2)} on ${sys.cpu_cores} core${sys.cpu_cores === 1 ? '' : 's'} — server under pressure for 15+ minutes`
-            };
-        }
-    }
-    // v3.0.0: GitHub update available — light the gear badge. The
-    // health dot stays green; this is informational, not an actual
-    // health degradation. The Live-tab toast for update_available is
+    // v3.0.0: GitHub update available — light the gear badge. Informational, not
+    // an actual health degradation. The Live-tab toast for update_available is
     // intentionally suppressed (handled below in updateHealthIndicator)
     // so users aren't toasted on every page load with "update available".
-    if(statJ && statJ.update_available === true){
+    if(statJ.update_available === true){
         return { level:'warn', reason:'A new Aerodrome release is available on GitHub — see Updates' };
     }
     return { level:'ok', reason:null };
@@ -5287,11 +5274,8 @@ const _SEARCH_PAGESIZE_STORAGE_KEY = 'aerodrome_search_pagesize_v1';
 // for both — caller (srchCustomApply) computes from the input fields.
 function _searchPresetWindow(presetId){
     const now = new Date();
-    if (presetId === 'today'){
-        // From the start of the local calendar day.
-        const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        return { fromTs: Math.floor(start.getTime() / 1000), toTs: null };
-    }
+    // 'today' has no window here: the server works it out in Aerodrome's timezone,
+    // the same as the Stats cards and the `today` search word (_searchDateParams).
     if (presetId === '7d'){
         return { fromTs: Math.floor((now.getTime() - 7 * 86400000) / 1000), toTs: null };
     }
@@ -5601,6 +5585,7 @@ function onSearchPageSizeChange(){
 }
 
 function clearSearch(){
+    _cancelSearchRequest();
     const input = document.getElementById('searchInput');
     if (input) input.value = '';
     // Reset state
@@ -5677,6 +5662,7 @@ async function runSearch(){
     const loadMoreBar = document.getElementById('searchLoadMoreBar');
     const chipsEl = document.getElementById('searchChips');
     if (!q){
+        _cancelSearchRequest();
         if (emptyEl) emptyEl.style.display = '';
         if (resultsEl) resultsEl.innerHTML = '';
         if (metaEl) metaEl.textContent = '';
@@ -5690,6 +5676,27 @@ async function runSearch(){
     if (loadMoreBar) loadMoreBar.style.display = 'none';
 
     await _fetchSearchPage();
+}
+
+let _searchRequest = null;   // AbortController of the request on its way, if any
+function _cancelSearchRequest(){
+    if (_searchRequest) _searchRequest.abort();
+    _searchRequest = null;
+}
+
+function _searchDateParams(params){
+    const dr = _searchState.dateRange;
+    if (!dr) return;
+    if (dr.preset === 'today'){
+        params.set('preset', 'today');
+        return;
+    }
+    if (Number.isFinite(dr.fromTs) && dr.fromTs > 0){
+        params.set('from_ts', String(dr.fromTs));
+    }
+    if (Number.isFinite(dr.toTs) && dr.toTs > 0){
+        params.set('to_ts', String(dr.toTs));
+    }
 }
 
 // Fetch one page of results and either replace (offset=0) or append.
@@ -5711,18 +5718,16 @@ async function _fetchSearchPage(){
     // v2.62.0 (Phase 1E): include date-range params when an active
     // preset is set. Backend overrides any parser-extracted time_range
     // when these are non-zero (the "preset wins" rule).
-    if (_searchState.dateRange){
-        const dr = _searchState.dateRange;
-        if (Number.isFinite(dr.fromTs) && dr.fromTs > 0){
-            params.set('from_ts', String(dr.fromTs));
-        }
-        if (Number.isFinite(dr.toTs) && dr.toTs > 0){
-            params.set('to_ts', String(dr.toTs));
-        }
-    }
+    _searchDateParams(params);
+    // Only the newest request counts: a new search, sort or page size drops whatever
+    // is still on its way, so a late answer can't overwrite or join newer results.
+    _cancelSearchRequest();
+    const ctl = new AbortController();
+    _searchRequest = ctl;
     try {
-        const r = await fetch(`/api/search?${params.toString()}`);
+        const r = await fetch(`/api/search?${params.toString()}`, {signal: ctl.signal});
         const j = await r.json();
+        if (ctl !== _searchRequest) return;
         if (!j.ok && j.error){
             _renderSearchError(j.error);
             return;
@@ -5744,11 +5749,15 @@ async function _fetchSearchPage(){
         _searchState.totalCount = j.total_count || 0;
         _renderSearchResults(j);
     } catch (e){
+        if (ctl !== _searchRequest) return;
         _renderSearchError(e.message || String(e));
+    } finally {
+        if (ctl === _searchRequest) _searchRequest = null;
     }
 }
 
 function loadMoreSearch(){
+    if (_searchRequest) return;      // a page is already on its way
     _searchState.offset = _searchState.rows.length;
     _fetchSearchPage();
 }
@@ -6738,15 +6747,7 @@ async function _fetchAllSearchResults(){
         }
         // v2.62.0 (Phase 1E): respect the user's chosen date range
         // on export so the CSV reflects what they see on screen.
-        if (_searchState.dateRange){
-            const dr = _searchState.dateRange;
-            if (Number.isFinite(dr.fromTs) && dr.fromTs > 0){
-                params.set('from_ts', String(dr.fromTs));
-            }
-            if (Number.isFinite(dr.toTs) && dr.toTs > 0){
-                params.set('to_ts', String(dr.toTs));
-            }
-        }
+        _searchDateParams(params);
         const r = await fetch(`/api/search?${params.toString()}`);
         const j = await r.json();
         if (!j.ok && j.error) throw new Error(j.error);
@@ -7582,28 +7583,34 @@ setInterval(refresh, 60000);
 // Keep these three copies in sync when updating.
 // v2.63.0 (Phase 1D prep): system-banner poller. Hits /api/status to
 // learn whether the hourly rollup backfill is running, errored, or
-// done. Updates #systemBanner accordingly. Runs every 30s plus once at
-// init. Cheap: /api/status is cached server-side and the response is
-// small. Failures are silent (banner just stays in its current state).
+// done. Updates #systemBanner and the health dot. Runs every 30s plus once at
+// init, and when /api/live reports trouble starting or ending. Each call makes the
+// server probe the receiver, so it stays off the 5 s Live tick.
 //
 // Promoted from the All-tab-only fetchAll() banner update so the
 // signal reaches every tab. With Phase 1D dropping the All tab in
 // v2.64.0, the global poller is what keeps backfill state visible.
+let _statusInflight = false;
 async function _pollSystemStatus(){
+    if (_statusInflight) return;
+    _statusInflight = true;
     let rollupState = null;
     try {
-        const sr = await fetch('/api/status');
-        if (sr.ok) {
-            const sj = await sr.json();
-            rollupState = sj?.hourly_rollup || null;
-            // v3.1.0: demo flag is also surfaced as window.aerodromeDemoMode
-            // by static/theme.js's banner module (which handles the
-            // banner display centrally). Mirror it here for any
-            // index.html code that needs to gate on demo mode without
-            // depending on the theme.js load order.
-            window.aerodromeDemoMode = !!sj?.demo_enabled;
-        }
-    } catch (_) { /* non-fatal */ }
+        const sj = await getJsonWithin('/api/status', POLL_LIMIT_MS);
+        rollupState = sj?.hourly_rollup || null;
+        // v3.1.0: demo flag is also surfaced as window.aerodromeDemoMode
+        // by static/theme.js's banner module (which handles the
+        // banner display centrally). Mirror it here for any
+        // index.html code that needs to gate on demo mode without
+        // depending on the theme.js load order.
+        window.aerodromeDemoMode = !!sj?.demo_enabled;
+        // While /api/live isn't answering, that's what the dot is showing.
+        if (_liveTrouble !== 'request') updateHealthIndicator(sj);
+    } catch (_) {
+        updateHealthIndicator(null);
+    } finally {
+        _statusInflight = false;
+    }
     const banner = document.getElementById('systemBanner');
     const text = document.getElementById('systemBannerText');
     if (!banner || !text) return;
@@ -8086,11 +8093,65 @@ function renderStats(j){
         container.innerHTML = `<div class="stats-loading">No stat cards to show. Check Configuration → Stats.</div>`;
         return;
     }
+    const putDrillsBack = _rememberOpenDrills(container);
     container.innerHTML = sections.join('');
+    putDrillsBack();
 
     // Apply the configured color via a CSS variable on the whole stats
     // container so all highlighted cards + chips pick up the user's color.
     container.style.setProperty('--nra-color', nraCfg.color || '#22c55e');
+}
+
+// A refresh replaces every card. An open drill goes back where it was, as the same
+// element, so its rows, sort, scroll position and any request on its way carry on.
+function _rememberOpenDrills(container){
+    const scrolled = el => [...el.querySelectorAll('*')]
+        .filter(e => e.scrollTop || e.scrollLeft)
+        .map(e => [e, e.scrollTop, e.scrollLeft]);
+    const restoreScroll = list => list.forEach(([e, top, left]) => { e.scrollTop = top; e.scrollLeft = left; });
+
+    const wide = container.querySelector('.drill-panel-row');
+    const wideScroll = wide ? scrolled(wide) : [];
+    const charts = [...container.querySelectorAll('.chart-drill-panel')].map(panel => {
+        const host = panel.closest('[data-drill-host]');
+        const bar = host && host.querySelector('.drill-active');
+        return { panel, scroll: scrolled(panel), host: host && host.dataset.drillHost,
+                 bar: bar && bar.getAttribute('onclick') };
+    });
+
+    return () => {
+        if(wide){
+            const id = wide.dataset.sourceCardId;
+            const value = wide.dataset.sourceRowValue;
+            const rows = [...container.querySelectorAll('.drill-row')].filter(r => r.dataset.drillCard === id);
+            const row = value === undefined ? null : rows.find(r => r.dataset.drillValue === value);
+            // The value can drop off a Top 5 list: the panel stays with its card.
+            const card = [...container.querySelectorAll('.stat-card[data-drill-card]')]
+                    .find(c => c.dataset.drillCard === id)
+                || (rows[0] && rows[0].closest('.stat-card'));
+            const grid = card && card.closest('.stats-grid');
+            if(grid){
+                card.classList.add('drill-source');
+                if(row) row.classList.add('drill-source-row');
+                grid.appendChild(wide);
+                restoreScroll(wideScroll);
+            } else {
+                delete _drillSorts[id];
+                delete _drillCache[id];
+            }
+        }
+        for(const {panel, scroll, host, bar} of charts){
+            const card = [...container.querySelectorAll('[data-drill-host]')]
+                .find(c => c.dataset.drillHost === host);
+            const newBar = card && [...card.querySelectorAll('[onclick]')]
+                .find(b => b.getAttribute('onclick') === bar);
+            if(newBar){
+                newBar.classList.add('drill-active');
+                card.appendChild(panel);
+                restoreScroll(scroll);
+            }
+        }
+    };
 }
 
 // --- Section collapse state (persisted in localStorage) ---
@@ -8470,8 +8531,9 @@ async function toggleDrillOptionC(cardEl, cardId){
             return;
         }
         // Re-check that this panel is still the current one (user might have
-        // clicked a different card before the fetch completed)
-        if(panel.parentElement !== grid) return;
+        // clicked a different card before the fetch completed). A refresh moves
+        // it to the new grid, so look for it on the page, not in this grid.
+        if(!panel.isConnected) return;
         panel.innerHTML = renderOptionCDrillPanel(cardId, j);
     } catch(e){
         panel.querySelector('.drill-loading').outerHTML =
@@ -9299,8 +9361,8 @@ async function toggleRowDrillOptionC(rowEl, cardId){
             return;
         }
         // Stale fetch guard: user may have clicked another row before this
-        // returned. If so, this panel is no longer in the grid.
-        if(panel.parentElement !== grid) return;
+        // returned. If so, this panel is no longer on the page.
+        if(!panel.isConnected) return;
         panel.innerHTML = renderOptionCDrillPanel(cardId, j, {
             label: contextLabel,
             value: display,

@@ -36,28 +36,12 @@
     var POLL_INTERVAL_MS = 30000;
     var pollTimer = null;
 
-    // Mirror the classification logic from index.html so the gear's alert
-    // state is consistent across pages. If the server's severity is exposed
-    // directly on the response (it is, as of v2.41.x), use that; fall back
-    // to deriving from components for older server builds.
+    // The server decides (severity on /api/status), the same for every page.
+    // update_available is gated on updates.github.notify.gear_badge server-side,
+    // so respecting it here is correct.
     function classifyHealth(statJ){
-        if (!statJ || typeof statJ !== 'object') return 'ok';
-        if (statJ.severity === 'error') return 'error';
-        if (statJ.severity === 'warn')  return 'warn';
-        // Fallback: derive from components. Receiver / database / collector
-        // are critical; hexdb_resolver is advisory only.
-        var c = statJ.components || {};
-        var critical = ['receiver', 'database', 'collector', 'webserver'];
-        for (var i = 0; i < critical.length; i++) {
-            if (c[critical[i]] && c[critical[i]].ok === false) return 'error';
-        }
-        if (c.hexdb_resolver && c.hexdb_resolver.ok === false) return 'warn';
-        // v3.0.0: GitHub update availability also lights the gear badge.
-        // update_available is gated on updates.github.notify.gear_badge
-        // server-side, so respecting it here is correct — the server
-        // already knows the user's preference.
-        if (statJ.update_available === true) return 'warn';
-        return 'ok';
+        if (statJ.severity === 'error' || statJ.severity === 'warn') return statJ.severity;
+        return statJ.update_available === true ? 'warn' : 'ok';
     }
 
     function applyToGear(level){
@@ -82,24 +66,28 @@
         }
     }
 
+    // Two polls in a row without an answer means the server is gone, so the dot
+    // goes red. One could just be a slow moment. /api/status can itself wait 5 s on
+    // the receiver, so the limit has to be well past that.
+    var failures = 0;
     function pollOnce(){
-        // Fetch with a short timeout — if /api/status is slow we don't want
-        // to delay the next poll. AbortController is widely supported.
         var ctl = ('AbortController' in window) ? new AbortController() : null;
-        var timer = ctl ? setTimeout(function(){ ctl.abort(); }, 5000) : null;
+        var timer = ctl ? setTimeout(function(){ ctl.abort(); }, 15000) : null;
         var opts = ctl ? { signal: ctl.signal } : {};
         fetch('/api/status', opts)
-            .then(function(r){ return r.ok ? r.json() : null; })
+            .then(function(r){
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.json();
+            })
             .then(function(j){
                 if (timer) clearTimeout(timer);
+                failures = 0;
                 applyToGear(classifyHealth(j));
             })
             .catch(function(){
-                // Silent: a failed /api/status fetch is itself an indicator
-                // that something's wrong, but we don't want to spam errors
-                // into the console on a transient hiccup. Leave the previous
-                // class state in place; next poll will retry.
                 if (timer) clearTimeout(timer);
+                failures += 1;
+                if (failures >= 2) applyToGear('error');
             });
     }
 

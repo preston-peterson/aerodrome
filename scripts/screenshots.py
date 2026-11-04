@@ -1050,16 +1050,21 @@ window.fetch = async (url) => {{
     }});
     if (url.includes('/api/config/backups'))        return j({{backups: []}});
     if (url.includes('/api/backup/pre-restore'))    return j({{snapshots: []}});
-    if (url.includes('/api/backup/preview'))        return j({{ok: true, files: []}});
+    if (url.includes('/api/backup/preview'))        return j({{ok: true,
+        items: [{{name: 'config.yaml', bytes: 5243}}, {{name: 'aerodrome.db', bytes: 846200012}}],
+        approximate_total_bytes: 846205255, warnings: []}});
+    if (url.includes('/api/backup/list-server-side')) return j({{ok: true, count: 1, total_bytes: 402653184,
+        backups: [{{filename: 'aerodrome-backup-20260115-030000.zip', path: '/opt/aerodrome/.backups/aerodrome-backup-20260115-030000.zip',
+                   bytes: 402653184, mtime: 1768446000, sha256: '9f2c41a7d0e3b5c8a1f6e4d2b7c9035e8a6d1f4b2c7e0a93d5b8f16c2e4a7d03'}}]}});
     if (url.includes('/api/config/validate'))       return j({{errors: []}});
     if (url.includes('/api/config'))                return j({json.dumps(payloads['config'])});
     // v3.4.33: aircraft-detail page. Two endpoints: the detail object
     // (full aircraft metadata for the hero/cards/sections) and the
     // positions array used by the track-rendering map.
-    if (url.match(/\/api\/aircraft\/[0-9A-Fa-f]+\/positions/)) {{
+    if (url.match(/\\/api\\/aircraft\\/[0-9A-Fa-f]+\\/positions/)) {{
         return j({json.dumps(AIRCRAFT_POSITIONS)});
     }}
-    if (url.match(/\/api\/aircraft\/[0-9A-Fa-f]+$/)) {{
+    if (url.match(/\\/api\\/aircraft\\/[0-9A-Fa-f]+$/)) {{
         return j({json.dumps(AIRCRAFT_DETAIL)});
     }}
     // --- Docs viewer ---

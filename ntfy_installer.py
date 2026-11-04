@@ -63,6 +63,7 @@ import platform
 import re
 import secrets
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Tuple
 
@@ -323,16 +324,24 @@ VENDOR_PATHS = tuple(Path(p) for p in NTFY_VENDOR_PATHS)
 # ---------------------------------------------------------------
 GITHUB_RELEASES_LATEST = "https://api.github.com/repos/binwiederhier/ntfy/releases/latest"
 _version_cache: Optional[str] = None
+_version_failed_at: Optional[float] = None
+VERSION_RETRY_SEC = 600
 
 
 def latest_version() -> Optional[str]:
     """Fetch the latest ntfy version from GitHub. Returns e.g. '2.11.0'
-    (no leading 'v'). Returns None on failure. Cached for process lifetime."""
-    global _version_cache
+    (no leading 'v'). Returns None on failure. An answer is cached for the
+    process lifetime, a failure for VERSION_RETRY_SEC: without internet access,
+    every look at the Notifications tab would otherwise wait on GitHub again."""
+    global _version_cache, _version_failed_at
     if _version_cache is not None:
         return _version_cache
+    if (_version_failed_at is not None
+            and time.monotonic() - _version_failed_at < VERSION_RETRY_SEC):
+        return None
+    _version_failed_at = time.monotonic()
     try:
-        r = requests.get(GITHUB_RELEASES_LATEST, timeout=10,
+        r = requests.get(GITHUB_RELEASES_LATEST, timeout=5,
                          headers={"Accept": "application/vnd.github+json"})
         r.raise_for_status()
         tag = r.json().get("tag_name", "")
@@ -340,6 +349,7 @@ def latest_version() -> Optional[str]:
             return None
         v = tag[1:] if tag.startswith("v") else tag
         _version_cache = v
+        _version_failed_at = None
         return v
     except Exception as e:
         log.warning("Failed to fetch latest ntfy version: %s", e)

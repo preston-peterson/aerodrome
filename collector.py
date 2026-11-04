@@ -1,4 +1,4 @@
-# Version: 3.4.153
+# Version: 3.4.154
 """
 collector.py — ADS-B data fetcher and classifier.
 
@@ -886,6 +886,55 @@ def analyze_db(conn: sqlite3.Connection, target: str = "") -> None:
     conn.commit()
 
 
+# A computer with no battery-backed clock can start with the wrong time until it
+# reaches a time server, and a row keeps the time it was written with. So just after
+# a boot, a clock earlier than the newest row waits to be set before anything is
+# stored. Most boots never get here, and neither does a restart later on: a row from
+# a clock that was once ahead can't hold up every restart. The limit keeps a machine
+# that never reaches a time server collecting.
+CLOCK_WAIT_MAX_SEC = 600
+CLOCK_WAIT_STEP_SEC = 5
+CLOCK_BEHIND_MARGIN_SEC = 60
+CLOCK_JUST_BOOTED_SEC = 900
+
+
+def _seconds_since_boot() -> Optional[float]:
+    try:
+        with open("/proc/uptime") as f:
+            return float(f.read().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def wait_for_plausible_clock(db_path: str) -> None:
+    """Hold off collecting while the clock is obviously unset. Never raises."""
+    uptime = _seconds_since_boot()
+    if uptime is None or uptime >= CLOCK_JUST_BOOTED_SEC:
+        return
+    try:
+        conn = _open_db_conn(db_path)
+        try:
+            newest = conn.execute("SELECT MAX(seen_at) FROM all_sightings").fetchone()[0]
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        logger.debug(f"Clock check skipped: {e}")
+        return
+    if not newest or time.time() >= newest - CLOCK_BEHIND_MARGIN_SEC:
+        return
+    logger.warning(f"The system clock reads earlier than the newest sighting by "
+                   f"{newest - time.time():,.0f}s, so it may not be set yet. Collection "
+                   f"waits for it, for up to {CLOCK_WAIT_MAX_SEC // 60} minutes.")
+    started = time.monotonic()
+    while time.time() < newest - CLOCK_BEHIND_MARGIN_SEC:
+        if time.monotonic() - started >= CLOCK_WAIT_MAX_SEC:
+            logger.warning("The system clock still reads earlier than the newest sighting. "
+                           "Collecting anyway, with the time it has.")
+            return
+        time.sleep(CLOCK_WAIT_STEP_SEC)
+    logger.info("The system clock is set. Collection starts.")
+
+
 def ensure_lookup_indexes(db_path: str) -> None:
     """Build any missing LOOKUP_INDEXES. The collector calls this before its first
     poll, so the web UI is already up (reads go on during a build in WAL mode) and
@@ -1527,6 +1576,7 @@ def _hexdb_cache_check(conn, key: str,
     # from the same hexdb response — existing installs fill in gradually
     # as their aircraft are looked at, without a bulk re-fetch. Only the
     # positive case qualifies: a negative entry legitimately has no owner.
+    # '' is the looked-up-and-none answer (see _hexdb_cache_write).
     if last_outcome == "positive" and registered_owner is None:
         return ("stale", None, None)
     # v3.4.138: same self-heal for the type code. NULL means "written before
@@ -1557,7 +1607,9 @@ def _hexdb_cache_write(conn, key: str, reg: Optional[str],
     seen_aircraft so the detail page can read them without a hexdb call.
 
     v3.4.138: also persists type_code. Stored as '' (never NULL) when hexdb
-    has none, so _hexdb_cache_check can tell it from a pre-v15 row."""
+    has none, so _hexdb_cache_check can tell it from a pre-v15 row. The owner of
+    a positive answer works the same way: '' means hexdb knows this aircraft and
+    has no owner for it, where NULL means written before owners were stored."""
     conn.execute("""
         INSERT INTO hexdb_cache (icao, registration, resolved_at, last_outcome,
                                  hit_count, last_hit_at, registered_owner, manufacturer,
@@ -1572,8 +1624,9 @@ def _hexdb_cache_write(conn, key: str, reg: Optional[str],
             registered_owner = excluded.registered_owner,
             manufacturer = excluded.manufacturer,
             type_code = excluded.type_code
-    """, (key, reg, now_ts, outcome, registered_owner or None, manufacturer or None,
-          type_code or ""))
+    """, (key, reg, now_ts, outcome,
+          (registered_owner or "") if outcome == "positive" else None,
+          manufacturer or None, type_code or ""))
     # v2.51.0: when hexdb resolves a registration, mirror it into
     # seen_aircraft so search results carry tail registration without
     # needing a JOIN at query time. Only write if reg is non-empty —

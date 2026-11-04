@@ -458,6 +458,20 @@ class TestThroughTheApp(_DbCase):
         args.update(kw)
         return self.endpoint("/api/search")(**args)
 
+    def test_the_today_button_means_today_in_aerodromes_timezone(self):
+        now = int(time.time())
+        for n, tz_name in enumerate(self.TZ_NAMES):
+            with self.subTest(tz=tz_name):
+                self.app_for(tz_name)
+                start = tzwindow.today_bounds(tzwindow.resolve_tz(self.cfg))[0]
+                today, yesterday = f"B0000{n}", f"C0000{n}"
+                self.sight(today, max(start, now - 1))
+                self.sight(yesterday, start - 1)
+                self.conn.commit()
+                found = {r["icao"] for r in self.api_search(preset="today")["rows"]}
+                self.assertIn(today, found)
+                self.assertNotIn(yesterday, found)
+
     def sight(self, icao, ts):
         """Everything the collector would have written for one sighting."""
         row = self.conn.execute("SELECT first_seen_at, last_seen_at FROM seen_aircraft WHERE icao=?",

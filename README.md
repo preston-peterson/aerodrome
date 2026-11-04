@@ -1,5 +1,5 @@
 # Aerodrome
-<!-- Version: 3.4.153 -->
+<!-- Version: 3.4.154 -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -188,6 +188,7 @@ aerodrome/
 ├── test_config_write_safety.py   unit tests — all-or-nothing config writes, recovery, private files
 ├── test_designators.py           unit tests — aircraft type and operator decoders
 ├── test_destructive_endpoints.py unit tests — switch-to-real + watchlist-history deletes
+├── test_frontend_browser.py      tests — real pages in Chromium with scripted answers: hangs, failures, late replies
 ├── test_icao_hex.py              unit tests — ICAO hex ingest validation
 ├── test_install_sh.py            installer tests — install.sh + recover-sudoers.sh under stub sudo
 ├── test_maintenance_locks.py     unit tests — one maintenance operation at a time, backups leave nothing behind
@@ -212,6 +213,7 @@ aerodrome/
 ├── test_startup_rollup_backfill.py unit tests — rollup backfills before migrations, the gate
 ├── test_stats_drills.py          unit tests — Stats detail-panel drill queries
 ├── test_stats_most_seen.py       unit tests — all-time most-seen stats card
+├── test_status_and_lookups.py    unit tests — health summary, no-owner and offline lookups, clock after boot
 ├── test_sudoers_boundary.py      unit tests — what the v6 rules grant (sudo's matching) and deny
 ├── test_sudoers_gate_contract.py unit tests — Updates-page sudoers gate + refresh commands
 ├── test_type_code.py             unit tests — aircraft type code (feed vs hexdb fallback)
