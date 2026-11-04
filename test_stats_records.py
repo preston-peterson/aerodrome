@@ -1,7 +1,7 @@
 """The fastest and highest all-time records and Today's cards refuse readings a
-type can't produce, keep the aircraft that really do fly that fast or high, and
-correct a record stored under looser rules from the never-pruned hourly history.
-All aircraft and readings are invented.
+type can't produce and speeds no neighbouring reading backs up, keep the aircraft
+that really do fly that fast or high, and correct a record stored under looser
+rules from the never-pruned hourly history. All aircraft and readings are invented.
 """
 import json
 import os
@@ -126,11 +126,26 @@ class _DbCase(unittest.TestCase):
                      "aircraft_type, set_at, extra) VALUES (?, ?, ?, ?, ?, ?, ?)", *rows)
 
     def hourly(self, *rows):
-        """(icao, callsign, type, speed, altitude, hour_bucket)"""
+        """(icao, callsign, type, speed, altitude, hour_bucket), or with the hour's
+        last speed on the end. It defaults to a little under the peak, as in an
+        ordinary hour whose readings have since been pruned."""
+        full = [r if len(r) == 7 else (*r, r[3] - 5 if isinstance(r[3], (int, float)) else None)
+                for r in rows]
         self.execute("INSERT INTO sightings_hourly (icao, hour_bucket, callsign, aircraft_type, "
-                     "sighting_count, first_seen_at, last_seen_at, max_speed, max_altitude) "
-                     "VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)",
-                     *[(i, h, c, t, h, h, s, a) for i, c, t, s, a, h in rows])
+                     "sighting_count, first_seen_at, last_seen_at, max_speed, max_altitude, last_speed) "
+                     "VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?)",
+                     *[(i, h, c, t, h, h, s, a, ls) for i, c, t, s, a, h, ls in full])
+
+    def track(self, icao, type_code, start, *speeds, step=60):
+        """An aircraft's readings a poll apart, and the hourly rows the collector
+        would have made from them. Returns when each reading happened."""
+        times = [start + n * step for n in range(len(speeds))]
+        self.execute("INSERT INTO all_sightings (icao, callsign, aircraft_type, speed, seen_at) "
+                     "VALUES (?, ?, ?, ?, ?)", *[(icao, "TEST1", type_code, s, t) for s, t in zip(speeds, times)])
+        for hour in sorted({t // HOUR * HOUR for t in times}):
+            here = [s for s, t in zip(speeds, times) if t // HOUR * HOUR == hour]
+            self.hourly((icao, "TEST1", type_code, max(here), 30000, hour, here[-1]))
+        return times
 
     def records(self):
         conn = sqlite3.connect(self.db)
@@ -292,6 +307,129 @@ class TestHeal(_DbCase):
         self.assertEqual(self.records(), {})
 
 
+class TestSpikeCheck(_DbCase):
+    """A speed only counts if the reading just before or after it agrees."""
+
+    RECENT = (int(time.time()) - 5 * DAY) // HOUR * HOUR
+
+    def stored(self, speed, icao, type_code, at):
+        self.record(("fastest_ever", speed, icao, "TEST1", type_code, at, ""))
+
+    def fastest(self):
+        return self.records().get("fastest_ever")
+
+    def test_a_spike_under_the_limit_is_replaced_by_the_best_real_reading(self):
+        self.track("A0F001", "B738", self.RECENT, 480, 690, 482)
+        when = self.track("A0F002", "B738", self.RECENT + HOUR, 510, 512, 511)
+        self.stored(690, "A0F001", "B738", self.RECENT)
+        self.restart()
+        rec = self.fastest()
+        self.assertEqual((rec["value"], rec["icao"], rec["set_at"]), (512, "A0F002", when[1]))
+
+    def test_a_spike_on_the_last_reading_of_a_track_is_replaced(self):
+        self.track("A0F003", "", self.RECENT, 467, 963)
+        self.track("A0F002", "B738", self.RECENT + HOUR, 510, 512)
+        self.stored(963, "A0F003", "", self.RECENT)
+        self.restart()
+        self.assertEqual(self.fastest()["icao"], "A0F002")
+
+    def test_an_aircraft_heard_once_cannot_hold_the_record(self):
+        self.track("A0F004", "B738", self.RECENT, 650)
+        self.track("A0F002", "B738", self.RECENT + HOUR, 510, 512)
+        self.stored(650, "A0F004", "B738", self.RECENT)
+        self.restart()
+        self.assertEqual(self.fastest()["icao"], "A0F002")
+
+    def test_a_real_jet_stream_reading_stands(self):
+        when = self.track("A0F005", "B78X", self.RECENT, 664.7, 664.2, 666.1, 667.1, 667.6)
+        self.stored(667.6, "A0F005", "B78X", when[-1])
+        self.restart()
+        self.assertEqual((self.fastest()["value"], self.fastest()["set_at"]), (667.6, when[-1]))
+
+    def test_a_real_reading_under_a_spike_in_the_same_hour_still_counts(self):
+        when = self.track("A0F006", "B738", self.RECENT, 640, 642, 695, 641)
+        self.track("A0F002", "B738", self.RECENT + HOUR, 510, 512)
+        self.restart()
+        rec = self.fastest()
+        self.assertEqual((rec["value"], rec["icao"], rec["set_at"]), (642, "A0F006", when[1]))
+
+    def test_the_next_reading_can_back_it_up_as_well_as_the_last(self):
+        when = self.track("A0F015", "B738", self.RECENT, 300, 640, 620)
+        self.restart()
+        rec = self.fastest()
+        self.assertEqual((rec["value"], rec["set_at"]), (640, when[1]))
+
+    def test_a_reading_too_far_away_does_not_back_it_up_unless_polling_is_that_slow(self):
+        self.track("A0F007", "B738", self.RECENT, 500, 505, step=240)
+        self.restart()
+        self.assertIsNone(self.fastest())
+        collector.init_db(self.db, 300)
+        self.assertEqual(self.fastest()["value"], 505)
+
+    def test_a_neighbour_across_the_hour_line_counts(self):
+        self.track("A0F008", "B738", self.RECENT + HOUR - 30, 600, 500)
+        self.track("A0F009", "B738", self.RECENT + 2 * HOUR - 30, 500, 600)
+        self.restart()
+        self.assertIsNone(self.fastest())
+        self.track("A0F00A", "B738", self.RECENT + 3 * HOUR - 30, 610, 605)
+        self.track("A0F00B", "B738", self.RECENT + 5 * HOUR - 30, 615, 620)
+        self.restart()
+        self.assertEqual((self.fastest()["icao"], self.fastest()["value"]), ("A0F00B", 620))
+
+    def test_a_record_too_old_to_check_stays(self):
+        self.hourly(("A0F00C", "TEST1", "B738", 600, 30000, OLD))
+        self.stored(690, "A0F00D", "B738", OLD)
+        self.restart()
+        self.assertEqual(self.fastest()["value"], 690)
+
+    def test_a_record_whose_own_reading_is_gone_stays(self):
+        self.track("A0F00E", "B738", self.RECENT, 400, 402)
+        self.stored(690, "A0F00E", "B738", self.RECENT)
+        self.restart()
+        self.assertEqual(self.fastest()["value"], 690)
+
+    def test_past_retention_a_peak_has_to_be_near_but_not_be_the_hours_last_speed(self):
+        self.hourly(("A0F010", "END", "B738", 690, 30000, OLD, 690),         # gone after the spike
+                    ("A0F011", "MID", "B738", 680, 30000, OLD, 410),         # back to normal after it
+                    ("A0F012", "NUL", "B738", 670, 30000, OLD, None),        # nothing to compare
+                    ("A0F013", "REAL", "B738", 600, 30000, OLD, 590))
+        self.restart()
+        rec = self.fastest()
+        self.assertEqual((rec["icao"], rec["set_at"]), ("A0F013", OLD))
+
+    def test_a_stored_time_that_is_not_a_time_does_not_stop_the_start(self):
+        self.stored(600, "A0F00F", "B738", "junk")
+        self.restart()
+        self.assertEqual(self.fastest()["value"], 600)
+
+    def test_a_stored_value_that_is_not_a_number_does_not_stop_the_start(self):
+        self.track("A0F002", "B738", self.RECENT, 510, 512)
+        self.stored("ground", "A0F00F", "B738", self.RECENT)
+        self.restart()
+        self.assertEqual(self.fastest()["value"], 512)
+
+    def test_healing_twice_is_the_same_as_once(self):
+        self.track("A0F001", "B738", self.RECENT, 480, 690, 482)
+        self.track("A0F002", "B738", self.RECENT + HOUR, 510, 512, 511)
+        self.stored(690, "A0F001", "B738", self.RECENT)
+        self.restart()
+        first = self.records()
+        self.restart()
+        self.assertEqual(self.records(), first)
+
+    def test_altitude_is_not_spike_checked(self):
+        self.track("A0F014", "U2", self.RECENT, 400)
+        self.execute("UPDATE sightings_hourly SET max_altitude = 72000 WHERE icao = 'A0F014'")
+        self.record(("highest_altitude_ever", 72000, "A0F014", "TEST1", "U2", self.RECENT, ""))
+        self.restart()
+        self.assertEqual(self.records()["highest_altitude_ever"]["value"], 72000)
+
+    def test_the_window_is_three_minutes_or_two_polls(self):
+        for poll_interval, want in ((None, 180), (5, 180), (60, 180), (90, 180), (120, 240),
+                                    (3600, 7200), ("junk", 180)):
+            self.assertEqual(collector.speed_agree_window(poll_interval), want)
+
+
 class TestSeed(_DbCase):
     """An empty records table beside existing sightings, as on a first upgrade."""
 
@@ -303,6 +441,7 @@ class TestSeed(_DbCase):
         now = int(time.time())
         self.sightings(("A0C001", "N1BAD", "T18", 1200, 3000, now),
                        ("A0C002", "BAD2", "C130", 300, 120000, now),
+                       ("A0C003", "DAL1", "B738", 478, 37000, now - 60),
                        ("A0C003", "DAL1", "B738", 480, 37000, now))
         self.restart()
         rec = self.records()
@@ -349,10 +488,19 @@ class TestLivePoll(_DbCase):
         self.fire = fire.start()
         self.addCleanup(fire.stop)
 
-    def poll(self, *planes):
+    def poll(self, *planes, earlier=60):
+        """One poll. Each plane was already there at the same speed `earlier`
+        seconds ago, unless earlier is None."""
+        if earlier is not None:
+            self.reading(earlier, *[(p["hex"], p["gs"]) for p in planes])
         with mock.patch.object(collector.requests, "get", return_value=_Feed(list(planes))), \
                 mock.patch.object(collector.hexdb_resolver, "enqueue", return_value=False):
             collector._poll_once(self.cfg, collector.build_watchlist_lookup(self.cfg))
+
+    def reading(self, ago, *rows):
+        """(icao, speed) heard `ago` seconds before now."""
+        self.execute("INSERT INTO all_sightings (icao, speed, seen_at) VALUES (?, ?, ?)",
+                     *[(i, s, int(time.time()) - ago) for i, s in rows])
 
     def test_a_poll_refuses_impossible_readings_and_keeps_real_ones(self):
         self.poll(_plane("A0D001", "T18", 1200, 3000), _plane("A0D002", "C130", 300, 120000),
@@ -389,6 +537,53 @@ class TestLivePoll(_DbCase):
         self.poll(_plane("A0D002", "C130", 300, 120000))
         self.assertEqual(self.records()["lowest_altitude_ever"]["value"], 3000)
 
+    def test_a_spike_under_the_limit_cannot_set_the_record_or_notify(self):
+        self.poll(_plane("A0D003", "B738", 450, 36000))
+        self.fire.reset_mock()
+        self.reading(60, ("A0D006", 470))
+        self.poll(_plane("A0D006", "B738", 690, 36000), earlier=None)
+        self.assertEqual(self.records()["fastest_ever"]["value"], 450)
+        self.assertNotIn("fastest_ever", [call.args[0] for call in self.fire.call_args_list])
+
+    def test_a_spike_on_an_unknown_type_cannot_set_the_record(self):
+        self.poll(_plane("A0D003", "B738", 450, 36000))
+        self.reading(60, ("A0D007", 470))
+        self.poll(_plane("A0D007", "", 1400, 36000), earlier=None)
+        self.assertEqual(self.records()["fastest_ever"]["value"], 450)
+
+    def test_a_first_reading_waits_for_the_next_one(self):
+        self.poll(_plane("A0D003", "B738", 450, 36000), earlier=None)
+        rec = self.records()
+        self.assertNotIn("fastest_ever", rec)
+        self.assertEqual(rec["highest_altitude_ever"]["value"], 36000)
+        self.reading(60, ("A0D003", 447))
+        self.poll(_plane("A0D003", "B738", 452, 36000), earlier=None)
+        self.assertEqual(self.records()["fastest_ever"]["value"], 452)
+
+    def test_a_reading_long_ago_does_not_back_up_a_new_one(self):
+        self.reading(600, ("A0D003", 450))
+        self.poll(_plane("A0D003", "B738", 450, 36000), earlier=None)
+        self.assertNotIn("fastest_ever", self.records())
+
+    def test_slow_polling_gets_a_wider_window(self):
+        self.cfg["receiver"]["poll_interval"] = 300
+        self.reading(290, ("A0D003", 450))
+        self.poll(_plane("A0D003", "B738", 450, 36000), earlier=None)
+        self.assertEqual(self.records()["fastest_ever"]["value"], 450)
+
+    def test_an_ordinary_reading_never_runs_the_check(self):
+        conn = sqlite3.connect(self.db)
+        self.addCleanup(conn.close)
+        ac = {"hex": "A0D003", "callsign": "", "aircraft_type": "B738"}
+        confirm = mock.Mock(return_value=True)
+        collector._update_record(conn, "fastest_ever", 500, "gt", ac, 1000, confirm=confirm)
+        self.assertEqual(confirm.call_count, 1)
+        collector._update_record(conn, "fastest_ever", 400, "gt", ac, 1060, confirm=confirm)
+        self.assertEqual(confirm.call_count, 1)
+        confirm.return_value = False
+        self.assertFalse(collector._update_record(conn, "fastest_ever", 600, "gt", ac, 1120, confirm=confirm))
+        self.assertEqual(conn.execute("SELECT value FROM stats_records").fetchone()[0], 500)
+
 
 class TestReadPath(_DbCase):
 
@@ -410,7 +605,9 @@ class TestReadPath(_DbCase):
         d = self.today
         self.hourly(*[(i, c, t, s, a, d) for i, c, t, s, a in planes])
         self.execute("INSERT INTO all_sightings (icao, callsign, aircraft_type, speed, altitude, "
-                     "seen_at) VALUES (?, ?, ?, ?, ?, ?)", *[(i, c, t, s, a, d + 60) for i, c, t, s, a in planes])
+                     "seen_at) VALUES (?, ?, ?, ?, ?, ?)",
+                     *[(i, c, t, s, a, d + 60) for i, c, t, s, a in planes],
+                     *[(i, c, t, s - 5, a, d + 120) for i, c, t, s, a in planes])
 
     def test_the_stats_page_shows_the_corrected_records(self):
         self.record(("fastest_ever", 1200.0, "A0E001", "N1BAD", "T18", OLD, ""),
@@ -442,6 +639,44 @@ class TestReadPath(_DbCase):
         fast = [r["icao"] for r in self.drill_ep(card="fastest", value=None, all=False)["rows"]]
         self.assertEqual(fast[0], "A0E003")
         self.assertNotIn("A0E001", fast)
+
+    def fastest_both_ways(self):
+        card = self.stats_ep()["cards"]["fastest"]
+        rows = self.drill_ep(card="fastest", value=None, all=False)["rows"]
+        return card, [(r["icao"], r["metric"]) for r in rows]
+
+    def test_todays_fastest_skips_a_spike_and_keeps_the_aircrafts_real_speed(self):
+        self.track("A0E006", "B738", self.today + 60, 448, 450, 690, 452, 455)
+        self.track("A0E007", "B738", self.today + 60, 500, 502)
+        card, drill = self.fastest_both_ways()
+        self.assertEqual((card["icao"], card["speed"]), ("A0E007", 502))
+        self.assertEqual(drill, [("A0E007", 502), ("A0E006", 455)])
+
+    def test_todays_fastest_can_be_the_real_reading_under_its_own_spike(self):
+        self.track("A0E006", "B738", self.today + 60, 448, 450, 690, 452, 455)
+        card, drill = self.fastest_both_ways()
+        self.assertEqual(card["speed"], 455)
+        self.assertEqual(sorted(card), ["aircraft_type", "callsign", "icao", "speed"])
+        self.assertEqual(drill, [("A0E006", 455)])
+
+    def test_an_aircraft_heard_once_today_is_not_todays_fastest(self):
+        self.track("A0E008", "B738", self.today + 60, 650)
+        self.track("A0E007", "B738", self.today + 60, 500, 502)
+        card, drill = self.fastest_both_ways()
+        self.assertEqual(card["icao"], "A0E007")
+        self.assertEqual(drill, [("A0E007", 502)])
+
+    def test_a_reading_just_before_midnight_backs_up_the_first_one_today(self):
+        self.track("A0E009", "B738", self.today - 30, 510, 502, 300)    # 510 was yesterday
+        card, drill = self.fastest_both_ways()
+        self.assertEqual(card["speed"], 502)
+        self.assertEqual(drill, [("A0E009", 502)])
+
+    def test_with_no_backed_up_reading_todays_fastest_is_empty(self):
+        self.track("A0E008", "B738", self.today + 60, 650)
+        card, drill = self.fastest_both_ways()
+        self.assertIsNone(card)
+        self.assertEqual(drill, [])
 
 
 if __name__ == "__main__":

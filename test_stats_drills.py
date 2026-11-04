@@ -118,11 +118,12 @@ class TestDrillResults(_DrillCase):
         d = self.day
         # A second aircraft ties A00001's 480 kt (icao order breaks the tie).
         self.execute("INSERT INTO all_sightings (icao, callsign, aircraft_type, speed, "
-                     "altitude, seen_at) VALUES ('A00000', 'DAL100', 'B738', 480, 30000, ?)"
-                     .replace("?", str(d + 300)))
+                     "altitude, seen_at) VALUES ('A00000', 'DAL100', 'B738', 480, 30000, ?)",
+                     [(d + 300,), (d + 360,)])
         expect = {
+            # A00003 was heard once, so no neighbouring reading backs up its speed.
             "fastest": [("A00000", 480, d + 300), ("A00001", 480, d + 120),
-                        ("A00002", 110, d + 150), ("A00003", 60, d + 200)],
+                        ("A00002", 110, d + 150)],
             "slowest": [("A00003", 60, d + 200), ("A00002", 95, d + 90),
                         ("A00001", 450, d + 60), ("A00000", 480, d + 300)],
             "highest_altitude": [("A00001", 36000, d + 120), ("A00000", 30000, d + 300),

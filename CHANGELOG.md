@@ -19,6 +19,24 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.157] — 2026-11-04
+
+**A one-off speed glitch can no longer be the fastest record or Today's fastest.** The limits added in 3.4.155 and 3.4.156 stop a speed that type of aircraft can't reach, but a wrong speed can stay under its limit: a business jet at 732 kt, or an airliner at 697 kt. These are usually a single reading out of line with the rest of the track, like 467 kt, then 963 kt, then nothing, while a real speed holds from one reading to the next, even a jet stream's 660 kt. So a speed now counts only if the aircraft's reading just before or just after it, within 3 minutes, is within 40 kt. If you poll more slowly than every 90 seconds, the 3 minutes becomes two polls. This doesn't need to know the aircraft's type, so it covers unknown types too.
+
+**A wrong record already stored corrects itself.** On the first start after this update, a fastest record that fails the check is replaced by the best reading that passes, and the date shown is when that reading happened. You won't get a notification. Your fastest record may drop by a lot, and that's expected. If the reading behind your record is older than your retention, which is 30 days by default, there's nothing left to check it against, so the record stays until something beats it. A replacement from that far back has to be close to the last speed kept for that hour. That's a weaker check, and it can leave the record a little under the true best.
+
+**Today's fastest and its detail panel use the same check.** An aircraft with a glitch now shows its real top speed, and one heard only once today isn't listed. The raw reading still shows on the Live tab, in Search and on the aircraft's page.
+
+### Operational notes
+
+This is an ordinary update with a normal restart and no database change. The highest record works as before: wrong altitudes often repeat from one reading to the next, so this check can't catch them, and altitude keeps its limits by type. A new fastest record now lands on the aircraft's second reading rather than its first. If you poll every few seconds, a glitch can last two polls and back itself up, though the limits by type still apply.
+
+### Behind the scenes
+
+The rule is `SPEED_AGREE_KT` and `SPEED_AGREE_SEC` in `collector.py`. A poll looks up the aircraft's previous reading only when a reading would set a record, so an ordinary reading costs nothing extra. The self-heal and the Today card read the raw readings of one aircraft's hour at a time and stop once no later hourly row can beat the best so far, and a spike at the top of an hour no longer hides the real readings under it. The detail panel uses `LAG` and `LEAD` over today's readings, still pinned to the same index. For hours past retention, the fallback refuses a peak equal to the hour's last speed, because a spike is often the last thing heard from an aircraft.
+
+Measured on a real install with about 180 days of data: none of the 57 hourly peaks at 700 kt or more had an agreeing neighbour, and the top result was the same at the five combinations tried across 30, 40 and 60 kt and 2, 3 and 5 minutes. The fallback refused every spike at 650 kt and above. The self-heal took 0.22 s, the Today card about 0.2 ms, and the detail panel about 0.12 s on a 76,000-reading day, up from 0.05-0.09 s. Replaying every day, the card and its panel agreed on the top speed each time.
+
 ## [3.4.156] — 2026-11-04
 
 **A glitch on a large jet can no longer hold the fastest or highest record.** Several large jets were missing from the list that gives airliners their limits, so a garbled reading on one of them could still set a record. That includes the KC-135, RC-135, B-52, DC-10, 707, L-1011 and 747SP. They now have the same limits as airliners, 700 kt and 60,000 ft. The B-1 and Tu-160 are supersonic and keep 1,500 kt.

@@ -1302,8 +1302,17 @@ and stats:
   the cap are excluded from the fastest and highest all-time records and
   from Today's fastest and highest. The caps apply only to those; the raw
   value still appears on the Live tab, in Search and on the aircraft's page.
-  An aircraft whose type isn't known can still set a wrong record, because
-  there's nothing to compare it with.
+  An aircraft whose type isn't known can still set a wrong highest record,
+  because there's nothing to compare it with.
+
+- **Speed spike check.** A wrong speed is usually one reading out of line with
+  the aircraft's own track: 467 kt, then 963 kt, then gone. A real speed holds,
+  even a jet stream's 660 kt. So a speed only counts toward the fastest record
+  and Today's fastest if the aircraft's reading just before or just after it,
+  within 3 minutes (or two polls, if you poll more slowly than that), is within
+  40 kt. An aircraft heard only once can't set either. This doesn't need to know
+  the type, so it covers unknown types too. It's for speed only: wrong altitudes
+  often repeat, so the next reading can't be trusted to disagree.
 
 - **TIS-B / MLAT pseudo-target exclusion.** Some receivers (via
   dump1090 or readsb) relay aircraft position data they didn't hear
@@ -1317,7 +1326,11 @@ and stats:
   future release, a fastest or highest record that violates the new
   rule gets recomputed from the hourly history on next startup, which
   is kept however short your retention is. A bogus record stored under
-  looser rules will quietly fix itself, with no notification.
+  looser rules will quietly fix itself, with no notification. Individual
+  readings older than your retention are gone, so the spike check can't
+  look at them: a stored fastest record from that far back stays until
+  it's beaten, and a replacement from that far back has to be close to
+  the last speed kept for that hour.
 
 These filters apply to the Stats tab's records and the "Today's
 extremes" cards. They do not affect the Live, Watchlist, or Military

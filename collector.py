@@ -1,4 +1,4 @@
-# Version: 3.4.156
+# Version: 3.4.157
 """
 collector.py — ADS-B data fetcher and classifier.
 
@@ -1257,44 +1257,159 @@ def _known_type(conn, icao: str, aircraft_type: Optional[str]) -> str:
     return row[0] if row else ""
 
 
-# record_type -> the sightings_hourly column it comes from, and its check.
+# The spike check. A wrong speed is one reading out of line with the aircraft's
+# own track (467 -> 963 kt and then gone, 519 -> 1,098 -> 547), and a limit by
+# type can't catch one that stays under the limit. A real 660 kt in a jet stream
+# holds reading after reading. So a speed only counts toward the fastest record
+# and Today's fastest if the reading just before or just after it agrees.
+# Speed only: altitude glitches repeat, so their neighbours agree with them.
+SPEED_AGREE_KT = 40
+SPEED_AGREE_SEC = 180
+
+
+def speed_agree_window(poll_interval=None) -> int:
+    """How far apart two readings can be and still back each other up: three
+    minutes, or two polls on an install that polls more slowly than that."""
+    try:
+        return max(SPEED_AGREE_SEC, 2 * int(poll_interval))
+    except (TypeError, ValueError):
+        return SPEED_AGREE_SEC
+
+
+def _speed_readings(conn, icao: str, hour_bucket: int, window: int) -> List:
+    """(seen_at, speed) for the aircraft's hour and the neighbours either side."""
+    return conn.execute("""
+        SELECT seen_at, speed FROM all_sightings
+        WHERE icao = ? AND seen_at >= ? AND seen_at < ?
+          AND typeof(speed) IN ('integer', 'real')
+        ORDER BY seen_at
+    """, (icao, hour_bucket - window, hour_bucket + 3600 + window)).fetchall()
+
+
+def _reading_agrees(readings: List, i: int, window: int) -> bool:
+    at, speed = readings[i]
+    return any(0 <= j < len(readings)
+               and abs(readings[j][0] - at) <= window
+               and abs(readings[j][1] - speed) <= SPEED_AGREE_KT
+               for j in (i - 1, i + 1))
+
+
+def _best_agreed(readings: List, hour_bucket: int, aircraft_type: Optional[str],
+                 window: int) -> Optional[Tuple[float, int]]:
+    best = None
+    for i, (at, speed) in enumerate(readings):
+        if (hour_bucket <= at < hour_bucket + 3600 and (best is None or speed > best[0])
+                and _speed_is_plausible(aircraft_type, speed)
+                and _reading_agrees(readings, i, window)):
+            best = (speed, at)
+    return best
+
+
+def best_agreed_speed(conn, icao: str, hour_bucket: int, aircraft_type: Optional[str],
+                      window: int = SPEED_AGREE_SEC) -> Optional[Tuple[float, int]]:
+    """(speed, seen_at) of the aircraft's fastest reading that hour that is within
+    its type's limit and backed up by a neighbour, or None. Looks below the hour's
+    peak, because a spike at the top can sit above real readings."""
+    return _best_agreed(_speed_readings(conn, icao, hour_bucket, window),
+                        hour_bucket, aircraft_type, window)
+
+
+def _prior_speed_agrees(conn, icao: str, speed: float, now: int, window: int) -> bool:
+    """Whether the aircraft's previous reading backs up this one. The poll calls
+    this only for a reading that would set a record, so a real aircraft confirms
+    within one poll and a one-reading glitch never lands or notifies."""
+    row = conn.execute("""
+        SELECT speed FROM all_sightings
+        WHERE icao = ? AND seen_at >= ? AND seen_at < ?
+          AND typeof(speed) IN ('integer', 'real')
+        ORDER BY seen_at DESC LIMIT 1
+    """, (icao, now - window, now)).fetchone()
+    return row is not None and abs(row[0] - speed) <= SPEED_AGREE_KT
+
+
+def _fastest_stands(conn, icao, known, value, set_at, window) -> bool:
+    """Keep a stored fastest unless its own reading is found and nothing backs it
+    up. Older than retention there is nothing to look at: a record isn't taken
+    away just because it can't be checked any more."""
+    if not _speed_is_plausible(known, value):
+        return False
+    try:
+        hour_bucket = int(set_at) // 3600 * 3600
+    except (TypeError, ValueError):
+        return True
+    readings = _speed_readings(conn, icao, hour_bucket, window)
+    found = [i for i, (at, speed) in enumerate(readings)
+             if speed == value and hour_bucket <= at < hour_bucket + 3600]
+    return not found or any(_reading_agrees(readings, i, window) for i in found)
+
+
+def _highest_stands(conn, icao, known, value, set_at, window) -> bool:
+    return altitude_is_plausible(known, value)
+
+
+def _fastest_in_hour(conn, icao, known, value, last_speed, hour_bucket, window):
+    """(value, when) this hourly row can give the fastest record, or None."""
+    readings = _speed_readings(conn, icao, hour_bucket, window)
+    if any(hour_bucket <= at < hour_bucket + 3600 for at, _ in readings):
+        return _best_agreed(readings, hour_bucket, known, window)
+    # Past retention the hour's last reading is the only other speed left: the
+    # peak has to be close to it. Being that reading is no evidence at all, since
+    # a spike often is the last thing heard from an aircraft. Measured on a real
+    # install this refused every spike at 650 kt and above, along with some real
+    # readings, which only makes the record a little lower.
+    if (isinstance(last_speed, (int, float)) and last_speed != value
+            and abs(last_speed - value) <= SPEED_AGREE_KT
+            and _speed_is_plausible(known, value)):
+        return value, hour_bucket
+    return None
+
+
+def _highest_in_hour(conn, icao, known, value, last_speed, hour_bucket, window):
+    return (value, hour_bucket) if altitude_is_plausible(known, value) else None
+
+
+# record_type -> the sightings_hourly column it comes from, whether a stored
+# value stands, and what an hourly row can give it.
 _CHECKED_RECORDS = {
-    "fastest_ever": ("max_speed", _speed_is_plausible),
-    "highest_altitude_ever": ("max_altitude", altitude_is_plausible),
+    "fastest_ever": ("max_speed", _fastest_stands, _fastest_in_hour),
+    "highest_altitude_ever": ("max_altitude", _highest_stands, _highest_in_hour),
 }
 
 
-def heal_all_time_records(conn) -> None:
-    """Replace a fastest or highest record that fails today's ceilings, or that
-    is missing, with the best reading that passes. Runs on every start, so
-    tightening a ceiling corrects old records.
+def heal_all_time_records(conn, window: int = SPEED_AGREE_SEC) -> None:
+    """Replace a fastest or highest record that fails today's checks, or that is
+    missing, with the best reading that passes. Runs on every start, so tightening
+    a check corrects old records.
 
-    Reads sightings_hourly, which is never pruned, so the answer doesn't depend
-    on retention. set_at is the hour it happened (seconds), never now, so the
-    daily summary doesn't report an old reading as new, and nothing is notified.
-    A healthy record costs two lookups; only a rebuild sorts the table."""
-    for record_type, (column, plausible) in _CHECKED_RECORDS.items():
+    Walks sightings_hourly, which is never pruned, so there is an answer however
+    short retention is. set_at is when it happened, never now, so the daily summary
+    doesn't report an old reading as new, and nothing is notified. A healthy record
+    costs a few lookups; only a rebuild sorts the table."""
+    for record_type, (column, stands, in_hour) in _CHECKED_RECORDS.items():
         stored = conn.execute(
-            "SELECT value, icao, aircraft_type FROM stats_records WHERE record_type = ?",
+            "SELECT value, icao, aircraft_type, set_at FROM stats_records WHERE record_type = ?",
             (record_type,)).fetchone()
-        if stored and plausible(_known_type(conn, stored[1], stored[2]), float(stored[0])):
+        if stored and stands(conn, stored[1], _known_type(conn, stored[1], stored[2]),
+                             float(stored[0]), stored[3], window):
             continue
         best = None
         candidates = conn.execute(f"""
-            SELECT icao, callsign, aircraft_type, {column}, hour_bucket
+            SELECT icao, callsign, aircraft_type, {column}, last_speed, hour_bucket
             FROM sightings_hourly
             WHERE typeof({column}) IN ('integer', 'real') AND icao NOT LIKE '~%'
             ORDER BY {column} DESC
         """)
-        for icao, callsign, aircraft_type, value, hour_bucket in candidates:
-            known = _known_type(conn, icao, aircraft_type)
-            if plausible(known, value):
-                best = (value, icao, callsign or "", known, hour_bucket)
+        for icao, callsign, aircraft_type, value, last_speed, hour_bucket in candidates:
+            if best and value <= best[0]:
                 break
+            known = _known_type(conn, icao, aircraft_type)
+            found = in_hour(conn, icao, known, value, last_speed, hour_bucket, window)
+            if found and (not best or found[0] > best[0]):
+                best = (found[0], icao, callsign or "", known, found[1])
         candidates.close()
         if stored:
             conn.execute("DELETE FROM stats_records WHERE record_type = ?", (record_type,))
-            logger.info("Self-healing %s: stored %s for type %s fails the current ceiling",
+            logger.info("Self-healing %s: stored %s for type %s fails the current checks",
                         record_type, stored[0], stored[2] or "(unknown)")
         if best:
             conn.execute(
@@ -2144,7 +2259,7 @@ def _build_track_url(icao: str, provider: str) -> str:
 # Database
 # =============================================================================
 
-def init_db(db_path: str):
+def init_db(db_path: str, poll_interval=None):
     """Create tables. all_sightings stores everything; military/watchlist
     store tagged subsets with their extra label columns."""
     conn = _open_db_conn(db_path)
@@ -2666,7 +2781,7 @@ def init_db(db_path: str):
 
     # A record stored under looser rules corrects itself here, on every start.
     try:
-        heal_all_time_records(conn)
+        heal_all_time_records(conn, speed_agree_window(poll_interval))
     except sqlite3.OperationalError:
         # Tables don't exist yet: nothing to heal.
         pass
@@ -3675,11 +3790,13 @@ def _haversine(lat1, lon1, lat2, lon2, unit="mi"):
 
 
 def _update_record(conn, record_type: str, new_value: float, beats: str,
-                   ac: Dict, now: int, extra: str = ""):
+                   ac: Dict, now: int, extra: str = "", confirm=None):
     """Update an all-time record if the new value beats the stored one.
 
     beats='gt' → update if new_value > stored value (records like fastest, furthest, highest)
     beats='lt' → update if new_value < stored value (records like lowest altitude)
+    confirm    → optional check that has to pass too, asked only when the record
+                 would change, so it costs nothing on an ordinary reading
     """
     # Coerce new_value to float. If it's not numeric (e.g. string "ground"
     # from some ADS-B feeds), skip this update rather than crashing.
@@ -3693,6 +3810,8 @@ def _update_record(conn, record_type: str, new_value: float, beats: str,
         (record_type,)
     ).fetchone()
     if row is None:
+        if confirm and not confirm():
+            return False
         # First record — insert
         conn.execute("""
             INSERT INTO stats_records (record_type, value, icao, callsign,
@@ -3706,6 +3825,8 @@ def _update_record(conn, record_type: str, new_value: float, beats: str,
     try:
         stored = float(row[0])
     except (TypeError, ValueError):
+        if confirm and not confirm():
+            return False
         # Corrupt stored value — overwrite it with our new good value
         conn.execute("""
             UPDATE stats_records
@@ -3715,6 +3836,8 @@ def _update_record(conn, record_type: str, new_value: float, beats: str,
               ac.get("aircraft_type", ""), now, extra, record_type))
         return True
     if (beats == "gt" and new_value > stored) or (beats == "lt" and new_value < stored):
+        if confirm and not confirm():
+            return False
         conn.execute("""
             UPDATE stats_records
             SET value = ?, icao = ?, callsign = ?, aircraft_type = ?, set_at = ?, extra = ?
@@ -4276,6 +4399,9 @@ def _poll_once(config: Dict, watchlist_lookup: Dict):
             # - Fastest and highest enforce the type-aware ceilings to reject
             #   transponder glitches (a B763 reporting 1010 kt, a C130 at
             #   120,000 ft). Types with no known class stay permissive.
+            # - Fastest also needs the aircraft's previous reading to agree (the
+            #   spike check). A first reading can't confirm itself; its next one
+            #   can, if that still beats the record.
             # - Slowest is not an all-time record (it would just trend toward
             #   1 kt as more ground noise gets caught), and a low altitude
             #   can't be told from a real one by type, so no filter there.
@@ -4286,7 +4412,11 @@ def _poll_once(config: Dict, watchlist_lookup: Dict):
                     if ac["speed"] is not None and ac["speed"] > 0:
                         cap = speed_ceiling_for_type(ac.get("aircraft_type"))
                         if ac["speed"] <= cap:
-                            _update_record(conn, "fastest_ever", ac["speed"], "gt", ac, now)
+                            _update_record(
+                                conn, "fastest_ever", ac["speed"], "gt", ac, now,
+                                confirm=lambda: _prior_speed_agrees(
+                                    conn, ac["hex"], ac["speed"], now, speed_agree_window(
+                                        config.get("receiver", {}).get("poll_interval"))))
                     if ac["altitude"] is not None:
                         if altitude_is_plausible(ac.get("aircraft_type"), ac["altitude"]):
                             _update_record(conn, "highest_altitude_ever", ac["altitude"], "gt", ac, now)

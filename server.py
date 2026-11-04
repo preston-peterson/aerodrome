@@ -1,4 +1,4 @@
-# Version: 3.4.156
+# Version: 3.4.157
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -5531,20 +5531,30 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 # realistic glitch counts (most installs see 1-3
                 # glitchy aircraft / day, each contributing 1-5 hour
                 # buckets, so 30+ slots remain for legit answers).
+                #
+                # v3.4.157: the rollup says which hours to look at; the raw
+                # readings of those hours say which speed a neighbouring reading
+                # backs up (see the spike check in collector.py). One indexed
+                # lookup per row, and the walk stops as soon as no later row can
+                # beat the best so far: usually one or two.
                 rows = q("""
-                    SELECT icao, callsign, max_speed AS speed, aircraft_type
+                    SELECT icao, callsign, max_speed AS speed, aircraft_type, hour_bucket
                     FROM sightings_hourly
                     WHERE hour_bucket >= ? AND max_speed IS NOT NULL
                       AND typeof(max_speed) IN ('integer', 'real')
                       AND icao NOT LIKE '~%'
                     ORDER BY max_speed DESC LIMIT 50
                 """, (start_ts,))
+                window = _collector_mod.speed_agree_window(CONFIG["receiver"].get("poll_interval"))
                 fastest = None
                 for r in rows:
-                    cap = _collector_mod.speed_ceiling_for_type(r["aircraft_type"])
-                    if r["speed"] <= cap:
-                        fastest = dict(r)
+                    if fastest and r["speed"] <= fastest["speed"]:
                         break
+                    found = _collector_mod.best_agreed_speed(
+                        conn, r["icao"], r["hour_bucket"], r["aircraft_type"], window)
+                    if found and (not fastest or found[0] > fastest["speed"]):
+                        fastest = {"icao": r["icao"], "callsign": r["callsign"],
+                                   "speed": found[0], "aircraft_type": r["aircraft_type"]}
                 result["cards"]["fastest"] = fastest
 
             if card_check("slowest"):
@@ -6424,14 +6434,34 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 # skip-scan on a busy install, a scan of the peaks per row
                 # after a one-aircraft first poll). init_db creates the
                 # index on every start.
+                #
+                # v3.4.157: the peak is the fastest reading a neighbouring
+                # reading backs up, the same spike check as the card (see
+                # collector.py), so a glitch doesn't hide the aircraft's real
+                # peak. An aircraft with no such reading isn't listed. The slice
+                # starts a window early so the day's first reading can have a
+                # neighbour, as it does on the card. 0.12 s on a 76,000-reading
+                # day, against 0.05-0.09 s before.
+                agree_sec = _collector_mod.speed_agree_window(CONFIG["receiver"].get("poll_interval"))
+                agree_kt = _collector_mod.SPEED_AGREE_KT
                 raw = q("""
-                    WITH r AS (
+                    WITH readings AS (
                         SELECT icao, callsign, aircraft_type, speed AS v, seen_at,
-                               MAX(speed) OVER (PARTITION BY icao) AS peak
+                               LAG(speed) OVER w AS prev_v, LAG(seen_at) OVER w AS prev_at,
+                               LEAD(speed) OVER w AS next_v, LEAD(seen_at) OVER w AS next_at
                         FROM all_sightings INDEXED BY idx_all_seen_icao
                         WHERE seen_at >= ? AND speed IS NOT NULL
                           AND typeof(speed) IN ('integer', 'real')
                           AND icao NOT LIKE '~%'
+                        WINDOW w AS (PARTITION BY icao ORDER BY seen_at)
+                    ),
+                    r AS (
+                        SELECT icao, callsign, aircraft_type, v, seen_at,
+                               MAX(v) OVER (PARTITION BY icao) AS peak
+                        FROM readings
+                        WHERE seen_at >= ?
+                          AND ((seen_at - prev_at <= ? AND ABS(v - prev_v) <= ?)
+                            OR (next_at - seen_at <= ? AND ABS(v - next_v) <= ?))
                     )
                     SELECT icao,
                            MAX(callsign) AS callsign,
@@ -6442,7 +6472,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                     WHERE v = peak
                     GROUP BY icao, peak
                     ORDER BY metric DESC, icao
-                """, (start_ts,))
+                """, (start_ts - agree_sec, start_ts, agree_sec, agree_kt, agree_sec, agree_kt))
                 rows = []
                 for r in raw:
                     m = _to_number(r["metric"]) or 0

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Version: 3.4.156
+# Version: 3.4.157
 """
 main.py — Aerodrome ADS-B Tracker
 
@@ -915,7 +915,7 @@ def start(config: dict):
     # init_db also runs the one-time rollup backfills, synchronously, before
     # the migrations below (migrations v1, v5 and v16 read those rollups).
     try:
-        init_db(config["data"]["db_file"])
+        init_db(config["data"]["db_file"], config.get("receiver", {}).get("poll_interval"))
     except Exception as e:
         if _restore:
             _restore_failed(_restore, f"the restored database couldn't be opened: {e}",
