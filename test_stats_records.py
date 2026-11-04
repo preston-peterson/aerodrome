@@ -50,6 +50,20 @@ class TestCeilings(unittest.TestCase):
                 self.assertTrue(collector.altitude_is_plausible(type_code, 130000))
                 self.assertIsNone(collector.altitude_ceiling_for_type(type_code))
 
+    def test_real_heavy_and_surveillance_jets_get_the_subsonic_ceilings(self):
+        for type_code in ("A337", "A3ST", "A50", "B2", "B52", "B703", "B74R", "B74S", "BLCF",
+                          "C135", "DC10", "DC86", "DC87", "E737", "E767", "IL62", "K35E", "K35R",
+                          "KC2", "KE3", "L101", "MYA4", "R135", "SLCH", "W135", "Y20"):
+            with self.subTest(type_code):
+                self.assertEqual(collector.speed_ceiling_for_type(type_code), 700)
+                self.assertEqual(collector.altitude_ceiling_for_type(type_code), 60000)
+
+    def test_supersonic_jets_stay_permissive(self):
+        for type_code in ("B1", "T160"):
+            with self.subTest(type_code):
+                self.assertEqual(collector.speed_ceiling_for_type(type_code), 1500)
+                self.assertIsNone(collector.altitude_ceiling_for_type(type_code))
+
     def test_a_homebuilt_gets_a_class_speed_ceiling(self):
         self.assertEqual(collector.speed_ceiling_for_type("T18"), collector.CLASS_MAX_KT["piston"])
         self.assertLess(collector.speed_ceiling_for_type("T18"), 1000)
@@ -212,6 +226,15 @@ class TestHeal(_DbCase):
                     ("A0B003", "DAL1", "B738", 512, 37000, OLD))
         self.restart()
         self.assertEqual(self.records()["fastest_ever"]["icao"], "A0B003")
+
+    def test_a_770_kt_glitch_on_a_real_heavy_jet_type_is_replaced(self):
+        self.record(("fastest_ever", 770.0, "A0B018", "N5BAD", "K35R", OLD + 7200, ""))
+        self.hourly(("A0B018", "N5BAD", "K35R", 770, 31000, OLD + 7200),
+                    ("A0B003", "DAL1", "B738", 512, 37000, OLD))
+        self.restart()
+        rec = self.records()["fastest_ever"]
+        self.assertEqual((rec["value"], rec["icao"], rec["callsign"], rec["aircraft_type"]),
+                         (512, "A0B003", "DAL1", "B738"))
 
     def test_a_blank_type_is_judged_by_the_type_learned_later(self):
         self.record(("fastest_ever", 1200.0, "A0B011", "N3BAD", "", OLD, ""))

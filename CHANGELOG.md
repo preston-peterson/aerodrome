@@ -19,6 +19,20 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.156] — 2026-11-04
+
+**A glitch on a large jet can no longer hold the fastest or highest record.** Several large jets were missing from the list that gives airliners their limits, so a garbled reading on one of them could still set a record. That includes the KC-135, RC-135, B-52, DC-10, 707, L-1011 and 747SP. They now have the same limits as airliners, 700 kt and 60,000 ft. The B-1 and Tu-160 are supersonic and keep 1,500 kt.
+
+**A wrong record already stored corrects itself.** On the first start after this update, a fastest or highest record that fails the check is replaced by the best reading that passes, the same way as in 3.4.155. You won't get a notification. The raw reading still shows on the Live tab, in Search and on the aircraft's page.
+
+### Operational notes
+
+This is an ordinary update with a normal restart and no database change. Fighters and other jets that aren't on the list keep the 1,500 kt limit and have no altitude limit, so a wrong reading on one of those, or on an aircraft whose type isn't known, can still set a record.
+
+### Behind the scenes
+
+The list in `collector.py` named some military types by codes that aren't in ICAO DOC 8643, such as `KC35`, so the real `K35R` and `K35E` never matched it. This adds 26 real codes: every heavy jet in DOC 8643 that wasn't listed, apart from the two supersonic ones, plus the 737 Wedgetail (`E737`). New tests check the limits for each code and that a stored 770 kt record on a `K35R` gets replaced.
+
 ## [3.4.155] — 2026-11-03
 
 **Stats no longer shows impossible all-time records.** A garbled transponder reading could set the fastest or highest record, a small piston homebuilt at over 1,000 kt or a C-130 above 100,000 ft, and it stayed until something beat it. Those two records now check each reading against what that type of aircraft can do. So do Today's fastest and highest cards and their detail panels.

@@ -1294,15 +1294,16 @@ and stats:
   Cessna 172 is garbage — a 172's max cruise is ~120 kt. Aerodrome caps
   each aircraft type at a physically plausible ground speed (e.g. 250 kt
   for light GA singles, 500 kt for other piston aircraft, 650 kt for
-  turboprops, 280 kt for helicopters, 700 kt for airliners, 1500 kt for
-  fighters and unknown types) and altitude (50,000 ft for piston aircraft,
-  45,000 ft for helicopters, 60,000 ft for turboprops, airliners and
-  business jets, with no limit for other jets, balloons, gliders and
-  unknown types). Readings above the cap are excluded from the fastest and
-  highest all-time records and from Today's fastest and highest. The caps
-  apply only to those; the raw value still appears on the Live tab, in
-  Search and on the aircraft's page. An aircraft whose type isn't known
-  can still set a wrong record, because there's nothing to compare it with.
+  turboprops, 280 kt for helicopters, 700 kt for airliners and large
+  military jets, 1500 kt for fighters and unknown types) and altitude
+  (50,000 ft for piston aircraft, 45,000 ft for helicopters, 60,000 ft for
+  turboprops, airliners, large military jets and business jets, with no
+  limit for other jets, balloons, gliders and unknown types). Readings above
+  the cap are excluded from the fastest and highest all-time records and
+  from Today's fastest and highest. The caps apply only to those; the raw
+  value still appears on the Live tab, in Search and on the aircraft's page.
+  An aircraft whose type isn't known can still set a wrong record, because
+  there's nothing to compare it with.
 
 - **TIS-B / MLAT pseudo-target exclusion.** Some receivers (via
   dump1090 or readsb) relay aircraft position data they didn't hear

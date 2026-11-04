@@ -1,4 +1,4 @@
-# Version: 3.4.155
+# Version: 3.4.156
 """
 collector.py — ADS-B data fetcher and classifier.
 
@@ -1110,8 +1110,12 @@ SUBSONIC_AIRFRAMES = frozenset({
     # Common military transports (all subsonic)
     "C5", "C5M", "C17", "C130", "C30J", "C40",
     "KC10", "KC30", "KC35", "KC46", "KC7", "KC97", "KDC1",
-    "E3", "E3CF", "E3TF", "E4", "E6", "E8",
+    "E3", "E3CF", "E3TF", "E4", "E6", "E737", "E8",
     "P3", "P8", "P3C", "U2",
+    # Other heavy jets by their real ICAO codes (all subsonic; B1 and T160 are not, so stay out)
+    "A337", "A3ST", "A50", "B2", "B52", "B703", "B74R", "B74S", "BLCF", "C135",
+    "DC10", "DC86", "DC87", "E767", "IL62", "K35E", "K35R", "KC2", "KE3", "L101",
+    "MYA4", "R135", "SLCH", "W135", "Y20",
     # Tu / Il / An (subsonic)
     "A124", "A148", "A158", "A225", "IL76", "IL86", "IL96",
     "T154", "T204", "T214",
