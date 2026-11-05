@@ -29,6 +29,8 @@ from unittest import mock
 from test_update_apply import (NEW, REPO, _EndpointCase, _release_files, _status, _upload,
                                _zip_release, repo_guard)
 
+os.environ.setdefault("AERODROME_NO_UPDATE_CHECK", "1")
+
 setUpModule, tearDownModule = repo_guard()
 
 # The only route handlers allowed to be `async def`. Each either awaits real

@@ -19,6 +19,20 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.159] — 2026-11-05
+
+**`uninstall.sh --purge` now removes your database when `data.db_file` is a link to it.** If `data.db_file` in config.yaml is a link, for example one in the install folder pointing at a database on another disk, purge used to delete only the link and say the database was removed. The database and the files kept beside it stayed where they were. Purge now removes the database the link points to, the files Aerodrome keeps beside it (SQLite's `-wal` and `-shm` files, a restore's copies, the daily-summary state) and the link itself. Without `--purge`, the question now names the real file and shows its real size. As before, a file that isn't a SQLite database is left alone, a link to a folder is skipped, and `--keep` keeps everything.
+
+**A settings save that fails no longer changes the file's permissions.** When Aerodrome can't replace config.yaml with a new file (for example, it's a link into a folder Aerodrome's account can't write to), it writes over the file in place, and first makes it readable only by its owner. If that write then failed, say on a full disk, the old settings were put back but the file stayed owner-only. Now its permissions go back too, so a failed save really changes nothing.
+
+### Operational notes
+
+This is an ordinary update with a normal restart and no database change.
+
+### Behind the scenes
+
+`uninstall.sh` resolves a linked `db_file` with its `realpath -m` helper before it works out the data folder. That's because everything the app keeps beside the database sits beside the real file: SQLite follows the link, `restore_io` uses `realpath`, and the daily-summary state uses `Path.resolve()`. The link goes in the same delete set. In `config_io._write_in_place`, the failure branch now restores the original mode with `fchmod` after it puts the old bytes back. The mode is still set before the data is written, so new settings are never readable under a looser mode. The test suite no longer reaches GitHub: each test module that builds an app sets `AERODROME_NO_UPDATE_CHECK=1`, which keeps `get_app()` from starting the update-check thread, and a static test fails if a test file forgets it.
+
 ## [3.4.158] — 2026-11-05
 
 **The Watchlist alert in live mode now fires for every kind of watchlist entry.** With the alert set to "Only while aircraft is actively transmitting", the tab lit up only for entries added by hex code or tail number, so an entry for a callsign or an aircraft model never set it off. It now lights whenever an aircraft on the Live tab matches any of your entries, the same match that marks it on the radar, and it still clears by itself when that aircraft leaves range.

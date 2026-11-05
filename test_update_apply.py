@@ -36,6 +36,8 @@ from unittest import mock
 
 import updater
 
+os.environ.setdefault("AERODROME_NO_UPDATE_CHECK", "1")
+
 REPO = Path(__file__).resolve().parent
 TMP = os.environ.get("TMPDIR") or None
 PRESERVE = {"config.yaml", "aircraft_history.db", "logs", "venv", ".backups", "update",
@@ -2948,6 +2950,71 @@ class TestUpdateCheckBackoff(unittest.TestCase):
                                   last_check_result="success"), 0)
 
 
+class TestUpdateCheckThreadSwitch(unittest.TestCase):
+    """AERODROME_NO_UPDATE_CHECK=1 — what every test module that builds an app
+    sets — keeps get_app() from starting the update-check scheduler: a test run
+    must not reach api.github.com, and a scheduler thread outlives the test
+    whose database it would then read. Only the thread is skipped; the
+    /api/updates/github/check endpoint still works (TestGithubCheckUnreadableTag)."""
+
+    def build_app(self):
+        """A real get_app() on a throwaway config; returns its stop switch."""
+        import sqlite3
+        import yaml
+        import collector
+        import server
+        from schema_migrations import apply_schema_migrations
+        tmp = _tmpdir(self)
+        db = tmp / "history.db"
+        collector.init_db(str(db))
+        conn = sqlite3.connect(str(db))
+        apply_schema_migrations(conn, "test")
+        conn.close()
+        cfg = yaml.safe_load((REPO / "config.yaml.example").read_text())
+        cfg["data"]["db_file"] = str(db)
+        cfg["watchlist"] = []
+        cfgp = tmp / "config.yaml"
+        cfgp.write_text(yaml.safe_dump(cfg))
+        server.get_app(cfg, str(cfgp))
+        stop = server._SCHEDULERS_STOP       # get_app's own switch for its schedulers
+        self.addCleanup(stop.set)
+        return stop
+
+    @staticmethod
+    def schedulers():
+        return [t for t in threading.enumerate() if t.name == "update-check-scheduler"]
+
+    def started_since(self, seen):
+        """Scheduler threads get_app() began after the snapshot, waiting out
+        the window where a started thread isn't listed yet."""
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            new = [t for t in self.schedulers() if id(t) not in seen]
+            if new:
+                return new
+            time.sleep(0.02)
+        return []
+
+    def test_the_switch_starts_no_scheduler_thread(self):
+        seen = {id(t) for t in self.schedulers()}
+        with mock.patch.dict(os.environ, {"AERODROME_NO_UPDATE_CHECK": "1"}):
+            self.build_app()
+        self.assertEqual([t for t in self.schedulers() if id(t) not in seen], [])
+
+    def test_without_the_switch_a_built_app_starts_one(self):
+        seen = {id(t) for t in self.schedulers()}
+        with mock.patch.dict(os.environ):
+            os.environ.pop("AERODROME_NO_UPDATE_CHECK", None)
+            stop = self.build_app()
+        started = self.started_since(seen)
+        self.assertEqual(len(started), 1, started)
+        stop.set()                                  # what a newer get_app() does
+        for t in started:
+            t.join(5)
+        self.assertEqual([t for t in started if t.is_alive()], [],
+                         "the stopped scheduler is still running")
+
+
 class TestStaticGates(unittest.TestCase):
 
     def test_guard_block_comes_before_any_non_stdlib_import(self):
@@ -3007,6 +3074,15 @@ class TestStaticGates(unittest.TestCase):
                 raw.append(m.group(0))
         raw += re.findall(r"\+\s*\(?\s*" + field + r"[^\n]*", src)
         self.assertEqual(raw, [], "server text shown as HTML without _esc()")
+
+    def test_every_test_module_that_builds_an_app_sets_the_update_check_switch(self):
+        # get_app() only skips its update-check scheduler when the module says
+        # so; a test file that forgets it reaches api.github.com, and its
+        # thread outlives the database it wakes to read.
+        forgetful = [p.name for p in sorted(REPO.glob("test_*.py"))
+                     if "get_app(" in p.read_text()
+                     and "AERODROME_NO_UPDATE_CHECK" not in p.read_text()]
+        self.assertEqual(forgetful, [])
 
 
 class TestShipsWithRelease(unittest.TestCase):

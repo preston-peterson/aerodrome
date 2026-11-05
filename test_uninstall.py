@@ -350,6 +350,78 @@ class Purge(_Case):
         self.assertEqual(sorted(p.name for p in o.iterdir()),
                          ["a.db.restore-staged", "unrelated"], out)
 
+    def linked_db(self):
+        """db_file is a link in the install to a database elsewhere, with
+        everything the app keeps beside the REAL file (SQLite's -wal/-shm, a
+        restore's files, the daily-summary state)."""
+        o = self.tmp / "data"
+        db = sqlite_file(o / "a.db")
+        for f in ("a.db-wal", "a.db-shm", "a.db.bak.20261021-101010.pre-restore",
+                  ".daily-summary-state.json", *self.RESTORE_FILES):
+            (o / f).write_text("x\n")
+        (o / "unrelated").write_text("keep\n")
+        link = self.inst / "aircraft_history.db"
+        link.symlink_to(db)
+        self.config()
+        return o, db, link
+
+    def test_a_linked_db_purges_the_real_database_and_the_link(self):
+        o, db, link = self.linked_db()
+        rc, out = self.run_un("--purge")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(sorted(p.name for p in o.iterdir()), ["unrelated"], out)
+        self.assertFalse(os.path.lexists(link), out)
+        self.assertTrue(o.is_dir())                    # never the folder
+
+    def test_a_link_to_a_file_that_is_not_sqlite_is_kept_with_the_link(self):
+        v = self.tmp / "victim.txt"
+        v.write_text("important\n")
+        link = self.inst / "aircraft_history.db"
+        link.symlink_to(v)
+        self.config()
+        rc, out = self.run_un("--purge")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(v.read_text(), "important\n")
+        self.assertTrue(link.is_symlink(), out)
+        self.assertIn("not a SQLite database", out)
+
+    def test_a_link_to_a_folder_is_skipped_with_the_folder_intact(self):
+        d = self.tmp / "data"
+        d.mkdir()
+        (d / "keep.txt").write_text("keep\n")
+        link = self.inst / "aircraft_history.db"
+        link.symlink_to(d)
+        self.config()
+        rc, out = self.run_un("--purge")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual((d / "keep.txt").read_text(), "keep\n")
+        self.assertIn("is a directory", out)
+
+    def test_a_link_whose_database_is_gone_is_removed(self):
+        link = self.inst / "aircraft_history.db"
+        link.symlink_to(self.tmp / "data" / "gone.db")
+        self.config()
+        rc, out = self.run_un("--purge")
+        self.assertEqual(rc, 0, out)
+        self.assertFalse(os.path.lexists(link), out)
+
+    def test_a_linked_db_is_kept_whole_with_keep(self):
+        o, db, link = self.linked_db()
+        before = sorted(p.name for p in o.iterdir())
+        rc, out = self.run_un("--keep")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(sorted(p.name for p in o.iterdir()), before, out)
+        self.assertTrue(link.is_symlink(), out)
+
+    def test_the_prompt_for_a_linked_db_names_the_real_file(self):
+        o, db, link = self.linked_db()
+        # sure=y, database=y, then n to everything else
+        rc, out = self.run_un_tty(keys="yynnnnnn")
+        self.assertEqual(rc, 0, out)
+        self.assertIn(f"Delete Database (aircraft history) — {db.resolve()} + ", out)
+        self.assertEqual(sorted(p.name for p in o.iterdir()), ["unrelated"], out)
+        self.assertFalse(os.path.lexists(link), out)
+
 
 @GUARD
 @NEEDS

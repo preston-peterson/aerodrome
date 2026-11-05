@@ -18,6 +18,8 @@ import collector
 import hexdb_resolver
 from schema_migrations import apply_schema_migrations
 
+os.environ.setdefault("AERODROME_NO_UPDATE_CHECK", "1")
+
 REPO = Path(__file__).resolve().parent
 GOOD = {"hex": "a00001", "flight": "DEMO1 ", "lat": 40.0, "lon": -90.0,
         "alt_baro": 12000, "gs": 300, "t": "B738", "squawk": "1200"}

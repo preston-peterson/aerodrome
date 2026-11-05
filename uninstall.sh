@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.4.158
+# Version: 3.4.159
 # =============================================================================
 # Aerodrome — Uninstall Script
 # =============================================================================
@@ -23,7 +23,8 @@
 #     its -wal/-shm files, its .pre-restore safety copies, the files a
 #     restore keeps next to it (a staged copy, a restored database set
 #     aside, an unfinished copy), and the daily-summary state file kept
-#     next to it
+#     next to it. When db_file is a link, that means the file it points at
+#     (all of these live beside it) and the link
 #   - Backups & update snapshots (.backups/: pre-update snapshots, database
 #     snapshots, and backup zips you made from the web UI — copy any backup
 #     you want to keep out of .backups/ first)
@@ -229,6 +230,15 @@ PYEOF
 fi
 case "$DB_FILE" in /*) ;; *) DB_FILE="${INSTALL_DIR}/${DB_FILE}" ;; esac
 case "$LOG_DIR" in /*) ;; *) LOG_DIR="${INSTALL_DIR}/${LOG_DIR}" ;; esac
+# A db_file that is a link: the database it points at, SQLite's -wal/-shm, a
+# restore's files and the daily-summary state all sit beside the real file,
+# so that is the set to handle — plus the link itself (DB_LINK).
+DB_LINK=""
+if [ -L "$DB_FILE" ]; then
+    DB_LINK="$DB_FILE"
+    DB_FILE="$(_real "$DB_LINK")" || DB_FILE=""
+    [ -n "$DB_FILE" ] || DB_FILE="$DB_LINK"
+fi
 DATA_DIR="$(dirname "$DB_FILE")"
 
 # Deletion rules: `rm -rf` only ever runs on a path whose REAL location is
@@ -413,7 +423,7 @@ else
         "${DATA_DIR}/.${_DBN}.restore-staged-shm" "${DATA_DIR}/.${_DBN}.restore-staged-journal" \
         "${DB_FILE}".restore-failed.* \
         "${DATA_DIR}/.${_DBN}".bak.*.pre-restore.tmp* \
-        "${DATA_DIR}/.daily-summary-state.json" || true
+        "${DATA_DIR}/.daily-summary-state.json" ${DB_LINK:+"$DB_LINK"} || true
 fi
 remove_or_keep "Backups & update snapshots" "${INSTALL_DIR}/.backups" || true
 if _inside_install "$LOG_DIR"; then

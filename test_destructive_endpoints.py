@@ -30,6 +30,8 @@ import privhelper
 import server
 from schema_migrations import apply_schema_migrations
 
+os.environ.setdefault("AERODROME_NO_UPDATE_CHECK", "1")
+
 REPO = Path(__file__).resolve().parent
 
 
@@ -212,6 +214,12 @@ class TestASupersededAppsSchedulersStop(_AppCase):
             yield made
 
     def setUp(self):
+        # This class drives the update-check scheduler's body on purpose, so
+        # the suite-wide switch that keeps tests off GitHub is cleared here.
+        no_check = mock.patch.dict(os.environ)
+        no_check.start()
+        os.environ.pop("AERODROME_NO_UPDATE_CHECK", None)
+        self.addCleanup(no_check.stop)
         with self.capturing() as self.a:
             super().setUp()
         self.fresh = self.dir / "fresh.db"

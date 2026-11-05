@@ -40,6 +40,8 @@ import collector
 import privhelper
 from schema_migrations import apply_schema_migrations
 
+os.environ.setdefault("AERODROME_NO_UPDATE_CHECK", "1")
+
 REPO = Path(__file__).resolve().parent
 IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
 

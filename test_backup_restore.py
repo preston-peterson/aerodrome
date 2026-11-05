@@ -63,6 +63,8 @@ import atomic_io
 import config_io
 from test_update_apply import _tmpdir, repo_guard
 
+os.environ.setdefault("AERODROME_NO_UPDATE_CHECK", "1")
+
 try:
     import restore_io
 except ImportError:            # the release before 3.4.149 (base check)

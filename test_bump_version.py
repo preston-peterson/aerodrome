@@ -32,6 +32,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+os.environ.setdefault("AERODROME_NO_UPDATE_CHECK", "1")
+
 REPO = Path(__file__).resolve().parent
 SKIP_SLOW = os.environ.get("AERODROME_SKIP_SLOW_TESTS") == "1"
 SLOW_SKIP_REASON = "AERODROME_SKIP_SLOW_TESTS=1 (subprocess release-pipeline suite)"

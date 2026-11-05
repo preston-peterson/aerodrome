@@ -1,4 +1,4 @@
-# Version: 3.4.158
+# Version: 3.4.159
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -3922,12 +3922,15 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             if schedulers_stop.wait(_seconds_until_next_check()):
                 return
 
-    _update_check_thread = _threading.Thread(
-        target=_update_check_scheduler,
-        name="update-check-scheduler",
-        daemon=True,
-    )
-    _update_check_thread.start()
+    # AERODROME_NO_UPDATE_CHECK=1 is set by the test suite: tests build apps
+    # and must never reach api.github.com.
+    if os.environ.get("AERODROME_NO_UPDATE_CHECK") != "1":
+        _update_check_thread = _threading.Thread(
+            target=_update_check_scheduler,
+            name="update-check-scheduler",
+            daemon=True,
+        )
+        _update_check_thread.start()
 
     @app.post("/api/notifications/daily-summary/test")
     def post_daily_summary_test():

@@ -23,6 +23,8 @@ import type_classes
 from categorize import HELICOPTER_TYPES
 from schema_migrations import apply_schema_migrations
 
+os.environ.setdefault("AERODROME_NO_UPDATE_CHECK", "1")
+
 REPO = Path(__file__).resolve().parent
 HOUR = 3600
 DAY = 86400

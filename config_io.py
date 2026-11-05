@@ -52,6 +52,7 @@ credentials.
 import errno
 import os
 import re
+import stat
 import threading
 import time
 from pathlib import Path
@@ -272,9 +273,11 @@ def _write_in_place(staged, name):
                 view = view[os.write(fd, view):]
             os.ftruncate(fd, len(data))
             os.fsync(fd)
+        chmodded = False
         try:
             if st.st_uid == os.geteuid():
                 os.fchmod(fd, CONFIG_MODE)
+                chmodded = True
             put(staged.data)
         except OSError as e:
             try:
@@ -284,6 +287,11 @@ def _write_in_place(staged, name):
                     f"Couldn't save {name}: {os.strerror(e.errno) if e.errno else e}, and the "
                     f"old file couldn't be put back — Aerodrome puts the last settings that "
                     f"worked back at its next start.", disk_full=atomic_io.is_disk_full(e)) from e
+            if chmodded:                      # the write failed: undo the mode too
+                try:
+                    os.fchmod(fd, stat.S_IMODE(st.st_mode))
+                except OSError:
+                    pass                      # the bytes are what matter
             raise _as_write_error(e, name) from e
         os.lseek(fd, 0, os.SEEK_SET)
         got = b""

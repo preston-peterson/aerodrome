@@ -30,6 +30,8 @@ import collector
 import server
 from schema_migrations import apply_schema_migrations
 
+os.environ.setdefault("AERODROME_NO_UPDATE_CHECK", "1")
+
 REPO = Path(__file__).resolve().parent
 SLICE_DRILLS = ["fastest", "slowest", "highest_altitude", "lowest_altitude",
                 "unique_today", "top_types=B738", "top_operators=DAL",

@@ -23,6 +23,8 @@ import tzwindow
 from schema_migrations import apply_schema_migrations
 from search import execute_search, parse_query
 
+os.environ.setdefault("AERODROME_NO_UPDATE_CHECK", "1")
+
 REPO = Path(__file__).resolve().parent
 CHICAGO = ZoneInfo("America/Chicago")
 KOLKATA = ZoneInfo("Asia/Kolkata")

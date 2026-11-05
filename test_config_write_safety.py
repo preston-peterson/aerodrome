@@ -42,6 +42,8 @@ import config_io
 import updater
 from test_update_apply import NEW, OLD, PRESERVE, _fake_release, _tmpdir, repo_guard
 
+os.environ.setdefault("AERODROME_NO_UPDATE_CHECK", "1")
+
 setUpModule, tearDownModule = repo_guard()
 
 REPO = Path(__file__).resolve().parent
@@ -256,6 +258,27 @@ class TestWhoseFileAndWhichFolder(unittest.TestCase):
         self.assertTrue(cm.exception.disk_full)
         self.assertIn("Nothing was changed", str(cm.exception))
         self.assertEqual(real.read_bytes(), before)
+
+    @unittest.skipIf(_AS_ROOT, "root can write any folder")
+    def test_in_place_failed_write_puts_the_old_mode_back_too(self):
+        # Guard: the new text is fchmod'd 0600 before it is written; a save
+        # that fails and says "Nothing was changed" must not leave 0644→0600.
+        real = self.link_into_readonly_folder(0o644)
+        before = real.read_bytes()
+        real_write, n = os.write, [0]
+
+        def flaky(fd, data):
+            n[0] += 1
+            if n[0] == 1:                  # the new text: cut short by a full disk
+                real_write(fd, bytes(data)[:100])
+                raise ENOSPC
+            return real_write(fd, data)
+        new = "# differs from the first byte\n" + EXAMPLE
+        with mock.patch.object(config_io.os, "write", side_effect=flaky), \
+                self.assertRaises(config_io.ConfigWriteError):
+            config_io.write_text(self.path, new)
+        self.assertEqual(real.read_bytes(), before)
+        self.assertEqual(stat.S_IMODE(real.stat().st_mode), 0o644)
 
     @unittest.skipIf(_AS_ROOT, "root can write any folder")
     def test_in_place_refuses_a_file_with_other_hard_links(self):

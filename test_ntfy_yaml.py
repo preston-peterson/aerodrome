@@ -42,6 +42,8 @@ import server
 from schema_migrations import apply_schema_migrations
 from test_aerodrome_helper import HelperHost, HelperSudo
 
+os.environ.setdefault("AERODROME_NO_UPDATE_CHECK", "1")
+
 REPO = Path(__file__).resolve().parent
 
 # What v3.4.144 and earlier wrote (comments trimmed): plain cache-file and
