@@ -15,6 +15,7 @@ from unittest import mock
 import collector
 import hexdb_resolver
 from schema_migrations import apply_schema_migrations
+from tools.synthetic_feeder.generator import Fleet
 
 
 def _reset_caches():
@@ -66,6 +67,41 @@ class TestFeedTypeCode(unittest.TestCase):
         ac = collector.normalize({"hex": "a1b2c4", "type": "mlat",
                                   "flight": "DEMO1 "})
         self.assertEqual(ac["aircraft_type"], "")
+
+
+class TestSyntheticFeederNoType(unittest.TestCase):
+    """The feeder's --no-type shape: a stock readsb started without
+    --db-file, or dump1090-fa, sends no `t` and uses `type` for the
+    message source. Same seed, same fleet either way."""
+
+    SIZE = 25
+    SEED = 42
+
+    def _snapshot(self, **kwargs):
+        fleet = Fleet(size=self.SIZE, home_lat=40.0, home_lon=-75.0,
+                      seed=self.SEED, **kwargs)
+        return fleet, fleet.snapshot_json()["aircraft"]
+
+    def test_default_snapshot_carries_t_on_every_aircraft(self):
+        fleet, aircraft = self._snapshot()
+        self.assertEqual(len(aircraft), self.SIZE)
+        for ac, rec in zip(fleet.aircraft, aircraft):
+            self.assertEqual(rec["t"], ac.type_code)
+            self.assertEqual(rec["type"], "adsb_icao")
+
+    def test_no_type_drops_t_and_keeps_message_source(self):
+        fleet, aircraft = self._snapshot(no_type=True)
+        self.assertEqual(len(aircraft), self.SIZE)
+        for ac, rec in zip(fleet.aircraft, aircraft):
+            self.assertNotIn("t", rec)
+            self.assertEqual(rec["type"], "adsb_icao")
+            # Everything else is untouched — only `t` goes.
+            self.assertEqual(rec["desc"], ac.type_desc)
+
+    def test_no_type_record_is_typeless_to_the_collector(self):
+        _, aircraft = self._snapshot(no_type=True)
+        for rec in aircraft:
+            self.assertEqual(collector.feed_type_code(rec), "")
 
 
 class _DbCase(unittest.TestCase):

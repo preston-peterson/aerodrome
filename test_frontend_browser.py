@@ -24,7 +24,8 @@ except ImportError:
 ROOT = Path(os.environ.get("FRONTEND_ROOT") or Path(__file__).resolve().parent)
 BASE = "http://aerodrome.test"
 HOLD = object()
-PAGES = {"/": "index.html", "/board": "board.html", "/status": "status.html"}
+PAGES = {"/": "index.html", "/board": "board.html", "/status": "status.html",
+         "/updates": "updates.html"}
 
 
 def _chrome():
@@ -594,6 +595,69 @@ class TestStatsDrillSurvivesRefresh(BrowserCase):
         self.assertEqual(self.errors, [])
 
 
+class TestWatchlistAlertInLiveMode(BrowserCase):
+    """Trigger "live" asks /api/live's is_watchlist mark — the server's full
+    matcher — not the page's hex-only wlIcaos set, so callsign and model
+    entries light the tab too. Hexes and callsigns invented."""
+
+    UNWATCHED = {"icao": "A00009", "callsign": "DEMO9", "altitude": 12000,
+                 "speed": 300, "lat": 40.1, "lon": -90.1, "track": 90,
+                 "is_watchlist": False}
+    WATCHED = {"icao": "A00001", "callsign": "TEST123", "aircraft_type": "DASH8",
+               "altitude": 8000, "speed": 240, "lat": 40.2, "lon": -90.2,
+               "track": 45, "is_watchlist": True}
+
+    def setUp(self):
+        super().setUp()
+        self.site.api["/api/ui-config"] = {"watchlist_alerts": {
+            "enabled": True, "trigger": "live", "effect": "pulse_dot",
+            "color": "#f59e0b"}}
+        # A callsign entry and a model entry: wlIcaos gets no hexes from these.
+        self.site.api["/api/watchlist/entries"] = {"entries": [
+            {"callsign": "TEST123", "label": "Test flight"},
+            {"model": "DASH8", "label": "Test model"}]}
+        self.site.api["/api/watchlist"] = {"aircraft": []}
+        self.site.api["/api/military"] = {"aircraft": [], "special_aircraft": {}}
+        self.site.api["/api/status"] = _status()
+        self.set_live(self.UNWATCHED)
+        self.open("/")
+        self.advance(1000)
+
+    def set_live(self, *rows):
+        self.site.api["/api/live"] = {
+            "aircraft": [dict(r) for r in rows],
+            "receiver": {"lat": 40.0, "lon": -90.0, "distance_unit": "mi"},
+            "last_updated": 1700000000}
+
+    def poll(self):
+        self.page.evaluate("fetchLive()")
+        self.page.wait_for_timeout(150)
+
+    def alert_class(self):
+        cls = self.page.get_attribute('.tab[data-t="watchlist"]', "class") or ""
+        return next((c for c in cls.split() if c.startswith("wa-")), None)
+
+    def test_a_watchlist_row_lights_the_tab_even_with_no_matching_hex(self):
+        # A00001 is on no watchlist entry by hex or tail — the mark came from
+        # the callsign/model matcher on the server.
+        self.set_live(self.WATCHED, self.UNWATCHED)
+        self.poll()
+        self.assertEqual(self.alert_class(), "wa-pulse-dot")
+
+    def test_rows_nobody_watches_leave_the_tab_quiet(self):
+        self.set_live(self.UNWATCHED, dict(self.UNWATCHED, icao="A00010"))
+        self.poll()
+        self.assertIsNone(self.alert_class())
+
+    def test_the_alert_clears_when_the_watched_aircraft_is_gone(self):
+        self.set_live(self.WATCHED)
+        self.poll()
+        self.assertEqual(self.alert_class(), "wa-pulse-dot")
+        self.set_live(self.UNWATCHED)
+        self.poll()
+        self.assertIsNone(self.alert_class())
+
+
 class TestNoPageErrors(BrowserCase):
 
     def test_pages_load_clean(self):
@@ -605,6 +669,81 @@ class TestNoPageErrors(BrowserCase):
                 self.open(path)
                 self.advance(6000)
                 self.assertEqual(self.errors, [])
+
+
+class TestUpdatesApplyWaitsForARestore(BrowserCase):
+    # /api/maintenance/status reports restore.pending while a restore waits
+    # for its restart; the server answers 409 restore_pending to an apply,
+    # so the page must not offer one meanwhile.
+    RESTORE = {"busy": None, "update": None, "update_pending": None, "config": None,
+               "restore": {"pending": {"staged_at": 1700000000, "expires_at": 1700003600,
+                                       "restart_failed": False, "waiting_for_restart": True,
+                                       "source": "example-backup.zip",
+                                       "backup_created_at_iso": "2026-01-01T12:00:00+00:00",
+                                       "keep_current_config": False, "notes": "",
+                                       "kind": "restore"},
+                           "result": None}}
+    IDLE = {"busy": None, "update": None, "update_pending": None, "config": None,
+            "restore": {"pending": None, "result": None}}
+    STAGED = {"available": True, "current_version": "3.4.150", "update_version": "3.4.151",
+              "install_dir": "/opt/aerodrome",
+              "sudoers": {"can_verify": True, "needs_refresh": False}}
+
+    def setUp(self):
+        super().setUp()
+        self.site.api["/api/version"] = {"version": "3.4.150"}
+        self.site.api["/api/updates/local/check"] = self.STAGED
+        self.open("/updates")
+        self.advance(1000)
+
+    def test_a_waiting_restore_disables_apply_and_says_why(self):
+        self.site.api["/api/maintenance/status"] = self.RESTORE
+        self.page.evaluate("refreshMaintenance()")
+        self.page.wait_for_timeout(100)
+        self.assertTrue(self.page.evaluate("document.getElementById('btnApply').disabled"))
+        self.assertIn("restart Aerodrome", self.text("#maintBusy"))
+
+    def test_apply_is_free_again_once_nothing_waits(self):
+        self.site.api["/api/maintenance/status"] = self.RESTORE
+        self.page.evaluate("refreshMaintenance()")
+        self.page.wait_for_timeout(100)
+        self.site.api["/api/maintenance/status"] = self.IDLE
+        self.page.evaluate("refreshMaintenance()")
+        self.page.wait_for_timeout(100)
+        self.assertFalse(self.page.evaluate("document.getElementById('btnApply').disabled"))
+        self.assertEqual(self.page.locator("#maintBusy").count(), 0)
+
+
+class TestUpdatesGithubCannotReadTheTag(BrowserCase):
+    # A stored tag parse_version can't parse is not evidence of being up to
+    # date — the card says it can't tell instead of claiming it is.
+    def setUp(self):
+        super().setUp()
+        self.site.api["/api/version"] = {"version": "3.4.150"}
+        self.site.api["/api/updates/local/check"] = {"available": False,
+                                                     "current_version": "3.4.150"}
+        self.site.api["/api/maintenance/status"] = {
+            "busy": None, "update": None, "update_pending": None, "config": None,
+            "restore": {"pending": None, "result": None}}
+
+    def card_text(self, latest, unreadable):
+        self.site.api["/api/updates/github/check"] = {
+            "enabled": True, "poll_interval": "monthly", "running_version": "3.4.150",
+            "latest_known": latest, "available": False, "latest_unreadable": unreadable,
+            "last_check_ts": 1700000000, "last_check_result": "success",
+            "last_check_error": None, "last_known_latest_ts": 1700000000,
+            "release_url": None}
+        self.open("/updates")
+        self.advance(1000)
+        return self.text("#githubUpdateStatus")
+
+    def test_an_unreadable_tag_says_the_truth(self):
+        t = self.card_text("v.3.4.53", True)
+        self.assertIn("can't read", t)
+        self.assertNotIn("latest version", t)
+
+    def test_a_readable_older_tag_still_says_latest(self):
+        self.assertIn("latest version", self.card_text("v3.4.53", False))
 
 
 if __name__ == "__main__":

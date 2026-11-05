@@ -144,6 +144,9 @@ def main() -> int:
                         "(default: 1.0)")
     p.add_argument("--seed", type=int, default=None,
                    help="Random seed for reproducible runs (default: random)")
+    p.add_argument("--no-type", action="store_true",
+                   help="Omit the per-aircraft `t` type code, as a stock "
+                        "readsb (no --db-file) or dump1090-fa feed does")
     args = p.parse_args()
 
     logging.basicConfig(
@@ -158,6 +161,7 @@ def main() -> int:
         max_range_km=args.range_km,
         military_fraction=args.military_fraction,
         seed=args.seed,
+        no_type=args.no_type,
     )
     FeederHandler.fleet = fleet
 

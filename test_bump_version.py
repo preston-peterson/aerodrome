@@ -473,6 +473,24 @@ class GatesBeforeWrites(_FixtureCase):
         self.assertIn("docs/fixture-note.txt", out)
         self.assertNothingWritten(t, out=out)
 
+    def test_t3b_pii_in_a_sha256_file_comment(self):
+        # scripts/reviewed-doc-images.sha256 is a tracked TEXT file — its
+        # header is prose — so `.sha256` must stay out of the audit's binary
+        # skip list. The hashes it lists must not trip the audit themselves.
+        t = self.tree()
+        target = t / "scripts" / "reviewed-doc-images.sha256"
+        original = target.read_text()
+        with self.subTest("listed sha256 sums are not findings"):
+            rc, out = self.check(t)
+            self.assertEqual(rc, 0, out[-3000:])
+        target.write_text(f"# fixture receiver {FIXTURE_IP}\n" + original)
+        git(t, "commit", "-qam", "sha256 header comment")
+        with self.subTest("private value in a .sha256 comment: in scope"):
+            rc, out = self.set_new(t)
+            self.assertEqual(rc, 1, out[-3000:])
+            self.assertIn("scripts/reviewed-doc-images.sha256", out)
+            self.assertNothingWritten(t, out=out)
+
     def test_t4_expand_break_fix_converges(self):
         t = self.tree()
         rc, out = self.set_new(t, desc="auto one-liner")

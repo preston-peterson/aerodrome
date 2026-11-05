@@ -73,6 +73,7 @@ within one poll cycle.
 --military-fraction F   Fraction in military hex range (default 0.05)
 --tick-interval S       Fleet position update period (default 1.0)
 --seed N                Random seed for reproducible runs
+--no-type               Omit the `t` type code, like stock readsb / dump1090-fa
 ```
 
 ### What ramping up looks like

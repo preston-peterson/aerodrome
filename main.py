@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Version: 3.4.157
+# Version: 3.4.158
 """
 main.py — Aerodrome ADS-B Tracker
 
@@ -1311,15 +1311,26 @@ def status(config: dict):
         import sqlite3
         conn = _open_db_conn(db_path)
         now = int(time.time())
+        # Military and watchlist stay on the raw tables: small, and the
+        # v2.50.17 covering indexes (idx_mil_seen_icao, idx_watch_seen_icao)
+        # cover the DISTINCT scan.
         for table, key, days_key in [
             ("military_sightings", "military", "military_days"),
             ("watchlist_sightings", "watchlist", "watchlist_days"),
-            ("all_sightings", "all", "all_days"),
         ]:
             cutoff = now - (config["retention"][days_key] * 86400)
             stats[key] = conn.execute(
                 f"SELECT COUNT(DISTINCT icao) FROM {table} WHERE seen_at >= ?", (cutoff,)
             ).fetchone()[0]
+        # Same source /api/status uses (server.py's db stats): one row per
+        # aircraft, so the retention window is a COUNT(*) over a last_seen_at
+        # range — no DISTINCT, no temp B-tree. COUNT(DISTINCT icao) over
+        # all_sightings scans every row in the window (~6.5s cold on a big
+        # install) for the same number.
+        all_cutoff = now - (config["retention"]["all_days"] * 86400)
+        stats["all"] = conn.execute(
+            "SELECT COUNT(*) FROM seen_aircraft WHERE last_seen_at >= ?", (all_cutoff,)
+        ).fetchone()[0]
         conn.close()
 
     G = '\033[32m\033[1m'

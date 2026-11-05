@@ -19,6 +19,28 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.158] — 2026-11-05
+
+**The Watchlist alert in live mode now fires for every kind of watchlist entry.** With the alert set to "Only while aircraft is actively transmitting", the tab lit up only for entries added by hex code or tail number, so an entry for a callsign or an aircraft model never set it off. It now lights whenever an aircraft on the Live tab matches any of your entries, the same match that marks it on the radar, and it still clears by itself when that aircraft leaves range.
+
+**A failing update check waits an hour before trying again.** If Aerodrome couldn't reach GitHub, or GitHub turned it away for too many requests from your network, the automatic check tried again every minute and logged a warning each time. It now waits an hour after a failed check, which is also how long GitHub's limit for anonymous requests lasts. Check now on the Updates page still works at any time, and a successful check puts the normal schedule back.
+
+**The Updates page no longer offers Apply while a restore is waiting.** After you restore a backup, Aerodrome needs a restart to finish it, and until then it refuses to apply an update. The page used to offer Apply and the upload area anyway and refuse only once you clicked. It now disables both and says why: restart Aerodrome to finish the restore, or cancel it in Settings.
+
+**The GitHub card no longer says you're up to date when it can't tell.** If GitHub's latest release has a tag that isn't a normal version number, the card used to say you were on the latest version. It now shows "unknown" and names the tag it couldn't read.
+
+**`python3 main.py status` answers right away.** Its "All" count went through every sighting in your retention window, which took several seconds on a large database. It now counts from the table that keeps one row per aircraft, so it matches the count on the Status page.
+
+**The install guide explains where aircraft types come from.** A new section in `docs/INSTALL.md` explains why some aircraft show a plain chevron instead of a silhouette, and how starting readsb with `--db-file` fixes it.
+
+### Operational notes
+
+This is an ordinary update with a normal restart and no database change.
+
+### Behind the scenes
+
+The update scheduler's timing is now one function, `_update_check_due_in` in `server.py`: a check is due one poll interval after the last success, and never sooner than `UPDATE_CHECK_RETRY_SEC` (an hour) after a failed attempt. The live-mode alert reads the `is_watchlist` mark that `/api/live` already sets on each row through `_annotate_watchlist`, instead of the page's own set of hex codes. On the Updates page, `applyMaintBusy` treats `restore.pending` from `/api/maintenance/status` as busy, and `/api/updates/github/check` adds `latest_unreadable`. The synthetic feeder has a `--no-type` flag that leaves out `t` and keeps `"type": "adsb_icao"`, the shape a stock readsb without `--db-file` or dump1090-fa sends, so a typeless feed can be tested. The release PII check now scans `.sha256` files as well, because the list of reviewed documentation images is a text file with comments.
+
 ## [3.4.157] — 2026-11-04
 
 **A one-off speed glitch can no longer be the fastest record or Today's fastest.** The limits added in 3.4.155 and 3.4.156 stop a speed that type of aircraft can't reach, but a wrong speed can stay under its limit: a business jet at 732 kt, or an airliner at 697 kt. These are usually a single reading out of line with the rest of the track, like 467 kt, then 963 kt, then nothing, while a real speed holds from one reading to the next, even a jet stream's 660 kt. So a speed now counts only if the aircraft's reading just before or just after it, within 3 minutes, is within 40 kt. If you poll more slowly than every 90 seconds, the 3 minutes becomes two polls. This doesn't need to know the aircraft's type, so it covers unknown types too.

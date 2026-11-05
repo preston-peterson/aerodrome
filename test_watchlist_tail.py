@@ -485,5 +485,36 @@ class TestServerAgrees(_TailCase):
         self.assertFalse(self._live_flags("a00004")["A00004"])
 
 
+class TestAnnotateEntryKinds(unittest.TestCase):
+    """_annotate_watchlist marks rows for the entry kinds beyond icao/tail:
+    callsign prefix and model substring. Hexes, callsigns and labels invented."""
+
+    def annotate(self, entries, row):
+        import server
+        with mock.patch.object(server, "CONFIG", {"watchlist": entries}):
+            return server._annotate_watchlist(dict(row))
+
+    def test_callsign_prefix_entry_marks_matching_callsigns(self):
+        entry = [{"callsign": "TEST", "label": "Test flights"}]
+        hit = self.annotate(entry, {"icao": "A00001", "callsign": "TEST123"})
+        self.assertTrue(hit["is_watchlist"])
+        self.assertEqual(hit["watchlist_label"], "Test flights")
+        miss = self.annotate(entry, {"icao": "A00002", "callsign": "DEMO1"})
+        self.assertFalse(miss["is_watchlist"])
+        self.assertIsNone(miss["watchlist_label"])
+
+    def test_model_substring_entry_marks_matching_types(self):
+        entry = [{"model": "DASH", "label": "Dash fleet"}]
+        hit = self.annotate(entry, {"icao": "A00003", "callsign": "DEMO2",
+                                    "aircraft_type": "DASH8"})
+        self.assertTrue(hit["is_watchlist"])
+        self.assertEqual(hit["watchlist_label"], "Dash fleet")
+        by_desc = self.annotate(entry, {"icao": "A00004", "aircraft_type_desc": "Dash 8 Q400"})
+        self.assertTrue(by_desc["is_watchlist"])
+        miss = self.annotate(entry, {"icao": "A00005", "aircraft_type": "B738",
+                                     "aircraft_type_desc": "Boeing 737-800"})
+        self.assertFalse(miss["is_watchlist"])
+
+
 if __name__ == "__main__":
     unittest.main()

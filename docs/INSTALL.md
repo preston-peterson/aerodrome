@@ -26,6 +26,7 @@ something specific, the table of contents below has direct links.
 - [Uninstalling](#uninstalling)
 - [Configuration](#configuration)
   - [Receiver location](#receiver-location-for-the-distance-column)
+  - [Aircraft types](#where-aircraft-types-come-from)
   - [Retention](#retention-per-tab)
   - [Logging](#logging)
   - [Stats](#stats)
@@ -1243,6 +1244,18 @@ receiver:
 Find your coords at [latlong.net](https://www.latlong.net/). If you
 leave `latitude` or `longitude` as `null`, the Distance column is
 hidden.
+
+### Where aircraft types come from
+
+Aircraft types come from the receiver. readsb sends each aircraft's type
+code only when it is started with `--db-file`; dump1090-fa does not send
+it at all.
+
+Without that, Aerodrome looks the type up on hexdb.io in the background.
+In one install that covered about 72% of live traffic. An aircraft with
+no known type has no silhouette on the map and shows a plain chevron.
+
+If you run readsb, starting it with `--db-file` gives the complete answer.
 
 ### Retention (per tab)
 

@@ -249,12 +249,18 @@ class Fleet:
         max_range_km: float = 250.0,
         military_fraction: float = 0.05,
         seed: Optional[int] = None,
+        no_type: bool = False,
     ):
         self.size = size
         self.home_lat = home_lat
         self.home_lon = home_lon
         self.max_range_km = max_range_km
         self.military_fraction = military_fraction
+        # Stock readsb without --db-file (and dump1090-fa) never send the
+        # `t` type code; `type` carries the message source instead. Set to
+        # reproduce that shape. Aircraft keep their types internally — only
+        # the emitted JSON omits `t`.
+        self.no_type = no_type
         self.rng = random.Random(seed)
         self.aircraft: List[Aircraft] = []
         # v3.1.0: emergency-squawk event state. demo mode triggers
@@ -318,12 +324,19 @@ class Fleet:
                 self.aircraft[i] = self._spawn()
 
     def snapshot_json(self) -> Dict:
-        """Return the current fleet shaped for /data/aircraft.json."""
+        """Return the current fleet shaped for /data/aircraft.json.
+
+        With `no_type`, the per-aircraft `t` type code is dropped — the
+        shape a stock readsb (no --db-file) or a dump1090-fa feed sends."""
         now = time.time()
+        records = [ac.to_json() for ac in self.aircraft]
+        if self.no_type:
+            for rec in records:
+                rec.pop("t", None)
         return {
             "now": round(now, 1),
             "messages": sum(ac.messages for ac in self.aircraft),
-            "aircraft": [ac.to_json() for ac in self.aircraft],
+            "aircraft": records,
         }
 
     # ------------------------------------------------------------------

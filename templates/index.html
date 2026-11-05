@@ -1,4 +1,4 @@
-<!-- Version: 3.4.157 -->
+<!-- Version: 3.4.158 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -4997,13 +4997,13 @@ function evaluateWatchlistAlert(){
     let shouldAlert = false;
 
     if(waCfg.trigger === 'live'){
-        // LIVE mode: is any watchlist ICAO currently transmitting? Check D.live
-        // (the fresh snapshot from the receiver). If yes → alert. If no → no
+        // LIVE mode: is any aircraft on the watchlist currently transmitting?
+        // Check D.live (the fresh snapshot from the receiver), whose rows
+        // /api/live already marks with is_watchlist using the server's full
+        // matcher (hex, tail, callsign, model). If yes → alert. If no → no
         // alert. Dismissal isn't needed — the alert naturally clears when the
         // aircraft leaves range.
-        const liveWatchlistHits = (D.live || []).filter(ac =>
-            ac && ac.icao && wlIcaos.has(String(ac.icao).toUpperCase())
-        );
+        const liveWatchlistHits = (D.live || []).filter(ac => ac && ac.is_watchlist);
         shouldAlert = liveWatchlistHits.length > 0;
 
     } else {

@@ -1,4 +1,4 @@
-# Version: 3.4.157
+# Version: 3.4.158
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -442,6 +442,27 @@ _RESTART_HOLD_SEC = 120
 # decompressed or update/ is wiped. A release unpacks to about 12 MB.
 UPDATE_UNPACKED_MAX_BYTES = 200 * 1024 * 1024
 UPDATE_UNPACK_HEADROOM_BYTES = 256 * 1024 * 1024
+
+# How long to wait before retrying a FAILED update check. The poll interval is
+# measured from the last successful check, so a check that keeps failing would
+# otherwise fire on every scheduler wake (every minute). One hour because
+# GitHub's anonymous rate limit resets within the hour.
+UPDATE_CHECK_RETRY_SEC = 3600
+
+
+def _update_check_due_in(interval_s: int, now: int, state: dict) -> int:
+    """Seconds until the next scheduled update check is due; 0 means now.
+    `state` is an update-state dict (see _get_update_state). The interval runs
+    from the last SUCCESSFUL check, which a failing check never moves, so the
+    failure back-off below is what stops a broken check from firing on every
+    scheduler wake. A later success replaces the back-off (it rewrites
+    last_check_result)."""
+    last_success = state.get("last_known_latest_ts")
+    due = 0 if last_success is None else last_success + interval_s
+    last_attempt = state.get("last_check_ts")
+    if state.get("last_check_result") == "error" and last_attempt:
+        due = max(due, last_attempt + UPDATE_CHECK_RETRY_SEC)
+    return max(0, due - now)
 
 
 def _unpacked_size_refusal(zf, install_dir: Path):
@@ -3851,8 +3872,9 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     def _interval_elapsed() -> bool:
         """True if the configured poll interval has elapsed since the
         last successful check, or if no successful check has happened
-        yet. Returns False when poll_interval is 'never' — manual
-        'Check now' clicks still work in that mode."""
+        yet (subject to the failure back-off). Returns False when
+        poll_interval is 'never' — manual 'Check now' clicks still work
+        in that mode."""
         cfg = _updates_config()
         pi = cfg["poll_interval"]
         if pi == "never":
@@ -3860,29 +3882,23 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         interval_s = _POLL_INTERVAL_SECONDS.get(pi)
         if interval_s is None:
             return False
-        state = _get_update_state()
-        last = state["last_known_latest_ts"]
-        if last is None:
-            return True  # Never successfully checked — first check on startup
-        return (int(time.time()) - last) >= interval_s
+        return _update_check_due_in(
+            interval_s, int(time.time()), _get_update_state()) == 0
 
     def _seconds_until_next_check() -> int:
         """How long the scheduler should sleep before next deciding whether
         to check. Bounded to [60s, 3600s]: the 1-hour cap means changing
         poll_interval (or toggling enabled) takes effect within an hour
-        with no service restart needed — the LIVE_KEYS contract."""
+        with no service restart needed — the LIVE_KEYS contract. A failing
+        check returns the retry delay instead, so the scheduler sleeps out
+        the back-off rather than waking every minute."""
         cfg = _updates_config()
         pi = cfg["poll_interval"]
         if pi == "never" or pi not in _POLL_INTERVAL_SECONDS:
             return 3600
         interval_s = _POLL_INTERVAL_SECONDS[pi]
-        state = _get_update_state()
-        last = state["last_known_latest_ts"]
-        if last is None:
-            return 60  # Check soon — startup case with no prior success
-        elapsed = int(time.time()) - last
-        remaining = max(60, interval_s - elapsed)
-        return min(remaining, 3600)
+        return min(3600, max(60, _update_check_due_in(
+            interval_s, int(time.time()), _get_update_state())))
 
     def _update_check_scheduler():
         """Background thread body. Wakes on schedule; calls
@@ -11992,6 +12008,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
           enabled, poll_interval — current config
           running_version       — VERSION file contents (e.g. '2.98.3')
           latest_known          — last-fetched tag, or null
+          latest_unreadable     — true iff latest_known is set but not parseable as a version
           available             — true iff latest_known > running (semver)
           last_check_ts         — unix ts of last attempt (success or fail)
           last_check_result     — 'success' / 'error' / null
@@ -12018,6 +12035,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             "poll_interval": cfg["poll_interval"],
             "running_version": running,
             "latest_known": latest,
+            "latest_unreadable": bool(latest and updater.parse_version(latest) is None),
             "available": available,
             "last_check_ts": state["last_check_ts"],
             "last_check_result": state["last_check_result"],

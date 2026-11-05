@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.4.157
+# Version: 3.4.158
 # =============================================================================
 # bump-version.sh — Bump Aerodrome version + auto-update CHANGELOG.md
 # =============================================================================
@@ -845,7 +845,7 @@ def is_ip_pii(o1, o2, o3, o4):
 
 # Binary formats are never scanned (they'd only produce regex coincidences).
 SKIP_EXT = {'.db', '.db-wal', '.db-shm', '.pyc', '.png', '.jpg', '.jpeg',
-            '.gif', '.pdf', '.zip', '.sha256', '.ico'}
+            '.gif', '.pdf', '.zip', '.ico'}
 # Fallback walk only (no git): build/cache/runtime dirs that don't ship, and
 # maintainer-only files (Claude-to-Claude session notes). In a git checkout
 # NONE of these name rules apply — a file git lists is tracked or committable,

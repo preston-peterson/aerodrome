@@ -1729,6 +1729,34 @@ class TestUploadEndpoint(_EndpointCase):
         self.assertEqual(self.update_snapshot(), before)
 
 
+class TestGithubCheckUnreadableTag(_EndpointCase):
+    """`latest_unreadable` in the GitHub status response: a stored tag
+    parse_version can't read must not let the card claim "up to date"."""
+
+    def check(self, tag):
+        import sqlite3
+        c = sqlite3.connect(self.db)
+        c.execute(
+            "INSERT INTO update_state (id, last_check_ts, last_check_result, "
+            "last_check_error, last_known_latest, last_known_latest_ts, updated_at) "
+            "VALUES (1, 1700000000, 'success', NULL, ?, 1700000000, 1700000000) "
+            "ON CONFLICT(id) DO UPDATE SET last_known_latest = excluded.last_known_latest",
+            (tag,))
+        c.commit()
+        c.close()
+        return self.ep("/api/updates/github/check", "GET")()
+
+    def test_a_stored_tag_that_cannot_be_parsed_is_flagged(self):
+        out = self.check("v.3.4.53")
+        self.assertEqual(out["latest_known"], "v.3.4.53")
+        self.assertTrue(out["latest_unreadable"])
+
+    def test_a_parseable_stored_tag_is_not_flagged(self):
+        out = self.check("v3.4.53")
+        self.assertEqual(out["latest_known"], "v3.4.53")
+        self.assertFalse(out["latest_unreadable"])
+
+
 # ===========================================================================
 # Review fixes: each class pins one defect found in review (failing-first)
 # ===========================================================================
@@ -2866,6 +2894,58 @@ def _imports(tree):
                 yield a.name.split(".")[0]
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             yield node.module.split(".")[0]
+
+
+class TestUpdateCheckBackoff(unittest.TestCase):
+    """_update_check_due_in, the scheduler's clock. A failing check never
+    moves last_known_latest_ts, so the poll interval alone would retry it on
+    every wake. Invented timestamps, 1-day interval."""
+
+    INTERVAL = 86400
+    NOW = 1_800_000_000
+
+    @classmethod
+    def setUpClass(cls):
+        import server
+        cls.due_in = staticmethod(server._update_check_due_in)
+
+    def due(self, *, last_success=None, last_check_ts=None, last_check_result=None):
+        return self.due_in(self.INTERVAL, self.NOW, {
+            "last_known_latest_ts": last_success,
+            "last_check_ts": last_check_ts,
+            "last_check_result": last_check_result,
+        })
+
+    def test_no_attempt_ever_is_due_now(self):
+        self.assertEqual(self.due(), 0)
+
+    def test_failure_ten_seconds_ago_waits_out_the_retry(self):
+        self.assertEqual(self.due(last_check_ts=self.NOW - 10,
+                                  last_check_result="error"), 3590)
+
+    def test_failure_a_full_retry_ago_is_due_again(self):
+        self.assertEqual(self.due(last_check_ts=self.NOW - 3600,
+                                  last_check_result="error"), 0)
+
+    def test_elapsed_interval_does_not_override_the_backoff(self):
+        self.assertEqual(self.due(last_success=self.NOW - 2 * self.INTERVAL,
+                                  last_check_ts=self.NOW - 10,
+                                  last_check_result="error"), 3590)
+
+    def test_interval_later_than_the_retry_wins(self):
+        self.assertEqual(self.due(last_success=self.NOW - 3600,
+                                  last_check_ts=self.NOW - 10,
+                                  last_check_result="error"), 82800)
+
+    def test_success_resumes_the_plain_interval(self):
+        self.assertEqual(self.due(last_success=self.NOW - 3600,
+                                  last_check_ts=self.NOW - 10,
+                                  last_check_result="success"), 82800)
+
+    def test_elapsed_interval_since_success_is_due_now(self):
+        self.assertEqual(self.due(last_success=self.NOW - 2 * self.INTERVAL,
+                                  last_check_ts=self.NOW - 10,
+                                  last_check_result="success"), 0)
 
 
 class TestStaticGates(unittest.TestCase):

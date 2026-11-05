@@ -294,7 +294,10 @@ class TestASupersededAppsSchedulersStop(_AppCase):
         # for its next check: it ends at that wait, touching nothing more.
         res = self.drive(self.a["update-check-scheduler"],
                          on_wait={2: lambda: apps.update(b=self.build("b"))})
-        self.assertEqual(res["waits"], [15.0, 60], res)
+        self.assertEqual(len(res["waits"]), 2, res)
+        self.assertEqual(res["waits"][0], 15.0, res)
+        # The first check failed (GitHub unreachable), so the wait is the back-off, not a minute.
+        self.assertIn(res["waits"][1], range(3540, 3601), res)
         self.assertFalse(res["cut"], f"the replaced app's update check kept running: {res}")
         self.assertTrue(res["opens"][:res["mark"]], res)              # its own check, first
         self.assertEqual(set(res["opens"][:res["mark"]]), {a_db})
@@ -321,7 +324,11 @@ class TestASupersededAppsSchedulersStop(_AppCase):
         c, c_db = apps["c"]
         res = self.drive(c["update-check-scheduler"])
         self.assertTrue(res["cut"], res)
-        self.assertEqual(res["waits"], [15.0, 60, 60])
+        self.assertEqual(len(res["waits"]), 3, res)
+        self.assertEqual(res["waits"][0], 15.0, res)
+        # The first check fails (GitHub unreachable), so both later waits are the back-off.
+        for w in res["waits"][1:]:
+            self.assertIn(w, range(3540, 3601), res)
         self.assertTrue(res["opens"])
         self.assertEqual(set(res["opens"]), {c_db})
         res = self.drive(c["daily-summary-scheduler"])

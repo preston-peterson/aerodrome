@@ -1,4 +1,4 @@
-<!-- Version: 3.4.157 -->
+<!-- Version: 3.4.158 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -741,6 +741,7 @@ function _ago(sec){
 }
 
 function _busyText(b){
+    if (b && b.message) return b.message;
     if (!b || !b.op) return '';
     const op = String(b.op);
     if (b.parked) return `Aerodrome is ${op} — try again in a minute.`;
@@ -790,7 +791,12 @@ function applyMaintBusy(m){
     // 409 update_pending until it is confirmed or rolled back), though
     // nothing holds the lock in the restarted process.
     const busy = (m && m.busy)
-        || (m && m.update_pending ? {op: 'confirming the last update', parked: true} : null);
+        || (m && m.update_pending ? {op: 'confirming the last update', parked: true} : null)
+        // A restore waiting for its restart (the server answers 409
+        // restore_pending): the waiting text, not an op with an age.
+        || (m && m.restore && m.restore.pending
+            ? {message: "A restore is waiting for the restart — restart Aerodrome to finish it, or cancel it in Settings."}
+            : null);
     const txt = _busyText(busy);
     const zone = document.getElementById('uploadZone');
     if (zone) zone.classList.toggle('disabled', !!busy);
@@ -2063,6 +2069,21 @@ async function checkGithubUpdate(force){
         recheckBtn.textContent = 'Check again';
         recheckBtn.onclick = () => checkGithubUpdate(true);
         actions.appendChild(recheckBtn);
+        return;
+    }
+
+    // A stored tag we can't parse isn't evidence of being up to date —
+    // say we can't tell instead of claiming we are.
+    if(j.latest_unreadable){
+        _ghBadge('unknown', '');
+        status.innerHTML = `<div class="status-msg warn">
+            GitHub's latest release is tagged <code>${escapeHtml(j.latest_known)}</code>, which Aerodrome can't read as a version, so it can't tell whether you're up to date.
+        </div>`;
+        const checkBtn = document.createElement('button');
+        checkBtn.className = 'btn';
+        checkBtn.textContent = 'Check now';
+        checkBtn.onclick = () => checkGithubUpdate(true);
+        actions.appendChild(checkBtn);
         return;
     }
 
