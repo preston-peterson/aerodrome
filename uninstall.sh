@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.4.159
+# Version: 3.4.160
 # =============================================================================
 # Aerodrome — Uninstall Script
 # =============================================================================
@@ -232,7 +232,8 @@ case "$DB_FILE" in /*) ;; *) DB_FILE="${INSTALL_DIR}/${DB_FILE}" ;; esac
 case "$LOG_DIR" in /*) ;; *) LOG_DIR="${INSTALL_DIR}/${LOG_DIR}" ;; esac
 # A db_file that is a link: the database it points at, SQLite's -wal/-shm, a
 # restore's files and the daily-summary state all sit beside the real file,
-# so that is the set to handle — plus the link itself (DB_LINK).
+# so that is the set to handle — plus the link itself (DB_LINK) and the
+# pre-restore copies releases before 3.4.149 made beside the link.
 DB_LINK=""
 if [ -L "$DB_FILE" ]; then
     DB_LINK="$DB_FILE"
@@ -416,6 +417,8 @@ else
     # pre-restore copy cut short. Inside the install they also go with the
     # printed rm -rf; beside a database elsewhere only by name, here.
     _DBN="$(basename "$DB_FILE")"
+    _LINK_SIDE=()
+    [ -n "$DB_LINK" ] && _LINK_SIDE=("$DB_LINK" "$DB_LINK".bak.*.pre-restore)
     remove_or_keep "Database (aircraft history)" \
         "$DB_FILE" "${DB_FILE}-wal" "${DB_FILE}-shm" \
         "${DB_FILE}".bak.*.pre-restore \
@@ -423,7 +426,7 @@ else
         "${DATA_DIR}/.${_DBN}.restore-staged-shm" "${DATA_DIR}/.${_DBN}.restore-staged-journal" \
         "${DB_FILE}".restore-failed.* \
         "${DATA_DIR}/.${_DBN}".bak.*.pre-restore.tmp* \
-        "${DATA_DIR}/.daily-summary-state.json" ${DB_LINK:+"$DB_LINK"} || true
+        "${DATA_DIR}/.daily-summary-state.json" "${_LINK_SIDE[@]}" || true
 fi
 remove_or_keep "Backups & update snapshots" "${INSTALL_DIR}/.backups" || true
 if _inside_install "$LOG_DIR"; then

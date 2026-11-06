@@ -19,6 +19,20 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.160] — 2026-11-05
+
+**`uninstall.sh --purge` again removes the database copies older releases kept beside a linked database.** When `data.db_file` is a link, a restore made by a release before 3.4.149 kept its safety copy of the database (`<name>.bak.<date>.pre-restore`) next to the link, not next to the file it points to. 3.4.159 taught purge to follow the link, and in doing so it stopped looking beside the link, so those older copies were left behind. Purge now removes them too, along with everything 3.4.159 already removes. Nothing else changes: without `--purge` you're still asked first, and `--keep` still keeps everything.
+
+**Six unused screenshots are gone from the docs.** They showed pages from much older versions and nothing linked to them. Every image under `docs/` is now made by `scripts/screenshots.py` from invented data.
+
+### Operational notes
+
+This is an ordinary update with a normal restart and no database change.
+
+### Behind the scenes
+
+In `uninstall.sh`, a linked `db_file` adds the link and `<link>.bak.*.pre-restore` to the database's delete set (`_LINK_SIDE`), next to the real file's set. A new test covers it and fails on 3.4.159. The daily-summary state needed no such care: it has always been written beside the real file. `scripts/reviewed-doc-images.sha256` is now empty, but the image gate still requires any hand-made image under `docs/` to be listed there with its reviewed sha256. Its test now reviews a fixture image of its own.
+
 ## [3.4.159] — 2026-11-05
 
 **`uninstall.sh --purge` now removes your database when `data.db_file` is a link to it.** If `data.db_file` in config.yaml is a link, for example one in the install folder pointing at a database on another disk, purge used to delete only the link and say the database was removed. The database and the files kept beside it stayed where they were. Purge now removes the database the link points to, the files Aerodrome keeps beside it (SQLite's `-wal` and `-shm` files, a restore's copies, the daily-summary state) and the link itself. Without `--purge`, the question now names the real file and shows its real size. As before, a file that isn't a SQLite database is left alone, a link to a folder is skipped, and `--keep` keeps everything.

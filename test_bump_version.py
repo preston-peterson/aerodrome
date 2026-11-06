@@ -789,7 +789,8 @@ class DocImageGate(_FixtureCase):
     def test_real_docs_pass(self):
         t = self.tree()
         listed = self._reviewed(t)
-        self.assertTrue(listed, "the reviewed list is empty")
+        # Empty since every docs/ image is made by scripts/screenshots.py; the
+        # list stays for a hand-made image someone reviews later.
         for path in listed:
             self.assertTrue((t / path).is_file(), f"{path} is listed but not in docs/")
         images = [p for p in (t / "docs").rglob("*") if p.suffix.lower() in self.IMAGE_EXT]
@@ -824,9 +825,17 @@ class DocImageGate(_FixtureCase):
                 self.assertNothingWritten(t, out=out)
 
     def test_changed_listed_image_blocks_until_reviewed_again(self):
+        # A reviewed image of its own: the real list is empty (every docs/
+        # image comes from scripts/screenshots.py).
         t = self.tree()
-        path, sha = sorted(self._reviewed(t).items())[0]
+        path = "docs/fixture-reviewed.png"
         p = t / path
+        p.write_bytes(self.FAKE_IMAGE)
+        sha = hashlib.sha256(self.FAKE_IMAGE).hexdigest()
+        lst = t / self.LIST
+        lst.write_text(lst.read_text() + f"{sha}  {path}\n")
+        rc, out = self.check(t)
+        self.assertEqual(rc, 0, out[-3000:])            # listed at its sha: passes
         with open(p, "ab") as f:
             f.write(b"\0")
         rc, out = self.check(t)
@@ -834,7 +843,6 @@ class DocImageGate(_FixtureCase):
         self.assertIn(f"✗ {path}", out)
         self.assertIn("changed since it was reviewed", out)
         self.assertIn("scripts/screenshots.py", out)
-        lst = t / self.LIST
         new = hashlib.sha256(p.read_bytes()).hexdigest()
         lst.write_text(lst.read_text().replace(sha, new, 1))
         rc, out = self.check(t)

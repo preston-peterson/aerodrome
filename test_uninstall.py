@@ -373,6 +373,19 @@ class Purge(_Case):
         self.assertFalse(os.path.lexists(link), out)
         self.assertTrue(o.is_dir())                    # never the folder
 
+    def test_a_linked_db_also_purges_pre_restore_copies_beside_the_link(self):
+        # Releases before 3.4.149 made the database's pre-restore copy beside
+        # the link, not the file it points to (docs/API.md, Restoring a backup).
+        o, db, link = self.linked_db()
+        old = [self.inst / "aircraft_history.db.bak.20261001-090000.pre-restore",
+               self.inst / "aircraft_history.db.bak.20261002-090000.pre-restore"]
+        for p in old:
+            p.write_text("x\n")
+        rc, out = self.run_un("--purge")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual([p.name for p in old if p.exists()], [], out)
+        self.assertEqual(sorted(p.name for p in o.iterdir()), ["unrelated"], out)
+
     def test_a_link_to_a_file_that_is_not_sqlite_is_kept_with_the_link(self):
         v = self.tmp / "victim.txt"
         v.write_text("important\n")
