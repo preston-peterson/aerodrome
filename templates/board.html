@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
-<!-- Version: 3.4.161 -->
+<!-- Version: 3.4.162 -->
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Display board — Aerodrome</title>
@@ -683,6 +683,23 @@ function chevronSvg(a, sizeRem){
   const s = `width:${px}rem;height:${px}rem`;
   const ring = ringCol
     ? `<circle cx="12" cy="12" r="15" fill="none" stroke="${escapeHtml(ringCol)}" stroke-width="2"/>` : '';
+  // Type silhouette (mirrors the Live radar's _radarTypeSvg): map.type_shapes
+  // on + known typecode -> the generated path; otherwise the chevron below.
+  // A balloon never draws one; a helicopter only when its typecode is a
+  // rotorcraft silhouette (same rule as the Live radar's _radarDrawsShape).
+  if (MAPCFG.type_shapes && typeof SHAPES_DATA !== 'undefined' && !isBalloon(a)) {
+    const code = (a.aircraft_type || '').toUpperCase();
+    const rotorShape = typeof SHAPES_ROTORCRAFT !== 'undefined' && SHAPES_ROTORCRAFT.has(code);
+    const p = (rotorShape || !heli) ? SHAPES_DATA[code] : null;
+    if (p) {
+      // Same drawing as the Live radar: larger than the chevron (26 vs 19 on
+      // the Live map) so the planform reads, with a solid dark outline
+      // painted behind the fill instead of a translucent one.
+      const spx = px * 26 / 19;
+      return `<svg class="ts" viewBox="${vb}" style="width:${spx}rem;height:${spx}rem;transform:rotate(${rot}deg)">${ring}`
+        + `<g fill="${col}" stroke="#0a0d12" stroke-width="1.8" stroke-linejoin="round" paint-order="stroke" fill-rule="evenodd">${p}</g></svg>`;
+    }
+  }
   if (heli) {
     // Rotor disc: dark under-stroke, crossed blades, hub — heading-agnostic.
     return `<svg viewBox="${vb}" style="${s}">${ring}`
@@ -697,19 +714,6 @@ function chevronSvg(a, sizeRem){
     return `<svg viewBox="${vb}" style="${s}">${ring}`
       + `<circle cx="12" cy="9" r="7" fill="${col}" stroke="${dk}" stroke-width="1"/>`
       + `<rect x="10" y="18.5" width="4" height="3.4" rx="0.8" fill="none" stroke="${col}" stroke-width="1.6"/></svg>`;
-  }
-  // Type silhouette (mirrors the Live radar's _radarTypeSvg): map.type_shapes
-  // on + known typecode -> the generated path; otherwise the chevron below.
-  if (MAPCFG.type_shapes && typeof SHAPES_DATA !== 'undefined') {
-    const p = SHAPES_DATA[(a.aircraft_type || '').toUpperCase()];
-    if (p) {
-      // Same drawing as the Live radar: larger than the chevron (26 vs 19 on
-      // the Live map) so the planform reads, with a solid dark outline
-      // painted behind the fill instead of a translucent one.
-      const spx = px * 26 / 19;
-      return `<svg class="ts" viewBox="${vb}" style="width:${spx}rem;height:${spx}rem;transform:rotate(${rot}deg)">${ring}`
-        + `<g fill="${col}" stroke="#0a0d12" stroke-width="1.8" stroke-linejoin="round" paint-order="stroke" fill-rule="evenodd">${p}</g></svg>`;
-    }
   }
   return `<svg viewBox="${vb}" style="${s};transform:rotate(${rot}deg)">${ring}`
     + `<path d="M12 2 L21 22 L12 17 L3 22 Z" fill="${col}" stroke="${dk}" stroke-width="1" stroke-linejoin="round"/></svg>`;

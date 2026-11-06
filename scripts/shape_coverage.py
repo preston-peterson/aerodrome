@@ -6,8 +6,8 @@ NOT draw a silhouette for, and how much live traffic do they account
 for? Types with a shape render the parametric silhouette; everything
 else falls back to the generic chevron (by design — a wrong shape is
 worse than a generic one). Helicopters and tiltrotors are excluded
-entirely: the radar draws them a heading-agnostic rotor disc, so a
-missing rotorcraft designator is never a gap.
+entirely: one without a silhouette of its own still gets the radar's
+rotor disc, so a missing rotorcraft designator is never a gap.
 
 Two information sources, in priority order:
 
@@ -78,7 +78,7 @@ def load_shapes():
     js = os.path.join(REPO, "static", "shapes-data.js")
     try:
         with open(js, encoding="utf-8") as f:
-            codes = set(re.findall(r'"([A-Z0-9]{4})":', f.read()))
+            codes = set(re.findall(r'^\s*"([A-Z0-9]{2,4})":', f.read(), re.M))
     except (OSError, UnicodeDecodeError) as exc:
         print(f"  ✗ cannot read static/shapes-data.js: {exc}")
         sys.exit(2)
@@ -103,7 +103,7 @@ def load_doc8643(quiet, cache_only=False):
         out = {}
         for r in csv.DictReader(io.StringIO(text)):
             d = (r.get("type_designator") or "").strip().upper()
-            if not re.fullmatch(r"[A-Z0-9]{4}", d):
+            if not re.fullmatch(r"[A-Z0-9]{2,4}", d):
                 continue
             entry = out.setdefault(d, {"desc": "", "rotor": False})
             if not entry["desc"]:  # first variant wins; one line per code
@@ -265,7 +265,7 @@ def main():
         if d["available"]:
             print(f"  DOC 8643: {d['codes_without_shape']} designatable"
                   f" codes have no shape ({d['rotor_codes']} rotorcraft"
-                  f" excluded — the rotor disc covers them);"
+                  f" excluded — the rotor disc covers any without a shape);"
                   f" a few hundred plane gaps is expected —"
                   f" chevrons are correct for rarities)")
         else:

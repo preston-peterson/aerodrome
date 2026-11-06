@@ -19,6 +19,26 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.162] — 2026-11-05
+
+**The map now draws a silhouette for about 550 aircraft types, up from 135.** An aircraft whose type had no silhouette showed the plain chevron. Far fewer will now. The Live map and the display board draw:
+
+- every type in the FAA's table of aircraft that use US airports, except the V-22 tiltrotor;
+- many types that table doesn't list: older and foreign airliners, military jets and transports, warbirds, kit-built and light-sport aircraft, and gliders;
+- kinds of aircraft that could not be drawn before: fighters and delta wings, high-wing jet transports, biplanes, twin-boom aircraft, and aircraft with wingtip tanks or a canard.
+
+A type that still has no silhouette keeps the chevron, as before.
+
+**Helicopters with a known type now draw as helicopters.** 56 helicopter types have a silhouette: a body, a tail boom and the main rotor with that type's real number of blades, turned to the direction it is flying. A Robinson R44 shows two blades, an AS350 three, a Black Hawk four, an AW139 five. A helicopter whose type isn't known, or isn't one of the 56, keeps the round rotor symbol. The silhouette points along the helicopter's track over the ground, so one that is hovering or flying sideways may not point the way its nose does.
+
+### Operational notes
+
+This is an ordinary update with a normal restart and no database change. Reload any open Live or display-board page to see the new shapes. The file of shapes those two pages load grew from 72 KB to 258 KB; it loads once per page and the browser keeps it until the next update.
+
+### Behind the scenes
+
+`scripts/gen_type_shapes.py` gained families for fighters, deltas, jet trainers, high-wing jet transports, gliders, biplanes, twin booms and helicopters, plus wingtip tanks and canards, and it now fits each shape by its own outline, so a sharply swept wing can no longer reach outside the box. The table has 547 rows and 13 aliases. Dimensions for types the FAA table lacks were looked up one by one and each entry names its source; eight could not be confirmed and say so. The FAA table itself turned out to list another variant's figures for several types, and the wrong engine count for the Boeing 727 and the Saab 2000; those are overridden, each with the reason. `test_type_shapes.py` now checks every drawn engine count against the FAA table and, where a local copy is present, ICAO Doc 8643. `static/shapes-data.js` also lists which silhouettes are rotorcraft, which is how the map tells a helicopter's silhouette from a fixed-wing one: a contact that reports the helicopter category but a fixed-wing type keeps the rotor symbol. The bump's shape-coverage audit used to count only four-character type codes; it now counts two- and three-character ones too (M5, B2, P68). The Live map, display board, aircraft page and export screenshots in `docs/` are rebuilt, with the dark map's tiles and the new silhouettes: `scripts/screenshots.py` takes a tile key from the environment for the run, removes its scratch pages afterwards, and can render named screenshots only.
+
 ## [3.4.161] — 2026-11-05
 
 **Aircraft silhouettes on the Live map and the display board are redrawn, larger and sharper.** Until now every type was drawn from one outline: a thick body, a swept slab of a wing and a stub tail, so a Cessna 172 looked much like an A320. Each type is now drawn from its own layout:

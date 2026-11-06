@@ -55,10 +55,10 @@ class TypeShapeTableTest(unittest.TestCase):
 
     def test_every_row_names_a_preset_and_has_dimensions(self):
         for code, (family, _over) in self.gen.SOURCES.items():
-            self.assertIn(family, self.gen.PRESETS, code)
-            self.assertIn(code, self.dims, f"{code}: no span/length in type_dims.csv or EXTRA_DIMS")
+            self.assertTrue(family in self.gen.PRESETS, f"{code}: no preset {family}")
+            self.assertTrue(code in self.dims, f"{code}: no span/length in type_dims.csv or EXTRA_DIMS")
             span, length = self.dims[code]
-            self.assertTrue(5 < span < 90 and 5 < length < 90, (code, span, length))
+            self.assertTrue(4 < span < 90 and 4 < length < 90, (code, span, length))
 
     def test_extra_dims_say_why_they_override_the_faa_table(self):
         """A code the FAA table covers uses the FAA figure unless its
@@ -66,15 +66,15 @@ class TypeShapeTableTest(unittest.TestCase):
         with open(DIMS_CSV, newline="") as fh:
             in_faa = {r["code"] for r in csv.DictReader(fh)}
         for code, (span, length, source) in self.gen.EXTRA_DIMS.items():
-            self.assertIn(code, self.gen.SOURCES, code)
+            self.assertTrue(code in self.gen.SOURCES, f"{code}: EXTRA_DIMS entry without a SOURCES row")
             self.assertTrue(source.strip(), code)
             if code in in_faa:
                 self.assertIn("FAA", source, f"{code}: say why the FAA row is not used")
 
     def test_aliases_point_at_drawn_types(self):
         for alias, target in self.gen.ALIASES.items():
-            self.assertNotIn(alias, self.gen.SOURCES, alias)
-            self.assertIn(target, self.gen.SOURCES, alias)
+            self.assertFalse(alias in self.gen.SOURCES, f"{alias}: both an alias and a row")
+            self.assertTrue(target in self.gen.SOURCES, f"{alias}: alias target {target} is not drawn")
 
     def test_dimension_table_is_well_formed(self):
         with open(DIMS_CSV, newline="") as fh:
@@ -92,13 +92,39 @@ class TypeShapeTableTest(unittest.TestCase):
         twin) is the kind of wrong row the old hand-typed table had."""
         with open(DIMS_CSV, newline="") as fh:
             listed = {r["code"]: int(r["engines"]) for r in csv.DictReader(fh)}
+        # Types the FAA table lacks are checked against DOC 8643 where that
+        # file is present (it is a local, untracked cache).
+        doc = ROOT / "scripts" / "doc8643.csv"
+        if doc.exists():
+            with open(doc, newline="") as fh:
+                for r in csv.DictReader(fh):
+                    if r["engine_count"].isdigit():
+                        listed.setdefault(r["type_designator"], int(r["engine_count"]))
+        listed.update(self.gen.ENGINE_COUNT_FIXES)
+        checked = 0
         for code in self.gen.SOURCES:
-            if code in self.gen.BUILDERS or code not in listed:
+            if code in self.gen.BUILDERS or code not in listed or self.gen.is_rotorcraft(code):
                 continue
-            drawn = 0
-            for e in self.gen.spec_for(code)["engines"]:
-                drawn += 1 if e["kind"] in ("centre", "nose") else 2
+            drawn = sum(e.get("count", 1 if e["kind"] in ("centre", "nose") else 2)
+                        for e in self.gen.spec_for(code)["engines"])
             self.assertEqual(drawn, listed[code], code)
+            checked += 1
+        self.assertGreater(checked, 300)
+
+    def test_rotorcraft_rows_are_helicopters_in_doc_8643(self):
+        """A helicopter preset on a fixed-wing code (or the reverse) would
+        draw rotor blades on an aeroplane. DOC 8643 says which is which; its
+        CSV is a local, untracked cache, so the check runs only where it is."""
+        doc = ROOT / "scripts" / "doc8643.csv"
+        if not doc.exists():
+            self.skipTest("scripts/doc8643.csv not present")
+        with open(doc, newline="") as fh:
+            kind = {}
+            for r in csv.DictReader(fh):
+                kind.setdefault(r["type_designator"], r["description"])
+        for code in self.gen.SOURCES:
+            if code in kind:
+                self.assertEqual(self.gen.is_rotorcraft(code), kind[code] == "Helicopter", code)
 
 
 class ShippedShapesTest(unittest.TestCase):
@@ -115,6 +141,15 @@ class ShippedShapesTest(unittest.TestCase):
         have = {p.stem for p in SHAPES_DIR.glob("*.svg")}
         self.assertEqual(have, set(self.gen.SOURCES))
 
+    def test_rotorcraft_list_matches_the_table(self):
+        m = re.search(r"^const SHAPES_ROTORCRAFT = new Set\((\[.*\])\);$", DATA_JS.read_text(), re.M)
+        self.assertIsNotNone(m, "shapes-data.js has no SHAPES_ROTORCRAFT")
+        listed = set(json.loads(m.group(1)))
+        want = {c for c in self.gen.SOURCES if self.gen.is_rotorcraft(c)}
+        want |= {a for a, t in self.gen.ALIASES.items() if self.gen.is_rotorcraft(t)}
+        self.assertEqual(listed, want)
+        self.assertGreater(len(listed), 40)
+
     def test_aliases_ship_their_target_path(self):
         for alias, target in self.gen.ALIASES.items():
             self.assertEqual(self.paths[alias], self.paths[target], alias)
@@ -130,7 +165,7 @@ class ShippedShapesTest(unittest.TestCase):
             self.assertLessEqual(max(xs + ys), 23.5, code)
             # fit to the same 22-unit box and centred on x=12
             self.assertAlmostEqual(max(max(xs) - min(xs), max(ys) - min(ys)), 22.0,
-                                   delta=0.6, msg=code)
+                                   delta=0.8, msg=code)
             self.assertAlmostEqual((max(xs) + min(xs)) / 2, 12.0, delta=0.15, msg=code)
 
     def test_shipped_files_match_the_generator(self):

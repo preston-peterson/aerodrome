@@ -14,6 +14,14 @@ The mock data is deliberately generic — generic Bay Area coordinates,
 reserved-for-documentation receiver IP 192.0.2.10, and fictional callsigns.
 No real receiver, home location, or personal watchlist is ever referenced.
 
+Map tiles: the dark map needs a CARTO key. Without one the dark tiles say
+"API KEY REQUIRED", so set AERODROME_SCREENSHOT_CARTO_KEY in the environment
+for the run (it is used for tile requests only: never written to the PNGs,
+and the scratch HTML that carries it is deleted after each render).
+
+To render only some screenshots, name them:
+    python3 scripts/screenshots.py live board_radar
+
 To add a new screenshot:
   1. Add a new `screenshot_foo()` function below
   2. Append it to the list at the bottom of main()
@@ -21,8 +29,10 @@ To add a new screenshot:
 """
 import asyncio
 import json
+import os
 import random
 import subprocess
+import sys
 import time
 import urllib.request
 from pathlib import Path
@@ -87,7 +97,8 @@ UI_CFG = {
     # ~23 mi of the receiver) so the display board's scope fills the frame
     # instead of huddling every contact inside the innermost default ring.
     "map": {"ring_distances": [8, 16, 24], "show_range_rings": True,
-            "carto_api_key": "screenshot-fixture-key"},
+            "carto_api_key": (os.environ.get("AERODROME_SCREENSHOT_CARTO_KEY")
+                              or "screenshot-fixture-key")},
     "display": {"wallboard_layout": "ask"},
     "track_link_provider": "airplanes_live",
     # v2.50.24: the harness was missing these — without them the UI's
@@ -125,7 +136,7 @@ UI_CFG = {
 LIVE_AIRCRAFT = [
     {"icao":"A00001","callsign":"UAL1234","speed":452,"lat":37.41,"lon":-122.07,"altitude":35000,"aircraft_type":"B737","type_desc":"Boeing 737-800","distance":18.2,"is_military":False,"seen_at":NOW},
     {"icao":"A12345","callsign":"DAL512","speed":438,"lat":37.55,"lon":-122.18,"altitude":32000,"aircraft_type":"A321","type_desc":"Airbus A321","distance":24.5,"is_military":False,"seen_at":NOW},
-    {"icao":"AB0777","callsign":"UAL901","speed":490,"lat":37.62,"lon":-121.89,"altitude":41000,"aircraft_type":"B777","type_desc":"Boeing 777-300ER","distance":36.7,"is_military":False,"seen_at":NOW},
+    {"icao":"AB0777","callsign":"UAL901","speed":490,"lat":37.62,"lon":-121.89,"altitude":41000,"aircraft_type":"B77W","type_desc":"Boeing 777-300ER","distance":36.7,"is_military":False,"seen_at":NOW},
     {"icao":"A55599","callsign":"SWA2024","speed":412,"lat":37.34,"lon":-122.31,"altitude":28500,"aircraft_type":"B738","type_desc":"Boeing 737-800","distance":14.1,"is_military":False,"seen_at":NOW},
     {"icao":"AE01CE","callsign":"RCH42","speed":365,"lat":37.51,"lon":-121.95,"altitude":26000,"aircraft_type":"C17","type_desc":"Boeing C-17A Globemaster III","distance":33.4,"is_military":True,"mil_color":"#ef4444","mil_label":"MIL","seen_at":NOW},
     {"icao":"AE093F","callsign":"GRZLY39","speed":310,"lat":37.67,"lon":-122.41,"altitude":18000,"aircraft_type":"C56X","type_desc":"Cessna 560XL Citation","distance":19.8,"is_military":True,"mil_color":"#ef4444","mil_label":"MIL","seen_at":NOW},
@@ -135,7 +146,7 @@ LIVE_AIRCRAFT = [
     {"icao":"C2B369","callsign":"CFC3136","speed":285,"lat":37.60,"lon":-121.78,"altitude":24000,"aircraft_type":"CL60","type_desc":"Bombardier CL-600","distance":42.3,"is_military":True,"mil_color":"#ef4444","mil_label":"MIL","seen_at":NOW},
     {"icao":"C2B2DD","callsign":"CFC555","speed":305,"lat":37.49,"lon":-122.33,"altitude":27000,"aircraft_type":"DH8D","type_desc":"De Havilland Dash 8-400","distance":15.2,"is_military":True,"mil_color":"#ef4444","mil_label":"MIL","seen_at":NOW},
     {"icao":"480C41","callsign":"MMF50","speed":220,"lat":37.55,"lon":-122.19,"altitude":15000,"aircraft_type":"A332","type_desc":"Airbus A330-200","distance":24.0,"is_military":True,"mil_color":"#ef4444","mil_label":"MIL","seen_at":NOW},
-    {"icao":"A67890","callsign":"ASQ567","speed":421,"lat":37.28,"lon":-122.42,"altitude":31000,"aircraft_type":"E175","type_desc":"Embraer E175","distance":16.9,"is_military":False,"seen_at":NOW},
+    {"icao":"A67890","callsign":"ASQ567","speed":421,"lat":37.28,"lon":-122.42,"altitude":31000,"aircraft_type":"E75L","type_desc":"Embraer E175","distance":16.9,"is_military":False,"seen_at":NOW},
     # v3.4.119: a high-altitude balloon (category B2 → envelope glyph on the
     # radar/board; FL5xx + very low speed, like the HBAL/NSL fleets).
     {"icao":"A7F2C3","callsign":"HBAL617","speed":22,"lat":37.72,"lon":-122.02,"altitude":52000,"aircraft_type":"BALL","type_desc":"Balloon","distance":21.4,"is_military":False,"seen_at":NOW,"category":"B2"},
@@ -245,7 +256,7 @@ PHOTO_VARIANT_URIS = [
 # --- Watchlist tab (grouped {latest, sightings}) ---------------------------
 WATCHLIST_GROUPS = [
     {"latest":{"icao":"AAAD47","callsign":"N78729","aircraft_type":"C172","type_desc":"Cessna 172","altitude":1500,"speed":80,"lat":37.43,"lon":-122.02,"distance":6.4,"seen_at":NOW,"watchlist_label":"Friend's Cessna","is_military":False},"sightings":[]},
-    {"latest":{"icao":"A67890","callsign":"ASQ567","aircraft_type":"E175","type_desc":"Embraer E175","altitude":31000,"speed":421,"lat":37.28,"lon":-122.42,"distance":16.9,"seen_at":NOW-180,"watchlist_label":"Brother's airline","is_military":False},"sightings":[]},
+    {"latest":{"icao":"A67890","callsign":"ASQ567","aircraft_type":"E75L","type_desc":"Embraer E175","altitude":31000,"speed":421,"lat":37.28,"lon":-122.42,"distance":16.9,"seen_at":NOW-180,"watchlist_label":"Brother's airline","is_military":False},"sightings":[]},
 ]
 
 # --- Military tab (grouped) ------------------------------------------------
@@ -287,7 +298,7 @@ SEARCH_ROWS = [
      "last_speed":438,"last_altitude":32000,"last_squawk":"3401",
      "last_distance_km":39.4,"distance":24.5,"score":1.0},
     {"icao":"AB0777","registration":"N777UA","last_callsign":"UAL901","callsign":"UAL901",
-     "aircraft_type":"B777","aircraft_type_desc":"Boeing 777-300ER","operator":"United Airlines",
+     "aircraft_type":"B77W","aircraft_type_desc":"Boeing 777-300ER","operator":"United Airlines",
      "country":"United States","last_lat":37.62,"last_lon":-121.89,
      "last_seen_at":_SEARCH_T0-150,"sighting_count":12,"first_seen_at":_SEARCH_T0-7200,
      "last_speed":490,"last_altitude":41000,"last_squawk":"2654",
@@ -378,7 +389,7 @@ STATS = {
             "last":  {"icao":"A67890","callsign":"ASQ567", "seen_at":NOW-180},
         },
         "furthest":         {"icao":"AE01CE","callsign":"RCH42","distance":420,"unit":"mi","bearing":220,"aircraft_type":"C17"},
-        "highest_altitude": {"icao":"AB0777","callsign":"UAL901","altitude":43000,"aircraft_type":"B777"},
+        "highest_altitude": {"icao":"AB0777","callsign":"UAL901","altitude":43000,"aircraft_type":"B77W"},
         "lowest_altitude":  {"icao":"A134D2","callsign":"N177SV","altitude":1000,"aircraft_type":"C177"},
         "fastest":          {"icao":"AD7E6F","callsign":"JBU934","speed":597,"aircraft_type":"A321"},
         "slowest":          {"icao":"AAAD47","callsign":"N78729","speed":84,"aircraft_type":"C172"},
@@ -456,7 +467,7 @@ STATS = {
             {"record_type":"lowest_altitude_ever","value":200,"icao":"A33333","callsign":"N54321","aircraft_type":"C172","set_at":NOW-86400*8,"extra":""},
             {"record_type":"furthest_ever","value":478.6,"icao":"A22222","callsign":"AAL123","aircraft_type":"B789","set_at":NOW-86400*20,"extra":"mi"},
             {"record_type":"peak_simultaneous_ever","value":89,"icao":"","callsign":"","aircraft_type":"","set_at":NOW-86400*5,"extra":""},
-            {"record_type":"longest_track_ever","value":18000,"icao":"AAA123","callsign":"LONGHAUL","aircraft_type":"B747","set_at":NOW-86400*30,"extra":""},
+            {"record_type":"longest_track_ever","value":18000,"icao":"AAA123","callsign":"LONGHAUL","aircraft_type":"B744","set_at":NOW-86400*30,"extra":""},
         ],
         "range_rose": {
             "window":"30d","unit":"mi","total_positions":6501,
@@ -950,6 +961,21 @@ AIRCRAFT_DETAIL = {
 # Playwright harness
 # ---------------------------------------------------------------------------
 
+# Invented Sightings rows for ABCDEF (EXA1234), newest first, over the last day.
+AC_SIGHTINGS = [
+    {"seen_at": _AC_NOW - off, "callsign": "EXA1234", "altitude": alt, "speed": spd,
+     "lat": lat, "lon": lon}
+    for off, alt, spd, lat, lon in [
+        (1800,  35400, 482, 37.612, -122.391), (5400,  34100, 476, 37.655, -122.352),
+        (9000,  28700, 451, 37.701, -122.298), (14400, 21300, 402, 37.588, -122.447),
+        (21600, 12800, 338, 37.540, -122.410), (30600,  6200, 261, 37.481, -122.372),
+        (39600, 33800, 470, 37.730, -122.215), (48600, 35400, 479, 37.690, -122.330),
+        (57600, 29500, 455, 37.640, -122.405), (66600, 18900, 389, 37.575, -122.438),
+        (75600,  9400, 297, 37.520, -122.395), (84600, 31200, 463, 37.668, -122.361),
+    ]
+]
+
+
 def _build_fetch_stub() -> str:
     """Return a <script> block that overrides window.fetch so every
     /api/* call the templates make returns our synthetic data."""
@@ -982,6 +1008,11 @@ window.fetch = async (url) => {{
     // IMPORTANT: more-specific routes come first (e.g. /api/watchlist/entries
     // before /api/watchlist) so the correct stub matches.
     if (url.includes('/api/ui-config'))             return j({json.dumps(payloads['ui_config'])});
+    // Aircraft-page Sightings table: /api/all/drill?icao=...; rows carry
+    // seen_at / callsign / altitude / speed / lat / lon, newest first.
+    if (url.includes('/api/all/drill'))             return j({{
+        ok: true, total_count: 142, sightings: {json.dumps(AC_SIGHTINGS)},
+    }});
     if (url.includes('/api/stats/drill')) {{
         const u = new URL(url, 'http://x');
         return j({{card: u.searchParams.get('card'), rows: [], count: 0}});
@@ -1147,7 +1178,7 @@ async def _render(browser, template_file: str, outfile: Path, *,
     # string in JS, but the HTML tokenizer doesn't recognize it as a
     # closing tag. Applied to every inlined JS body below.
     static_dir = REPO_ROOT / 'static'
-    for asset in ('theme.css', 'theme.js', 'health-indicator.js'):
+    for asset in ('theme.css', 'theme.js', 'health-indicator.js', 'shapes-data.js'):
         path = static_dir / asset
         if not path.exists():
             continue
@@ -1215,16 +1246,20 @@ async def _render(browser, template_file: str, outfile: Path, *,
     html = html.replace('</head>', _build_fetch_stub() + '</head>')
     tmp = TMP_DIR / f'__aerodrome_rendertmp_{outfile.name}.html'
     tmp.write_text(html)
-
-    await page.goto(f'file://{tmp}{url_query}')
-    await page.wait_for_timeout(1500)
-    if ready_fn:
-        await ready_fn(page)
-    if clip:
-        await page.screenshot(path=str(outfile), clip=clip)
-    else:
-        await page.screenshot(path=str(outfile), full_page=True)
-    await page.close()
+    try:
+        await page.goto(f'file://{tmp}{url_query}')
+        await page.wait_for_timeout(1500)
+        if ready_fn:
+            await ready_fn(page)
+        if clip:
+            await page.screenshot(path=str(outfile), clip=clip)
+        else:
+            await page.screenshot(path=str(outfile), full_page=True)
+        await page.close()
+    finally:
+        # The scratch page embeds the mock config, which can carry a real
+        # tile key (AERODROME_SCREENSHOT_CARTO_KEY): never leave it on disk.
+        tmp.unlink(missing_ok=True)
 
     if errors:
         # Fatal JS errors usually mean mock data has drifted from the
@@ -1582,6 +1617,14 @@ async def main():
         screenshot_board_flight,
         screenshot_board_hybrid,
     ]
+    wanted = sys.argv[1:]
+    if wanted:
+        by_name = {fn.__name__[len('screenshot_'):]: fn for fn in renderers}
+        unknown = [w for w in wanted if w not in by_name]
+        if unknown:
+            raise SystemExit(f"unknown screenshot(s): {', '.join(unknown)}; "
+                             f"choose from: {', '.join(by_name)}")
+        renderers = [by_name[w] for w in wanted]
     async with async_playwright() as p:
         flatpak_proc = None
         try:

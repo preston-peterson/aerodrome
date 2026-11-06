@@ -1,4 +1,4 @@
-<!-- Version: 3.4.161 -->
+<!-- Version: 3.4.162 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -3525,6 +3525,17 @@ function _radarShapeKnown(ac){
     return !!SHAPES_DATA[(ac.aircraft_type || '').toUpperCase()];
 }
 
+// True when this aircraft's marker draws its type silhouette. A balloon never
+// does. A helicopter (emitter category A7) does only when its typecode is one
+// of the rotorcraft silhouettes: an A7 contact that reports a fixed-wing type
+// keeps the rotor disc, since its category is the better evidence.
+function _radarDrawsShape(ac){
+    if(!_radarShapeKnown(ac) || _radarIsBalloon(ac)) return false;
+    const rotor = typeof SHAPES_ROTORCRAFT !== 'undefined'
+        && SHAPES_ROTORCRAFT.has((ac.aircraft_type || '').toUpperCase());
+    return rotor || (ac.category || '').toUpperCase() !== 'A7';
+}
+
 // ADS-B emitter category (or type fallback) → one of 3 discrete sizes.
 // A1/A2 = light/small, A3/A4 = jet, A5+/B/C heavies & specials = large.
 // SILHOUETTE SIZE: a chevron reads at 13px because it's a solid blob, but a
@@ -3541,9 +3552,8 @@ function _radarSize(ac){
     else if(c === 'A5' || c === 'A6' || c === 'A7' || c.startsWith('B') || c.startsWith('C')) px = 24; // heavy/special
     else if(c === 'A3' || c === 'A4') px = 19;                              // jet
     else px = 17;                                                           // unknown — medium
-    // Helicopters and balloons draw their own glyph whatever their typecode,
-    // so they keep the bucket size.
-    if(c !== 'A7' && !_radarIsBalloon(ac) && _radarShapeKnown(ac)) px = (px === 24) ? 31 : 26;
+    // 31 for the heavies; a helicopter shares their 24px bucket but is not one.
+    if(_radarDrawsShape(ac)) px = (px === 24 && c !== 'A7') ? 31 : 26;
     return px;
 }
 
@@ -3594,9 +3604,10 @@ function _radarIsBalloon(ac){
 // typecode, nose-up in a 0 0 24 24 box). Returns an <svg> string or ''
 // when the toggle is off, the data file hasn't loaded, or the typecode
 // isn't in the table — callers fall back to the chevron in that case.
-// Helicopters and balloons never consult it (heading-agnostic glyphs win).
+// Balloons never consult it, and a helicopter only for a rotorcraft
+// silhouette (see _radarDrawsShape); otherwise their heading-agnostic glyphs win.
 function _radarTypeSvg(ac, color, px){
-    if(!_radarShapeKnown(ac)) return '';
+    if(!_radarDrawsShape(ac)) return '';
     const path = SHAPES_DATA[(ac.aircraft_type || '').toUpperCase()];
     // A solid dark outline painted BEHIND the fill, one screen pixel wide
     // whatever the marker size (the stroke is 2px, half of it under the
@@ -3855,19 +3866,19 @@ function _radarBuildIcon(ac){
     // takes precedence so the two coloured rings never collide; an aircraft
     // that's both reads as military).
     const isWl = !isMil && !!ac.is_watchlist;
-    // Helicopters (category A7) get a distinct rotor-disc glyph, drawn
-    // heading-agnostic (rotorcraft hover — no meaningful ground track).
+    // Helicopters (category A7) get a rotor-disc glyph, drawn heading-agnostic,
+    // unless their typecode has a rotorcraft silhouette (see _radarDrawsShape).
     // Balloons (category B2 / type BALL / balloon-fleet callsign) get an
     // envelope-and-basket glyph, same heading-agnostic treatment.
     const isHeli = (ac.category || '').toUpperCase() === 'A7';
     const isBalloon = !isHeli && _radarIsBalloon(ac);
-    // Type silhouette when available (map.type_shapes on + known typecode
-    // + not rotorcraft/balloon); empty string = chevron fallback.
-    const typeSvg = (isHeli || isBalloon) ? '' : _radarTypeSvg(ac, color, size);
+    // '' unless this marker draws a type silhouette (see _radarDrawsShape):
+    // a helicopter with a rotorcraft silhouette gets it, heading and all.
+    const typeSvg = _radarTypeSvg(ac, color, size);
     const track = (ac.track != null && !isNaN(ac.track)) ? Number(ac.track) : null;
     // Whole degrees: no one can see less on a marker this size, and most small
     // heading changes then leave the icon as it was (see _radarSetIcon).
-    const rot = (isHeli || isBalloon || track == null) ? 0 : Math.round(track);
+    const rot = ((!typeSvg && (isHeli || isBalloon)) || track == null) ? 0 : Math.round(track);
     const cls = 'radar-marker' + (isMil ? ' mil' : '') + (isWl ? ' wl' : '')
         + (radarLabelsMode() === 'all' ? ' labeled' : '')
         + (ac.icao === _radar.selectedIcao ? ' selected' : '');
@@ -3882,9 +3893,10 @@ function _radarBuildIcon(ac){
     const html =
         `<span class="rm-ring" style="width:${ringPx}px;height:${ringPx}px"></span>`
         + `<span class="rm-glyph${typeSvg ? ' ts' : ''}" style="width:${size}px;height:${size}px;transform:${glyphTransform}">`
-        + (isHeli ? _radarHeliSvg(color, size)
+        + (typeSvg ? typeSvg
+           : isHeli ? _radarHeliSvg(color, size)
            : isBalloon ? _radarBalloonSvg(color, size)
-           : (typeSvg || _radarChevronSvg(color, size))) + `</span>`
+           : _radarChevronSvg(color, size)) + `</span>`
         + `<span class="rm-label">${escapeHtml(label)}</span>`;
     return L.divIcon({
         // The class carries radar-marker (+ mil/selected) — REQUIRED: the
