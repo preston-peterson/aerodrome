@@ -19,6 +19,23 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.165] — 2026-11-06
+
+**The Status page now tells you when alerts can't reach your phone, and clicking a row in the Live list shows that aircraft on the radar.**
+
+- **Notifications on the Status page.** With notifications turned on, Aerodrome now checks every few minutes that your ntfy server is answering, and notices when the last alert it tried to send didn't go through. Either one turns the gear amber and shows on a new Notifications card on the Status page, which says what went wrong and links to the settings that fix it. Until now, a stopped or moved ntfy server went unnoticed until you wondered why your phone had gone quiet. The card shows only the server's address and port, never your topic.
+- **Click a Live row to find it on the radar.** Clicking anywhere on a row in the Live list centres the radar on that aircraft and opens its details panel. Links and buttons in the row still do their own thing, and selecting text to copy a callsign doesn't move the map. On a phone the click switches to the Radar view. So does the "Live →" chip on the Watchlist and other tabs, which used to centre a map you couldn't see.
+- **The Updates page after an update.** The Local update card now says "Nothing staged" when the update folder holds nothing to install, where it showed an error-sounding note about a missing VERSION file under an "Up to date" badge. That note now appears only when something was copied into the folder without its VERSION file.
+- **Fewer status checks.** Each open page now asks the server for its status once every 30 seconds, not twice. Every status check also contacts your receiver, so this halves those requests.
+
+### Operational notes
+
+This is an ordinary update with a normal restart and no database change. Reload any open pages to pick up the changes.
+
+### Behind the scenes
+
+`/api/status` has a `notifications` component (see API.md). It comes from a GET of the ntfy server's `/v1/health`, made under the same address rules and no-redirect rule as a real send, at most every five minutes and again whenever the address changes. Any answer below 500 counts as reachable, and the response body is never read back. The demo-mode banner in `static/theme.js` now listens for the status answer the page's own poll already fetched (an `aerodrome:status` event) and fetches on its own only on a page with no poll. `/api/updates/local/check` adds `staged: "none" | "partial"`. The release script's aircraft-shape coverage report no longer reads the local database, whose traffic was never representative, and the `AERODROME_SHAPE_GATE=strict` option that depended on it is gone.
+
 ## [3.4.164] — 2026-11-05
 
 **Sixteen aircraft silhouettes are redrawn to look more like the real thing.** Nothing else on the map changes.

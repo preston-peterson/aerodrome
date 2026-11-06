@@ -25,7 +25,6 @@ import importlib.util
 import os
 import re
 import shutil
-import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -322,17 +321,6 @@ class GateBlocks(_FixtureCase):
         rc, out = self.set_new(t, "--skip-js-parse")
         self.assertNotEqual(rc, 0, out[-3000:])
         self.assertIn("no shape codes", out)
-
-    def test_strict_local_gap_blocks(self):
-        t = self.tree()
-        con = sqlite3.connect(t / "aircraft_history.db")   # gitignored: never scanned/shipped
-        con.execute("create table seen_aircraft(aircraft_type text, category text)")
-        con.executemany("insert into seen_aircraft values (?, '')", [("ZZZZ",)] * 20)
-        con.commit()
-        con.close()
-        rc, out = self.set_new(t, env=dict(self.env, AERODROME_SHAPE_GATE="strict"))
-        self.assertNotEqual(rc, 0, out[-3000:])
-        self.assertIn("strict gate", out)
 
     @unittest.skipUnless(HAVE_REAL_NODE, "needs a real node >= 18")
     def test_inline_js_syntax_error_blocks_with_template_line(self):

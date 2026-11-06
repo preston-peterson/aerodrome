@@ -1,4 +1,4 @@
-<!-- Version: 3.4.164 -->
+<!-- Version: 3.4.165 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -923,6 +923,9 @@
             /* v2.97.3: see watchlist-grid above for rationale. */
             align-items: start;
         }
+        /* Clicking a Live row focuses the radar on that aircraft (delegated
+           listener by focusOnRadar), so the whole card is the affordance. */
+        #bLive .row-card { cursor: pointer; }
         /* v2.59.1: All tab grid. 11 columns — same as Military but
            with Last Seen present. The tab carries the highest density
            in the app (potentially thousands of rows), so we lean on
@@ -4358,6 +4361,11 @@ function liveChipHtml(icao){
 // centering is the right behavior here.
 function focusOnRadar(hex){
     const up = String(hex || '').toUpperCase();
+    // On phones the map pane is hidden while the List view shows, so a focus
+    // that didn't switch panes would recenter an invisible map. setLiveView
+    // only toggles a class that matters inside the phone media query, so
+    // desktop (both panes always shown) is unaffected.
+    setLiveView('map');
     go('live');
     setTimeout(() => {
         if(_radar.map) _radar.map.invalidateSize();
@@ -4372,6 +4380,20 @@ function focusOnRadar(hex){
         _radarPulse(ac.icao);
     }, 140);
 }
+
+// Clicking anywhere on a Live row focuses the radar on that aircraft. The
+// list re-renders every few seconds (innerHTML swap), so per-row handlers
+// aren't possible — this one delegated listener on #bLive covers every
+// re-render. Clicks meant for the row's own controls (ICAO link, Track ↗
+// link, watchlist button) pass through untouched, and a click that lands
+// while text is selected is treated as "I'm copying a callsign", not
+// "show me this aircraft".
+document.getElementById('bLive').addEventListener('click', e => {
+    if(e.target.closest('a, button, input, select, label, .c-wl, .c-track')) return;
+    if(String(window.getSelection())) return;
+    const row = e.target.closest('.row-card.live-grid');
+    if(row && row.dataset.icao) focusOnRadar(row.dataset.icao);
+});
 
 // Briefly pulse the focused marker so it's easy to spot.
 function _radarPulse(icao){
@@ -7628,6 +7650,10 @@ async function _pollSystemStatus(){
         // index.html code that needs to gate on demo mode without
         // depending on the theme.js load order.
         window.aerodromeDemoMode = !!sj?.demo_enabled;
+        // This page's one /api/status answer, shared: anything else on the page that
+        // wants status (static/theme.js's demo banner) listens here instead of asking
+        // again, since every call makes the server probe the receiver.
+        if (sj) window.dispatchEvent(new CustomEvent('aerodrome:status', {detail: sj}));
         // While /api/live isn't answering, that's what the dot is showing.
         if (_liveTrouble !== 'request') updateHealthIndicator(sj);
     } catch (_) {

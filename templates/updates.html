@@ -1,4 +1,4 @@
-<!-- Version: 3.4.164 -->
+<!-- Version: 3.4.165 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1037,7 +1037,9 @@ async function checkLocal(){
                     `</div>`;
                 setBadge('refresh needed', 'warn');
             } else {
-                setBadge('up to date', '');
+                // This card only knows what's in update/; whether a newer
+                // release exists is the GitHub card's job.
+                setBadge(j.staged === 'none' ? 'nothing staged' : 'up to date', '');
             }
             // Show whatever reason the server gave for no-update
             const cls = (j.status === 'older') ? 'warn' : 'info';

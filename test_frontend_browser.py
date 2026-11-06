@@ -307,13 +307,165 @@ class TestLiveTick(BrowserCase):
     def test_status_is_asked_for_on_its_own_schedule(self):
         before = self.site.count("/api/status")
         self.advance(60000)
-        # This page's poll and the shared banner's, each every 30 s (it was 17).
+        # This page's own poll every 30 s; the banner rides it (it was 17 once).
         self.assertLessEqual(self.site.count("/api/status") - before, 5)
 
     def test_the_list_keeps_what_it_had_when_live_fails(self):
         self.site.api["/api/live"] = (500, "boom")
         self.advance(6000)
         self.assertEqual(self.count_shown(), "1")
+
+
+class TestLiveRowFocusesRadar(BrowserCase):
+    """Clicking a Live row centres the radar on that aircraft. The row's own
+    controls (ICAO link, Track link, watchlist button) and text selection
+    keep behaving as before. _aircraft() gives lat/lon so the map can place
+    the contact."""
+
+    ROW = "#bLive .row-card[data-icao='A00001']"
+
+    def setUp(self):
+        super().setUp()
+        self.site.api["/api/live"] = _aircraft(1)
+        self.site.api["/api/status"] = _status()
+        self.site.api["/api/ui-config"] = {
+            "track_link_provider": "example_track",
+            "track_link_fallback": "example_track",
+            "track_link_providers": {"example_track": {
+                "label": "Example Track", "url": "http://track.example/{HEX_UPPER}",
+                "reg_required": False}}}
+        self.open("/")
+        self.advance(1000)
+
+    def focused(self):
+        return self.page.evaluate("_radar.selectedIcao")
+
+    def overlay_open(self):
+        return self.page.evaluate(
+            "document.getElementById('radarOverlay').classList.contains('open')")
+
+    def map_shown(self):
+        return self.page.evaluate(
+            "document.getElementById('liveSplit').classList.contains('show-map')")
+
+    def test_clicking_the_callsign_cell_opens_the_radar_overlay(self):
+        self.page.click(self.ROW + " .col-callsign")
+        self.advance(200)
+        self.assertEqual(self.focused(), "A00001")
+        self.assertTrue(self.overlay_open())
+
+    def test_on_a_phone_the_click_shows_the_radar_pane(self):
+        self.page.set_viewport_size({"width": 390, "height": 844})
+        # <=700px the row collapses to ICAO/Description/Track/WL; click a
+        # cell that's still on screen.
+        self.page.click(self.ROW + " .col-desc")
+        self.advance(200)
+        self.assertTrue(self.map_shown())
+
+    def test_the_track_link_and_watchlist_button_do_not_move_the_radar(self):
+        self.page.set_viewport_size({"width": 390, "height": 844})
+        self.page.click(self.ROW + " .col-desc")       # a plain row click does focus
+        self.advance(200)
+        self.assertEqual(self.focused(), "A00001")
+        self.assertTrue(self.map_shown())
+        self.page.evaluate("closeRadarOverlay(); setLiveView('list')")
+        self.assertIn("track.example",
+                      self.page.get_attribute(self.ROW + " .c-track a", "href"))
+        with self.page.expect_popup() as popped:
+            self.page.click(self.ROW + " .c-track a")
+        popped.value.close()
+        self.page.click(self.ROW + " .c-wl button")
+        self.advance(200)
+        self.assertIsNone(self.focused(), "the row's own controls don't focus the radar")
+        self.assertFalse(self.map_shown())
+
+    def test_a_text_selection_inside_the_row_does_not_jump_the_map(self):
+        self.page.evaluate("""() => {
+            const el = document.querySelector('#bLive .row-card .col-callsign');
+            const r = document.createRange(); r.selectNodeContents(el);
+            const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+        }""")
+        self.assertTrue(self.page.evaluate("String(getSelection())"))
+        self.page.evaluate("""() => document.querySelector('#bLive .row-card .col-callsign')
+            .dispatchEvent(new MouseEvent('click', {bubbles: true}))""")
+        self.advance(200)
+        self.assertIsNone(self.focused(), "selecting a callsign shouldn't jump the map")
+        self.page.evaluate("getSelection().removeAllRanges()")
+        self.page.click(self.ROW + " .col-callsign")
+        self.advance(200)
+        self.assertEqual(self.focused(), "A00001", "a plain click still focuses")
+
+
+def _status_page(notifications, **extra):
+    """A /api/status answer complete enough for the Status page to draw every card."""
+    answer = _status(**extra)
+    answer["components"] = {
+        "receiver": {"ok": True, "url": "http://192.0.2.10:8080/data/aircraft.json",
+                     "response_ms": 45, "error": None},
+        "database": {"ok": True, "size_mb": 45.0, "error": None,
+                     "stats": {"all": {"total": 1000, "unique": 100},
+                               "military": {"total": 10, "unique": 2},
+                               "watchlist": {"total": 5, "unique": 1}},
+                     "capacity": {"ok": True, "db_size_mb": 45.0, "mb_per_day": 3.0,
+                                  "bytes_per_row": 170.4, "retention_days": 30,
+                                  "projected_settled_mb": 90.0, "disk_free_mb": 12400.0,
+                                  "headroom_ratio": 138.3, "what_if": [], "error": None}},
+        "collector": {"ok": True, "last_write_seconds_ago": 5, "records_per_sec_5m": 4.2,
+                      "records_sample_count_5m": 1260, "error": None},
+        "webserver": {"ok": True, "host": "0.0.0.0", "port": 8000, "error": None},
+        "hexdb_resolver": {"ok": True, "response_ms": 112, "error": None},
+        "notifications": notifications,
+    }
+    answer["system"] = {"ok": False, "error": "not in this test"}
+    return answer
+
+
+class TestStatusNotificationsCard(BrowserCase):
+    """The Status page says whether alerts can reach the phone: off, working,
+    the ntfy server not answering, or the last alert refused."""
+
+    def card(self, notifications, **extra):
+        self.site.api["/api/status"] = _status_page(notifications, **extra)
+        self.open("/status")
+        self.advance(1000)
+        self.assertNotIn("Failed to load status", self.page.inner_text("body"))
+        if self.page.locator("#notificationsCard").count() == 0:
+            return None
+        return self.text("#notificationsCard")
+
+    def test_off(self):
+        text = self.card({"enabled": False, "ok": True})
+        self.assertIn("Off", text)
+
+    def test_working(self):
+        text = self.card({"enabled": True, "ok": True, "reachable": True, "server": "127.0.0.1:2586",
+                          "response_ms": 4, "error": None, "last_sent_ts": 1781539200,
+                          "last_failed": None})
+        self.assertIn("Reachable", text)
+        self.assertIn("127.0.0.1:2586", text)
+        self.assertNotIn("Can't reach", text)
+
+    def test_unreachable_says_so_and_names_it_in_the_banner(self):
+        text = self.card({"enabled": True, "ok": False, "reachable": False, "server": "127.0.0.1:2586",
+                          "response_ms": None, "error": "couldn't connect", "last_sent_ts": None,
+                          "last_failed": None},
+                         severity="warn", failing=["notifications"],
+                         health_reason="notification server unreachable — alerts aren't reaching your phone")
+        self.assertIn("Unreachable", text)
+        self.assertIn("Can't reach the notification server (couldn't connect)", text)
+        self.assertEqual(self.page.get_attribute("#notificationsCard a", "href"), "/config#notifications")
+        self.assertIn("notifications", self.page.inner_text(".overall"))
+
+    def test_the_last_alert_refused(self):
+        text = self.card({"enabled": True, "ok": False, "reachable": True, "server": "127.0.0.1:2586",
+                          "response_ms": 4, "error": None, "last_sent_ts": 1781539200,
+                          "last_failed": {"ts": 1781542800, "event": "watchlist", "error": "HTTP 403"}},
+                         severity="warn", failing=["notifications"])
+        self.assertIn("Last alert failed", text)
+        self.assertIn("failed: HTTP 403", text)
+
+    def test_an_older_server_without_the_component_draws_no_card(self):
+        self.assertIsNone(self.card(None))
 
 
 class TestHealthDotMatchesAcrossPages(BrowserCase):
@@ -358,6 +510,47 @@ class TestHealthDotMatchesAcrossPages(BrowserCase):
 def _rows(*icaos):
     return [{"icao": i, "callsign": f"CS{i}", "aircraft_type": "B738", "sighting_count": 1,
              "first_seen_at": 1700000000, "last_seen_at": 1700000000} for i in icaos]
+
+
+class TestStatusAskedForOncePerPage(BrowserCase):
+    """Every /api/status call makes the server probe the receiver, so a page asks
+    once per 30 s cycle however many features on it want the answer. The shared
+    demo banner rides on the page's own poll instead of running a second one."""
+
+    def banner(self):
+        return self.page.evaluate(
+            "() => { var e = document.getElementById('demoBanner');"
+            " return e ? e.style.display : 'missing'; }")
+
+    def ask(self, path, seconds, limit):
+        self.site.api["/api/status"] = _status()
+        self.site.api["/api/live"] = _aircraft(1)
+        self.open(path)
+        self.advance(1000)
+        asked = self.site.count("/api/status")
+        self.advance(seconds * 1000)
+        self.assertLessEqual(self.site.count("/api/status") - asked, limit,
+                             "asked: " + str(self.site.count("/api/status") - asked))
+
+    def test_the_updates_page_asks_once_per_cycle(self):
+        # Only health-indicator.js's poll; the banner used to add its own.
+        self.ask("/updates", 60, 2)
+
+    def test_index_asks_once_per_cycle(self):
+        # Only _pollSystemStatus; the banner used to add its own.
+        self.ask("/", 60, 3)
+
+    def test_the_demo_banner_rides_the_pages_poll(self):
+        self.site.api["/api/status"] = _status(demo_enabled=True)
+        self.open("/updates")
+        self.advance(1000)
+        self.assertEqual(self.banner(), "block")
+        self.site.api["/api/status"] = _status(demo_enabled=False)
+        asked = self.site.count("/api/status")
+        self.advance(31000)
+        self.assertEqual(self.banner(), "none")
+        self.assertLessEqual(self.site.count("/api/status") - asked, 1,
+                             "the flip came from the page's poll, not a second request")
 
 
 class TestSearchRaces(BrowserCase):
@@ -712,6 +905,39 @@ class TestUpdatesApplyWaitsForARestore(BrowserCase):
         self.page.wait_for_timeout(100)
         self.assertFalse(self.page.evaluate("document.getElementById('btnApply').disabled"))
         self.assertEqual(self.page.locator("#maintBusy").count(), 0)
+
+
+class TestUpdatesLocalNothingStaged(BrowserCase):
+    # The Local update card only knows what's in update/, so with nothing there
+    # it says so instead of claiming the install is up to date.
+    def setUp(self):
+        super().setUp()
+        self.site.api["/api/version"] = {"version": "3.4.150"}
+        self.site.api["/api/sudoers/status"] = {"can_verify": True, "needs_refresh": False}
+        self.site.api["/api/maintenance/status"] = {
+            "busy": None, "update": None, "update_pending": None, "config": None,
+            "restore": {"pending": None, "result": None}}
+
+    def card(self, staged, reason):
+        self.site.api["/api/updates/local/check"] = {
+            "available": False, "current_version": "3.4.150", "update_version": None,
+            "staged": staged, "reason": reason,
+            "preflight": {"ok": True, "problems": [], "message": None, "fix_command": None}}
+        self.open("/updates")
+        self.advance(1000)
+        return self.text("#localBadge").strip().lower(), self.text("#localStatus")
+
+    def test_nothing_staged(self):
+        badge, note = self.card("none", "Nothing staged. To update, upload a release zip below, "
+                                        "or copy one into update/ over SSH.")
+        self.assertEqual(badge, "nothing staged")
+        self.assertIn("Nothing staged.", note)
+
+    def test_a_partial_copy_keeps_its_note(self):
+        badge, note = self.card("partial", "No VERSION file in update/. "
+                                           "Make sure you copied the full release contents.")
+        self.assertEqual(badge, "up to date")
+        self.assertIn("No VERSION file", note)
 
 
 class TestUpdatesGithubCannotReadTheTag(BrowserCase):

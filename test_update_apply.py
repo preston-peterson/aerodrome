@@ -1634,6 +1634,44 @@ class TestCheckPreflight(_EndpointCase):
         self.assertEqual(j["status"], "newer")
 
 
+class TestCheckNothingStaged(_EndpointCase):
+    """After every apply update/ holds only its own docs: that's "nothing
+    staged", not a release missing its VERSION file."""
+
+    def empty_update_dir(self):
+        upd = self.inst / "update"
+        for item in upd.iterdir():
+            if item.name != "UPDATE_README.md":
+                shutil.rmtree(item) if item.is_dir() else item.unlink()
+        _write(upd / ".gitkeep", "")
+
+    def test_only_the_folders_own_docs_is_nothing_staged(self):
+        self.empty_update_dir()
+        j = self.ep("/api/updates/local/check", "GET")()
+        self.assertFalse(j["available"])
+        self.assertEqual(j["staged"], "none")
+        self.assertTrue(j["reason"].startswith("Nothing staged."), j["reason"])
+        self.assertNotIn("VERSION", j["reason"])
+
+    def test_an_empty_folder_is_nothing_staged(self):
+        shutil.rmtree(self.inst / "update")
+        (self.inst / "update").mkdir()
+        j = self.ep("/api/updates/local/check", "GET")()
+        self.assertEqual(j["staged"], "none")
+
+    def test_anything_else_without_a_version_is_partial(self):
+        self.empty_update_dir()
+        _write(self.inst / "update" / "main.py", "print('half a copy')\n")
+        j = self.ep("/api/updates/local/check", "GET")()
+        self.assertEqual(j["staged"], "partial")
+        self.assertIn("No VERSION file", j["reason"])
+
+    def test_a_staged_release_has_no_staged_field(self):
+        j = self.ep("/api/updates/local/check", "GET")()
+        self.assertTrue(j["available"])
+        self.assertNotIn("staged", j)
+
+
 def _zip_release(files, wrapper=None):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:

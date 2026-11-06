@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.4.164
+# Version: 3.4.165
 # =============================================================================
 # bump-version.sh — Bump Aerodrome version + auto-update CHANGELOG.md
 # =============================================================================
@@ -50,9 +50,7 @@
 #                                         gate. The coverage REPORT is
 #                                         advisory; the gate blocks only
 #                                         when static/shapes-data.js is
-#                                         unreadable/empty or, with
-#                                         AERODROME_SHAPE_GATE=strict, on
-#                                         a >=5% local-traffic gap)
+#                                         unreadable/empty)
 #   --skip-js-parse                      (skip the JavaScript parse gate.
 #                                         Only for a host without node >= 18
 #                                         — never for a release you publish)
@@ -704,23 +702,19 @@ fi
 # =============================================================================
 # Type-shape coverage audit — REQUIRED (v3.4.133+).
 # =============================================================================
-# Which types does the radar still draw a chevron for, and how much of
-# YOUR sky is that? Reports local fixed-wing traffic coverage (the
-# seen_aircraft table) plus ICAO DOC 8643 designator gaps; helicopters
+# Which designators can a transponder actually emit that the radar still
+# draws a chevron for? Reports ICAO DOC 8643 designator gaps; helicopters
 # and tiltrotors are excluded — the rotor disc covers them. The gap
 # count itself NEVER blocks a bump (most of DOC 8643 SHOULD stay
 # chevrons — rarities aren't worth a SOURCES line). What is release-
 # blocking is the script failing to run at all: that means the shipped
 # shapes data can't be parsed, i.e. the file the radar depends on is
-# corrupt. Set AERODROME_SHAPE_GATE=strict to additionally block on a
-# local-traffic gap of >=5% on a single type (you're staring at generic
-# markers for a meaningful slice of your own sky).
+# corrupt.
 #
 # `check` (and so package-release.sh) passes --cache-only: it reads the
-# cached scripts/doc8643.csv when present — the same data the `set` run used,
-# so the strict gate reaches the same verdict — but never fetches (no 15 s
-# network wait) and never writes the cache. `set` keeps the cache-first report
-# with a best-effort fetch.
+# cached scripts/doc8643.csv when present — the same data the `set` run
+# read — but never fetches (no 15 s network wait) and never writes the
+# cache. `set` keeps the cache-first report with a best-effort fetch.
 #
 # Pass --skip-shapes to suppress the section entirely.
 SHAPE_AUDIT="${SCRIPT_DIR}/scripts/shape_coverage.py"
@@ -730,8 +724,7 @@ if [ "$SKIP_SHAPES" = "0" ] && [ -f "$SHAPE_AUDIT" ]; then
     echo "Type-shape coverage audit..."
     if ! python3 "$SHAPE_AUDIT" "${SHAPE_ARGS[@]}" 2>&1 | sed 's/^/  /'; then
         echo "✗ Type-shape coverage gate failed (see above): static/shapes-data.js"
-        echo "  is unreadable/empty, the audit crashed, or (strict mode) a type"
-        echo "  without a shape is >=5% of local traffic. Fix or regenerate"
+        echo "  is unreadable/empty or the audit crashed. Fix or regenerate"
         echo "  (scripts/gen_type_shapes.py) before releasing."
         nothing_written
         exit 1

@@ -148,7 +148,9 @@
    Also exposes window.aerodromeDemoMode (read-only boolean) so other
    feature code — most importantly the external-link "Track it"
    confirmation guard — can read demo state without its own status
-   fetch. Refreshed every 30s via the same poll cycle.
+   fetch. State comes from the page's own /api/status poll (shared as an
+   'aerodrome:status' event) and only falls back to fetching here on
+   pages that have no such poll.
    ============================================================================= */
 (function(){
     window.aerodromeDemoMode = false;  // updated by polls
@@ -180,25 +182,51 @@
         return el;
     }
 
+    function applyStatus(j) {
+        var on = !!j.demo_enabled;
+        window.aerodromeDemoMode = on;
+        var el = ensureBanner();
+        el.style.display = on ? 'block' : 'none';
+    }
+
     function refresh() {
         fetch('/api/status', { cache: 'no-store' })
             .then(function(r) { return r.ok ? r.json() : null; })
             .then(function(j) {
                 if (!j) return;
-                var on = !!j.demo_enabled;
-                window.aerodromeDemoMode = on;
-                var el = ensureBanner();
-                el.style.display = on ? 'block' : 'none';
+                applyStatus(j);
             })
             .catch(function(){ /* non-fatal — leave banner state alone */ });
     }
 
-    // First call as soon as DOM is ready so the banner appears on the
-    // initial render. Then refresh every 30s to pick up demo.enabled
-    // flips from the switch-to-real wizard within one cycle.
+    // Most pages already poll /api/status for the health dot (health-indicator.js,
+    // or index.html's own _pollSystemStatus) and announce every answer here, so the
+    // banner can ride a request the page was making anyway. Every /api/status call
+    // probes the receiver, so where such a poller exists this module must not run a
+    // second one.
+    var FIRST_TRY_MS = 3000;      // how long to wait for a poller's first answer
+    var POLL_INTERVAL_MS = 30000; // fallback cadence, same as the pollers'
+    var STALE_AFTER_MS = 35000;   // no answer this long means there is no poller
+    var lastHeardAt = 0;
+
+    window.addEventListener('aerodrome:status', function(e){
+        lastHeardAt = Date.now();
+        if (e.detail) applyStatus(e.detail);
+    });
+
+    function heardRecently() {
+        return lastHeardAt > 0 && (Date.now() - lastHeardAt) < STALE_AFTER_MS;
+    }
+
+    // Fallback for pages with no status poller of their own (aircraft.html): one
+    // fetch shortly after load, in case no event has shown up, and then every 30s
+    // for as long as none arrives. Pages that do poll keep the event coming, so
+    // these ticks never fire a request there.
     document.addEventListener('DOMContentLoaded', function(){
-        refresh();
-        setInterval(refresh, 30000);
+        setTimeout(function tick(){
+            if (!heardRecently()) refresh();
+            setTimeout(tick, POLL_INTERVAL_MS);
+        }, FIRST_TRY_MS);
     });
 })();
 

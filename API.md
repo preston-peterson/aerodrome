@@ -79,10 +79,12 @@ The `?icaos=` query string is comma-separated. The response is `{hex: registrati
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/status` | Comprehensive health check — collector, web server, database, receiver, hexdb resolver, system info |
+| GET | `/api/status` | Comprehensive health check — collector, web server, database, receiver, hexdb resolver, notifications, system info |
 | GET | `/api/sudoers/status` | Check if /etc/sudoers.d/aerodrome matches the expected version; every reply carries `recovery_command`, the permissions-refresh command to run on the server. From rules version 6, `live_version` counts only as far as the system helper the rules name (`rules_version`, `helper_version`); with no rules file at all, `can_verify` and `managed` are false and nothing needs doing (also where Aerodrome's account can't look inside `/etc/sudoers.d`, as on Fedora/RHEL, sudo won't show it a rules file and there is no system helper); with one Aerodrome can't read, it asks the helper itself |
 
 `/api/status` is used both by the Status page and by external health-check tooling. The response shape is documented in the comment block above the handler. It's the most stable endpoint in the API — deliberately kept backward-compatible.
+
+`components.notifications` is `{enabled: false, ok: true}` while notifications are off. When they're on it adds `server` (host:port only, never the topic), `reachable`, `response_ms` and `error` from a check of the ntfy server's `/v1/health` (at most every 5 minutes, and at once after the address changes; any answer below 500 counts as reachable), `last_sent_ts`, and `last_failed` (`{ts, event, error}` when the most recent alert that tried to send failed and nothing has gone through since). `ok` is false when the server isn't reachable or the last alert failed; that's an advisory, so `severity` becomes `warn` (never `error`) with `notifications` in `failing`.
 
 ## Configuration
 
@@ -198,7 +200,7 @@ Other 400s (`invalid`, `unreadable`, or a notification server Aerodrome doesn't 
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/updates/local/check` | Check for a staged release in `update/`; also `preflight` (below) |
+| GET | `/api/updates/local/check` | Check for a staged release in `update/`; also `preflight` (below). With nothing to apply, `staged` is `"none"` (`update/` is missing or holds only its own `UPDATE_README.md`/`.gitkeep`) or `"partial"` (something is there, but no `VERSION`) |
 | POST | `/api/updates/local/upload` | Upload a release zip (staged into `update/`) |
 | POST | `/api/updates/local/apply` | Apply the staged release: stage to the side, test-load, switch in, restart; rolled back automatically if it doesn't start |
 | GET | `/api/updates/github/check` | The cached GitHub release check (`?force=true` checks now) |

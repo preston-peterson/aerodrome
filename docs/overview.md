@@ -191,7 +191,7 @@ One click downloads a complete disaster-recovery zip: config.yaml, the aircraft-
 
 ## Health monitoring
 
-A gear menu badge lights up amber when something needs attention — sudoers drift after an update, sustained system load, a degraded hexdb resolver, a core component offline. The Status page breaks down every subsystem: collector thread, web server, database connectivity, receiver reachability, tail-number resolver latency, plus system-level CPU/load/memory/disk with color coding.
+A gear menu badge lights up amber when something needs attention — sudoers drift after an update, sustained system load, a degraded hexdb resolver, a notification server that isn't answering or an alert that failed to send, a core component offline. The Status page breaks down every subsystem: collector thread, web server, database connectivity, receiver reachability, tail-number resolver latency, whether alerts can reach your phone, plus system-level CPU/load/memory/disk with color coding.
 
 ## It honestly doesn't need much babysitting
 

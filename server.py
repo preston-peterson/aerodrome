@@ -1,4 +1,4 @@
-# Version: 3.4.164
+# Version: 3.4.165
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -4566,6 +4566,17 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         version_file = Path(__file__).parent / "VERSION"
         version = version_file.read_text().strip() if version_file.exists() else "unknown"
 
+        # --- Notifications (advisory): is the ntfy server answering, and did
+        # the last alert that was sent go through? See _notifications_check.
+        try:
+            notify_check, nonlocal_state["notify_probe_cache"] = _notifications_check(
+                CONFIG.get("notifications"),
+                _NOTIFIER.stats() if _NOTIFIER is not None else None,
+                nonlocal_state.get("notify_probe_cache"), now)
+        except Exception as e:
+            logger.debug(f"notifications check failed in /api/status: {e}")
+            notify_check = {"enabled": False, "ok": True}
+
         # --- Severity: see _health_summary ---
         core_ok = all([
             receiver_check["ok"],
@@ -4598,6 +4609,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
              "collector": collector_check["ok"], "webserver": webserver_check["ok"]},
             hexdb_ok=advisory_ok, capacity_ok=capacity_ok,
             sudoers=nonlocal_state.get("last_sudoers_check"), system=system_info,
+            notifications=notify_check,
         )
 
         # v3.0.0: GitHub update availability. The gear-menu badge driver
@@ -4633,6 +4645,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 "database": db_check,
                 "receiver": receiver_check,
                 "hexdb_resolver": hexdb_check,
+                "notifications": notify_check,
             },
             "system": system_info,
             "retention": CONFIG["retention"],
@@ -10690,11 +10703,15 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         update_dir = install_dir / "update"
         current_ver = (install_dir / "VERSION").read_text().strip() if (install_dir / "VERSION").exists() else "unknown"
 
+        # `staged` says what update/ holds when nothing can be applied: "none"
+        # (empty, or only its own UPDATE_README.md/.gitkeep — the normal state
+        # after every apply) or "partial" (something is there, but no VERSION).
         if not update_dir.exists():
             return {
                 "available": False,
                 "current_version": current_ver,
                 "update_version": None,
+                "staged": "none",
                 "reason": "No update/ directory found. Copy a new release there to stage an update.",
                 "update_dir": str(update_dir),
                 "preflight": _update_preflight(install_dir),
@@ -10708,10 +10725,27 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         ]
         version_file = next((c for c in candidates if c.exists()), None)
         if not version_file:
+            try:
+                leftovers = [p.name for p in update_dir.iterdir()
+                             if p.name not in UPDATE_FOLDER_REFRESH]
+            except OSError:
+                leftovers = ["?"]   # can't list it: don't claim it's empty
+            if not leftovers:
+                return {
+                    "available": False,
+                    "current_version": current_ver,
+                    "update_version": None,
+                    "staged": "none",
+                    "reason": "Nothing staged. To update, upload a release zip below, "
+                              "or copy one into update/ over SSH.",
+                    "update_dir": str(update_dir),
+                    "preflight": _update_preflight(install_dir),
+                }
             return {
                 "available": False,
                 "current_version": current_ver,
                 "update_version": None,
+                "staged": "partial",
                 "reason": "No VERSION file in update/. Make sure you copied the full release contents.",
                 "update_dir": str(update_dir),
                 "preflight": _update_preflight(install_dir),
@@ -13274,9 +13308,101 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     return app
 
 
+NOTIFY_PROBE_CACHE_TTL_SEC = 300
+NOTIFY_PROBE_TIMEOUT_SEC = 2
+
+
+def _notify_server_probe(url: str) -> Dict[str, Any]:
+    """Is the server behind notifications.url answering? One GET of ntfy's
+    /v1/health on the same scheme/host/port, under the same address rules and
+    no-redirect rule as a real send. Any answer below 500 counts as reachable
+    (an older ntfy without /v1/health answers 404, which still proves it's
+    there); the body is never read back. `server` is host:port only — the
+    path can hold a private topic name and never leaves this function."""
+    import requests as _rq
+    from config_validator import _validate_outbound_url
+    parts = urlsplit((url or "").strip())
+    netloc = parts.netloc.rsplit("@", 1)[-1]      # drop any user:password
+    out = {"reachable": False, "response_ms": None, "error": None, "server": netloc}
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        out["error"] = "the notification address isn't an http(s) address"
+        return out
+    if _validate_outbound_url(url, "notifications.url"):
+        out["error"] = "the notification address points somewhere Aerodrome won't send to"
+        return out
+    t0 = time.time()
+    try:
+        r = _rq.get(f"{parts.scheme}://{netloc}/v1/health",
+                    timeout=NOTIFY_PROBE_TIMEOUT_SEC, allow_redirects=False, stream=True)
+        r.close()       # headers are enough; don't download whatever it sent
+        out["response_ms"] = int((time.time() - t0) * 1000)
+        if r.status_code >= 500:
+            out["error"] = f"the server answered HTTP {r.status_code}"
+        else:
+            out["reachable"] = True
+    except _rq.Timeout:
+        out["error"] = f"no answer within {NOTIFY_PROBE_TIMEOUT_SEC} s"
+    except _rq.ConnectionError:
+        out["error"] = "couldn't connect"
+    except _rq.RequestException as e:
+        out["error"] = f"request failed ({type(e).__name__})"
+    return out
+
+
+def _short_send_error(err: Optional[str]) -> str:
+    """The notifier's failure text, without anything that can carry the URL
+    (a connection error's text includes the path, i.e. the topic)."""
+    err = err or ""
+    if err.startswith("HTTP ") or err.startswith("Blocked"):
+        return err
+    if err.startswith("Timeout"):
+        return "no answer in time"
+    if err.startswith("Connection error"):
+        return "couldn't connect"
+    return "the request failed"
+
+
+def _notifications_check(nt_cfg: Optional[Dict[str, Any]], stats: Optional[Dict[str, Any]],
+                         cache: Optional[Dict[str, Any]], now: float,
+                         probe=_notify_server_probe) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+    """(component, cache to keep) for /api/status's `notifications`.
+
+    Off (notifications disabled or no URL) is ok. On, it is ok when the
+    server answers (probed at most every NOTIFY_PROBE_CACHE_TTL_SEC, or at
+    once when the URL changes) and the last alert that was actually sent
+    didn't fail. Advisory only: it can turn the gear amber, never red."""
+    nt_cfg = nt_cfg or {}
+    url = nt_cfg.get("url") or ""
+    if not (nt_cfg.get("enabled") and url):
+        return {"enabled": False, "ok": True}, cache
+    if cache and cache.get("url") == url and now - cache.get("timestamp", 0) < NOTIFY_PROBE_CACHE_TTL_SEC:
+        found, age = cache["data"], int(now - cache["timestamp"])
+    else:
+        found, age = probe(url), 0
+        cache = {"url": url, "data": dict(found), "timestamp": now}
+    stats = stats or {}
+    sent, err = stats.get("last_sent"), stats.get("last_error")
+    last_failed = None
+    if err and (not sent or err.get("ts", 0) > sent.get("ts", 0)):
+        last_failed = {"ts": err.get("ts"), "event": err.get("event"),
+                       "error": _short_send_error(err.get("error"))}
+    return {
+        "enabled": True,
+        "ok": bool(found.get("reachable")) and last_failed is None,
+        "server": found.get("server"),
+        "reachable": bool(found.get("reachable")),
+        "response_ms": found.get("response_ms"),
+        "error": found.get("error"),
+        "probe_cached_age_sec": age,
+        "last_sent_ts": (sent or {}).get("ts"),
+        "last_failed": last_failed,
+    }, cache
+
+
 def _health_summary(core: Dict[str, bool], hexdb_ok: bool, capacity_ok: bool,
                     sudoers: Optional[Dict[str, Any]],
-                    system: Optional[Dict[str, Any]]) -> Tuple[str, List[str], Optional[str]]:
+                    system: Optional[Dict[str, Any]],
+                    notifications: Optional[Dict[str, Any]] = None) -> Tuple[str, List[str], Optional[str]]:
     """(severity, failing, reason) for /api/status: the one place that decides
     the colour of the health dot and gear on every page, and the Status banner.
 
@@ -13285,10 +13411,13 @@ def _health_summary(core: Dict[str, bool], hexdb_ok: bool, capacity_ok: bool,
     would fail), a degraded tail lookup, a disk capacity alert, or a load over
     1.5x cores for 15 minutes (not 1 minute, so it doesn't flap on a spike, and
     not 1x, which is normal on a busy tracker). `reason` says why, for the dot's
-    tooltip and the Live tab's toast."""
+    tooltip and the Live tab's toast. `notifications` is /api/status's component
+    of that name: on and not ok is a warning too (alerts aren't arriving)."""
+    notify_bad = bool(notifications and notifications.get("enabled") and not notifications.get("ok"))
     down = [name for name, ok in core.items() if not ok]
     if down:
-        failing = down + ([] if hexdb_ok else ["hexdb_resolver"]) + ([] if capacity_ok else ["capacity"])
+        failing = (down + ([] if hexdb_ok else ["hexdb_resolver"]) + ([] if capacity_ok else ["capacity"])
+                   + (["notifications"] if notify_bad else []))
         return "error", failing, ", ".join(down) + " offline"
 
     warnings = []
@@ -13301,6 +13430,11 @@ def _health_summary(core: Dict[str, bool], hexdb_ok: bool, capacity_ok: bool,
         warnings.append(("hexdb_resolver", "hexdb lookup degraded — tail numbers may be missing"))
     if not capacity_ok:
         warnings.append(("capacity", "disk capacity alert — see Status"))
+    if notify_bad:
+        warnings.append(("notifications",
+                         "notification server unreachable — alerts aren't reaching your phone"
+                         if not notifications.get("reachable")
+                         else "the last alert failed to send — see Status"))
     load = ((system or {}).get("load_average") or {}).get("15m")
     cores = (system or {}).get("cpu_cores")
     if load is not None and cores and load >= cores * 1.5:

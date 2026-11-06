@@ -20,8 +20,13 @@ ALL_UP = {"receiver": True, "database": True, "collector": True, "webserver": Tr
 CALM = {"load_average": {"15m": 0.5}, "cpu_cores": 4}
 
 
-def summary(core=None, hexdb_ok=True, capacity_ok=True, sudoers=None, system=CALM):
-    return server._health_summary(core or ALL_UP, hexdb_ok, capacity_ok, sudoers, system)
+def summary(core=None, hexdb_ok=True, capacity_ok=True, sudoers=None, system=CALM, notifications=None):
+    return server._health_summary(core or ALL_UP, hexdb_ok, capacity_ok, sudoers, system,
+                                  notifications=notifications)
+
+
+NOTIFY_DOWN = {"enabled": True, "ok": False, "reachable": False}
+NOTIFY_LAST_FAILED = {"enabled": True, "ok": False, "reachable": True}
 
 
 class TestHealthSummary(unittest.TestCase):
@@ -36,8 +41,9 @@ class TestHealthSummary(unittest.TestCase):
         self.assertEqual(reason, "receiver, database offline")
 
     def test_an_error_still_lists_the_advisories(self):
-        _, failing, _ = summary(core=dict(ALL_UP, receiver=False), hexdb_ok=False, capacity_ok=False)
-        self.assertEqual(failing, ["receiver", "hexdb_resolver", "capacity"])
+        _, failing, _ = summary(core=dict(ALL_UP, receiver=False), hexdb_ok=False, capacity_ok=False,
+                                notifications=NOTIFY_DOWN)
+        self.assertEqual(failing, ["receiver", "hexdb_resolver", "capacity", "notifications"])
 
     def test_each_thing_that_needs_attention_is_a_warning(self):
         drift = {"can_verify": True, "needs_refresh": True, "expected_version": 6, "live_version": 5}
@@ -46,6 +52,7 @@ class TestHealthSummary(unittest.TestCase):
             "hexdb_resolver": dict(hexdb_ok=False),
             "capacity": dict(capacity_ok=False),
             "system_load": dict(system={"load_average": {"15m": 6.0}, "cpu_cores": 4}),
+            "notifications": dict(notifications=NOTIFY_DOWN),
         }
         for name, kwargs in cases.items():
             with self.subTest(name):
@@ -75,6 +82,135 @@ class TestHealthSummary(unittest.TestCase):
     def test_one_core_reads_right(self):
         _, _, reason = summary(system={"load_average": {"15m": 2.0}, "cpu_cores": 1})
         self.assertIn("on 1 core ", reason)
+
+    def test_notifications_say_which_problem(self):
+        self.assertIn("unreachable", summary(notifications=NOTIFY_DOWN)[2])
+        self.assertIn("last alert failed", summary(notifications=NOTIFY_LAST_FAILED)[2])
+
+    def test_notifications_off_or_working_is_not_a_warning(self):
+        for n in (None, {"enabled": False, "ok": True}, {"enabled": True, "ok": True, "reachable": True}):
+            with self.subTest(n):
+                self.assertEqual(summary(notifications=n), ("ok", [], None))
+
+
+class _Answer:
+    def __init__(self, status_code):
+        self.status_code = status_code
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+class TestNotifyServerProbe(unittest.TestCase):
+    """The ntfy health probe behind the Status page's Notifications card.
+    requests is mocked; addresses are documentation/loopback examples."""
+
+    URL = "http://127.0.0.1:2586/example-topic"
+
+    def probe(self, url=URL, **get):
+        with mock.patch("requests.get", **get) as g:
+            return server._notify_server_probe(url), g
+
+    def test_any_answer_below_500_is_reachable(self):
+        for code in (200, 404):
+            with self.subTest(code):
+                out, g = self.probe(return_value=_Answer(code))
+                self.assertTrue(out["reachable"])
+                self.assertIsNone(out["error"])
+        self.assertEqual(g.call_args.args[0], "http://127.0.0.1:2586/v1/health")
+        self.assertEqual(g.call_args.kwargs["allow_redirects"], False)
+        self.assertTrue(g.call_args.kwargs["stream"])
+        self.assertTrue(g.return_value.closed, "the body is never downloaded")
+
+    def test_a_server_error_is_unreachable(self):
+        out, _ = self.probe(return_value=_Answer(502))
+        self.assertFalse(out["reachable"])
+        self.assertIn("502", out["error"])
+
+    def test_refused_and_silent(self):
+        for exc, words in ((requests.ConnectionError("refused"), "couldn't connect"),
+                           (requests.Timeout("slow"), "no answer within")):
+            with self.subTest(words):
+                out, _ = self.probe(side_effect=exc)
+                self.assertFalse(out["reachable"])
+                self.assertIn(words, out["error"])
+
+    def test_server_is_host_and_port_only(self):
+        out, g = self.probe("https://user:secret@ntfy.example.org:8443/private-topic?x=1",
+                            return_value=_Answer(200))
+        self.assertEqual(out["server"], "ntfy.example.org:8443")
+        self.assertEqual(g.call_args.args[0], "https://ntfy.example.org:8443/v1/health")
+
+    def test_a_blocked_address_is_never_asked(self):
+        out, g = self.probe("http://169.254.169.254/example-topic", return_value=_Answer(200))
+        g.assert_not_called()
+        self.assertFalse(out["reachable"])
+        self.assertIn("won't send to", out["error"])
+
+    def test_not_a_web_address(self):
+        out, g = self.probe("ftp://192.0.2.10/example-topic", return_value=_Answer(200))
+        g.assert_not_called()
+        self.assertFalse(out["reachable"])
+
+
+class TestNotificationsCheck(unittest.TestCase):
+    ON = {"enabled": True, "url": "http://127.0.0.1:2586/example-topic"}
+    UP = {"reachable": True, "response_ms": 3, "error": None, "server": "127.0.0.1:2586"}
+    DOWN = {"reachable": False, "response_ms": None, "error": "couldn't connect", "server": "127.0.0.1:2586"}
+
+    def check(self, cfg=ON, stats=None, cache=None, now=1000.0, found=UP):
+        calls = []
+        def probe(url):
+            calls.append(url)
+            return dict(found)
+        comp, cache = server._notifications_check(cfg, stats, cache, now, probe=probe)
+        return comp, cache, calls
+
+    def test_off_is_ok_and_never_probes(self):
+        for cfg in (None, {}, {"enabled": False, "url": "http://127.0.0.1:2586/t"}, {"enabled": True, "url": ""}):
+            with self.subTest(cfg):
+                comp, _, calls = self.check(cfg=cfg)
+                self.assertEqual(comp, {"enabled": False, "ok": True})
+                self.assertEqual(calls, [])
+
+    def test_working(self):
+        comp, _, _ = self.check(stats={"last_sent": {"ts": 900}, "last_error": None})
+        self.assertTrue(comp["ok"])
+        self.assertEqual(comp["last_sent_ts"], 900)
+        self.assertIsNone(comp["last_failed"])
+
+    def test_unreachable(self):
+        comp, _, _ = self.check(found=self.DOWN)
+        self.assertFalse(comp["ok"])
+        self.assertFalse(comp["reachable"])
+        self.assertEqual(comp["error"], "couldn't connect")
+
+    def test_the_last_alert_failing_counts_only_if_nothing_went_through_since(self):
+        failed = {"ts": 950, "event": "watchlist", "error": "HTTP 403"}
+        comp, _, _ = self.check(stats={"last_sent": {"ts": 900}, "last_error": failed})
+        self.assertFalse(comp["ok"])
+        self.assertEqual(comp["last_failed"], {"ts": 950, "event": "watchlist", "error": "HTTP 403"})
+        comp, _, _ = self.check(stats={"last_sent": {"ts": 990}, "last_error": failed})
+        self.assertTrue(comp["ok"])
+
+    def test_a_failure_text_never_carries_the_topic(self):
+        failed = {"ts": 950, "event": "watchlist",
+                  "error": "Connection error: HTTPConnectionPool(host='127.0.0.1', port=2586): "
+                           "Max retries exceeded with url: /example-topic"}
+        comp, _, _ = self.check(stats={"last_error": failed})
+        self.assertEqual(comp["last_failed"]["error"], "couldn't connect")
+        self.assertNotIn("example-topic", str(comp))
+
+    def test_probed_at_most_every_five_minutes_and_again_when_the_url_changes(self):
+        _, cache, calls = self.check(now=1000.0)
+        _, cache, more = self.check(cache=cache, now=1000.0 + server.NOTIFY_PROBE_CACHE_TTL_SEC - 1)
+        self.assertEqual((len(calls), len(more)), (1, 0))
+        _, cache, more = self.check(cache=cache, now=1000.0 + server.NOTIFY_PROBE_CACHE_TTL_SEC)
+        self.assertEqual(len(more), 1)
+        moved = dict(self.ON, url="http://127.0.0.1:2587/example-topic")
+        _, _, more = self.check(cfg=moved, cache=cache, now=1001.0 + server.NOTIFY_PROBE_CACHE_TTL_SEC)
+        self.assertEqual(more, ["http://127.0.0.1:2587/example-topic"])
 
 
 class _Db(unittest.TestCase):

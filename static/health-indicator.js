@@ -12,6 +12,8 @@
      - Polls /api/status every 30 seconds (matches index.html's prior cadence)
      - Reads severity + failing[] from the response
      - Applies .warn / .error / (no class) to .settings-btn accordingly
+     - Announces each answer on window as an 'aerodrome:status' event, so other
+       status consumers on the page ride this request instead of making their own
      - CSS handles the rest — including mirroring the alert color onto the
        "Status" item inside the gear menu via sibling selector (see theme.css).
 
@@ -83,6 +85,10 @@
                 if (timer) clearTimeout(timer);
                 failures = 0;
                 applyToGear(classifyHealth(j));
+                // Share this answer with the rest of the page. Every /api/status call
+                // probes the receiver, so anything else that wants status — notably
+                // static/theme.js's demo banner — listens here instead of asking again.
+                window.dispatchEvent(new CustomEvent('aerodrome:status', {detail: j}));
             })
             .catch(function(){
                 if (timer) clearTimeout(timer);

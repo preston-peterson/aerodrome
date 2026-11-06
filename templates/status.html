@@ -1,4 +1,4 @@
-<!-- Version: 3.4.164 -->
+<!-- Version: 3.4.165 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -131,6 +131,7 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
    palette so the card matches the gear icon and overall-status banner,
    which already render advisory failures in amber. */
 .warn-box { background:rgba(245,158,11,.08); border:1px solid rgba(245,158,11,.3); border-radius:6px; padding:8px 10px; margin-top:8px; font-family:var(--mono); font-size:11px; color:var(--amber); }
+.warn-box a { color:inherit; text-decoration:underline; }
 
 .loading { text-align:center; padding:40px; color:var(--t3); font-size:13px; }
 
@@ -347,6 +348,7 @@ function render(s) {
         collector: 'collector',
         webserver: 'web server',
         hexdb_resolver: 'tail resolver',
+        notifications: 'notifications',
         capacity: 'disk capacity',
         sudoers: 'sudoers rules',
         system_load: 'sustained load',
@@ -713,6 +715,44 @@ function render(s) {
                     `;
                 })()}
             </div>
+
+            <!-- Notifications: is the ntfy server answering, and did the last
+                 alert go through? Advisory, so amber, never red. An older
+                 server without the component skips the card. -->
+            ${c.notifications ? (function(n){
+                const settings = '<a href="/config#notifications">Settings → Notifications</a>';
+                if (!n.enabled) return `
+            <div class="card" id="notificationsCard">
+                <div class="card-head">
+                    <div class="light unknown"></div>
+                    <div class="card-title">Notifications</div>
+                    <div class="card-subtitle">ntfy</div>
+                </div>
+                <div class="row"><span class="row-lbl">Status</span><span class="row-val" style="color:var(--t3)">Off</span></div>
+            </div>`;
+                const state = !n.reachable ? 'Unreachable' : n.last_failed ? 'Last alert failed' : 'Reachable';
+                let why = '';
+                if (!n.reachable) {
+                    why = `Can't reach the notification server (${escText(n.error || 'no answer')}), so alerts ` +
+                          `aren't reaching your phone. Check that ntfy is running, or fix the address in ${settings}.`;
+                } else if (n.last_failed) {
+                    why = `The server answers, but the last alert (${escText(n.last_failed.event || 'alert')}, ` +
+                          `${escText(formatDateTime(n.last_failed.ts))}) failed: ${escText(n.last_failed.error)}. ` +
+                          `Check the topic and access settings in ${settings}.`;
+                }
+                return `
+            <div class="card" id="notificationsCard">
+                <div class="card-head">
+                    <div class="light ${n.ok ? 'ok' : 'warn'}"></div>
+                    <div class="card-title">Notifications</div>
+                    <div class="card-subtitle">ntfy${n.server ? ' · ' + escText(n.server) : ''}</div>
+                </div>
+                <div class="row"><span class="row-lbl">Status</span><span class="row-val ${n.ok ? 'ok' : 'warn'}">${state}</span></div>
+                ${n.reachable && n.response_ms != null ? `<div class="row"><span class="row-lbl">Response time</span><span class="row-val">${n.response_ms} ms</span></div>` : ''}
+                <div class="row"><span class="row-lbl">Last alert sent</span><span class="row-val">${n.last_sent_ts ? escText(formatDateTime(n.last_sent_ts)) : 'None since Aerodrome started'}</span></div>
+                ${why ? `<div class="warn-box">${why}</div>` : ''}
+            </div>`;
+            })(c.notifications) : ''}
 
             <!-- System Info -->
             ${sys.ok ? `
