@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
-<!-- Version: 3.4.160 -->
+<!-- Version: 3.4.161 -->
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Display board — Aerodrome</title>
@@ -110,6 +110,8 @@ body:not(.mouse) *{cursor:none!important}
 .ac{position:absolute;display:flex;flex-direction:column;align-items:center;gap:.18rem;
     transform:translate(-50%,-50%)}
 .ac svg{filter:drop-shadow(0 0 .2rem rgba(0,0,0,.8))}
+/* Type silhouettes carry their own solid outline; a blurred shadow softens it. */
+.ac svg.ts{filter:none;overflow:visible}
 .ac .lab{font-family:var(--mono);font-size:.92rem;font-weight:600;
   background:rgba(10,14,23,.78);padding:.1rem .45rem;border-radius:.32rem;
   border:1px solid var(--bdr);white-space:nowrap}
@@ -700,8 +702,14 @@ function chevronSvg(a, sizeRem){
   // on + known typecode -> the generated path; otherwise the chevron below.
   if (MAPCFG.type_shapes && typeof SHAPES_DATA !== 'undefined') {
     const p = SHAPES_DATA[(a.aircraft_type || '').toUpperCase()];
-    if (p) return `<svg viewBox="${vb}" style="${s};transform:rotate(${rot}deg)">${ring}`
-      + `<g fill="${col}" stroke="${dk}" stroke-width="1" stroke-linejoin="round" fill-rule="evenodd">${p}</g></svg>`;
+    if (p) {
+      // Same drawing as the Live radar: larger than the chevron (26 vs 19 on
+      // the Live map) so the planform reads, with a solid dark outline
+      // painted behind the fill instead of a translucent one.
+      const spx = px * 26 / 19;
+      return `<svg class="ts" viewBox="${vb}" style="width:${spx}rem;height:${spx}rem;transform:rotate(${rot}deg)">${ring}`
+        + `<g fill="${col}" stroke="#0a0d12" stroke-width="1.8" stroke-linejoin="round" paint-order="stroke" fill-rule="evenodd">${p}</g></svg>`;
+    }
   }
   return `<svg viewBox="${vb}" style="${s};transform:rotate(${rot}deg)">${ring}`
     + `<path d="M12 2 L21 22 L12 17 L3 22 Z" fill="${col}" stroke="${dk}" stroke-width="1" stroke-linejoin="round"/></svg>`;

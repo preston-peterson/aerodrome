@@ -19,6 +19,27 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.161] — 2026-11-05
+
+**Aircraft silhouettes on the Live map and the display board are redrawn, larger and sharper.** Until now every type was drawn from one outline: a thick body, a swept slab of a wing and a stub tail, so a Cessna 172 looked much like an A320. Each type is now drawn from its own layout:
+
+- the wing's real shape, sweep and position, straight on a light single and swept on a jet;
+- engines where the aircraft has them: under the wing, on the rear fuselage, or as propeller nacelles;
+- a conventional tail or a T-tail;
+- a small propeller bar on the nose of single-engine propeller aircraft.
+
+Airliners, regional jets, business jets, turboprops, light twins and light singles are now easy to tell apart at a glance. Silhouettes are also larger, 26 px in place of 19 (31 in place of 24 for heavy aircraft), and drawn with a solid dark outline in place of a soft shadow, so their edges are crisp on both the light and the dark map. The chevron for an aircraft with no known type, the helicopter symbol and the balloon symbol keep their size and look. The **Aircraft type shapes** setting under Configuration → Map works as before.
+
+**Each type's proportions and engine count now come from published data.** Wingspan, length and engine count are taken from the FAA's Aircraft Characteristics Database in place of hand-entered figures, about half of which were off by more than 3%. A few types were drawn with the wrong number of engines, for example the single-engine Cirrus Vision Jet as a twin, and the King Air 350 and the Boeing 717 with three. Those are corrected.
+
+### Operational notes
+
+This is an ordinary update with a normal restart and no database change. Reload any open Live or display-board page to see the new shapes. With larger silhouettes, aircraft that are close together overlap a little more than before; zooming in separates them.
+
+### Behind the scenes
+
+`scripts/gen_type_shapes.py` now lays each type out in metres from a family preset (airliner, rear-engine jet, turboprop, piston single, light twin and their variants) plus per-type overrides, so adding a type is one row naming its family. Dimensions come from the new `scripts/type_dims.csv` (388 types, derived from the FAA table, which is a public-domain US-government work), with a short override list for types the table lacks or lists under another variant's figures. The generator refuses a shape whose parts are not connected, and removes only its own files when a type leaves the table. The new `test_type_shapes.py` regenerates every shape and compares it with the shipped file, so a table edit that isn't followed by a re-run fails. On the map, markers are now anchored on whole pixels: an odd-sized marker used to sit half a pixel off the grid, which blurred its edges on standard-density screens. `static/shapes-data.js` grew from 55 KB to 72 KB.
+
 ## [3.4.160] — 2026-11-05
 
 **`uninstall.sh --purge` again removes the database copies older releases kept beside a linked database.** When `data.db_file` is a link, a restore made by a release before 3.4.149 kept its safety copy of the database (`<name>.bak.<date>.pre-restore`) next to the link, not next to the file it points to. 3.4.159 taught purge to follow the link, and in doing so it stopped looking beside the link, so those older copies were left behind. Purge now removes them too, along with everything 3.4.159 already removes. Nothing else changes: without `--purge` you're still asked first, and `--keep` still keeps everything.

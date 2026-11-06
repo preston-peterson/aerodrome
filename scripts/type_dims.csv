@@ -1,0 +1,389 @@
+code,span_m,length_m,engines,model
+A10,17.53,16.25,2,Fairchild A10
+A124,73.30,68.95,4,Antonov AN-124 Ruslan
+A19N,35.81,33.83,2,Airbus A319 Neo
+A20N,35.81,37.58,2,Airbus A320 Neo
+A21N,35.81,44.50,2,Airbus A321 Neo
+A306,44.84,54.07,2,Airbus A300 B4-600
+A30B,44.84,53.49,2,Airbus A300-B2
+A310,43.89,46.70,2,Airbus A310
+A318,34.11,31.46,2,Airbus A318
+A319,35.81,33.83,2,Airbus A319
+A320,35.81,37.58,2,Airbus A320
+A321,35.81,44.50,2,Airbus A321
+A332,60.29,59.01,2,Airbus A330-200
+A333,60.29,63.70,2,Airbus A330-300
+A337,60.29,63.09,2,Airbus A330-700 - Beluga XL
+A338,64.01,58.83,2,Airbus A330-800
+A339,64.01,63.67,2,Airbus A330-900
+A342,60.29,59.44,4,Airbus A340-200
+A343,60.29,63.70,4,Airbus A340-300
+A345,63.46,67.94,4,Airbus A340-500
+A346,63.46,75.35,4,Airbus A340-600
+A359,64.75,66.61,2,Airbus 350-900
+A35K,64.74,73.58,2,Airbus A350-1000 XWB
+A388,79.77,72.73,4,Airbus A380-800
+A400,42.40,45.11,4,Airbus A400M Atlas
+A5,10.61,7.01,1,Icon A-5
+AA1,7.44,5.88,1,Grumman American AA1
+AA5,9.57,6.71,1,Grumman American AA5
+AC11,10.00,7.59,1,Rockwell Commander 112
+AC50,14.94,11.22,2,Aero Commander 500
+AC56,14.94,11.22,2,Aero Commander 560
+AC68,15.09,10.70,2,Aero Commander 680FP
+AC6L,13.44,13.11,2,Aero Commander 680FL
+AC80,14.23,12.65,2,Rockwell Commander Turbo 680
+AC90,15.88,13.53,2,Gulfstream 690 Commander 690
+AC95,15.88,13.11,2,Gulfstream Jetprop Commander 1000
+AEST,11.19,10.61,2,Piper Aero Star
+AN12,38.04,34.02,4,Antonov AN-12
+AN72,31.88,28.07,2,Antonov AN-74-100/200
+AR11,10.97,6.34,1,Aeronca 11 Chief
+ASTR,16.06,16.95,2,IAI Astra 1125
+AT3T,15.58,9.33,1,Air Tractor AT-402
+AT43,24.60,22.68,2,ATR 42-300/320
+AT44,24.60,22.68,2,ATR-42-400
+AT45,24.60,22.68,2,ATR 42-500
+AT46,24.60,22.68,2,ATR 42-600
+AT5T,15.85,8.23,1,Air Tractor AT-503
+AT6T,17.07,10.21,1,AT-602 Air Tractor
+AT72,27.07,27.16,2,ATR-72-201/202
+AT73,27.04,27.16,2,ATR 72-211/212
+AT75,24.57,27.16,2,ATR-72-500
+AT76,27.04,27.16,2,ATR 72-600/212A
+AT8T,18.07,11.43,1,Air Tractor AT-802
+B18T,14.02,13.50,2,Beech 18 (Turbo)
+B190,17.68,17.59,2,Beech 1900/C-12J
+B2,52.43,21.03,4,Northrop B-2 Spirit
+B350,17.65,14.23,2,Beech Super King Air 350
+B36T,10.21,8.90,1,Allison 36 Turbine Bonanza
+B37M,35.91,35.57,2,Boeing 737 MAX 7
+B38M,35.91,39.53,2,Boeing 737 MAX 8
+B39M,35.91,42.15,2,Boeing 737 MAX 9
+B461,26.33,26.18,4,BAe 146-100
+B462,26.33,28.56,4,BAe 146 -200
+B52,56.39,49.04,8,Boeing B-52 Stratofortress
+B703,44.44,46.60,4,Boeing 707-300
+B712,28.44,37.80,2,Boeing 717-200
+B721,32.92,40.60,2,Boeing 727-100 (C-22)
+B722,33.31,46.70,2,Boeing 727-200
+B732,28.35,30.54,2,Boeing 737-200/VC96
+B733,31.21,33.41,2,Boeing 737-300
+B734,28.90,36.45,2,Boeing 737-400
+B735,28.90,31.03,2,Boeing 737-500
+B736,35.78,31.24,2,Boeing 737-600
+B737,35.78,33.62,2,Boeing 737-700
+B738,35.78,39.47,2,Boeing 737-800
+B739,35.78,42.12,2,Boeing 737-900
+B741,59.65,70.65,4,Boeing 747-100
+B742,59.65,70.65,4,Boeing 747-200
+B743,59.65,70.65,4,Boeing 747-300
+B744,59.65,70.68,4,Boeing 747-400
+B748,68.40,76.26,4,Boeing 747-8
+B752,41.09,47.34,2,Boeing 757-200
+B753,41.09,54.44,2,Boeing 757-300
+B762,47.58,48.52,2,Boeing 767-200
+B763,50.90,54.96,2,Boeing 767-300
+B764,51.91,61.36,2,Boeing 767-400
+B772,60.93,63.73,2,Boeing 777-200
+B773,60.93,63.73,2,Boeing 777-300
+B778,71.75,69.80,2,Boeing 777-8
+B779,71.75,76.75,2,Boeing 777-9
+B77L,64.65,63.73,2,Boeing 777-200LRF/LR
+B77W,64.80,73.85,2,Boeing 777-300ER
+B788,60.14,56.72,2,Boeing 787-8 BBJ/Dreamliner
+B789,60.14,62.82,2,Boeing 787-9 Dreamliner
+B78X,60.14,68.31,2,Boeing 787-10 Dreamliner
+BA11,26.97,28.50,2,BAC 111 One-Eleven
+BCS1,35.08,34.99,2,Airbus A220-100
+BCS3,35.08,38.71,2,Airbus A220-300
+BE10,13.99,12.16,2,Beech King Air 100
+BE18,15.15,10.76,2,Beech 18
+BE19,10.00,7.83,1,Beech B19 Musketeer
+BE20,16.61,13.35,2,Beech 200 Super King
+BE23,10.00,7.83,1,Beech 23 Sundowner
+BE24,10.00,7.83,1,Beech 24 Sierra
+BE30,17.65,14.23,2,Raytheon 300 Super King Air
+BE33,10.21,8.14,1,Beech Bonanza 33
+BE35,10.82,7.68,1,Beech Bonanza 35
+BE36,10.21,8.38,1,Beech Bonanza 36
+BE40,13.26,14.75,2,Raytheon/Beech Beechjet 400/T-1 Jayhawk
+BE50,13.81,9.60,2,Beechcraft 50 Twin Bonanza
+BE55,11.52,8.53,2,Beech Baron 55
+BE58,11.52,9.08,2,Beech 58 Baron
+BE60,11.98,10.30,2,Beech 60 Duke
+BE65,13.99,10.82,2,Beech 65 Queen Air
+BE70,15.33,10.82,2,Beech 70 Queen Air
+BE76,11.58,8.84,2,Beech 76 Duchess
+BE77,9.14,7.32,1,Beech 77 Skipper
+BE80,15.33,10.82,2,Beech BE-80 Queen Air
+BE95,11.52,7.89,2,Beechcraft 95 Travel Air
+BE99,13.99,13.59,2,Beech Airliner 99
+BE9L,15.33,10.82,2,Beech King Air 90
+BE9T,16.61,10.82,2,Beech F90 King Air
+BL17,10.42,8.02,1,Bellanca Viking
+BL8,11.03,7.01,1,Bellanca 8 Scout
+BLCF,64.92,71.69,4,Boeing 747-400LCF Dreamlifter
+BT36,11.52,8.38,1,Beech 36 Bonanza
+C120,10.15,6.55,1,Cessna 120
+C130,40.42,29.81,4,Lockheed 130 Hercules
+C140,10.15,6.55,1,Cessna 140
+C150,10.12,7.28,1,Cessna 150
+C152,10.12,7.35,1,Cessna 152
+C160,39.99,32.40,2,Transall C-160
+C162,9.14,6.95,1,Cessna 162 Skycatcher
+C17,51.76,53.04,4,Boeing Globemaster 3
+C170,10.97,7.62,1,Cessna 170
+C172,11.00,8.29,1,Cessna Skyhawk 172/Cutlass
+C175,11.03,7.62,1,Cessna 175
+C177,10.82,8.32,1,Cessna 177 Cardinal
+C180,10.91,7.80,1,Cessna 180 Skywagon
+C182,10.97,8.84,1,Cessna Skylane 182
+C185,10.91,7.80,1,Cessna 185 Skywagon
+C188,12.71,8.02,1,Cessna 188
+C195,11.03,8.32,1,Cessna 195
+C206,10.97,8.63,1,Cessna 206 Stationair
+C207,11.00,9.60,1,Cessna 207 Stationair 7
+C208,15.88,11.46,1,Cessna 208 Caravan 1
+C210,11.22,8.60,1,Cessna 210 Centurion
+C212,18.99,16.15,2,CASA Aviocar
+C240,11.00,7.68,1,Cessna TTx Model T240
+C25A,15.18,14.54,2,Cessna Citation CJ2
+C25B,16.25,15.61,2,Cessna Citation CJ3
+C25C,15.48,16.25,2,Cessna Citation CJ4
+C25M,14.42,12.98,2,Cessna Citation M2
+C303,11.89,9.27,2,Cessna 303 Crusader
+C30J,40.42,34.38,4,C-130J Super Hercules ; Lockheed
+C310,11.25,9.75,2,Cessna 310
+C320,11.25,9.75,2,Cessna 320 Skyknight
+C335,11.61,10.45,2,Cessna 335
+C340,11.61,13.20,2,Cessna 340
+C402,13.47,11.09,2,Cessna 401/402
+C404,14.11,12.04,2,Cessna 404 Titan
+C414,13.47,11.09,2,Cessna Chancellor 414
+C421,13.47,11.09,2,Cessna Golden Eagle 421
+C425,13.47,10.91,2,Cessna 425 Corsair
+C441,15.03,11.89,2,Cessna Conquest
+C500,14.36,13.26,2,Cessna 500/Citation I
+C501,14.36,13.26,2,Cessna 1SP
+C510,13.17,12.37,2,Cessna Citation Mustang
+C525,14.30,12.98,2,Cessna CitationJet/CJ1
+C526,14.26,12.98,2,Cessna 526 CitationJet
+C550,15.76,14.42,2,Cessna Citation II/Bravo
+C551,15.76,14.54,2,Cessna Citation II/SP
+C55B,15.91,14.54,2,Cessna Citation Bravo
+C560,16.49,14.90,2,Cessna Citation V/Ultra/Encore
+C56X,17.16,15.79,2,Cessna Excel/XLS
+C650,16.31,16.92,2,Cessna III/VI/VII
+C680,19.23,19.35,2,Cessna Citation Sovereign
+C68A,22.04,18.99,2,Cessna Citation Latitude
+C700,21.00,22.31,2,Cessna Citation Longitude
+C72R,11.00,8.29,1,Cessna 172RG Cutlass RG
+C750,19.39,22.04,2,Cessna Citation X
+C77R,10.82,8.32,1,Cessna 177 Cardinal RG
+C82R,10.97,8.84,1,Cessna Skylane RG
+CH7A,10.21,6.74,1,Aeronca 7AC
+CH7B,10.21,6.74,1,Bellanca 7GCBC Citabria
+CL30,19.45,20.97,2,Bombardier (Canadair) Challenger 300
+CL35,21.00,20.91,2,Bombardier Challenger 350
+CL41,11.13,9.75,1,Canadair 41 Tutor
+CL60,19.60,20.85,2,Canadair Challenger 600/601/604
+CN35,25.82,19.66,2,CASA CN-235
+COL3,11.00,7.68,1,Lancair LC-40 Columbia 300
+COL4,11.00,7.68,1,Lancair LC-41 Columbia 400
+COUR,11.89,9.45,1,HELIO U-10 Super Courier
+CRJ1,21.21,26.76,2,canadair CRJ-100
+CRJ2,20.94,26.76,2,canadair CRJ-200
+CRJ7,23.26,32.49,2,canadair CRJ-700
+CRJ9,24.84,36.21,2,canadair CRJ-900
+CRUZ,8.78,6.49,1,CZAW SportCruiser
+CVLP,27.98,24.14,2,Convair CV-440 Metropolitan
+CVLT,32.10,29.20,2,"Convair CV-580/600/640, C-131H"
+D328,20.97,21.28,2,Dornier 328 Series
+DA40,11.95,8.02,1,Diamond Star DA40
+DA42,13.56,8.56,2,Diamond Twin Star
+DC10,50.38,55.35,3,Boeing (Douglas) DC 10-10/30/40
+DC3,29.02,19.72,2,Douglas DC 3
+DC3S,27.43,20.67,2,Douglas Super DC-3
+DC3T,28.96,20.67,2,"Basler, BT-67 Turbo 67"
+DC6,35.81,30.66,4,Douglas DC 6
+DC87,45.23,57.21,4,Douglas DC-8-70
+DC91,27.25,31.82,2,Douglas DC 9-10
+DC93,28.44,36.36,2,Douglas DC 9-30
+DC95,28.47,40.72,2,Douglas DC 9-50
+DH8A,25.91,22.25,2,DeHavilland Canada DHC8-100
+DH8B,25.91,22.25,2,DeHavilland Canada DHC8-200
+DH8C,27.43,25.69,2,DeHavilland Canada Dash 8/DHC8-300
+DH8D,28.44,32.86,2,DeHavilland Canada 8/DHC8-400
+DHC2,14.63,9.24,1,DeHavilland Canada 2 Mk1 Beaver
+DHC6,19.81,15.79,2,DeHavilland Canada Twin Otter
+DHC7,28.35,24.54,4,DeHavilland Canada DHC-7
+DV20,10.88,7.16,1,Diamond 20 Katana
+E110,15.33,15.33,2,Embraer EMB110 Bandeirante
+E120,19.78,20.03,2,Embraer Brasilia EMB 120
+E135,20.06,28.47,2,Embraer ERJ 135/140/Legacy
+E145,20.06,29.87,2,Embraer ERJ-145
+E170,26.00,29.90,2,Embraer 170
+E190,28.71,36.24,2,Embraer 190
+E195,28.71,38.65,2,Embraer 195
+E290,33.71,36.21,2,Embraer 190-E2
+E295,35.11,41.51,2,Embraer 195-E2
+E35L,21.09,26.33,2,Embraer 135BJ Legacy 600
+E45X,19.99,29.87,2,Embraer ERJ 145 XR
+E50P,12.28,12.83,2,Embraer 500 Phenom 100
+E545,20.24,19.69,2,Embraer EMB-545 Legacy 450
+E550,20.27,20.73,2,Legacy 500/Praetor 600
+E55P,15.91,15.64,2,Embraer Phenom 300
+E75L,31.00,32.31,2,Embraer 175 long wing
+E75S,28.71,31.67,2,Embraer 175 short wing
+EA50,11.37,10.09,2,Eclipse 500
+ERCO,9.14,6.34,1,Ercoupe 415
+EVOT,11.28,9.14,1,Lancair Evolution Turbine
+F15,13.05,19.45,2,Boeing F-15 Eagle
+F16,9.97,15.06,1,Lockheed F-16 Fighting Falcon
+F18H,12.31,17.07,2,F/A 18 Hornet
+F18S,13.62,18.32,2,FA-18E/F Super Hornet
+F22,13.56,18.93,2,Lockheed Martin L-645 Raptor
+F2TH,19.32,20.21,2,Dassault Falcon 2000
+F406,15.09,11.89,2,Reims-Cessna F406 Caravan II
+F900,19.32,20.21,3,Dassault Falcon 900
+FA10,13.08,13.87,2,Dassault Falcon/Mystère 10
+FA20,16.31,17.16,2,Dassault Falcon/Mystère 20
+FA50,18.87,18.53,3,Dassault Falcon/Mystère 50
+FA7X,26.21,23.20,3,Dassault Falcon 7X
+FA8X,26.30,24.44,3,Dassault Falcon 8X
+FDCT,8.56,6.61,1,Flight Design CT
+G150,16.95,17.31,2,Gulfstream G150
+G164,12.89,7.89,1,Grumman American G164
+G280,19.20,20.36,2,Gulfstream G280
+GA5C,26.32,27.79,2,Gulfstream Aerospace Gulfstream G7-G500
+GA6C,28.70,29.29,2,Gulfstream Aerospace Gulfstream G7-G600
+GA7,11.22,8.75,2,Gulfstream American GA7
+GALX,17.71,18.99,2,IAI 1126 Galaxy/Gulfstream G200
+GC1,8.93,6.34,1,Globe GC-1 Swift
+GL5T,28.65,29.50,2,Bombardier BD-700 Global 5000
+GL7T,31.79,33.71,2,Bombardier BD-700 Global 7500
+GLEX,28.65,30.30,2,Bombardier BD-700 Global Express
+GLF2,20.97,24.35,2,Gulfstream II
+GLF3,23.71,25.33,2,Gulfstream III
+GLF4,23.71,26.91,2,Gulfstream IV/G400
+GLF5,28.50,29.38,2,Gulfstream V
+GLF6,30.39,30.42,2,Gulfstream G650
+H25A,14.33,15.39,2,HS 125-1/2/3/400/600
+H25B,15.67,15.61,2,BAe HS 125/700-800/Hawker 800
+H25C,15.67,16.43,2,BAe/Raytheon HS 125-1000
+HA4T,18.84,21.09,2,Hawker 4000
+HAWK,9.94,11.40,1,BAe T-45 Goshawk
+HDJT,12.16,12.53,2,HONDA HA-420 HondaJet
+HUSK,10.82,6.89,1,AVIAT Huskey
+IL76,50.51,46.60,4,Ilyushin IL 76
+J328,20.97,21.24,2,Fairchild Dornier 328 Jet
+JS31,15.85,14.36,2,BAe 3100 Jetstream 31
+JS32,15.85,14.36,2,BAe Jetstream super 31
+JS41,18.41,19.26,2,BAe Jetstream 41
+K35R,39.87,41.54,4,Boeing KC-135 Stratotanker
+KODI,13.72,10.42,1,Quest Kodiak
+L29B,16.55,18.38,4,Lockheed Jetstar 2/731
+L5,10.36,7.35,1,Stinson L5 Sentinel
+L8,10.67,6.10,1,Luscombe 8
+LA4,11.58,7.59,1,Lake LA-4
+LJ23,10.85,13.20,2,Bombardier Learjet 23
+LJ24,10.85,13.20,2,Bombardier Learjet 24
+LJ25,10.85,14.51,2,Bombardier Learjet 25
+LJ31,13.35,14.84,2,Bombardier Learjet 31
+LJ35,12.04,14.84,2,Bombardier Learjet 35/36
+LJ40,14.57,16.95,2,Learjet 40
+LJ45,14.57,17.68,2,Bombardier Learjet 45
+LJ55,13.35,16.79,2,Bombardier Learjet 55
+LJ60,13.35,17.89,2,Bombardier Learjet 60
+LJ70,15.51,17.07,2,Learjet 70
+LJ75,15.51,17.68,2,Learjet 75
+LNC4,9.94,7.62,1,Lancair IV
+LNP4,9.94,7.62,1,Lancair PropJet IV
+M20P,11.00,8.17,1,Mooney M-20C Ranger
+M20T,11.00,8.17,1,Mooney M20K Encore/M20M Bravo
+M5,9.39,7.16,1,Maule M-5
+MD11,51.97,61.63,3,Boeing (Douglas) MD 11
+MD81,32.89,45.05,2,Boeing (Douglas) MD 81
+MD82,32.89,45.05,2,Boeing (Douglas) MD 82
+MD83,32.89,45.05,2,Boeing (Douglas) MD 83
+MD87,32.89,39.75,2,Boeing (Douglas) MD 87
+MD88,32.89,45.05,2,Boeing (Douglas) MD 88
+MD90,32.89,46.51,2,Boeing (Douglas) MD 90
+MU2,11.95,12.01,2,Mitsubishi Marquise/Solitaire
+MU30,13.26,14.75,2,Mitsubishi Diamond/MU300 Diamond
+NAVI,10.18,8.38,1,North American Navion
+P180,14.02,14.42,2,Piaggio P-180 Avanti
+P210,11.83,8.60,1,Riley Super P210
+P28A,10.67,7.25,1,Piper Cherokee
+P28B,10.67,7.53,1,Piper Turbo Dakota
+P28R,10.79,7.53,1,Cherokee Arrow
+P28T,10.79,7.53,1,Piper 28T Arrow 4
+P3,30.39,35.36,4,Lockheed P-3 Orion
+P32R,11.03,8.44,1,Piper PA-32R Lance/ Saratoga SP
+P32T,11.03,8.44,1,Piper 32T Turbo Lance 2
+P46T,13.11,9.02,1,Piper Malibu Meridian
+P51,11.28,9.85,1,North American Mustang
+P68,12.01,9.54,2,Vulcan Air P68
+P750,12.80,11.83,1,Pacific Aerospace P-750 Xstol
+P8,37.67,39.47,2,Boeing P-8 Poseidon
+PA11,10.82,7.28,1,Piper PA-11 Cub Special
+PA12,10.82,6.95,1,Piper 12 Supercruiser
+PA16,8.93,6.13,1,Piper PA-16 Clipper
+PA18,10.76,6.86,1,Piper 18 Super Cub
+PA20,8.93,6.25,1,Piper PA-20 Pacer
+PA22,8.93,6.25,1,Piper 22 Tri-Pacer
+PA23,11.34,8.41,2,Piper PA-23-150/160 Apache
+PA24,10.97,7.56,1,Piper PA-24 Comanche
+PA25,11.03,7.56,1,Piper PA-25 Pawnee
+PA27,11.34,9.51,2,Piper Aztec
+PA30,11.22,7.68,2,Piper PA-30 Turbo Twin Comanche/Turbo Twin Comanche
+PA31,12.41,9.94,2,Piper Navajo PA-31
+PA32,11.03,8.41,1,Piper Cherokee Six
+PA34,11.86,8.72,2,Piper PA-34 Seneca
+PA36,11.83,8.38,1,Piper PA-36 Pawnee Brave
+PA38,10.36,7.04,1,Piper Tomahawk PA38
+PA44,11.77,8.41,2,Piper Seminole
+PA46,13.11,8.81,1,Piper Malibu
+PAT4,13.01,10.58,2,Piper PA-31T3-500 T-1040
+PAY1,13.01,10.58,2,Piper Cheyenne 1
+PAY2,13.01,10.58,2,Piper Cheyenne 2
+PAY3,14.54,13.23,2,Piper PA-42-720 Cheyenne 3
+PAY4,14.54,13.23,2,Piper Cheyenne 400
+PC12,16.25,14.42,1,Pilatus PC-12
+PC24,17.01,16.86,2,Pilatus PC-24
+PRM1,13.56,14.02,2,Raytheon Premier 1/390 Premier 1
+R721,32.92,40.60,3,Boeing 727-100RE Super 27
+R722,32.92,46.70,3,Boeing 727-200RE Super 27
+RJ1H,26.33,31.00,4,Avro RJ-100 Avroliner
+RJ85,26.33,28.56,4,Avro RJ-85 Avroliner
+RV12,8.17,6.07,1,Van's RV-12
+S108,10.33,7.47,1,Stinson 108 Voyager
+S22T,11.67,7.92,1,Cirrus SR-22 Turbo
+SB20,24.78,27.28,1,Saab 2000
+SBR1,13.62,14.30,2,North American Rockwell Sabre 40/60
+SBR2,13.62,14.30,2,North American Rockwell Sabre 75
+SC7,19.78,12.59,2,Short Skyvan SC7
+SF34,22.74,19.72,2,Saab SF 340
+SF50,11.80,9.36,1,Cirrus Vision SF50
+SH33,22.77,17.68,2,Shorts 330
+SH36,22.80,21.58,2,Shorts 360
+SR20,11.67,7.92,1,Cirrus SR-20
+SR22,11.67,7.92,1,Cirrus SR 22
+SU95,27.80,29.93,2,SUKHOI Superjet 100-95
+SW3,14.11,12.86,2,Fairchild Swearingen SA-226T/TB Merlin 3
+SW4,17.37,18.11,2,Swearingen SA-227AT Merlin 4
+T210,11.83,8.60,1,Cessna T210 Turbo Centurion
+T28,12.22,10.06,1,North American T-28 Trojan
+T34P,10.15,8.75,1,Beech T-34/45 Mentor
+T38,7.71,14.11,2,Northrop T-38 Talon
+T6,12.80,8.84,1,North American T-6 Texan
+TAYB,10.97,6.71,1,Taylorcraft BC
+TB20,9.97,7.74,1,Socata TB-20 Trinidad
+TBM7,12.68,10.64,1,Socata TBM-700/700A
+TBM8,12.68,10.64,1,Socata TBM-850
+TBM9,12.83,10.73,1,Socata TBM-900
+TEX2,10.18,10.12,1,Raytheon Texan 2
+TOBA,10.00,7.74,1,Socata TB-10 Tobago
+V22,13.96,19.20,2,Bell V-22 Osprey
+WW24,13.66,15.94,2,IAI 1124 Westwind

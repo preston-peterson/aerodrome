@@ -1,4 +1,4 @@
-<!-- Version: 3.4.160 -->
+<!-- Version: 3.4.161 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -592,6 +592,10 @@
             display:block; line-height:0; pointer-events:auto;
             filter:drop-shadow(0 0 1px rgba(0,0,0,.6));
         }
+        /* Type silhouettes carry their own solid outline: a blurred shadow
+           around them only softens the edge. (.selected still glows — its
+           rule comes later.) */
+        .radar-marker .rm-glyph.ts { filter:none; }
         .radar-marker .rm-ring {
             position:absolute; left:50%; top:50%;
             transform:translate(-50%,-50%);
@@ -3523,15 +3527,13 @@ function _radarShapeKnown(ac){
 
 // ADS-B emitter category (or type fallback) → one of 3 discrete sizes.
 // A1/A2 = light/small, A3/A4 = jet, A5+/B/C heavies & specials = large.
-// LEGIBILITY FLOOR: a chevron reads at 13px because it's a solid blob, but
-// a GA silhouette (C172, Mooney, Baron) inside a 13px box is a literal dot
-// — those types draw ~1/5 the on-canvas airspace of an A320. So when the
-// shape is actually going to be drawn (map.type_shapes on + the typecode is
-// in the table), ALL buckets get at least the jet size (19px): a silhouette
-// needs ~5 filled pixels across the outline to read, and 19px is where the
-// smallest shapes clear that. The old "medium" 17px was still marginal.
-// Real physical size stays encoded in each file's aerodrome-scale comment;
-// marker pixel size buys readability, not scale fidelity.
+// SILHOUETTE SIZE: a chevron reads at 13px because it's a solid blob, but a
+// silhouette's wing, engines and tail are each only a pixel or two wide at
+// that size and blur into one another. So when the shape is actually going
+// to be drawn (map.type_shapes on + the typecode is in the table) the marker
+// is 26px, or 31px for the heavy bucket — the size at which the planform
+// reads. Real physical size stays encoded in each file's aerodrome-scale
+// comment; marker pixel size buys readability, not scale fidelity.
 function _radarSize(ac){
     const c = (ac.category || '').toUpperCase();
     let px;
@@ -3539,7 +3541,9 @@ function _radarSize(ac){
     else if(c === 'A5' || c === 'A6' || c === 'A7' || c.startsWith('B') || c.startsWith('C')) px = 24; // heavy/special
     else if(c === 'A3' || c === 'A4') px = 19;                              // jet
     else px = 17;                                                           // unknown — medium
-    if(px < 19 && _radarShapeKnown(ac)) px = 19;
+    // Helicopters and balloons draw their own glyph whatever their typecode,
+    // so they keep the bucket size.
+    if(c !== 'A7' && !_radarIsBalloon(ac) && _radarShapeKnown(ac)) px = (px === 24) ? 31 : 26;
     return px;
 }
 
@@ -3594,9 +3598,14 @@ function _radarIsBalloon(ac){
 function _radarTypeSvg(ac, color, px){
     if(!_radarShapeKnown(ac)) return '';
     const path = SHAPES_DATA[(ac.aircraft_type || '').toUpperCase()];
-    return `<svg width="${px}" height="${px}" viewBox="0 0 24 24" aria-hidden="true">`
-        + `<g fill="${color}" stroke="rgba(0,0,0,.45)" stroke-width="1" `
-        + `stroke-linejoin="round" fill-rule="evenodd">${path}</g></svg>`;
+    // A solid dark outline painted BEHIND the fill, one screen pixel wide
+    // whatever the marker size (the stroke is 2px, half of it under the
+    // fill). A translucent or blurred edge makes a small shape look soft.
+    const sw = (48 / px).toFixed(2);
+    return `<svg width="${px}" height="${px}" viewBox="0 0 24 24" aria-hidden="true" `
+        + `style="overflow:visible">`
+        + `<g fill="${color}" stroke="#0a0d12" stroke-width="${sw}" `
+        + `stroke-linejoin="round" paint-order="stroke" fill-rule="evenodd">${path}</g></svg>`;
 }
 
 function _radarTheme(){
@@ -3872,7 +3881,7 @@ function _radarBuildIcon(ac){
     const glyphTransform = `translate(-50%,-50%) rotate(${rot}deg)`;
     const html =
         `<span class="rm-ring" style="width:${ringPx}px;height:${ringPx}px"></span>`
-        + `<span class="rm-glyph" style="width:${size}px;height:${size}px;transform:${glyphTransform}">`
+        + `<span class="rm-glyph${typeSvg ? ' ts' : ''}" style="width:${size}px;height:${size}px;transform:${glyphTransform}">`
         + (isHeli ? _radarHeliSvg(color, size)
            : isBalloon ? _radarBalloonSvg(color, size)
            : (typeSvg || _radarChevronSvg(color, size))) + `</span>`
@@ -3883,7 +3892,9 @@ function _radarBuildIcon(ac){
         // and CSS transform (the heading rotation) is ignored on a default
         // inline <span>, so without display:block the chevrons don't rotate.
         className: cls, html,
-        iconSize: [size, size], iconAnchor: [size/2, size/2],
+        // Whole-pixel anchor: an odd size anchored at size/2 puts the whole
+        // marker half a pixel off the grid, which blurs every edge at 1x.
+        iconSize: [size, size], iconAnchor: [Math.floor(size/2), Math.floor(size/2)],
     });
 }
 

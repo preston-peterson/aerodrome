@@ -1,5 +1,5 @@
 # Aerodrome
-<!-- Version: 3.4.160 -->
+<!-- Version: 3.4.161 -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -167,6 +167,8 @@ aerodrome/
 │   ├── build_overview_pdf.py     rebuilds docs/Aerodrome_Overview.pdf
 │   ├── screenshots.py            Playwright harness for docs/*.png
 │   ├── gen_type_classes.py       rebuilds type_classes.py from a local copy of ICAO DOC 8643
+│   ├── gen_type_shapes.py        draws the map's aircraft silhouettes (static/shapes/, shapes-data.js)
+│   ├── type_dims.csv             wingspan, length and engine count per type, from the FAA's public table
 │   └── check_docs.py             advisory drift detector
 ├── tools/
 │   └── synthetic_feeder/         demo-mode synthetic ADS-B feeder (v3.1.0)
@@ -208,6 +210,7 @@ aerodrome/
 ├── test_search.py                unit tests — search query language
 ├── test_search_windows.py        tests — date windows, names, card and drill parity
 ├── test_tzwindow.py              unit tests — local days, hours and clock changes
+├── test_type_shapes.py           unit tests — aircraft silhouettes: table, dimensions and shipped files agree
 ├── test_watchlist_tail.py        tests — watchlist entries by tail number
 ├── test_search_v2_91_tokens.py   unit tests — search token grammar (v2.91 additions)
 ├── test_service_account.py       unit tests — no privileged call names an account or a group
