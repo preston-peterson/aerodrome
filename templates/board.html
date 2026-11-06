@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
-<!-- Version: 3.4.166 -->
+<!-- Version: 3.4.167 -->
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Display board — Aerodrome</title>
@@ -1458,12 +1458,12 @@ function lookup(memo, key, url, read){
 function routeFor(a){
   if (!SHOW_ROUTES) return null;
   const cs = (a.callsign || '').trim().toUpperCase();
-  if (!cs) return null;
-  let q = '';
-  if (a.lat != null && a.lon != null) {
-    q = `?lat=${encodeURIComponent(a.lat)}&lon=${encodeURIComponent(a.lon)}`
-      + (a.track != null ? `&track=${encodeURIComponent(a.track)}` : '');
-  }
+  // No position, no route: the server checks a route against where the plane
+  // is and hides one that doesn't fit (v3.4.167; the callsign data is often
+  // wrong), and without a position there's nothing to check it against.
+  if (!cs || a.lat == null || a.lon == null) return null;
+  const q = `?lat=${encodeURIComponent(a.lat)}&lon=${encodeURIComponent(a.lon)}`
+    + (a.track != null ? `&track=${encodeURIComponent(a.track)}` : '');
   return lookup(routeMemo, cs, `/api/callsign/${encodeURIComponent(cs)}/route${q}`, j => {
     let v = null;
     if (j.found) {

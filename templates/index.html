@@ -1,4 +1,4 @@
-<!-- Version: 3.4.166 -->
+<!-- Version: 3.4.167 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -4071,17 +4071,18 @@ function openRadarOverlay(icao){
         .catch(() => { if(_radar.selectedIcao === icao) _radarSetPhoto(null, ac); });
     // v3.4.109: route line re-enabled on the adsb.lol source (display was
     // pulled v3.4.105 when the old source proved unreliable). The plane's
-    // position rides along so a multi-leg flight number ("KMSP-KPHL-KMSP")
-    // shows the leg it's actually flying; when the server can't pick one
-    // confidently, the full chain renders instead. Callsign-less contacts
-    // skip the lookup entirely — the row stays hidden.
+    // position rides along: the server hides a route that doesn't fit
+    // where the plane is (v3.4.167; the callsign data is often wrong), and
+    // a multi-leg flight number ("KMSP-KPHL-KMSP") shows the leg it's
+    // actually flying; when the server can't pick one confidently, the full
+    // chain renders instead. Contacts without a callsign or a position skip
+    // the lookup entirely — there's nothing to check a route against, so
+    // the row stays hidden.
     const roCs = (ac.callsign || '').trim();
-    if(roCs && showRoutes){
+    if(roCs && showRoutes && ac.lat != null && ac.lon != null){
         _radarSetRoute('loading');
-        const roQ = (ac.lat != null && ac.lon != null)
-            ? `?lat=${encodeURIComponent(ac.lat)}&lon=${encodeURIComponent(ac.lon)}`
-              + (ac.track != null ? `&track=${encodeURIComponent(ac.track)}` : '')
-            : '';
+        const roQ = `?lat=${encodeURIComponent(ac.lat)}&lon=${encodeURIComponent(ac.lon)}`
+            + (ac.track != null ? `&track=${encodeURIComponent(ac.track)}` : '');
         fetch(`/api/callsign/${encodeURIComponent(roCs)}/route${roQ}`)
             .then(r => r.ok ? r.json() : null)
             .then(j => { if(_radar.selectedIcao === icao) _radarSetRoute(j); })
@@ -4207,8 +4208,8 @@ function _radarSetPhoto(info, ac){
 // A multi-leg flight number renders just its inferred current leg when the
 // server could pick one from the plane's position, else the full chain
 // ("KMSP → KPHL → KMSP"). The chip + the airline line are hidden entirely
-// when there's no scheduled route (GA/private/unknown callsign) or the
-// lookup fails — no empty rows.
+// when there's no scheduled route (GA/private/unknown callsign), the listed
+// route doesn't fit where the plane is, or the lookup fails — no empty rows.
 function _radarRouteStops(info){
     // Shared stop-picking logic for the route renderers: inferred current
     // leg → full chain → legacy origin/dest pair. Returns [{icao, name}...]

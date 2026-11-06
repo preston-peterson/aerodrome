@@ -19,6 +19,25 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.167] — 2026-11-06
+
+**A flight's route now shows only when it matches where the plane actually is.**
+
+Routes come from adsb.lol's community-maintained list of which airports each flight number serves, and that list is often out of date: airlines move flight numbers between routes. On a typical afternoon more than a third of the routes it gave for flights overhead were wrong. One flight was shown as Chicago → Las Vegas → San Francisco → Phoenix while it flew west hundreds of kilometres from Chicago, and others were listed between airports a thousand kilometres from the plane. Aerodrome now checks each route against the aircraft's position and heading before showing it. When no leg of the route fits, no route is shown, the same as for a flight with no route at all.
+
+- **On the Live map's aircraft panel and the display board**, a route appears only when the aircraft is near one of its legs and, away from the airports, heading toward that leg's destination. Long flights get more room, since they often stray well off the direct path.
+- **On the aircraft page**, a route now appears only while the aircraft is being received. For an aircraft that isn't overhead there's nothing to check the route against, and a past flight may have flown a different route.
+- The Flight routes setting (Configuration → Display) works as before; its description now explains the check.
+
+### Operational notes
+
+This is an ordinary update with a normal restart and no database change. Reload any open pages, including the display board, to pick up the change.
+
+### Behind the scenes
+
+- `route_resolver.fitting_legs()` decides which legs of a route fit a plane. A leg fits when the plane is within 150 km or 12% of the leg's length (whichever is larger) of its great-circle path, and within 80 km of the airport if it's beyond either end of the leg; and either no heading is known, or the plane is within 100 km of one of the leg's airports, or its heading is within 90° of the direction to the leg's destination. `pick_current_leg()` now chooses only among fitting legs. The thresholds were checked against FlightAware's record of the same 37 flights: all 13 routes the check hid were wrong, and 22 of the 24 it still showed were right. Before the check, 22 of the 37 were right.
+- `GET /api/callsign/{callsign}/route` with `lat`/`lon` returns `found: false, mismatch: true` when no leg fits, or when an airport in the route has no coordinates to check against. Without a position it returns the route unchecked, as before. The radar panel, the aircraft page and the display board now ask only when they have a live position.
+
 ## [3.4.166] — 2026-11-06
 
 **The Configuration page now fits on a phone, a partly installed notification server can be repaired in place, and the light theme is easier to read.**

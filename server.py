@@ -1,4 +1,4 @@
-# Version: 3.4.166
+# Version: 3.4.167
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -12734,18 +12734,27 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         short budget, mirroring /enrich.
 
         Optional lat/lon/track = the aircraft's current position + heading.
-        For a multi-leg chain they drive current-leg inference (which leg is
-        this plane actually flying — cross-track distance to each leg's
-        great-circle path, heading to split an out-and-back's two opposite
-        legs); the UI shows just that leg, falling back to the full chain
-        when inference is ambiguous or no position was given.
+        v3.4.167: with a position, the route must FIT the plane — some leg's
+        path near it and, away from the airports, the plane heading toward
+        that leg's destination (route_resolver.fitting_legs). The callsign
+        data is crowd-sourced and wrong for a large share of flights (on
+        2026-11-06, 9 of 28 live routes didn't match the plane at all), so a
+        route that doesn't fit comes back found=False, mismatch=True and the
+        UI shows no route row. For a multi-leg chain the position also drives
+        current-leg inference (which fitting leg this plane is flying; heading
+        splits an out-and-back's two opposite legs); the UI shows just that
+        leg, falling back to the full chain when inference is ambiguous.
+        Without a position the route is returned unchecked; the pages only
+        ask with one.
 
         Returns {ok, found, callsign[, origin_icao, origin_name, dest_icao,
         dest_name, airline, airports, current_leg], cached}. origin/dest are
         the chain's first/last stops; `airports` is the full ordered chain;
         `current_leg` is {origin_icao, origin_name, dest_icao, dest_name} or
         None. found=False (the UI shows no route row) for GA/private/unknown
-        callsigns and for a transient lookup failure."""
+        callsigns, for a transient lookup failure, and (with mismatch=True)
+        for a route that doesn't fit the plane's position or can't be checked
+        against it (an airport without coordinates)."""
         cs = (callsign or "").upper().strip()
         # Fast-reject obvious non-callsigns before spending a thread/conn; the
         # resolver re-validates with its [A-Z0-9]{2,8} charset rule.
@@ -12770,9 +12779,14 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             logger.debug(f"route resolve failed for {cs}: {e}")
             return {"ok": True, "found": False, "callsign": cs}
 
-        # Current-leg inference (pure math, no I/O — fine on the loop). Only
-        # meaningful for a 3+-stop chain; a plain A→B route IS its own leg.
+        # Fit check + current-leg inference (pure math, no I/O — fine on the
+        # loop). Leg inference only matters for a 3+-stop chain; a plain A→B
+        # route IS its own leg.
         airports = result.get("airports") if result.get("found") else None
+        if airports and lat is not None and lon is not None:
+            if not _route_resolver.fitting_legs(airports, lat, lon, track):
+                return {"ok": True, "found": False, "callsign": cs,
+                        "mismatch": True}
         if airports and len(airports) > 2:
             leg = _route_resolver.pick_current_leg(airports, lat, lon, track)
             if leg is not None:

@@ -317,5 +317,124 @@ class TestPickCurrentLeg(unittest.TestCase):
             route_resolver.pick_current_leg(self.CHAIN, 44.882, -93.221802, perp))
 
 
+class TestFittingLegs(unittest.TestCase):
+    """The route-fit check itself: does a plane's position/heading fit the
+    crowd-sourced chain at all? Crowd-sourced routes are wrong for a large
+    share of live flights, so a chain the plane isn't near — or isn't pointed
+    along — has to come back as fitting nothing. All positions below are
+    invented, not receiver data."""
+
+    AIRPORTS = {
+        "KCHA": {"icao": "KCHA", "name": "Chattanooga", "lat": 35.035301, "lon": -85.203796},
+        "KIAH": {"icao": "KIAH", "name": "Houston", "lat": 29.984399, "lon": -95.3414},
+        "KORD": {"icao": "KORD", "name": "Chicago", "lat": 41.9786, "lon": -87.9048},
+        "KPHL": {"icao": "KPHL", "name": "Philadelphia", "lat": 39.871899, "lon": -75.241096},
+        "EGLL": {"icao": "EGLL", "name": "London", "lat": 51.4706, "lon": -0.461941},
+        "KDFW": {"icao": "KDFW", "name": "Dallas", "lat": 32.896801, "lon": -97.038002},
+        "KLAS": {"icao": "KLAS", "name": "Las Vegas", "lat": 36.080101, "lon": -115.152},
+        "KSFO": {"icao": "KSFO", "name": "San Francisco", "lat": 37.618999, "lon": -122.375},
+        "KPHX": {"icao": "KPHX", "name": "Phoenix", "lat": 33.434299, "lon": -112.012001},
+        "KMCI": {"icao": "KMCI", "name": "Kansas City", "lat": 39.2976, "lon": -94.713898},
+        "KMSP": {"icao": "KMSP", "name": "Minneapolis", "lat": 44.882, "lon": -93.221802},
+    }
+
+    def _chain(self, *codes):
+        return [self.AIRPORTS[c] for c in codes]
+
+    def _track_toward(self, lat, lon, ap):
+        """A plane heading from (lat, lon) toward airport `ap`, in degrees."""
+        brg = route_resolver._bearing_rad(lat, lon, ap["lat"], ap["lon"])
+        return math.degrees(brg) % 360.0
+
+    def test_plane_far_off_a_short_legs_path_fits_nothing(self):
+        # (40.0,-83.0) is ~585 km north of the KCHA→KIAH path, and the
+        # 1,103 km leg's slack is only the 150 km floor.
+        self.assertEqual(
+            route_resolver.fitting_legs(self._chain("KCHA", "KIAH"),
+                                        40.0, -83.0, 270.0), [])
+
+    def test_plane_on_the_path_fits_when_pointed_down_it(self):
+        chain = self._chain("KORD", "KPHL")
+        lat, lon = 41.3, -81.7          # ~18 km off the ORD→PHL path
+        self.assertEqual(route_resolver.fitting_legs(
+            chain, lat, lon,
+            self._track_toward(lat, lon, self.AIRPORTS["KPHL"])), [0])
+
+    def test_plane_on_the_path_but_flying_it_backwards_fits_nothing(self):
+        # Headed back toward KORD, 521 km from either end — the heading
+        # check rules the leg out even though the position is on its path.
+        chain = self._chain("KORD", "KPHL")
+        lat, lon = 41.3, -81.7
+        self.assertEqual(route_resolver.fitting_legs(
+            chain, lat, lon,
+            self._track_toward(lat, lon, self.AIRPORTS["KORD"])), [])
+
+    def test_plane_on_the_path_without_a_track_fits(self):
+        # No heading means nothing to contradict the leg — position decides.
+        self.assertEqual(
+            route_resolver.fitting_legs(self._chain("KORD", "KPHL"), 41.3, -81.7),
+            [0])
+
+    def test_well_off_a_thousand_km_leg_does_not_fit(self):
+        # ~224 km off a 1,088 km leg: the fractional slack is 131 km, so the
+        # 150 km floor governs and this is outside it even head-on.
+        chain = self._chain("KORD", "KPHL")
+        lat, lon = 43.2, -81.7
+        self.assertEqual(route_resolver.fitting_legs(
+            chain, lat, lon,
+            self._track_toward(lat, lon, self.AIRPORTS["KPHL"])), [])
+
+    def test_near_an_airport_any_heading_fits(self):
+        # (42.52,-87.9048) is 60 km north of KORD with track 0° — pointed
+        # straight away from the leg's destination, i.e. a departure still
+        # turning.
+        self.assertEqual(
+            route_resolver.fitting_legs(self._chain("KORD", "KPHL"),
+                                        42.52, -87.9048, 0.0), [0])
+
+    def test_long_leg_gets_proportional_slack(self):
+        # (49.0,-60.0) is ~400 km off the EGLL→KDFW path, but that leg is
+        # 7,627 km long and a long flight strays far from the great circle.
+        self.assertEqual(
+            route_resolver.fitting_legs(self._chain("EGLL", "KDFW"),
+                                        49.0, -60.0, 253.5), [0])
+
+    def test_wrong_route_for_this_plane_fits_no_leg(self):
+        # The UAL574 case: the chain says KORD-KLAS-KSFO-KPHX while the plane
+        # is 530 km EAST of KORD. Track 270 points down leg 0's bearing, so
+        # the heading agrees and the position still doesn't — no leg fits,
+        # and pick_current_leg abstains instead of naming one.
+        chain = self._chain("KORD", "KLAS", "KSFO", "KPHX")
+        self.assertEqual(
+            route_resolver.fitting_legs(chain, 41.9, -81.5, 270.0), [])
+        self.assertIsNone(
+            route_resolver.pick_current_leg(chain, 41.9, -81.5, 270.0))
+
+    def test_near_a_hub_from_the_wrong_side_fits_nothing(self):
+        # 110 km EAST of KMSP heading for it: within the 150 km floor of the
+        # KMCI→KMSP segment's end, but beyond that end — it's arriving from the
+        # east, not from Kansas City to the south. Without the terminal rule any
+        # plane near a hub fits every route that ends there.
+        self.assertEqual(
+            route_resolver.fitting_legs(self._chain("KMCI", "KMSP"),
+                                        44.882, -91.83, 270.0), [])
+
+    def test_just_past_the_destination_still_fits(self):
+        # 30 km north of KMSP: past the end of KMCI→KMSP, but close enough to
+        # be maneuvering to land.
+        self.assertEqual(
+            route_resolver.fitting_legs(self._chain("KMCI", "KMSP"),
+                                        45.152, -93.221802, 180.0), [0])
+
+    def test_no_position_cannot_be_checked(self):
+        self.assertIsNone(route_resolver.fitting_legs(
+            self._chain("KORD", "KPHL", "KDFW"), None, None))
+
+    def test_missing_airport_coords_cannot_be_checked(self):
+        chain = [dict(a) for a in self._chain("KORD", "KPHL", "KDFW")]
+        chain[1]["lat"] = None
+        self.assertIsNone(route_resolver.fitting_legs(chain, 41.3, -81.7))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

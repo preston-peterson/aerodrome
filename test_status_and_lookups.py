@@ -1,20 +1,29 @@
 """The health summary every page's dot reads, the lookups that shouldn't repeat
 themselves (an aircraft hexdb has no owner for, ntfy's latest version with no
-internet), and holding collection while a just-booted clock is unset. hexdb, GitHub
-and the clock are mocked; hexes and data are invented.
+internet), a flight route that must fit the plane it's shown for, and holding
+collection while a just-booted clock is unset. hexdb, GitHub, the route source and
+the clock are mocked; hexes, callsigns, positions and data are invented.
 """
+import asyncio
+import math
 import os
 import sqlite3
 import tempfile
+import threading
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import requests
+import yaml
 
 import collector
 import ntfy_installer
+import route_resolver
 import server
 from schema_migrations import apply_schema_migrations
+
+os.environ.setdefault("AERODROME_NO_UPDATE_CHECK", "1")   # get_app() below must never reach GitHub
 
 ALL_UP = {"receiver": True, "database": True, "collector": True, "webserver": True}
 CALM = {"load_average": {"15m": 0.5}, "cpu_cores": 4}
@@ -346,6 +355,11 @@ class TestClockAfterBoot(_Db):
         self.running = 0.0
         self.uptime = 30.0
         self.slept = []
+        # collector.time IS the time module, so these patches are process-wide. Another
+        # thread (a hexdb worker an earlier test file left running idles with sleep(1.0))
+        # must keep its real sleep, or its calls land in self.slept.
+        self.thread = threading.get_ident()
+        self.real_sleep = collector.time.sleep
         for p in (mock.patch.object(collector.time, "time", side_effect=lambda: self.clock),
                   mock.patch.object(collector.time, "monotonic", side_effect=lambda: self.running),
                   mock.patch.object(collector.time, "sleep", side_effect=self.sleep),
@@ -355,6 +369,8 @@ class TestClockAfterBoot(_Db):
         self.set_clock_after = None
 
     def sleep(self, sec):
+        if threading.get_ident() != self.thread:
+            return self.real_sleep(sec)
         self.slept.append(sec)
         self.running += sec
         self.clock += sec
@@ -404,6 +420,96 @@ class TestClockAfterBoot(_Db):
         with mock.patch.object(collector, "_open_db_conn", side_effect=sqlite3.OperationalError("locked")):
             collector.wait_for_plausible_clock(self.db)
         self.assertEqual(self.slept, [])
+
+
+class TestRouteMustFitThePlane(_Db):
+    """The callsign→route data is crowd-sourced and often wrong (a flight number
+    listed as Chicago → Las Vegas → San Francisco → Phoenix while the plane flies
+    west far east of Chicago). With the plane's position, the route endpoint
+    returns no route unless some leg fits where the plane is and where it's
+    heading."""
+
+    CHAIN = [
+        {"icao": "KORD", "name": "Chicago", "lat": 41.9786, "lon": -87.9048},
+        {"icao": "KLAS", "name": "Las Vegas", "lat": 36.080101, "lon": -115.152},
+        {"icao": "KSFO", "name": "San Francisco", "lat": 37.618999, "lon": -122.375},
+        {"icao": "KPHX", "name": "Phoenix", "lat": 33.434299, "lon": -112.012001},
+    ]
+    ON_LAS_SFO = (36.9, -118.7)        # over the Sierra, between Las Vegas and San Francisco
+    ON_ORD_LAS = (39.6, -101.5)        # over Kansas, on the way from Chicago to Las Vegas
+
+    def setUp(self):
+        super().setUp()
+        cfg = yaml.safe_load((Path(__file__).resolve().parent / "config.yaml.example").read_text())
+        cfg["data"]["db_file"] = self.db
+        cfg["watchlist"] = []
+        cfg_path = self.db + ".yaml"
+        Path(cfg_path).write_text(yaml.safe_dump(cfg, sort_keys=False))
+        self.addCleanup(lambda: Path(cfg_path).unlink(missing_ok=True))
+        app = server.get_app(cfg, cfg_path)
+        self.route = next(r.endpoint for r in app.routes
+                          if getattr(r, "path", "") == "/api/callsign/{callsign}/route")
+        self.chain = [dict(a) for a in self.CHAIN]
+        p = mock.patch.object(route_resolver, "resolve_route", side_effect=self.resolve)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def resolve(self, conn, callsign):
+        first, last = self.chain[0], self.chain[-1]
+        return {"ok": True, "found": True, "cached": True, "callsign": callsign,
+                "origin_icao": first["icao"], "origin_name": first["name"],
+                "dest_icao": last["icao"], "dest_name": last["name"],
+                "airline": "Example Air", "airports": self.chain}
+
+    def ask(self, lat=None, lon=None, track=None):
+        return asyncio.run(self.route(callsign="EXA574", lat=lat, lon=lon, track=track))
+
+    def toward(self, lat, lon, icao):
+        ap = next(a for a in self.CHAIN if a["icao"] == icao)
+        return math.degrees(route_resolver._bearing_rad(lat, lon, ap["lat"], ap["lon"])) % 360.0
+
+    def test_a_route_that_doesnt_fit_the_plane_isnt_shown(self):
+        out = self.ask(41.9, -81.5, 270.0)        # flying west, far east of Chicago
+        self.assertFalse(out["found"])
+        self.assertTrue(out["mismatch"])
+        self.assertNotIn("airports", out)
+
+    def test_the_leg_the_plane_is_flying_is_shown(self):
+        lat, lon = self.ON_LAS_SFO
+        out = self.ask(lat, lon, self.toward(lat, lon, "KSFO"))
+        self.assertTrue(out["found"])
+        self.assertEqual((out["current_leg"]["origin_icao"], out["current_leg"]["dest_icao"]),
+                         ("KLAS", "KSFO"))
+
+    def test_heading_the_wrong_way_doesnt_fit(self):
+        lat, lon = self.ON_ORD_LAS
+        out = self.ask(lat, lon, self.toward(lat, lon, "KLAS"))
+        self.assertEqual(out["current_leg"]["dest_icao"], "KLAS")
+        out = self.ask(lat, lon, self.toward(lat, lon, "KORD"))   # flying the leg backwards
+        self.assertFalse(out["found"])
+        self.assertTrue(out["mismatch"])
+
+    def test_another_leg_can_fit_on_the_way_back(self):
+        # Over the Sierra heading east isn't Las Vegas → San Francisco flown
+        # backwards; it's on the way from San Francisco to Phoenix.
+        lat, lon = self.ON_LAS_SFO
+        out = self.ask(lat, lon, self.toward(lat, lon, "KLAS"))
+        self.assertEqual((out["current_leg"]["origin_icao"], out["current_leg"]["dest_icao"]),
+                         ("KSFO", "KPHX"))
+
+    def test_a_route_that_cant_be_checked_isnt_shown(self):
+        self.chain[1]["lat"] = None
+        lat, lon = self.ON_LAS_SFO
+        out = self.ask(lat, lon, self.toward(lat, lon, "KSFO"))
+        self.assertFalse(out["found"])
+        self.assertTrue(out["mismatch"])
+
+    def test_without_a_position_the_route_comes_back_unchecked(self):
+        out = self.ask()
+        self.assertTrue(out["found"])
+        self.assertNotIn("mismatch", out)
+        self.assertIsNone(out["current_leg"])
+        self.assertEqual([a["icao"] for a in out["airports"]], ["KORD", "KLAS", "KSFO", "KPHX"])
 
 
 if __name__ == "__main__":

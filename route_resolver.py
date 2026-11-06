@@ -37,7 +37,7 @@ import logging
 import math
 import re
 import time
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import requests
 
@@ -72,9 +72,17 @@ _CALLSIGN_RE = re.compile(r"^[A-Z0-9]{2,8}$")
 # the full chain rather than guess.
 LEG_AMBIGUITY_KM = 25.0
 
-# If the plane isn't within this of ANY leg's path, the route data doesn't
-# describe where it actually is — don't pick a "current leg" from it.
-LEG_MAX_XTRACK_KM = 150.0
+# Route-fit check: how close to a leg's path, and pointed how much along it,
+# a plane must be for that leg to describe where it actually is.
+FIT_MIN_KM = 150.0          # cross-track floor a plane gets regardless of leg length
+                            # (checked against FlightAware 2026-11-06: the one route 150–200 km
+                            # off that looked right by heading was in fact another flight)
+FIT_LEG_FRACTION = 0.12     # plus this fraction of the leg's length (long flights stray further)
+FIT_NEAR_END_KM = 100.0     # inside this of an endpoint, any heading is allowed (a plane can be turning)
+FIT_MAX_TURN_DEG = 90.0     # otherwise, max angle off the bearing to the leg's far end
+FIT_TERMINAL_KM = 80.0      # beyond either END of a leg, a plane fits only this close to that
+                            # airport (departing or arriving); farther out it isn't on this leg —
+                            # else any plane near a hub fits every route ending there
 
 # Heading tie-break: alignment is cos(track − leg bearing), 1 = flying along
 # the leg, −1 = flying it backwards. The winner must be meaningfully aligned
@@ -146,6 +154,61 @@ def _fetch(cs: str) -> Optional[dict]:
     }
 
 
+def fitting_legs(airports: List[dict], lat: Optional[float],
+                 lon: Optional[float],
+                 track: Optional[float] = None) -> Optional[List[int]]:
+    """Which legs of a chain does a plane at (lat, lon), heading `track`
+    degrees, actually FIT? Returns the sorted indices i of the legs
+    airports[i] → airports[i+1] the plane could be flying, or None when the
+    check can't be made at all (no position, fewer than two airports, any
+    airport without coordinates).
+
+    Why this exists: callsign→route data is crowd-sourced and wrong for a
+    large share of live flights — adsb.lol will list "KORD-KLAS-KSFO-KPHX"
+    for a callsign whose aircraft is nowhere near any of it. Callers use this
+    to hide a route that doesn't describe where the plane is, rather than
+    confidently showing a nonsense itinerary.
+
+    A leg fits when BOTH hold:
+      a. the plane is near the leg's great-circle path — cross-track within
+         max(FIT_MIN_KM, FIT_LEG_FRACTION × leg length) — and, if it lies
+         beyond either end of the leg, within FIT_TERMINAL_KM of that airport
+         (a plane past the destination, or behind the origin, is only on this
+         leg while it's departing or arriving there). Long legs get more
+         slack because a real flight strays further from the great circle the
+         further it has to fly (weather deviations, airways, oceanic routing),
+         while a short leg's path is tight enough to identify a plane by.
+      b. the plane's heading is compatible with flying the leg: either no
+         track was given (nothing to contradict), or the plane is within
+         FIT_NEAR_END_KM of either endpoint — near an airport a plane can be
+         turning any which way (departure, arrival, holding) so its heading
+         says nothing — or it's pointed no more than FIT_MAX_TURN_DEG off the
+         initial bearing to the leg's far end.
+    """
+    if lat is None or lon is None or len(airports) < 2:
+        return None
+    if any(a.get("lat") is None or a.get("lon") is None for a in airports):
+        return None
+    fits = []
+    for i in range(len(airports) - 1):
+        a, b = airports[i], airports[i + 1]
+        limit = max(FIT_MIN_KM,
+                    FIT_LEG_FRACTION * (haversine(a["lat"], a["lon"],
+                                                  b["lat"], b["lon"]) or 0.0))
+        off_km, beyond_end = _segment_offset(lat, lon, a["lat"], a["lon"], b["lat"], b["lon"])
+        if off_km > limit or (beyond_end and off_km > FIT_TERMINAL_KM):
+            continue
+        if track is not None \
+                and (haversine(lat, lon, a["lat"], a["lon"]) or 0.0) > FIT_NEAR_END_KM \
+                and (haversine(lat, lon, b["lat"], b["lon"]) or 0.0) > FIT_NEAR_END_KM:
+            brg = math.degrees(_bearing_rad(lat, lon, b["lat"], b["lon"])) % 360.0
+            off_track = abs((track - brg + 180.0) % 360.0 - 180.0)
+            if off_track > FIT_MAX_TURN_DEG:
+                continue
+        fits.append(i)
+    return fits
+
+
 def pick_current_leg(airports: List[dict], lat: Optional[float],
                      lon: Optional[float],
                      track: Optional[float] = None) -> Optional[int]:
@@ -154,21 +217,25 @@ def pick_current_leg(airports: List[dict], lat: Optional[float],
     airports[i] → airports[i+1]), or None when it can't be answered
     confidently — the caller shows the full chain instead.
 
-    Method: great-circle cross-track distance from the plane to each leg's
-    path (clamped to the segment — a plane beyond an endpoint scores its
-    distance to that endpoint), the same math the 2026-06-17 source
-    validation used to prove adsb.lol's accuracy. Position alone decides
-    when one leg is clearly closest. When several legs are equally close —
-    an out-and-back's two legs are the SAME path flown in opposite
-    directions, so this is the NORMAL multi-leg case, not a corner — the
-    plane's heading breaks the tie: the leg whose bearing it's actually
-    flying along wins (outbound vs return differ by ~180°).
+    Method: first fitting_legs() filters the chain down to the legs this
+    plane's position and heading are compatible with — crowd-sourced route
+    data is often for the wrong flight, and a leg the plane isn't near (or
+    isn't pointed along) isn't its leg. Then, among the fitting legs, the
+    great-circle cross-track distance to each leg's path (clamped to the
+    segment — a plane beyond an endpoint scores its distance to that
+    endpoint), the same math the 2026-06-17 source validation used to prove
+    adsb.lol's accuracy. Position alone decides when one leg is clearly
+    closest. When several legs are equally close — an out-and-back's two legs
+    are the SAME path flown in opposite directions, so this is the NORMAL
+    multi-leg case, not a corner — the plane's heading breaks the tie: the leg
+    whose bearing it's actually flying along wins (outbound vs return differ
+    by ~180°).
 
-    Returns None when: no position, any airport lacks coordinates, the
-    plane isn't near any leg's path (LEG_MAX_XTRACK_KM — bad route data),
-    or the positional tie can't be broken by heading (no track given, plane
-    on the ground at a shared airport pointing nowhere useful, near-parallel
-    legs). A single-leg chain trivially returns 0.
+    Returns None when: no position, any airport lacks coordinates, NO leg
+    fits the plane at all (bad route data for this aircraft), or the
+    positional tie can't be broken by heading (no track given, plane on the
+    ground at a shared airport pointing nowhere useful, near-parallel legs).
+    A single-leg chain trivially returns 0.
     """
     if lat is None or lon is None or len(airports) < 2:
         return None
@@ -176,14 +243,14 @@ def pick_current_leg(airports: List[dict], lat: Optional[float],
         return 0
     if any(a.get("lat") is None or a.get("lon") is None for a in airports):
         return None
-    dists = []
-    for i in range(len(airports) - 1):
-        a, b = airports[i], airports[i + 1]
-        dists.append(_xtrack_km(lat, lon, a["lat"], a["lon"], b["lat"], b["lon"]))
-    best = min(dists)
-    if best > LEG_MAX_XTRACK_KM:
+    fits = fitting_legs(airports, lat, lon, track)
+    if not fits:
         return None
-    candidates = [i for i, d in enumerate(dists) if d - best < LEG_AMBIGUITY_KM]
+    dists = {i: _xtrack_km(lat, lon, airports[i]["lat"], airports[i]["lon"],
+                           airports[i + 1]["lat"], airports[i + 1]["lon"])
+             for i in fits}
+    best = min(dists.values())
+    candidates = [i for i in fits if dists[i] - best < LEG_AMBIGUITY_KM]
     if len(candidates) == 1:
         return candidates[0]
     if track is None:
@@ -209,11 +276,18 @@ def _xtrack_km(plat: float, plon: float, alat: float, alon: float,
     cross-track distance when P projects onto the segment, else the distance
     to the nearer endpoint. Standard spherical formulas on the same
     EARTH_RADIUS the shared haversine uses (via the d13/haversine terms)."""
+    return _segment_offset(plat, plon, alat, alon, blat, blon)[0]
+
+
+def _segment_offset(plat: float, plon: float, alat: float, alon: float,
+                    blat: float, blon: float) -> Tuple[float, bool]:
+    """(_xtrack_km's distance, whether P lies BEYOND either end of A→B — its
+    projection falls before A or past B, so the distance is to that end)."""
     d_pa = haversine(plat, plon, alat, alon) or 0.0
     d_pb = haversine(plat, plon, blat, blon) or 0.0
     d_ab = haversine(alat, alon, blat, blon) or 0.0
     if d_ab == 0.0:
-        return d_pa
+        return d_pa, False
     # Angular distances/bearings for the cross-track term. R cancels out of
     # the bearing math; reuse haversine's km outputs with a nominal R.
     R = 6371.0
@@ -224,15 +298,15 @@ def _xtrack_km(plat: float, plon: float, alat: float, alon: float,
     # Along-track: how far along A→B the projection of P falls.
     cos_dxt = math.cos(abs(dxt) / R)
     if cos_dxt == 0.0:
-        return min(d_pa, d_pb)
+        return min(d_pa, d_pb), False
     ratio = max(-1.0, min(1.0, math.cos(delta13) / cos_dxt))
     dat = math.acos(ratio) * R
     behind_a = math.cos(theta13 - theta12) < 0   # projection falls before A
     if behind_a:
-        return d_pa
+        return d_pa, True
     if dat > d_ab:                               # projection falls past B
-        return d_pb
-    return abs(dxt)
+        return d_pb, True
+    return abs(dxt), False
 
 
 def _bearing_rad(lat1: float, lon1: float, lat2: float, lon2: float) -> float:

@@ -1,5 +1,5 @@
 # =============================================================================
-# Version: 3.4.166
+# Version: 3.4.167
 # Aerodrome — Example/Reference Configuration
 # =============================================================================
 # This is the canonical default config shipped with each Aerodrome release.
@@ -93,11 +93,11 @@ display:
   # Live-reloadable (no restart needed).
   wallboard_layout: "ask"
   # v3.4.114: show flight routes (origin → destination) on the radar
-  # overlay, the aircraft detail page, and the display board. Routes come
-  # from adsb.lol's community-maintained schedule data, matched by
-  # CALLSIGN. That's usually right but not guaranteed — the same callsign
-  # can fly different routes on the same day, so the displayed route
-  # (especially the origin) may not match the actual flight overhead.
+  # overlay, the aircraft detail page, and the display board while the
+  # aircraft is being received. Routes come from adsb.lol's
+  # community-maintained schedule data, matched by CALLSIGN, and that data
+  # is often out of date — so since v3.4.167 a route shows only when it
+  # fits where the plane is and where it's heading.
   # false hides route lines everywhere AND stops the outbound lookups.
   # Live-reloadable (applies on next page load).
   show_routes: true

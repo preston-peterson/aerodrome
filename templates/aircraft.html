@@ -1,4 +1,4 @@
-<!-- Version: 3.4.166 -->
+<!-- Version: 3.4.167 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1019,10 +1019,14 @@ function maybeEnrichRoute(callsign, icao) {
     // Lazy callsign→route lookup (v3.4.99; re-sourced to adsb.lol v3.4.109),
     // mirroring maybeEnrichOwner. The route line stays hidden until a
     // scheduled route resolves; a GA/private/unknown callsign (or a lookup
-    // failure) leaves it hidden — no empty row. If the aircraft is being
-    // received right now, its live position rides along so a multi-leg
-    // flight number ("KMSP-KPHL-KMSP") shows only the leg it's actually
-    // flying; without a confident leg the full chain renders.
+    // failure) leaves it hidden — no empty row. v3.4.167: only asked while
+    // the aircraft is being received with a position. The callsign data is
+    // often wrong, so the server hides a route that doesn't fit where the
+    // plane is; with no live position there's nothing to check it against
+    // (and a past sighting may have flown a different route), so no route
+    // shows. The position also lets a multi-leg flight number
+    // ("KMSP-KPHL-KMSP") show only the leg it's actually flying; without a
+    // confident leg the full chain renders.
     const cs = (callsign || '').trim();
     if (!cs || !_showRoutes) return;
     const up = (icao || '').toUpperCase();
@@ -1031,10 +1035,9 @@ function maybeEnrichRoute(callsign, icao) {
         .catch(() => null)
         .then(live => {
             const ac = live && (live.aircraft || []).find(a => (a.icao || '').toUpperCase() === up);
-            const q = (ac && ac.lat != null && ac.lon != null)
-                ? `?lat=${encodeURIComponent(ac.lat)}&lon=${encodeURIComponent(ac.lon)}`
-                  + (ac.track != null ? `&track=${encodeURIComponent(ac.track)}` : '')
-                : '';
+            if (!ac || ac.lat == null || ac.lon == null) return null;
+            const q = `?lat=${encodeURIComponent(ac.lat)}&lon=${encodeURIComponent(ac.lon)}`
+                + (ac.track != null ? `&track=${encodeURIComponent(ac.track)}` : '');
             return fetch(`/api/callsign/${encodeURIComponent(cs)}/route${q}`);
         })
         .then(r => r && r.ok ? r.json() : null)

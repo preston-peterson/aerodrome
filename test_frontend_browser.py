@@ -852,6 +852,53 @@ class TestAircraftPageRaces(BrowserCase):
         self.assertRegex(shown, r"\b5\b")
 
 
+class TestRoutesOnlyWithALivePosition(BrowserCase):
+    """The callsign→route data is often wrong, so the server checks a route
+    against where the plane is and hides one that doesn't fit. A page asks only
+    when it has a live position to check against: the aircraft page for a plane
+    that isn't being received, and the board for a contact without a position,
+    show no route and don't ask."""
+
+    ROUTE = {"found": True, "airline": "Example Air", "current_leg": None,
+             "airports": [{"icao": "KAAA", "name": "Alpha"}, {"icao": "KBBB", "name": "Bravo"}]}
+
+    def setUp(self):
+        super().setUp()
+        self.site.api["/api/live"] = _aircraft(1)              # A00001 / DEMO1 has a position
+        self.site.api["/api/status"] = _status()
+        self.site.api["/api/all/drill"] = {"ok": True, "total_count": 0, "sightings": []}
+        self.site.api["/api/callsign/DEMO1/route"] = self.ROUTE
+        self.site.api["/api/callsign/DEMO42/route"] = self.ROUTE
+        for icao, cs in (("A00001", "DEMO1"), ("A00042", "DEMO42")):
+            self.site.api[f"/api/aircraft/{icao}"] = {
+                "icao": icao, "first_seen_at": 1700000000, "last_seen_at": 1700000000,
+                "sighting_count": 3, "recent_sightings": [], "callsigns": [cs],
+                "last_callsign": cs}
+
+    def route_line(self):
+        return self.page.evaluate("""() => { const l = document.getElementById('routeLine');
+            return l && l.style.display !== 'none' ? l.textContent : null; }""")
+
+    def test_a_plane_being_received_shows_its_checked_route(self):
+        self.open("/aircraft/A00001")
+        self.page.wait_for_timeout(400)
+        self.assertEqual(self.site.count("/api/callsign/DEMO1/route"), 1)
+        self.assertIn("KAAA", self.route_line() or "")
+
+    def test_a_plane_not_being_received_shows_no_route(self):
+        self.open("/aircraft/A00042")
+        self.page.wait_for_timeout(400)
+        self.assertEqual(self.site.count("/api/callsign/DEMO42/route"), 0)
+        self.assertIsNone(self.route_line())
+
+    def test_the_board_doesnt_ask_without_a_position(self):
+        self.open("/board?mode=board")
+        self.advance(1000)
+        self.assertIsNone(self.page.evaluate("routeFor({callsign: 'DEMO42'})"))
+        self.page.wait_for_timeout(100)
+        self.assertEqual(self.site.count("/api/callsign/DEMO42/route"), 0)
+
+
 class TestStatsDrillSurvivesRefresh(BrowserCase):
     STATS = {"enabled": True, "timezone": "UTC", "cards": {"unique_today": 5},
              "groups": [{"id": "g", "label": "G", "cards": ["unique_today"]}]}
