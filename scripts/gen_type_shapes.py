@@ -80,6 +80,13 @@ def nose_prop(prop):
     return [dict(kind="nose", prop=prop)]
 
 
+def pusher(prop, at, d=0.6, ln=1.2):
+    """One engine on the centreline driving a propeller that faces aft: a small
+    pod ending at fraction `at` of the length, with the prop bar across its end.
+    Canard pushers have it at the tail; amphibians carry it above the wing."""
+    return [dict(kind="pusher", prop=prop, at=at, d=d, len=ln)]
+
+
 def internal(n):
     """Engines buried in the fuselage (fighters, some trainers): nothing is drawn."""
     return [dict(kind="internal", count=n)]
@@ -102,6 +109,9 @@ def over_wing(d, ln, eta):
 #   tail_w           width at the tail end, as a fraction of fuselage width
 #   stab             semi (fraction of span), sweep (deg), cr/ct (fraction of
 #                    span), pos: conv | cruci | T
+#   elliptic         an elliptical wing (cr is its root chord; sweep, ct unused)
+#   bulge            dict(at, to, w): a hull w metres wide between two fractions
+#                    of the length, on top of a narrower fuselage
 PRESETS = {}
 
 
@@ -483,7 +493,7 @@ SOURCES = {
     "A310": row("airliner", fus_w=5.64, sweep=28.0, cr=0.170, ct=0.040, kink=0.33, wing_le=0.335,
                 engines=jets(2.6, 5.0, 0.34)),                       # A310
     "A318": row("a320", wing_le=0.295, engines=jets(2.0, 4.2, 0.32)),  # A318
-    "A337": row("a330", fus_w=8.8, nose_len=0.9, nose_pow=0.5, wing_le=0.305),  # Beluga XL
+    "A337": row("a330", fus_w=5.64, bulge=dict(at=0.12, to=0.88, w=8.8), wing_le=0.305),  # Beluga XL
     "A338": row("a330", wing_le=0.300, engines=jets(3.3, 6.4, 0.31, ahead=0.66)),  # A330-800
     "A339": row("a330", wing_le=0.315, engines=jets(3.3, 6.4, 0.31, ahead=0.66)),  # A330-900
     "A342": row("a340", wing_le=0.300),                              # A340-200
@@ -522,7 +532,7 @@ SOURCES = {
                 engines=aft(1.6, 4.2, 0.70)),                       # BAC One-Eleven
     "BE40": row("phenom", fus_w=1.75, sweep=13.0, cr=0.170, ct=0.080, wing_le=0.420,
                 engines=aft(1.1, 2.8, 0.62)),                       # Beechjet 400
-    "BLCF": row("b747", fus_w=7.8, nose_len=1.2, nose_pow=0.55),    # 747 Dreamlifter
+    "BLCF": row("b747", fus_w=6.5, bulge=dict(at=0.17, to=0.80, w=8.4)),    # 747 Dreamlifter
     "C500": row("citation", fus_w=1.55, wing_le=0.400),             # Citation I
     "C501": row("citation", fus_w=1.55, wing_le=0.400),             # Citation I/SP
     "C510": row("cj", fus_w=1.40, sweep=2.0, wing_le=0.420,
@@ -656,8 +666,8 @@ SOURCES = {
     "TBM7": row("turbine_single", fus_w=1.30, wing_le=0.380),  # TBM 700
     "TBM8": row("turbine_single", fus_w=1.30, wing_le=0.380),  # TBM 850
     "TEX2": row("turbine_single", fus_w=1.25, nose_len=2.0, wing_le=0.330, cr=0.150, ct=0.075, engines=nose_prop(2.3)),  # T-6 Texan II
-    "A5": row("cherokee", fus_w=1.15, wing_le=0.300, cr=0.140, ct=0.100, engines=centre(0.55, 1.1, 0.50), stab=dict(semi=0.17, pos="conv", back=0.04)),  # ICON A5 (pusher drawn as a centreline pod)
-    "LA4": row("single", fus_w=1.30, wing_le=0.260, cr=0.150, ct=0.105, engines=centre(0.65, 1.5, 0.40), stab=dict(semi=0.17, pos="conv", back=0.05)),  # Lake LA-4 (pusher drawn as a centreline pod)
+    "A5": row("cherokee", fus_w=1.15, wing_le=0.300, cr=0.140, ct=0.100, engines=pusher(1.8, 0.56, d=0.7, ln=1.5), stab=dict(semi=0.17, pos="conv", back=0.04)),  # ICON A5 (pusher engine above the wing)
+    "LA4": row("single", fus_w=1.30, wing_le=0.260, cr=0.150, ct=0.105, engines=pusher(1.8, 0.52, d=0.7, ln=1.5), stab=dict(semi=0.17, pos="conv", back=0.05)),  # Lake LA-4 (pusher engine above the wing)
     "C526": row("cj", fus_w=1.50, sweep=2.0, cr=0.135, ct=0.070, wing_le=0.400),  # CitationJet 526 trainer
     "KODI": row("turbine_single", fus_w=1.55, nose_len=1.8, wing_le=0.300, cr=0.125, ct=0.095, inner=0.40),  # Kodiak
     # --- piston aircraft, A to C
@@ -877,7 +887,7 @@ SOURCES = {
     "B3XM": row("b737max", wing_le=0.360),  # 737 MAX 10
     "B74S": row("b747", wing_le=0.300),  # 747SP
     "B74R": row("b747"),  # 747SR
-    "A3ST": row("a330", fus_w=6.8, wing_le=0.300, engines=jets(2.7, 5.3, 0.33, ahead=0.66)),  # Beluga
+    "A3ST": row("a330", fus_w=5.64, bulge=dict(at=0.10, to=0.86, w=7.3), wing_le=0.300, engines=jets(2.7, 5.3, 0.33, ahead=0.66)),  # Beluga
     "CRJX": row("crj", wing_le=0.450),  # CRJ-1000
     "A148": row("jet_transport", fus_w=3.4, nose_len=1.9, nose_pow=0.62, sweep=25.0, cr=0.15, ct=0.05,
                 wing_le=0.36, engines=jets(1.7, 3.5, 0.29, ahead=0.7), stab=dict(semi=0.19)),  # An-148
@@ -957,7 +967,7 @@ SOURCES = {
     "ST75": row("biplane", fus_w=0.95, wing_le=0.20, cr=0.17, ct=0.17, engines=nose_prop(2.5)),  # Stearman
     "YK52": row("cherokee", fus_w=1.1, cr=0.15, ct=0.12, wing_le=0.28, engines=nose_prop(2.3)),  # Yak-52
     "Z42": row("cirrus", fus_w=1.1, cr=0.15, ct=0.12, wing_le=0.28, engines=nose_prop(2.0)),  # Zlin 242
-    "SPIT": row("cherokee", fus_w=0.9, nose_len=3.2, nose_pow=0.7, wing_le=0.33, cr=0.20, ct=0.06,
+    "SPIT": row("cherokee", fus_w=0.9, nose_len=3.2, nose_pow=0.7, wing_le=0.30, cr=0.225, ct=0.06, elliptic=True,
                 engines=nose_prop(3.0)),  # Spitfire
     "B17": row("hercules", fus_w=2.5, nose_len=1.6, wing_le=0.36, cr=0.12, ct=0.07,
                engines=props(1.3, 3.5, 0.5, 3.5, 0.23, 0.43)),  # B-17
@@ -966,7 +976,7 @@ SOURCES = {
     "B29": row("hercules", fus_w=2.9, nose_len=1.6, wing_le=0.36, cr=0.12, ct=0.06,
                engines=props(1.5, 3.5, 0.5, 5.0, 0.20, 0.40)),  # B-29
     "LGEZ": row("single", fus_w=0.7, nose_len=1.6, wing_le=0.55, sweep=25.0, cr=0.12, ct=0.05, inner=None,
-                engines=centre(0.6, 1.5, 0.78), canard=dict(at=0.12, semi=0.30, cr=0.07, ct=0.05),
+                engines=pusher(1.6, 0.97), canard=dict(at=0.12, semi=0.30, cr=0.07, ct=0.05),
                 stab=dict(semi=0.0)),  # Long-EZ
     # --- helicopters
     "R22":  row("heli_light"),                                  # Robinson R22
@@ -1030,7 +1040,7 @@ SOURCES = {
                 engines=internal(2)),   # Alpha Jet
     "ALIG": row("cirrus", fus_w=1.0, wing_le=0.30, cr=0.130, ct=0.080, nose_len=1.5, engines=nose_prop(1.7)),   # Arion Lightning
     "ANGL": row("twin", fus_w=1.4, nose_len=1.6, wing_le=0.30, cr=0.13, ct=0.10, inner=0.40,
-                engines=props(0.80, 0.0, 1.1, 1.9, 0.30)),   # Angel 44: pusher engines behind the wing
+                engines=props(0.80, 0.0, 1.1, 1.9, 0.30)),   # Angel 44: nacelles on the wing, pusher props behind it
     "AP22": row("cub", fus_w=1.0, cr=0.135, ct=0.135, wing_le=0.25, engines=nose_prop(1.7)),   # Aeroprakt A-22 Foxbat
     "AP32": row("cub", fus_w=1.0, cr=0.135, ct=0.135, wing_le=0.25, engines=nose_prop(1.7)),   # Aeroprakt A-32 Vixxen
     "AS31": row("glider", fus_w=0.70, nose_len=2.0, wing_le=0.28, cr=0.046, ct=0.018, engines=internal(1),
@@ -1070,13 +1080,13 @@ SOURCES = {
     "CMAS": row("single", fus_w=1.0, wing_le=0.25, cr=0.150, ct=0.110, engines=nose_prop(1.9)),   # Cessna C-34 Airmaster
     "COY2": row("cub", fus_w=0.85, cr=0.130, ct=0.130, wing_le=0.25, engines=nose_prop(1.8)),   # Rans S-6 Coyote II
     "COZY": row("single", fus_w=0.85, nose_len=1.6, wing_le=0.52, sweep=22.0, cr=0.13, ct=0.06, inner=None,
-                engines=centre(0.6, 1.5, 0.78), canard=dict(at=0.10, semi=0.24, cr=0.07, ct=0.05),
+                engines=pusher(1.6, 0.97), canard=dict(at=0.10, semi=0.24, cr=0.07, ct=0.05),
                 stab=dict(semi=0.0)),   # Cozy / AeroCanard
     "CRER": row("cub", fus_w=1.0, cr=0.150, ct=0.150, wing_le=0.25, engines=nose_prop(1.9)),   # Rans S-7 Courier
     "D11": row("cherokee", fus_w=0.95, wing_le=0.30, cr=0.165, ct=0.120, inner=0.40, engines=nose_prop(1.7)),   # Jodel D.112
     "DA2": row("cub", fus_w=0.80, cr=0.220, ct=0.220, wing_le=0.25, engines=nose_prop(1.6)),   # Davis DA-2
     "DEFI": row("single", fus_w=0.95, nose_len=1.6, wing_le=0.50, sweep=0.0, cr=0.13, ct=0.07, inner=None,
-                engines=nose_prop(1.7) + centre(0.5, 1.2, 0.80),
+                engines=nose_prop(1.7) + pusher(1.7, 0.97),
                 canard=dict(at=0.10, semi=0.24, cr=0.07, ct=0.05),
                 stab=dict(semi=0.0)),   # Rutan Defiant push-pull
     "DH82": row("biplane", fus_w=0.85, wing_le=0.19, cr=0.185, ct=0.185, engines=nose_prop(2.0)),   # Tiger Moth
@@ -1123,7 +1133,7 @@ SOURCES = {
     "JSX": row("cherokee", fus_w=0.7, cr=0.20, ct=0.14, inner=None, nose_len=1.5,
                engines=centre(0.5, 1.3, 0.60)),   # SubSonex
     "LA25": row("single", fus_w=1.3, nose_len=1.0, nose_pow=0.5, wing_le=0.30, cr=0.14, ct=0.115, inner=None,
-                engines=centre(0.7, 1.6, 0.55), stab=dict(pos="T")),   # Lake Renegade (hull, pusher above wing)
+                engines=pusher(1.8, 0.6, d=0.7, ln=1.5), stab=dict(pos="T")),   # Lake Renegade (hull, pusher above wing)
     "LEG2": row("cirrus", fus_w=0.95, cr=0.17, ct=0.10, wing_le=0.28, nose_len=1.6, engines=nose_prop(1.8)),   # Lancair Legacy
     "LNC2": row("cirrus", fus_w=0.90, cr=0.17, ct=0.10, wing_le=0.28, nose_len=1.6, engines=nose_prop(1.7)),   # Lancair 200
     "LNCE": row("cirrus", fus_w=1.15, nose_len=1.6, engines=nose_prop(2.0)),   # Lancair ES
@@ -1148,7 +1158,7 @@ SOURCES = {
     "PIVI": row("glider", fus_w=0.85, nose_len=1.8, engines=nose_prop(1.7), wing_le=0.30, cr=0.085, ct=0.050, stab=dict(semi=0.12, pos="T")),  # Pipistrel Surveyor
     "PP3":  row("bonanza", fus_w=1.0, nose_len=1.8, wing_le=0.30, cr=0.150, ct=0.085, engines=nose_prop(2.0)),  # Pilatus P-3
     "RBEL": row("cub", fus_w=0.95, wing_le=0.24),  # Murphy Rebel
-    "RC3":  row("single", fus_w=1.35, nose_len=1.2, wing_le=0.30, cr=0.130, ct=0.110, inner=0.5, engines=centre(0.65, 1.5, 0.42), stab=dict(semi=0.16, pos="conv", back=0.05)),  # Republic RC-3 Seabee (pusher on pylon, drawn as a centreline pod; amphibian, high wing)
+    "RC3":  row("single", fus_w=1.35, nose_len=1.2, wing_le=0.30, cr=0.130, ct=0.110, inner=0.5, engines=pusher(1.8, 0.56, d=0.7, ln=1.5), stab=dict(semi=0.16, pos="conv", back=0.05)),  # Republic RC-3 Seabee (pusher engine above the wing; amphibian, high wing)
     "RELI": row("single", fus_w=1.25, nose_len=1.3, wing_le=0.24, cr=0.135, ct=0.105, inner=0.40, engines=nose_prop(2.4)),  # Stinson AT-19 Reliant
     "RISN": row("cirrus", fus_w=0.95, nose_len=1.7, wing_le=0.30, cr=0.115, ct=0.075, engines=nose_prop(1.8)),  # Porto Risen
     "RS20": row("cub", fus_w=0.95, wing_le=0.23),  # Rans S-20 Raven
@@ -1163,7 +1173,7 @@ SOURCES = {
     "SLG4": row("cherokee", fus_w=1.15, nose_len=1.5, wing_le=0.28, cr=0.135, ct=0.100, engines=nose_prop(1.9)),  # Sling 4 TSi
     "SONX": row("cherokee", fus_w=0.85, nose_len=1.5, wing_le=0.30, cr=0.150, ct=0.130, engines=nose_prop(1.5)),  # Sonex
     "SPUP": row("biplane", fus_w=0.85, wing_le=0.20, cr=0.165, ct=0.165, engines=nose_prop(2.3)),  # Sopwith Pup replica
-    "SREY": row("single", fus_w=1.25, nose_len=1.2, wing_le=0.28, cr=0.135, ct=0.120, inner=0.5, engines=centre(0.65, 1.5, 0.42), stab=dict(semi=0.15, pos="conv", back=0.05)),  # Progressive Aerodyne SeaRey (pusher on pylon, amphibian, high wing)
+    "SREY": row("single", fus_w=1.25, nose_len=1.2, wing_le=0.28, cr=0.135, ct=0.120, inner=0.5, engines=pusher(1.8, 0.55, d=0.7, ln=1.5), stab=dict(semi=0.15, pos="conv", back=0.05)),  # Progressive Aerodyne SeaRey (pusher on pylon, amphibian, high wing)
     "SS2T": row("turbine_single", fus_w=1.30, nose_len=1.5, nose_pow=0.5, wing_le=0.30, cr=0.095, ct=0.085, stab=dict(semi=0.20, sweep=4.0, cr=0.11, ct=0.07), engines=nose_prop(2.6)),  # Ayres S-2R Turbo Thrush
     "SVNH": row("cub", fus_w=1.05, wing_le=0.22, cr=0.145, ct=0.130),  # Savannah MXP-740
     "SX30": row("cirrus", fus_w=0.90, nose_len=1.6, wing_le=0.30, cr=0.130, ct=0.100, engines=nose_prop(1.8)),  # Swearingen SX-300
@@ -1179,9 +1189,9 @@ SOURCES = {
                 stab=dict(semi=0.20, sweep=0.0, cr=0.100, ct=0.085, pos="conv", back=0.03)),  # Ford 4-AT Trimotor (nose + 2 wing engines)
     "TWEN": row("single", fus_w=1.25, nose_len=1.4, wing_le=0.25, cr=0.130, ct=0.100, inner=0.45, engines=nose_prop(1.9)),  # Tecnam P2010
     "VELO": row("single", fus_w=0.85, nose_len=1.6, wing_le=0.50, sweep=16.0, cr=0.13, ct=0.06, inner=None,
-                engines=centre(0.65, 1.5, 0.75), canard=dict(at=0.12, semi=0.28, cr=0.08, ct=0.06),
+                engines=pusher(1.6, 0.97), canard=dict(at=0.12, semi=0.28, cr=0.08, ct=0.06),
                 stab=dict(semi=0.0)),  # Velocity 173 (canard pusher, like Long-EZ row)
-    "VJ22": row("single", fus_w=1.30, nose_len=1.2, wing_le=0.30, cr=0.130, ct=0.100, inner=0.5, engines=centre(0.65, 1.5, 0.45), stab=dict(semi=0.15, pos="T", back=0.04)),  # Volmer VJ-22 Sportsman (pusher on pylon, amphibian, high wing)
+    "VJ22": row("single", fus_w=1.30, nose_len=1.2, wing_le=0.30, cr=0.130, ct=0.100, inner=0.5, engines=pusher(1.8, 0.57, d=0.7, ln=1.5), stab=dict(semi=0.15, pos="T", back=0.04)),  # Volmer VJ-22 Sportsman (pusher on pylon, amphibian, high wing)
     "VTRA": row("cub", fus_w=1.00, wing_le=0.22),  # Rans S-19 Venterra
     "WACF": row("biplane", fus_w=1.0, nose_len=1.4, wing_le=0.20, cr=0.150, ct=0.150, engines=nose_prop(2.0)),  # Waco Classic YMF-5
     "WAIX": row("cherokee", fus_w=0.85, nose_len=1.5, wing_le=0.30, cr=0.150, ct=0.130, engines=nose_prop(1.5), stab=dict(semi=0.12, sweep=20.0, cr=0.11, ct=0.06)),  # Sonex Waiex (V-tail drawn as a small stab)
@@ -1245,7 +1255,7 @@ EXTRA_DIMS = {
     "S3": (20.93, 16.26, "S-3B Viking, Navy SAC-derived data (68 ft 8 in, 53 ft 4 in)"),
     "C27J": (28.70, 22.70, "Bundeswehr C-27J page"),
     "C295": (25.81, 24.45, "Airbus C295M data, no winglets (C295W with winglets is 27.59 m)"),
-    "AN22": (64.40, 57.92, "An-22 reference data (64.4 m, 57.92 m) (unverified)"),
+    "AN22": (64.40, 57.92, "An-22: flugzeuginfo.net 64.40 m span; length 57.8-57.9 m by source, 57.92 m nose-config dependent (aerospaceweb/aerocorner)"),
     "V10": (12.19, 12.67, "National Museum of the USAF fact sheet, OV-10A (40 ft, 41 ft 7 in)"),
     "C123": (33.53, 23.09, "Travis AFB Aviation Museum, C-123K (110 ft, 75 ft 9 in)"),
     "C119": (33.32, 26.37, "Travis AFB / Hill Aerospace Museum, C-119G (109 ft 4 in, 86 ft 6 in)"),
@@ -1261,7 +1271,7 @@ EXTRA_DIMS = {
     "AN30": (29.20, 24.26, "Wikipedia An-30 infobox"),
     "AN32": (29.20, 23.78, "airvectors An-32 (23.78 m)"),
     "AN28": (22.06, 13.10, "Wikipedia PZL M28 (SKYbrary 22.10 m, 13.00 m)"),
-    "IL62": (43.20, 53.12, "Il-62M span from aircraft data; length from Wikipedia-derived page (unverified)"),
+    "IL62": (43.20, 53.12, "Il-62M: GlobalSecurity Il-62 specs, 43.20 m span, 53.12 m length"),
     "IL96": (60.11, 55.35, "Il-96-300 technical data (60.11 m, 55.35 m)"),
     "T154": (37.55, 47.90, "Tu-154M spec table (SKYbrary 37.5 m, 48.0 m)"),
     "T204": (41.80, 46.14, "Tu-204-100 Wikipedia; GlobalSecurity gives 42.0 m, 46.0 m"),
@@ -1269,7 +1279,7 @@ EXTRA_DIMS = {
     "F27": (29.00, 23.56, "Fokker F27 Mk 200 (globalmilitary 29 m, 23.6 m)"),
     "F50": (29.00, 25.25, "Fokker 50 (29.00 m, 25.25 m, two sources)"),
     "F70": (28.08, 30.91, "Fokker 70 (Fokker 100 wing, 30.91 m)"),
-    "F100": (28.08, 35.53, "Fokker 100 span 28.08 m; length 35.53 m (unverified)"),
+    "F100": (28.08, 35.53, "Fokker 100 span 28.08 m, length 35.53 m (Fokker data); SKYbrary rounds to 28.10 / 35.50 m"),
     "F28": (25.07, 29.61, "Fokker F28-4000 (25.07 m, 29.61 m)"),
     "DC86": (45.23, 57.12, "DC-8-63 airframe reference (45.24 m, 57.12 m)"),
     "DC94": (28.47, 38.28, "McDonnell Douglas DC-9-41 listing (28.47 m, 38.28 m)"),
@@ -1285,7 +1295,7 @@ EXTRA_DIMS = {
     "DH2T": (14.63, 10.74, "SKYbrary DH2T Turbo Beaver (14.63 m, 10.74 m)"),
     "DHC4": (29.15, 22.13, "DHC-4 Caribou (95 ft 7.5 in, 72 ft 7 in)"),
     "DHC5": (29.26, 24.08, "DHC-5D Buffalo (96 ft 0 in, 79 ft 0 in)"),
-    "AN2": (18.18, 12.74, "Antonov An-2 upper wing span (Wikipedia; one source gives 12.4 m length) (unverified)"),
+    "AN2": (18.18, 12.74, "Antonov An-2 upper wing 18.18 m, length 12.74 m (flugzeuginfo.net, all-aero); some sources say 12.4 m"),
     "PC6T": (15.87, 10.90, "Pilatus PC-6/B2-H4 Turbo Porter (15.87 m; SKYbrary length 10.90 m)"),
     "C46": (32.92, 23.27, "Curtiss C-46 (108 ft, 76 ft 4 in)"),
     "RV4": (7.01, 6.20, "Van's Aircraft RV-4 specifications (23 ft, 20 ft 4 in)"),
@@ -1310,9 +1320,9 @@ EXTRA_DIMS = {
     "YK52": (9.30, 7.75, "Yak-52 spec listing (30 ft 6 in, 25 ft 5 in)"),
     "Z42": (9.34, 6.94, "Zlin Z-242L (aeropedia 9.34 m, 6.94 m)"),
     "SPIT": (11.23, 9.12, "Spitfire Mk I (36 ft 10 in, 29 ft 11 in)"),
-    "B17": (31.62, 22.66, "Boeing B-17G (103 ft 9 in, 74 ft 4 in) (unverified)"),
-    "B25": (20.60, 16.13, "North American B-25J (67 ft 7 in, 52 ft 11 in) (unverified)"),
-    "B29": (43.05, 30.18, "Boeing B-29 (141 ft 3 in, 99 ft) (unverified)"),
+    "B17": (31.62, 22.66, "Boeing B-17G (103 ft 9 in, 74 ft 4 in) per flugzeuginfo.net"),
+    "B25": (20.60, 16.13, "North American B-25 per flugzeuginfo.net (67 ft 7 in span); some museum airframes list longer"),
+    "B29": (43.05, 30.18, "Boeing B-29 per flugzeuginfo.net, 43.05 m span, 30.18 m length"),
     "LGEZ": (7.96, 5.12, "Rutan Long-EZ (Jane's/AOPA: 26 ft 1 in, 16 ft 10 in)"),
     # --- helicopters: (main rotor diameter, fuselage length). Only the rotor diameter is
     #     used, and only for the scale comment: a helicopter's drawing does not depend on
@@ -1372,7 +1382,7 @@ EXTRA_DIMS = {
     "LYNX": (12.80, 12.06, "Super Lynx: rotor 12.8 m, fuselage ~12.1 m"),
     "H160": (13.40, 13.96, "Airbus H160: rotor 13.4 m"),
     # --- seen on a real receiver, added after the first coverage pass
-    "GA8C": (31.39, 30.41, "aircraft spec listings, 103 ft span / ~99.8 ft length (unverified)"),
+    "GA8C": (31.39, 30.40, "Gulfstream G800 103 ft 0 in span, 99 ft 9 in length (aerocorner spec listing)"),
     "FA6X": (25.94, 25.68, "airport-technology.com and aviation24.be spec tables"),
     "V22": (25.78, 17.48, "Boeing / USAF fact sheet: width across the turning rotors (rotor diameter 11.6 m) and fuselage length; the FAA row gives the wing's span, which leaves the rotors out"),
     "ULAC": (9.00, 6.00, "typical ultralight; ULAC is a generic designator"),
@@ -1445,9 +1455,9 @@ EXTRA_DIMS = {
     "LNCE": (10.82, 7.62, "Lancair ES, SKYbrary"),
     "M200": (9.30, 7.41, "Aero Commander 200D, 30 ft 6 in, 24 ft 4 in"),
     "MG17": (9.63, 11.5, "JJ-5/FT-5 two-seat trainer data"),
-    "MOR2": (9.14, 6.47, "Shinn 2150A / Kachina 2150 data, same design lineage (unverified)"),
+    "MOR2": (9.14, 6.45, "Morrisey 2150A = Shinn/Varga 2150 Kachina: 30 ft 0 in, 21 ft 2 in (GlobalAir, Wikipedia)"),
     "MRF1": (8.40, 15.30, "Mirage F1C, aerospaceweb/migflug"),
-    "NG5": (9.13, 6.45, "Bristell LSA wing 9.13 m, NG5 length 6.45 m, Aeropedia/GlobalAir (unverified)"),
+    "NG5": (9.13, 6.45, "Bristell NG5 LSA 9.13 m span, 6.45 m length (GlobalAir 29 ft 11 in; Wikipedia)"),
     "P136": (13.53, 10.8, "Piaggio P.136-L1, Vintage Flying Museum data"),
     "P38": (15.84, 11.53, "P-38L data (F-5 is the same airframe), 52 ft, 37 ft 10 in"),
     "PIAT": (10.5, 6.5, "Pipistrel Alpha Trainer manufacturer sheet"),
@@ -1478,7 +1488,7 @@ EXTRA_DIMS = {
     "T18":  (6.35, 5.77, "Classic Sport S-18 (20 ft 10 in; 18 ft 10 in)"),
     "TAIL": (7.31, 5.94, "Wittman W-10 Tailwind (24 ft, 19 ft 6 in)"),
     "TARR": (7.94, 7.53, "Pelegrin Tarragon (7.94 m, 7.53 m, Wikipedia citing maker)"),
-    "TF21": (10.70, 6.70, "Taylorcraft-class estimate (unverified)"),
+    "TF21": (10.97, 6.78, "Taylorcraft F-21 (Taylor Kits F-21B lineage): 36 ft span, 22 ft 3 in length (aircraftworlddirectory, aeropedia)"),
     "TNAV": (10.57, 8.53, "Camair Twin Navion (34 ft 8 in, 28 ft; twinnavion.com)"),
     "TRF1": (6.56, 6.40, "Team Rocket F1 (Jane's 2003-04: 21 ft 6 in, 21 ft)"),
     "TRIM": (22.56, 15.19, "Ford 4-AT (74 ft, 49 ft 10 in)"),
@@ -1772,6 +1782,20 @@ def _trapezoid(y0, semi, sweep_deg, c_root, c_tip, kink=None, inner=None):
     return st, le, ch
 
 
+def _elliptic(y0, semi, c_root, c_min):
+    """Stations for an elliptical wing (Spitfire): chord follows an ellipse
+    and the quarter-chord line is straight, so the leading edge curves back a
+    little and the trailing edge curves forward a lot."""
+    def ch(x):
+        return max(c_root * math.sqrt(max(0.0, 1 - (x / semi) ** 2)), c_min)
+
+    def le(x):
+        return y0 + 0.25 * (c_root - ch(x))
+
+    fr = (0.0, 0.25, 0.45, 0.62, 0.76, 0.87, 0.94, 0.98, 1.0)   # ends AT the tip: the span stays true
+    return [(f * semi, le(f * semi), ch(f * semi)) for f in fr], le, ch
+
+
 def _pod(x, y_front, length, width, front=0.7, back=0.6, shoulder=0.35):
     h = width / 2
     sh = min(shoulder * width, length * 0.4)
@@ -1854,9 +1878,19 @@ def build_source(code, dims):
                        tail_len, max(sp["tail_w"] * w, 0.45 / s))]
 
     c_tip = max(sp["ct"] * span, MIN_TIP / s)
-    stations, le, ch = _trapezoid(sp["wing_le"] * L, semi, sp["sweep"], sp["cr"] * span,
-                                  c_tip, kink=sp.get("kink"), inner=sp.get("inner"))
+    if sp.get("elliptic"):
+        # The tip only keeps a legibility floor; ct plays no part.
+        stations, le, ch = _elliptic(sp["wing_le"] * L, semi, sp["cr"] * span, MIN_TIP * 0.7 / s)
+    else:
+        stations, le, ch = _trapezoid(sp["wing_le"] * L, semi, sp["sweep"], sp["cr"] * span,
+                                      c_tip, kink=sp.get("kink"), inner=sp.get("inner"))
     parts.append(_surface(stations))
+    bulge = sp.get("bulge")
+    if bulge:   # a hull wider than the fuselage below it (Beluga, Dreamlifter)
+        y_a, y_b = bulge["at"] * L, bulge["to"] * L
+        parts.append([(x, y + y_a) for x, y in
+                      _fuselage(y_b - y_a, bulge["w"] * 1.08, bulge["w"] * 0.7, 0.55,
+                                bulge["w"] * 1.1, w * 0.9)])   # x1.08 like the fuselage
 
     for e in sp["engines"]:
         kind = e["kind"]
@@ -1877,6 +1911,11 @@ def build_source(code, dims):
             d = max(e["d"], MIN_POD / s) * 1.25
             ln = min(e["len"], fus_end * 0.99 - e["at"] * L)
             parts.append(_pod(0.0, e["at"] * L, ln, d, front=0.6, back=0.5))
+        elif kind == "pusher":
+            d = max(e["d"], MIN_POD * 0.8 / s)
+            y_prop = min(e["at"] * L, fus_end)
+            parts.append(_pod(0.0, y_prop - e["len"], e["len"], d, front=0.6, back=0.6))
+            parts.append(_bar(0.0, y_prop - MIN_PROP / s, e["prop"], MIN_PROP / s))
         elif kind == "over":
             d = max(e["d"] * 1.15, MIN_POD / s)
             x = e["eta"] * semi
@@ -1988,9 +2027,13 @@ def build_heli(code, dims):
         gap = sp["tandem"]                      # distance between the two masts
         body = gap + 0.34
         parts.append([(x, y - gap / 2 - 0.20) for x, y in
-                      _fuselage(body, sp["bw"], 0.16, 0.5, 0.14, sp["bw"] * 0.6)])
-        rotor(-gap / 2, 90 + 180.0 / n)
-        rotor(gap / 2, 90)
+                      _fuselage(body, sp["bw"], 0.30, 0.75, 0.05, sp["bw"] * 0.92)])
+        # One blade of each rotor lies along the body; the others splay out
+        # ahead of the front mast and behind the rear one, so the two rotors
+        # read as two and the shape stays compact. (These angles suit three
+        # blades, which every tandem type in the table has.)
+        rotor(-gap / 2, 90)
+        rotor(gap / 2, 270)
     else:
         cabin = sp["nose"] + sp["rear"]
         parts.append([(x, y - sp["nose"]) for x, y in

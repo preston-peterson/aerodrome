@@ -19,6 +19,26 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.164] — 2026-11-05
+
+**Sixteen aircraft silhouettes are redrawn to look more like the real thing.** Nothing else on the map changes.
+
+- **Spitfire:** its elliptical wing, in place of a tapered one.
+- **Tandem-rotor helicopters (Chinook, Sea Knight):** a long body with a pointed nose and a square tail, and a rotor splayed at each end. The earlier drawing looked the same front and back, so you couldn't tell which way it was heading.
+- **Canard pushers (Long-EZ, Cozy, Velocity, Defiant):** a propeller at the tail.
+- **Amphibians with the engine above the wing (ICON A5, Lake, SeaRey, Seabee, Volmer):** a propeller behind the wing, where there was only a bump.
+- **Beluga, Beluga XL and Dreamlifter:** a normal fuselage carrying the wide cargo hull, where they were simply drawn fat.
+
+Three more types are drawn to slightly corrected dimensions.
+
+### Operational notes
+
+This is an ordinary update with a normal restart and no database change. Reload any open Live or display-board page to see the new shapes.
+
+### Behind the scenes
+
+`scripts/gen_type_shapes.py` gained an elliptical wing (`elliptic`), a wider hull over part of a fuselage (`bulge`), and a centreline engine with an aft-facing propeller (`pusher`). The tandem-rotor layout has a new body and blade angles. The last eleven dimension entries that were marked as unconfirmed have been checked against published figures, so every entry in the table now names a source it was read from. Only the 19 affected shape files changed; the other 645 are byte-identical to 3.4.163.
+
 ## [3.4.163] — 2026-11-05
 
 **About 120 more aircraft types have a silhouette, which closes the gap for the less common ones.** 3.4.162 covered the types most often seen. This release adds the long tail:

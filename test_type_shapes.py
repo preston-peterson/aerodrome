@@ -105,7 +105,7 @@ class TypeShapeTableTest(unittest.TestCase):
         for code in self.gen.SOURCES:
             if code in self.gen.BUILDERS or code not in listed or self.gen.is_rotorcraft(code):
                 continue
-            drawn = sum(e.get("count", 1 if e["kind"] in ("centre", "nose") else 2)
+            drawn = sum(e.get("count", 1 if e["kind"] in ("centre", "nose", "pusher") else 2)
                         for e in self.gen.spec_for(code)["engines"])
             self.assertEqual(drawn, listed[code], code)
             checked += 1
