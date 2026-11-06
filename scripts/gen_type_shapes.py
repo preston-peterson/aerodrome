@@ -269,6 +269,11 @@ preset("heli", builder="heli", blades=4, bw=0.19, nose=0.32, rear=0.20, tail=0.6
 preset("heli_light", "heli", blades=2, bw=0.17, nose=0.26, rear=0.16, tail=0.62, tailplane=0.0)
 preset("heli_heavy", "heli", blades=4, bw=0.17, nose=0.40, rear=0.24, tail=0.62, tailplane=0.24)
 preset("heli_tandem", "heli", builder="heli", blades=3, bw=0.21, tandem=0.65)
+# -- tiltrotor (V-22): drawn by build_tiltrotor with its rotors up, as it
+#    looks from above in helicopter mode. Dimensions are (width across the
+#    turning rotors, fuselage length); rotor = rotor diameter in metres.
+preset("tiltrotor", builder="tilt", blades=3, rotor=11.6, fus_w=2.3, wing_le=0.330,
+       chord=2.5, stab=dict(semi=2.8, cr=1.7))
 
 
 def row(family, **over):
@@ -1013,6 +1018,174 @@ SOURCES = {
     "LYNX": row("heli", blades=4),                              # Lynx / Wildcat
     "H160": row("heli", blades=5),                              # H160
     "GLID": row("glider"),   # ICAO's generic designator for a sailplane
+    # --- seen on a real receiver, added after the first coverage pass
+    "GA8C": row("gulfstream", fus_w=2.59, sweep=33.0),          # Gulfstream G800
+    "FA6X": row("falcon", fus_w=2.7, sweep=32.0, engines=aft(1.4, 3.6, 0.665)),   # Falcon 6X (a twin)
+    "V22": row("tiltrotor"),                                    # V-22 Osprey
+    "ULAC": row("cub", fus_w=0.8),      # ICAO's generic designator for an ultralight
+    "GYRO": row("heli_light"),          # ICAO's generic designator for a gyrocopter
+    "ACRO": row("biplane", fus_w=0.75, wing_le=0.22, cr=0.19, ct=0.19, engines=nose_prop(1.7)),   # Acro Sport I
+    "AG10": row("cirrus", fus_w=1.1, wing_le=0.28, nose_len=1.4),   # AVIC/CAIGA AG100 (Cirrus SR10 derived trainer)
+    "AJET": row("jet_trainer", fus_w=1.5, nose_len=3.2, wing_le=0.380, sweep=28.0, cr=0.200, ct=0.080,
+                engines=internal(2)),   # Alpha Jet
+    "ALIG": row("cirrus", fus_w=1.0, wing_le=0.30, cr=0.130, ct=0.080, nose_len=1.5, engines=nose_prop(1.7)),   # Arion Lightning
+    "ANGL": row("twin", fus_w=1.4, nose_len=1.6, wing_le=0.30, cr=0.13, ct=0.10, inner=0.40,
+                engines=props(0.80, 0.0, 1.1, 1.9, 0.30)),   # Angel 44: pusher engines behind the wing
+    "AP22": row("cub", fus_w=1.0, cr=0.135, ct=0.135, wing_le=0.25, engines=nose_prop(1.7)),   # Aeroprakt A-22 Foxbat
+    "AP32": row("cub", fus_w=1.0, cr=0.135, ct=0.135, wing_le=0.25, engines=nose_prop(1.7)),   # Aeroprakt A-32 Vixxen
+    "AS31": row("glider", fus_w=0.70, nose_len=2.0, wing_le=0.28, cr=0.046, ct=0.018, engines=internal(1),
+                stab=dict(semi=0.075, cr=0.032, ct=0.022)),   # ASH 31 Mi, 21 m span
+    "ASTO": row("cherokee", fus_w=1.1, wing_le=0.28, cr=0.150, ct=0.115, engines=nose_prop(1.8)),   # Tecnam Astore
+    "AT3P": row("cherokee", fus_w=1.1, nose_len=1.8, wing_le=0.30, cr=0.135, ct=0.120, inner=None,
+                engines=nose_prop(2.5),
+                stab=dict(semi=0.150, sweep=0.0, cr=0.120, ct=0.090)),   # Air Tractor AT-300
+    "AVID": row("cub", fus_w=0.9, cr=0.135, ct=0.135, wing_le=0.26, engines=nose_prop(1.8)),   # Avid Flyer / Airdale
+    "B14A": row("cherokee", fus_w=1.1, wing_le=0.27, cr=0.150, ct=0.100, inner=None),   # Bellanca 14-13 Cruisair
+    "B26": row("twin", fus_w=1.7, nose_len=2.0, wing_le=0.360, sweep=2.0, cr=0.125, ct=0.060,
+               engines=props(1.2, 3.0, 1.0, 3.7, 0.25),
+               stab=dict(semi=0.170, cr=0.100, ct=0.055)),   # A-26 Invader
+    "BDOG": row("cherokee", fus_w=1.15, wing_le=0.28, cr=0.150, ct=0.110, inner=None,
+                engines=nose_prop(1.9)),   # Bulldog
+    "BE4W": row("citation_swept", fus_w=1.75, sweep=20.0, cr=0.170, ct=0.060, wing_le=0.410,
+                engines=aft(1.05, 3.0, 0.64)),   # Beechjet 400XT
+    "BIPL": row("biplane", fus_w=0.65, wing_le=0.22, cr=0.20, ct=0.20, engines=nose_prop(1.6)),   # EAA Biplane
+    "BOLT": row("biplane", fus_w=0.80, wing_le=0.20, cr=0.19, ct=0.19, engines=nose_prop(1.9)),   # Steen Skybolt
+    "BPAT": row("cub", fus_w=1.0, cr=0.135, ct=0.135, wing_le=0.24, engines=nose_prop(2.0)),   # Bearhawk Patrol
+    "BR23": row("cherokee", fus_w=1.15, wing_le=0.27, cr=0.140, ct=0.115, inner=None,
+                engines=nose_prop(1.9)),   # Bristell B23
+    "BUSH": row("cub", fus_w=0.9, cr=0.135, ct=0.135, wing_le=0.25, engines=nose_prop(1.8)),   # SkyReach BushCat
+    "C190": row("single", fus_w=1.25, wing_le=0.24, cr=0.150, ct=0.100, engines=nose_prop(2.1)),   # Cessna 190
+    "CB1": row("biplane", fus_w=0.80, wing_le=0.22, cr=0.19, ct=0.19, engines=nose_prop(1.7)),   # Hatz CB-1
+    "CC11": row("cub", fus_w=0.90, cr=0.135, ct=0.135, wing_le=0.25, engines=nose_prop(2.0)),   # Carbon Cub
+    "CC19": row("cub", fus_w=0.95, cr=0.130, ct=0.130, wing_le=0.25, engines=nose_prop(2.0)),   # XCub / NXCub
+    "CH60": row("cherokee", fus_w=1.1, wing_le=0.30, cr=0.167, ct=0.167, inner=None,
+                engines=nose_prop(1.7)),   # Zodiac CH 601
+    "CH75": row("cub", fus_w=1.0, cr=0.150, ct=0.150, wing_le=0.25, engines=nose_prop(1.8)),   # CH 750 STOL
+    "CH80": row("cub", fus_w=1.1, cr=0.150, ct=0.150, wing_le=0.25, engines=nose_prop(2.0)),   # CH 801 STOL
+    "CJ6": row("bonanza", fus_w=1.0, nose_len=2.0, nose_pow=0.6, wing_le=0.300, cr=0.170, ct=0.075,
+               engines=nose_prop(2.7)),   # CJ-6 / BT-6
+    "CL2T": row("turboprop", fus_w=2.3, nose_len=1.4, nose_pow=0.55, wing_le=0.37, sweep=0.0,
+                cr=0.130, ct=0.085, inner=0.5, engines=props(1.0, 2.2, 1.0, 3.8, 0.28),
+                stab=dict(semi=0.17, cr=0.11, ct=0.07, pos="T")),   # CL-415 amphibian, straight high wing
+    "CMAS": row("single", fus_w=1.0, wing_le=0.25, cr=0.150, ct=0.110, engines=nose_prop(1.9)),   # Cessna C-34 Airmaster
+    "COY2": row("cub", fus_w=0.85, cr=0.130, ct=0.130, wing_le=0.25, engines=nose_prop(1.8)),   # Rans S-6 Coyote II
+    "COZY": row("single", fus_w=0.85, nose_len=1.6, wing_le=0.52, sweep=22.0, cr=0.13, ct=0.06, inner=None,
+                engines=centre(0.6, 1.5, 0.78), canard=dict(at=0.10, semi=0.24, cr=0.07, ct=0.05),
+                stab=dict(semi=0.0)),   # Cozy / AeroCanard
+    "CRER": row("cub", fus_w=1.0, cr=0.150, ct=0.150, wing_le=0.25, engines=nose_prop(1.9)),   # Rans S-7 Courier
+    "D11": row("cherokee", fus_w=0.95, wing_le=0.30, cr=0.165, ct=0.120, inner=0.40, engines=nose_prop(1.7)),   # Jodel D.112
+    "DA2": row("cub", fus_w=0.80, cr=0.220, ct=0.220, wing_le=0.25, engines=nose_prop(1.6)),   # Davis DA-2
+    "DEFI": row("single", fus_w=0.95, nose_len=1.6, wing_le=0.50, sweep=0.0, cr=0.13, ct=0.07, inner=None,
+                engines=nose_prop(1.7) + centre(0.5, 1.2, 0.80),
+                canard=dict(at=0.10, semi=0.24, cr=0.07, ct=0.05),
+                stab=dict(semi=0.0)),   # Rutan Defiant push-pull
+    "DH82": row("biplane", fus_w=0.85, wing_le=0.19, cr=0.185, ct=0.185, engines=nose_prop(2.0)),   # Tiger Moth
+    "DO28": row("twin", fus_w=1.3, nose_len=1.5, wing_le=0.36, sweep=0.0, cr=0.135, ct=0.100,
+                engines=props(0.85, 1.1, 0.2, 2.0, 0.28)),   # Do 28A
+    "E300": row("cherokee", fus_w=0.85, wing_le=0.27, cr=0.19, ct=0.13, inner=None,
+                nose_len=1.6, nose_pow=0.55, engines=nose_prop(1.9),
+                stab=dict(semi=0.17, cr=0.11, ct=0.08)),   # Extra EA-300
+    "E390": row("jet_transport", fus_w=3.6, nose_len=1.5, wing_le=0.38, sweep=24.0, cr=0.15, ct=0.05,
+                tail_len=2.6, engines=jets(1.9, 4.0, 0.30, ahead=0.7),
+                stab=dict(semi=0.17, sweep=25.0, cr=0.12)),   # KC-390
+    "EAGL": row("biplane", fus_w=0.75, cr=0.21, ct=0.21, wing_le=0.20,
+                engines=nose_prop(1.9)),   # Aviat Christen Eagle
+    "EDGE": row("cherokee", fus_w=0.85, wing_le=0.27, cr=0.20, ct=0.13, inner=None,
+                nose_len=1.6, nose_pow=0.55, engines=nose_prop(1.9),
+                stab=dict(semi=0.17, cr=0.11, ct=0.08)),   # Edge 540
+    "EFOX": row("cub", fus_w=1.0, wing_le=0.22, engines=nose_prop(1.7)),   # Eurofox
+    "EV97": row("cherokee", fus_w=1.05, cr=0.17, ct=0.14, inner=None, engines=nose_prop(1.7)),   # EV-97 EuroStar
+    "EVOP": row("cirrus", fus_w=1.2, nose_len=1.8, cr=0.14, ct=0.075, engines=nose_prop(2.0)),   # Lancair Evolution
+    "EVSS": row("cherokee", fus_w=1.05, cr=0.17, ct=0.14, inner=None, engines=nose_prop(1.7)),   # SportStar
+    "EXNG": row("cherokee", fus_w=0.85, wing_le=0.27, cr=0.19, ct=0.13, inner=None,
+                nose_len=1.6, nose_pow=0.55, engines=nose_prop(1.9),
+                stab=dict(semi=0.17, cr=0.11, ct=0.08)),   # Extra NG
+    "F260": row("cherokee", fus_w=1.0, cr=0.17, ct=0.11, inner=None, nose_len=1.6, nose_pow=0.55,
+                tip_tanks=dict(d=0.45, len=2.0), engines=nose_prop(2.0)),   # SF.260
+    "F8L": row("cherokee", fus_w=1.0, cr=0.16, ct=0.10, inner=None, nose_len=1.6, nose_pow=0.55,
+               engines=nose_prop(1.9)),   # Falco
+    "FDF2": row("single", fus_w=1.0, cr=0.14, ct=0.115, inner=None, nose_len=1.4, engines=nose_prop(1.7)),   # Flight Design F2
+    "FOX": row("cub", fus_w=0.95, wing_le=0.22, engines=nose_prop(1.8)),   # Kitfox
+    "G21": row("twin", fus_w=1.5, nose_len=1.3, nose_pow=0.5, wing_le=0.30, cr=0.150, ct=0.100, inner=0.40,
+               engines=props(0.95, 1.5, 0.3, 2.6, 0.40),
+               stab=dict(semi=0.18, cr=0.11, ct=0.07)),   # Grumman Goose (high wing, hull)
+    "GA4C": row("gulfstream", sweep=33.0, engines=aft(1.5, 3.9, 0.665)),   # Gulfstream G400
+    "GB1": row("cherokee", fus_w=0.8, cr=0.20, ct=0.14, inner=None, wing_le=0.28,
+               nose_len=1.6, nose_pow=0.55, engines=nose_prop(1.9)),   # GameBird
+    "GLAS": row("cirrus", fus_w=0.95, cr=0.19, ct=0.12, wing_le=0.28, nose_len=1.7, engines=nose_prop(1.8)),   # Glasair
+    "GLST": row("cub", fus_w=1.15, wing_le=0.23, cr=0.14, ct=0.12, engines=nose_prop(1.9)),   # GlaStar
+    "HROC": row("cherokee", fus_w=0.8, cr=0.21, ct=0.15, inner=None, wing_le=0.28,
+                nose_len=1.6, nose_pow=0.55, engines=nose_prop(1.8)),   # Harmon Rocket
+    "IR23": row("cherokee", fus_w=1.2, cr=0.15, ct=0.11, inner=None, engines=nose_prop(1.9)),   # IAR-823
+    "J3": row("cub", fus_w=0.9, engines=nose_prop(1.8)),   # Legend Cub
+    "JAB4": row("single", fus_w=1.0, cr=0.14, ct=0.115, inner=None, engines=nose_prop(1.6)),   # Jabiru J200
+    "JABI": row("single", fus_w=0.95, cr=0.14, ct=0.115, inner=None, engines=nose_prop(1.6)),   # Jabiru LSA
+    "JSX": row("cherokee", fus_w=0.7, cr=0.20, ct=0.14, inner=None, nose_len=1.5,
+               engines=centre(0.5, 1.3, 0.60)),   # SubSonex
+    "LA25": row("single", fus_w=1.3, nose_len=1.0, nose_pow=0.5, wing_le=0.30, cr=0.14, ct=0.115, inner=None,
+                engines=centre(0.7, 1.6, 0.55), stab=dict(pos="T")),   # Lake Renegade (hull, pusher above wing)
+    "LEG2": row("cirrus", fus_w=0.95, cr=0.17, ct=0.10, wing_le=0.28, nose_len=1.6, engines=nose_prop(1.8)),   # Lancair Legacy
+    "LNC2": row("cirrus", fus_w=0.90, cr=0.17, ct=0.10, wing_le=0.28, nose_len=1.6, engines=nose_prop(1.7)),   # Lancair 200
+    "LNCE": row("cirrus", fus_w=1.15, nose_len=1.6, engines=nose_prop(2.0)),   # Lancair ES
+    "M200": row("cherokee", fus_w=1.2, cr=0.16, ct=0.10, inner=None, nose_len=1.6, nose_pow=0.55,
+                engines=nose_prop(1.9)),   # Aero Commander 200
+    "MG17": row("fighter", fus_w=1.4, nose_len=3.0, wing_le=0.38, sweep=43.0, cr=0.31, ct=0.12,
+                stab=dict(semi=0.19, sweep=45.0, cr=0.14, ct=0.07)),   # FT-5 (two-seat MiG-17)
+    "MOR2": row("cherokee", fus_w=1.0, cr=0.16, ct=0.12, inner=None, engines=nose_prop(1.8)),   # Morrisey 2150
+    "MRF1": row("fighter", fus_w=1.5, nose_len=3.4, wing_le=0.42, sweep=47.0, cr=0.50, ct=0.15,
+                stab=dict(semi=0.27, sweep=50.0, cr=0.28, ct=0.10)),   # Mirage F1
+    "NG5": row("cherokee", fus_w=1.1, cr=0.14, ct=0.12, inner=None, engines=nose_prop(1.8)),   # Bristell NG-5
+    "P136": row("twin", fus_w=1.4, nose_len=1.4, nose_pow=0.5, wing_le=0.28, cr=0.13, ct=0.10, inner=0.40,
+                engines=props(0.9, 0.2, 1.2, 2.0, 0.17),
+                stab=dict(semi=0.17, cr=0.10, ct=0.07)),   # Piaggio P.136 (gull wing, pushers)
+    "P38": row("booms", fus_w=1.3, nose_len=1.2, wing_le=0.30, cr=0.21, ct=0.09, inner=None,
+               booms=dict(eta=0.36, w=0.75, pod=0.62),
+               engines=props(1.0, 2.5, 1.0, 3.3, 0.36),
+               stab=dict(semi=0.20, sweep=0.0, cr=0.11, ct=0.09)),   # F-5 Lightning (P-38 photo)
+    "PIAT": row("cherokee", fus_w=1.0, cr=0.12, ct=0.095, inner=None, engines=nose_prop(1.7)),   # Alpha Trainer
+    "PISI": row("glider", engines=nose_prop(1.75), fus_w=0.85, nose_len=1.6,
+                stab=dict(pos="T", semi=0.095)),   # Pipistrel Sinus
+    "PIVI": row("glider", fus_w=0.85, nose_len=1.8, engines=nose_prop(1.7), wing_le=0.30, cr=0.085, ct=0.050, stab=dict(semi=0.12, pos="T")),  # Pipistrel Surveyor
+    "PP3":  row("bonanza", fus_w=1.0, nose_len=1.8, wing_le=0.30, cr=0.150, ct=0.085, engines=nose_prop(2.0)),  # Pilatus P-3
+    "RBEL": row("cub", fus_w=0.95, wing_le=0.24),  # Murphy Rebel
+    "RC3":  row("single", fus_w=1.35, nose_len=1.2, wing_le=0.30, cr=0.130, ct=0.110, inner=0.5, engines=centre(0.65, 1.5, 0.42), stab=dict(semi=0.16, pos="conv", back=0.05)),  # Republic RC-3 Seabee (pusher on pylon, drawn as a centreline pod; amphibian, high wing)
+    "RELI": row("single", fus_w=1.25, nose_len=1.3, wing_le=0.24, cr=0.135, ct=0.105, inner=0.40, engines=nose_prop(2.4)),  # Stinson AT-19 Reliant
+    "RISN": row("cirrus", fus_w=0.95, nose_len=1.7, wing_le=0.30, cr=0.115, ct=0.075, engines=nose_prop(1.8)),  # Porto Risen
+    "RS20": row("cub", fus_w=0.95, wing_le=0.23),  # Rans S-20 Raven
+    "RS21": row("cub", fus_w=1.05, wing_le=0.22, cr=0.150, ct=0.125),  # Rans S-21 Outbound
+    "S211": row("jet_trainer", fus_w=1.35, nose_len=2.3, nose_pow=0.7, wing_le=0.40, sweep=10.0, cr=0.200, ct=0.100, stab=dict(semi=0.200, sweep=18.0, cr=0.140, ct=0.070, pos="T")),  # PADC / Aermacchi S-211
+    "S58T": row("heli_heavy", blades=4, bw=0.16, nose=0.30, rear=0.22, tail=0.58, tailplane=0.12),  # Sikorsky S-58T (4 blades)
+    "S64":  row("heli_heavy", blades=6, bw=0.11, nose=0.22, rear=0.16, tail=0.50, tailplane=0.14),  # Sikorsky S-64 / CH-54 Skycrane (6 blades)
+    "SA30": row("biplane", fus_w=0.85, wing_le=0.20, cr=0.175, ct=0.175),  # Stolp Starduster Too
+    "SGRA": row("cub", fus_w=1.05, wing_le=0.23, cr=0.150, ct=0.130),  # Prestige Storm Rally
+    "SKAR": row("single", fus_w=0.95, nose_len=1.4, wing_le=0.27, cr=0.130, ct=0.100, inner=0.40, stab=dict(semi=0.15, pos="conv")),  # Sky Arrow 650
+    "SLG2": row("cherokee", fus_w=1.05, nose_len=1.5, wing_le=0.28, cr=0.135, ct=0.105, engines=nose_prop(1.7)),  # Sling 2 LSA
+    "SLG4": row("cherokee", fus_w=1.15, nose_len=1.5, wing_le=0.28, cr=0.135, ct=0.100, engines=nose_prop(1.9)),  # Sling 4 TSi
+    "SONX": row("cherokee", fus_w=0.85, nose_len=1.5, wing_le=0.30, cr=0.150, ct=0.130, engines=nose_prop(1.5)),  # Sonex
+    "SPUP": row("biplane", fus_w=0.85, wing_le=0.20, cr=0.165, ct=0.165, engines=nose_prop(2.3)),  # Sopwith Pup replica
+    "SREY": row("single", fus_w=1.25, nose_len=1.2, wing_le=0.28, cr=0.135, ct=0.120, inner=0.5, engines=centre(0.65, 1.5, 0.42), stab=dict(semi=0.15, pos="conv", back=0.05)),  # Progressive Aerodyne SeaRey (pusher on pylon, amphibian, high wing)
+    "SS2T": row("turbine_single", fus_w=1.30, nose_len=1.5, nose_pow=0.5, wing_le=0.30, cr=0.095, ct=0.085, stab=dict(semi=0.20, sweep=4.0, cr=0.11, ct=0.07), engines=nose_prop(2.6)),  # Ayres S-2R Turbo Thrush
+    "SVNH": row("cub", fus_w=1.05, wing_le=0.22, cr=0.145, ct=0.130),  # Savannah MXP-740
+    "SX30": row("cirrus", fus_w=0.90, nose_len=1.6, wing_le=0.30, cr=0.130, ct=0.100, engines=nose_prop(1.8)),  # Swearingen SX-300
+    "SYMP": row("cherokee", fus_w=1.10, nose_len=1.5, wing_le=0.28, cr=0.140, ct=0.100, engines=nose_prop(1.9)),  # OMF Symphony
+    "T18":  row("cirrus", fus_w=0.80, nose_len=1.7, wing_le=0.31, cr=0.170, ct=0.130, engines=nose_prop(1.7)),  # Classic Sport S-18 (Thorp T-18)
+    "TAIL": row("single", fus_w=0.80, nose_len=1.6, wing_le=0.25, cr=0.180, ct=0.130, inner=0.4, engines=nose_prop(1.8)),  # Wittman W-10 Tailwind
+    "TARR": row("cherokee", fus_w=1.05, nose_len=1.5, wing_le=0.28, cr=0.130, ct=0.100, engines=nose_prop(1.8)),  # Pelegrin Tarragon
+    "TF21": row("single", fus_w=0.95, nose_len=1.3, wing_le=0.24, cr=0.140, ct=0.125, inner=0.5, engines=nose_prop(1.9)),  # Taylor Kits T-Kraft (Taylorcraft-style high wing)
+    "TNAV": row("twin", fus_w=1.15, nose_len=1.8, wing_le=0.33, cr=0.150, ct=0.095, engines=props(0.70, 1.2, -0.1, 1.9, 0.30)),  # Camair Twin Navion
+    "TRF1": row("cirrus", fus_w=0.85, nose_len=1.4, wing_le=0.32, cr=0.150, ct=0.130, engines=nose_prop(1.6)),  # Team Rocket F1
+    "TRIM": row("twin", fus_w=1.9, nose_len=1.2, nose_pow=0.5, wing_le=0.27, sweep=0.0, cr=0.190, ct=0.170, inner=0.9,
+                engines=nose_prop(2.4) + props(0.85, 1.8, 0.0, 2.3, 0.28),
+                stab=dict(semi=0.20, sweep=0.0, cr=0.100, ct=0.085, pos="conv", back=0.03)),  # Ford 4-AT Trimotor (nose + 2 wing engines)
+    "TWEN": row("single", fus_w=1.25, nose_len=1.4, wing_le=0.25, cr=0.130, ct=0.100, inner=0.45, engines=nose_prop(1.9)),  # Tecnam P2010
+    "VELO": row("single", fus_w=0.85, nose_len=1.6, wing_le=0.50, sweep=16.0, cr=0.13, ct=0.06, inner=None,
+                engines=centre(0.65, 1.5, 0.75), canard=dict(at=0.12, semi=0.28, cr=0.08, ct=0.06),
+                stab=dict(semi=0.0)),  # Velocity 173 (canard pusher, like Long-EZ row)
+    "VJ22": row("single", fus_w=1.30, nose_len=1.2, wing_le=0.30, cr=0.130, ct=0.100, inner=0.5, engines=centre(0.65, 1.5, 0.45), stab=dict(semi=0.15, pos="T", back=0.04)),  # Volmer VJ-22 Sportsman (pusher on pylon, amphibian, high wing)
+    "VTRA": row("cub", fus_w=1.00, wing_le=0.22),  # Rans S-19 Venterra
+    "WACF": row("biplane", fus_w=1.0, nose_len=1.4, wing_le=0.20, cr=0.150, ct=0.150, engines=nose_prop(2.0)),  # Waco Classic YMF-5
+    "WAIX": row("cherokee", fus_w=0.85, nose_len=1.5, wing_le=0.30, cr=0.150, ct=0.130, engines=nose_prop(1.5), stab=dict(semi=0.12, sweep=20.0, cr=0.11, ct=0.06)),  # Sonex Waiex (V-tail drawn as a small stab)
+    "XL2":  row("cherokee", fus_w=1.05, nose_len=1.5, wing_le=0.28, cr=0.150, ct=0.115, engines=nose_prop(1.8)),  # Liberty / Discovery XL-2
     # --- flying wing (own builder, see BUILDERS)
     "B2": row("airliner"),
 }
@@ -1198,6 +1371,124 @@ EXTRA_DIMS = {
     "NH90": (16.30, 16.13, "NH90: rotor 16.3 m, fuselage ~16.1 m"),
     "LYNX": (12.80, 12.06, "Super Lynx: rotor 12.8 m, fuselage ~12.1 m"),
     "H160": (13.40, 13.96, "Airbus H160: rotor 13.4 m"),
+    # --- seen on a real receiver, added after the first coverage pass
+    "GA8C": (31.39, 30.41, "aircraft spec listings, 103 ft span / ~99.8 ft length (unverified)"),
+    "FA6X": (25.94, 25.68, "airport-technology.com and aviation24.be spec tables"),
+    "V22": (25.78, 17.48, "Boeing / USAF fact sheet: width across the turning rotors (rotor diameter 11.6 m) and fuselage length; the FAA row gives the wing's span, which leaves the rotors out"),
+    "ULAC": (9.00, 6.00, "typical ultralight; ULAC is a generic designator"),
+    "GYRO": (8.40, 5.00, "typical gyrocopter rotor; GYRO is a generic designator"),
+    "ACRO": (5.97, 5.33, "Acro Sport I: Wikipedia/aircraft directory, upper wing 19 ft 7 in, 17 ft 6 in"),
+    "AG10": (10.42, 7.26, "AVIC AG100: Chinese state media quoting AVIC, 10.42 m span, 7.26 m long"),
+    "AJET": (9.11, 11.75, "Alpha Jet E: Milavia/SKYbrary 9.11 m span, 11.75 m (Milavia; others 12.3-13.2 m with probe)"),
+    "ALIG": (9.30, 6.30, "Arion Lightning LS-1: manufacturer figures via Wikipedia, 30 ft 6 in, 20 ft 8 in"),
+    "ANGL": (12.18, 10.21, "Angel 44: Jane's via Wikipedia, 39 ft 11.5 in, 33 ft 6 in"),
+    "AP22": (10.10, 6.30, "Aeroprakt A-22: Wikipedia-derived spec, 10.1 m, 6.3 m (A22LS is 9.55 m)"),
+    "AP32": (9.45, 6.27, "Aeroprakt A-32 Vixxen: Foxbat Australia spec table and POH, 9.45 m, 6.27 m"),
+    "AS31": (21.00, 7.07, "ASH 31 Mi: Wikipedia spec, 21 m with winglets, 7.07 m (EASA TCDS 7.10 m)"),
+    "ASTO": (8.65, 7.00, "Tecnam Astore: AOPA/Tecnam data via Wikipedia, 8.65 m, 7.0 m"),
+    "AT3P": (13.72, 8.23, "Air Tractor AT-300 series: aeropedia/Jane's, 45 ft, 27 ft"),
+    "AVID": (9.14, 5.74, "Airdale Flyer/Backcountry: 30 ft 0 in span, 18 ft 10 in long (Wikipedia/aircraft directory)"),
+    "B14A": (10.41, 6.50, "Bellanca 14-13 Cruisair Senior: Wikipedia/GlobalAir, 34 ft 2 in, 21 ft 4 in"),
+    "B26": (21.34, 15.42, "A-26 Invader: sources agree 70 ft span; length 50 ft 7 in (15.42 m)"),
+    "BDOG": (10.06, 7.09, "Beagle/Scottish Aviation Bulldog: aeropedia, 33 ft 0 in, 23 ft 3 in"),
+    "BE4W": (13.25, 14.75, "Beechjet 400XT: Aerocorner/AvPay, 43 ft 6 in, 48 ft 5 in"),
+    "BIPL": (6.10, 5.18, "EAA Biplane: Wikipedia/aircraft directory, 20 ft 0 in, 17 ft 0 in"),
+    "BOLT": (7.32, 5.79, "Steen Skybolt: Wikipedia/Pima museum, 24 ft, 19 ft"),
+    "BPAT": (10.36, 6.91, "Bearhawk Patrol: manufacturer page 34 ft span, 22 ft 8 in long"),
+    "BR23": (9.27, 6.58, "Bristell B23: EASA TCDS, 9.27 m span, 6.58 m long"),
+    "BUSH": (9.60, 5.70, "SkyReach BushCat: Wikipedia/aeroexpo, 9.6 m, 5.7 m"),
+    "C190": (11.02, 8.33, "Cessna 190/195: Wikipedia/aeropedia, 36 ft 2 in, 27 ft 4 in"),
+    "CB1": (7.72, 5.79, "Hatz CB-1: Jane's via Wikipedia, 25 ft 4 in, 19 ft 0 in"),
+    "CC11": (10.44, 6.93, "Carbon Cub SS: Wikipedia (Flying magazine data), 34.25 ft, 22.75 ft"),
+    "CC19": (10.46, 7.26, "CubCrafters XCub: Wikipedia/EASA TCDS, 10.46 m, 7.26 m (NXCub is the same airframe with nosewheel)"),
+    "CH60": (8.23, 5.80, "Zenith CH 601 Zodiac: aeropedia/GlobalAir, 27 ft, 19 ft"),
+    "CH75": (9.09, 6.65, "Zenith STOL CH 750: Zenith spec page, 29 ft 10 in, 21 ft 10 in"),
+    "CH80": (9.55, 7.50, "Zenith STOL CH 801: aeropedia, 9.55 m, ~7.5 m"),
+    "CJ6": (10.22, 8.46, "Nanchang CJ-6A: Jane's via Wikipedia, 10.22 m, 8.46 m"),
+    "CL2T": (28.60, 19.82, "CL-415: SKYbrary/Army Recognition, 28.6 m span, 19.82 m long"),
+    "CMAS": (10.31, 7.57, "Cessna C-34 Airmaster: Wikipedia, 33 ft 10 in, 24 ft 10 in"),
+    "COY2": (10.52, 6.10, "Rans S-6 Coyote II: Wikipedia, 34 ft 6 in, 20 ft 0 in"),
+    "COZY": (8.57, 5.15, "Cozy Mk IV: Wikipedia, 28 ft 1.2 in, 16 ft 10.8 in (AeroCanard is the same size)"),
+    "CRER": (8.92, 7.09, "Rans S-7 Courier: Rans spec page, 29 ft 3 in, 23 ft 3 in"),
+    "D11": (8.20, 6.37, "Jodel D.112: aeropedia, 8.2 m, 6.37 m"),
+    "DA2": (5.86, 5.44, "Davis DA-2: Wikipedia, 19 ft 3 in, 17 ft 10 in"),
+    "DEFI": (9.40, 6.95, "Rutan Defiant: Wikipedia, 30 ft 9 in, 22 ft 10 in"),
+    "DH82": (8.94, 7.29, "DH.82 Tiger Moth: de Havilland Museum/GlobalAir, 29 ft 4 in, 23 ft 11 in"),
+    "DO28": (13.80, 9.00, "Do 28 A-1/B-1: Jane's via Wikipedia, 13.80 m, 9.00 m"),
+    "E300": (8.0, 6.9, "aviationdimension.com/web search, EA-300LP 26 ft 3 in, 22 ft 8 in"),
+    "E390": (35.05, 35.2, "Embraer KC-390 brochure"),
+    "EAGL": (6.07, 5.46, "Aviat Christen Eagle II kit table, 19 ft 11 in, 17 ft 11 in"),
+    "EDGE": (7.42, 6.27, "Zivko Edge 540 data, 24 ft 4 in, 20 ft 7 in"),
+    "EFOX": (9.125, 5.605, "Aeropro Eurofox manufacturer brochure"),
+    "EV97": (8.1, 5.98, "pilotfriend.com EV-97 Eurostar data"),
+    "EVOP": (11.0, 9.1, "Lancair Evolution manufacturer data, 37 ft, 30 ft"),
+    "EVSS": (8.65, 5.98, "Evektor SportStar Max, AvSport/Jane's"),
+    "EXNG": (8.3, 7.11, "Extra Aircraft Extra NG specification page"),
+    "F260": (8.35, 7.10, "SF.260C data, 27 ft 5 in, 23 ft 4 in"),
+    "F8L": (8.0, 6.5, "Falco F8L, Aeropedia/aircraftworlddirectory"),
+    "FDF2": (9.87, 6.86, "EASA type data sheet, Flight Design F2"),
+    "FOX": (9.75, 5.6, "GlobalAir Kitfox Classic IV, 32 ft, 18 ft 5 in"),
+    "G21": (14.94, 11.7, "Grumman G-21A Goose, 49 ft 0 in, 38 ft"),
+    "GA4C": (26.31, 26.29, "Gulfstream G400 manufacturer page"),
+    "GB1": (7.7, 6.9, "Game Composites GB1, AOPA/Top Gun Voltige sheet"),
+    "GLAS": (7.09, 6.5, "Glasair III, 23 ft 3 in, 21 ft 4 in"),
+    "GLST": (10.67, 6.71, "GlaStar, Kitplanes data via Wikipedia, 35 ft, 22 ft"),
+    "HROC": (6.67, 6.55, "Harmon Rocket II, Aeropedia"),
+    "IR23": (10.0, 8.24, "IAR-823, Jane's 1980-81 via Wikipedia"),
+    "J3": (10.82, 6.83, "American Legend AL3C-100, 35 ft 6 in, 22 ft 5 in"),
+    "JAB4": (8.1, 6.55, "Jabiru J200, all-aero.com"),
+    "JABI": (8.03, 5.0, "Jabiru LSA with 1600 engine, Wikipedia"),
+    "JSX": (5.48, 5.05, "Sonex SubSonex JSX-2, Aeropedia"),
+    "LA25": (11.58, 8.64, "Lake LA-250 Renegade, Jane's 1984-85, 38 ft, 28 ft 4 in"),
+    "LEG2": (7.77, 6.71, "Lancair Legacy spec sheet, 25 ft 6 in, 22 ft"),
+    "LNC2": (7.16, 5.99, "Lancair 200, Aeropedia, 23 ft 6 in, 19 ft 8 in"),
+    "LNCE": (10.82, 7.62, "Lancair ES, SKYbrary"),
+    "M200": (9.30, 7.41, "Aero Commander 200D, 30 ft 6 in, 24 ft 4 in"),
+    "MG17": (9.63, 11.5, "JJ-5/FT-5 two-seat trainer data"),
+    "MOR2": (9.14, 6.47, "Shinn 2150A / Kachina 2150 data, same design lineage (unverified)"),
+    "MRF1": (8.40, 15.30, "Mirage F1C, aerospaceweb/migflug"),
+    "NG5": (9.13, 6.45, "Bristell LSA wing 9.13 m, NG5 length 6.45 m, Aeropedia/GlobalAir (unverified)"),
+    "P136": (13.53, 10.8, "Piaggio P.136-L1, Vintage Flying Museum data"),
+    "P38": (15.84, 11.53, "P-38L data (F-5 is the same airframe), 52 ft, 37 ft 10 in"),
+    "PIAT": (10.5, 6.5, "Pipistrel Alpha Trainer manufacturer sheet"),
+    "PISI": (14.97, 6.5, "Pipistrel Sinus manufacturer datasheet"),
+    "PIVI": (10.70, 6.45, "Pipistrel Surveyor sheet 10.7 m wing option; length from Virus SW listing 6.45 m (base airframe)"),
+    "PP3":  (10.40, 8.75, "Pilatus P-3 specifications (10.40 m, 8.75 m)"),
+    "RBEL": (9.14, 6.55, "Murphy Rebel (Aeropedia 9.14 m, 6.55 m; 30 ft, 21 ft 4 in on maker data)"),
+    "RC3":  (11.47, 8.50, "Republic RC-3 Seabee (Smithsonian 37 ft 8 in; 27 ft 11 in)"),
+    "RELI": (12.77, 8.60, "Stinson AT-19/V-77 (41 ft 11 in, ~28 ft 3 in, restored-AT-19 article)"),
+    "RISN": (9.00, 6.80, "Risen maker comparison table (9.00 m, 6.80 m)"),
+    "RS20": (9.22, 6.40, "Rans S-20 Raven spec page (30 ft 3 in, 21 ft)"),
+    "RS21": (8.53, 6.83, "Rans S-21 Outbound (28 ft, 22 ft 4.9 in)"),
+    "S211": (8.43, 9.30, "S-211 (Volandia/Aeropedia 8.43 m; Global Military/migflug 9.3 m)"),
+    "S58T": (17.07, 14.25, "Sikorsky archives S-58 (56 ft rotor, 46 ft 9 in fuselage)"),
+    "S64":  (21.95, 21.41, "S-64 Skycrane (72 ft rotor, 70 ft 3 in fuselage)"),
+    "SA30": (7.30, 6.27, "Stolp Starduster Too (24 ft, 20 ft 7 in; Aircraft Spruce data)"),
+    "SGRA": (8.60, 7.08, "Storm Rally (Aeropedia 8.6 m, 7.08 m)"),
+    "SKAR": (9.68, 7.60, "Sky Arrow 650 (Giotto Air datasheet via Wikipedia)"),
+    "SLG2": (9.16, 6.68, "Sling LSA (AeroExpo/Aeropedia 9.16 m, 6.68 m)"),
+    "SLG4": (9.54, 7.175, "Sling TSi maker brochure (9.54 m, 7.175 m)"),
+    "SONX": (6.71, 5.51, "Sonex (22 ft, 18 ft 1 in; maker data via Wikipedia)"),
+    "SPUP": (8.20, 5.80, "Airdrome Sopwith Pup (27 ft, 19 ft)"),
+    "SREY": (9.39, 6.84, "SeaRey (AOPA guide 30 ft 10 in, 22 ft 5 in)"),
+    "SS2T": (14.47, 10.35, "Ayres S-2R-H80 Turbo Thrush (Aircraft World Directory 47 ft 6 in, 33 ft 11 in); S-2R-G close"),
+    "SVNH": (9.00, 6.60, "MXP-740 Savannah (Polish ULC TCDS 9.0 m, 6.6 m)"),
+    "SX30": (7.43, 6.44, "Swearingen SX-300 (AOPA Pilot 24 ft 4.5 in, 21 ft 1.5 in)"),
+    "SYMP": (10.67, 6.96, "Symphony 160 (EASA TCDS 6.96 m; 35 ft span)"),
+    "T18":  (6.35, 5.77, "Classic Sport S-18 (20 ft 10 in; 18 ft 10 in)"),
+    "TAIL": (7.31, 5.94, "Wittman W-10 Tailwind (24 ft, 19 ft 6 in)"),
+    "TARR": (7.94, 7.53, "Pelegrin Tarragon (7.94 m, 7.53 m, Wikipedia citing maker)"),
+    "TF21": (10.70, 6.70, "Taylorcraft-class estimate (unverified)"),
+    "TNAV": (10.57, 8.53, "Camair Twin Navion (34 ft 8 in, 28 ft; twinnavion.com)"),
+    "TRF1": (6.56, 6.40, "Team Rocket F1 (Jane's 2003-04: 21 ft 6 in, 21 ft)"),
+    "TRIM": (22.56, 15.19, "Ford 4-AT (74 ft, 49 ft 10 in)"),
+    "TWEN": (10.30, 7.97, "Tecnam P2010 (10.30 m, 7.97 m)"),
+    "VELO": (8.94, 5.80, "Velocity SE maker page (29 ft 4 in, 19 ft)"),
+    "VJ22": (11.13, 7.32, "Volmer VJ-22 (Jane's 1993-94: 36 ft 6 in, 24 ft)"),
+    "VTRA": (8.53, 6.06, "Rans S-19 Venterra (28 ft, 19 ft 10.75 in)"),
+    "WACF": (9.14, 7.04, "Waco YMF-5 (30 ft, 23 ft 1 in)"),
+    "WAIX": (6.71, 5.51, "Sonex Waiex (22 ft, 18 ft 1 in)"),
+    "XL2":  (8.72, 6.19, "Liberty XL2 (Wikipedia 8.72 m, 6.193 m)"),
 }
 
 # Engine counts the FAA table gets wrong (checked by test_type_shapes.py).
@@ -1221,6 +1512,14 @@ ALIASES = {
     "DH3T": "DHC3",
     "AS55": "AS50",
     "EC30": "AS50",
+    "C82T": "C82R",   # Turbo Skylane RG: the Skylane RG airframe
+    "T206": "C206",   # Turbo Stationair: the Stationair airframe
+    "M700": "M600",   # Piper M700 Fury: the M600 airframe
+    "K100": "KODI",   # Kodiak 100: the designator that replaced KODI
+    "W135": "K35R",   # WC-135R: a KC-135R conversion
+    "B58T": "BE58",   # Pressurized Baron: the Baron 58 airframe
+    "P28S": "P28R",   # Turbo Arrow III: the Arrow airframe
+    "P337": "C337",   # pressurized Skymaster: the Skymaster airframe
 }
 
 
@@ -1727,18 +2026,51 @@ def build_flying_wing(code, dims):
     return pts + mirror, span
 
 
+def build_tiltrotor(code, dims):
+    """Tiltrotor: a fuselage, a short straight wing with a nacelle and a
+    rotor at each tip, and a tailplane, drawn with the rotors up. In metres
+    from the nose. The first dimension is the width ACROSS THE TURNING
+    ROTORS, not the wing's span."""
+    sp = spec_for(code)
+    width, L = dims[code]
+    r = sp["rotor"] / 2
+    x_mast = width / 2 - r                 # rotor centres sit at the wingtips
+    w = sp["fus_w"]
+    if x_mast - r < w / 2:
+        raise RuntimeError(f"{code}: rotors would overlap the fuselage: its first dimension"
+                           " must be the width across the turning rotors")
+    y_wing = sp["wing_le"] * L
+    parts = [_fuselage(L, w, 1.6 * w, 0.6, 3.0 * w, 0.3 * w),
+             _bar(0.0, y_wing, 2 * x_mast, sp["chord"]),
+             _bar(0.0, L - sp["stab"]["cr"], 2 * sp["stab"]["semi"], sp["stab"]["cr"])]
+    y_mast = y_wing + sp["chord"] * 0.45
+    n = sp["blades"]
+    for side in (1, -1):
+        cx = side * x_mast
+        parts.append(_pod(cx, y_mast - 1.3, 2.6, 1.3, front=0.5, back=0.5))
+        for k in range(n):
+            deg = 90.0 / n + k * 360.0 / n          # the left rotor mirrors the right
+            parts.append(_blade(cx, y_mast, r, 0.62, deg if side > 0 else 180.0 - deg))
+    return _finish(parts), width
+
+
 BUILDERS = {"B2": build_flying_wing}
 
 
 def is_rotorcraft(code):
-    return PRESETS[SOURCES[code][0]].get("builder") == "heli"
+    """True for a row drawn with rotors (helicopters, the tiltrotor): the
+    marker code needs to know, since these report the rotorcraft category."""
+    return PRESETS[SOURCES[code][0]].get("builder") in ("heli", "tilt")
 
 
 def build(code, dims):
     if code in BUILDERS:
         return BUILDERS[code](code, dims)
-    if is_rotorcraft(code):
+    builder = PRESETS[SOURCES[code][0]].get("builder")
+    if builder == "heli":
         return build_heli(code, dims)
+    if builder == "tilt":
+        return build_tiltrotor(code, dims)
     return build_source(code, dims)
 
 

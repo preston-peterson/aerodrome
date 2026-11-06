@@ -19,6 +19,28 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.163] — 2026-11-05
+
+**About 120 more aircraft types have a silhouette, which closes the gap for the less common ones.** 3.4.162 covered the types most often seen. This release adds the long tail:
+
+- kit-built and light-sport aircraft, such as the Kitfox, Sonex, Zenith, Rans, Glasair, Lancair, Sling, Bristell and Carbon Cub;
+- aerobatic and vintage aircraft, a few more warbirds and military jets, and several amphibians;
+- newer business jets (the Gulfstream G800 and Falcon 6X) and two more helicopters;
+- the V-22 Osprey, drawn as a tiltrotor with a rotor at each wingtip;
+- the generic codes some aircraft report for an ultralight and a gyrocopter.
+
+685 type codes now draw a silhouette, up from 560. Checked against the history of a receiver that has recorded about 500 different types, every aircraft type in it now has one.
+
+**Only heavy aircraft draw at the larger size.** A silhouette is 26 px, or 31 px for an aircraft that reports the heavy category. Since 3.4.161, aircraft reporting some other categories (high-performance, ultralight, drone) also drew at 31 px, larger than an airliner. They are 26 px now.
+
+### Operational notes
+
+This is an ordinary update with a normal restart and no database change. Reload any open Live or display-board page to see the new shapes. The file of shapes those two pages load grew from 258 KB to 309 KB.
+
+### Behind the scenes
+
+`scripts/gen_type_shapes.py` gained a tiltrotor drawing (`build_tiltrotor`); it refuses a row whose rotors would overlap the fuselage, since a tiltrotor's first dimension is its width across the turning rotors, not its wingspan. The table has 664 rows and 21 aliases. Variants that share an airframe with a drawn type (the Turbo Stationair, the Turbo Skylane RG, the pressurized Baron and Skymaster, the Kodiak under its newer code) are aliases of it. None of the new types is in the FAA table, so each one's wingspan and length was looked up and its entry names the source; eleven entries in the whole table could not be confirmed and say so.
+
 ## [3.4.162] — 2026-11-05
 
 **The map now draws a silhouette for about 550 aircraft types, up from 135.** An aircraft whose type had no silhouette showed the plain chevron. Far fewer will now. The Live map and the display board draw:

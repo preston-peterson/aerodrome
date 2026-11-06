@@ -111,9 +111,9 @@ class TypeShapeTableTest(unittest.TestCase):
             checked += 1
         self.assertGreater(checked, 300)
 
-    def test_rotorcraft_rows_are_helicopters_in_doc_8643(self):
-        """A helicopter preset on a fixed-wing code (or the reverse) would
-        draw rotor blades on an aeroplane. DOC 8643 says which is which; its
+    def test_rotorcraft_rows_are_rotorcraft_in_doc_8643(self):
+        """A helicopter or tiltrotor preset on a fixed-wing code (or the
+        reverse) would draw rotor blades on an aeroplane. DOC 8643 says which is which; its
         CSV is a local, untracked cache, so the check runs only where it is."""
         doc = ROOT / "scripts" / "doc8643.csv"
         if not doc.exists():
@@ -124,7 +124,8 @@ class TypeShapeTableTest(unittest.TestCase):
                 kind.setdefault(r["type_designator"], r["description"])
         for code in self.gen.SOURCES:
             if code in kind:
-                self.assertEqual(self.gen.is_rotorcraft(code), kind[code] == "Helicopter", code)
+                self.assertEqual(self.gen.is_rotorcraft(code),
+                                 kind[code] in ("Helicopter", "Tiltrotor", "Gyrocopter"), code)
 
 
 class ShippedShapesTest(unittest.TestCase):
