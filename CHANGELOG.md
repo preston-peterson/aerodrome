@@ -19,6 +19,24 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.166] — 2026-11-06
+
+**The Configuration page now fits on a phone, a partly installed notification server can be repaired in place, and the light theme is easier to read.**
+
+- **Configuration on a phone.** Six tabs scrolled sideways on a phone: Database, Watchlist alerts, Stats, Notifications, Display and Updates. One long dropdown choice, or a field's minimum width, made the whole page wider than the screen. Every tab now fits a screen 320 pixels wide. On a narrow screen a long dropdown choice is cut short instead of widening the page, and the notification server's cleanup command breaks only between folder names, never inside one. Larger screens look the same as before.
+- **Repair a partly installed ntfy.** When some of the local notification server's files are missing, the Notifications tab now says which ones and offers Repair beside Uninstall. Repair puts back what's missing and keeps your settings and your topic, so a phone that's already subscribed keeps getting alerts. If the settings file itself is what's missing, Repair asks for the port and network setting first.
+- **Easier to read in the light theme.** Buttons, links and the titles of message boxes now meet the WCAG AA contrast level (4.5:1), and so does the "copied" note on Copy buttons. The light theme's teal is a shade darker as a result. In the dark theme, red message titles are a little lighter for the same reason.
+
+### Operational notes
+
+This is an ordinary update with a normal restart and no database change. Reload any open pages to pick up the new styles.
+
+### Behind the scenes
+
+- `templates/config.html` has phone rules (640 px and narrower) that let its one-column layout shrink below its widest dropdown option and drop the desktop 200 px minimum on fields, plus `cfg-*` classes for the two-up and label/field grids that were inline styles.
+- `POST /api/ntfy/install` on a `partial` install repairs it: it keeps the port, bind address, base URL and relay setting that the existing server.yml still holds, and the reply carries `repaired: true` (see API.md). Before, reinstalling over a partial install through the API used the request's port and bind address when the service file was the missing piece.
+- `static/theme.css` gains `--red-text`, `--amber-text` and `--green-text`, text shades of the alert colours that meet AA on each theme's backgrounds. The light theme's `--cyan` and `--link` are now `#0e7490`. The aircraft page's map-window buttons and the switch-to-real page's buttons now put `--bg0` text on their cyan fill, like every other cyan button, instead of black, which the darker light cyan would have left below AA.
+
 ## [3.4.165] — 2026-11-06
 
 **The Status page now tells you when alerts can't reach your phone, and clicking a row in the Live list shows that aircraft on the radar.**

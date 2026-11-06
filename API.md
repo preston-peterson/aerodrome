@@ -167,7 +167,7 @@ For users running a self-hosted ntfy server via Aerodrome's installer helper.
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/ntfy/status` | Is a self-hosted ntfy running? What version? Reachable? |
-| POST | `/api/ntfy/install` | Install ntfy to a user-specified directory |
+| POST | `/api/ntfy/install` | Install ntfy (`port`, `bind`, optional `topic`, `base_url`, `upstream_relay`). On a partly installed ntfy (state `partial`) it repairs instead: it puts back what's missing and keeps the port, bind, base URL and relay setting the existing server.yml still holds (the body's `port`/`bind` fill in only when that file is the missing piece); the reply then has `repaired: true` |
 | POST | `/api/ntfy/config` | Change the local ntfy server's address (`base_url`) or iPhone relay (`upstream_relay`) |
 | POST | `/api/ntfy/upgrade` | Upgrade ntfy to a newer version |
 | POST | `/api/ntfy/uninstall` | Remove the self-hosted ntfy install; `{"purge_data": true}` also deletes its cached messages (the local server's cache and SQLite's `-wal`/`-shm`, in `/var/lib/aerodrome-ntfy` and, from before v3.4.150, `/var/lib/ntfy`; a `cache-file` set by hand in server.yml is left in place, and `message` says so). With nothing installed it deletes a cache an earlier install left |

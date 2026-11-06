@@ -33,6 +33,12 @@
     /* Text-style accents — shift darker on light (see light block) for
        WCAG AA contrast. Dark values below. */
     --cyan:#06b6d4; --green:#22c55e; --blue:#3b82f6;
+    /* Text shades — legible-text siblings of the --red/--amber/--green
+       accents (which stay for fills, dots, borders). Needed because those
+       fills sit below WCAG AA as text on the card background: light --red
+       is ~3.4:1 on --bg2, --amber under 2:1. These carry the same meaning
+       in type-safe values for both themes. */
+    --red-text:#f87171; --amber-text:#f59e0b; --green-text:#22c55e;
     /* Link color — derived from cyan but tracked separately so changing
        link behavior later doesn't require palette archaeology. */
     --link:#06b6d4; --link-hover:#22d3ee;
@@ -51,9 +57,16 @@
     --t1:#0f172a; --t2:#475569; --t3:#64748b;
     /* Semantic accents — IDENTICAL to dark (Option C intent) */
     --red:#ef4444; --amber:#f59e0b;
-    /* Text accents — shifted darker for contrast on white */
-    --cyan:#0891b2; --green:#16a34a; --blue:#2563eb;
-    --link:#0891b2; --link-hover:#06b6d4;
+    /* Text accents — shifted darker for contrast on white. --cyan / --link
+       sit at cyan-700 (#0e7490): the old cyan-600 was 3.4-3.5:1 as text on
+       --bg2 and as --bg0 button text on --btn-primary fills — under AA.
+       --link-hover is darker still (cyan-800), underlined and transient. */
+    --cyan:#0e7490; --green:#16a34a; --blue:#2563eb;
+    --link:#0e7490; --link-hover:#155e75;
+    /* Text shades — same AA-on-white rationale as --cyan above; these are
+       the text-role values of the red/amber/green accents (which stay
+       identical to dark because they're fills/dots). */
+    --red-text:#b91c1c; --amber-text:#b45309; --green-text:#166534;
     --code-accent:#b45309;  /* amber-700, contrasts on light card bg */
     --purple:#7c3aed;  /* violet-600, contrast on light */
     --row-stripe:rgba(0,0,0,0.025);

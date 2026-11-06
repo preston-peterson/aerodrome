@@ -1336,7 +1336,13 @@ STALE_NOTE_TEXT = ("Cached messages from a prior install are still on this serve
                    "To start fresh, run this on the Aerodrome machine first, then reinstall:")
 PURGE_HINT_TEXT = ("Deletes the notification server's cached messages. Leave unchecked if you "
                    "might reinstall later and want to keep your message history.")
-STALE_CMD_RE = re.compile(r'<code id="nfStaleCacheCmd"[^>]*>([^<]*)</code>')
+STALE_CMD_RE = re.compile(r'<code id="nfStaleCacheCmd"[^>]*>(.*?)</code>', re.S)
+
+
+def _cmd_text(html):
+    """The command as Copy reads it (textContent): the markup's tags dropped —
+    v3.4.166 adds <wbr> after slashes and nowrap spans around the names."""
+    return [re.sub(r"<[^>]+>", "", c) for c in STALE_CMD_RE.findall(html)]
 COPY_ONCLICK = ("onclick=\"copyToClipboard(document.getElementById('nfStaleCacheCmd')"
                 ".textContent, this)\">Copy</button>")
 
@@ -1405,9 +1411,9 @@ class ConfigHtmlNtfyPanelWording(unittest.TestCase):
     def test_the_command_is_the_helpers_purge(self):
         """No wildcard (it would expand as the user, who can't list the
         folders) and no paths: the helper knows both caches."""
-        self.assertEqual(STALE_CMD_RE.findall(self.note), [_stale_cmd()])
+        self.assertEqual(_cmd_text(self.note), [_stale_cmd()])
         self.assertEqual(self.src.count('id="nfStaleCacheCmd"'), 1)
-        self.assertNotIn("*", STALE_CMD_RE.search(self.note).group(1))
+        self.assertNotIn("*", _cmd_text(self.note)[0])
 
     def test_no_single_cache_path_is_named(self):
         """There are two (v3.4.150): the note and the uninstall prompt name
@@ -1432,8 +1438,8 @@ class ConfigHtmlNtfyPanelWording(unittest.TestCase):
 
     def _styles(self):
         m = re.search(r'<div style="([^"]*)">\s*<code id="nfStaleCacheCmd" style="([^"]*)">'
-                      r'[^<]*</code>\s*<button type="button" class="btn" style="([^"]*)"',
-                      self.note)
+                      r'.*?</code>\s*<button type="button" class="btn" style="([^"]*)"',
+                      self.note, re.S)
         self.assertIsNotNone(m, "no command row (div > code#nfStaleCacheCmd + button.btn)")
         return [dict((k.strip(), v.strip()) for k, v in
                      (d.split(":", 1) for d in _squash(s).split(";") if ":" in d))
@@ -1447,17 +1453,22 @@ class ConfigHtmlNtfyPanelWording(unittest.TestCase):
         self.assertEqual(button.get("background"), "var(--bg3)")
 
     def test_on_a_narrow_screen_copy_drops_under_the_command(self):
-        """Guard (as committed in the approved-changes commit): on a phone
-        the row wraps, so Copy goes under the command and no path splits
-        mid-name; on a wide screen it is one line with Copy on the right."""
+        """Guard: on a phone the row wraps, so Copy goes under the command; on
+        a wide screen it is one line with Copy on the right. v3.4.166 (approved
+        mockup): the command breaks only after a slash, never inside a name —
+        overflow-wrap:anywhere split it mid-name at 320 px."""
         row, code, button = self._styles()
         self.assertEqual(row.get("display"), "flex")
         self.assertEqual(row.get("flex-wrap"), "wrap")
         self.assertEqual(code.get("flex"), "1 1 260px")
         self.assertEqual(code.get("min-width"), "0")
-        self.assertEqual(code.get("overflow-wrap"), "anywhere")
+        self.assertNotIn("overflow-wrap", code)
         self.assertEqual(button.get("flex"), "none")
         self.assertEqual(button.get("margin-left"), "auto")
+        inner = STALE_CMD_RE.search(self.note).group(1)
+        self.assertIn("/usr/local/libexec/<wbr>aerodrome/<wbr>", inner)
+        for name in ("aerodrome-helper", "ntfy-uninstall"):
+            self.assertIn(f'<span style="white-space:nowrap">{name}</span>', inner)
 
     def test_the_uninstall_prompt_no_longer_promises_attachments(self):
         prompt = _js_function(self.src, "nfUninstallPrompt")
@@ -1474,7 +1485,8 @@ const {code} = JSON.parse(fs.readFileSync(0, 'utf8'));
 const render = new Function('escapeAttr', code + '\nreturn _renderNtfyPanel;')(s => String(s));
 const status = {state: 'not_installed', installable: true};
 const out = {stale: render({status, stale_data: true}), fresh: render({status, stale_data: false})};
-const cmd = out.stale.match(/<code id="nfStaleCacheCmd"[^>]*>([^<]*)<\/code>/);
+const cmd = out.stale.match(/<code id="nfStaleCacheCmd"[^>]*>([\s\S]*?)<\/code>/);
+if (cmd) cmd[1] = cmd[1].replace(/<[^>]+>/g, '');
 const click = out.stale.match(/<button([^>]*)onclick="([^"]*)"[^>]*>Copy<\/button>/);
 if (cmd && click) {
   const btn = {id: 'copy-button'};
@@ -1497,7 +1509,8 @@ class ConfigHtmlStaleNoteRenders(unittest.TestCase):
             raise unittest.SkipTest("needs node >= 18")
         src = (REPO / "templates" / "config.html").read_text()
         r = subprocess.run([node, "-e", PANEL_HARNESS],
-                           input=json.dumps({"code": _js_block(src, "_renderNtfyPanel")}),
+                           input=json.dumps({"code": _js_block(src, "_nfPortBindFields") + "\n"
+                                                     + _js_block(src, "_renderNtfyPanel")}),
                            capture_output=True, text=True, timeout=120)
         if r.returncode:
             raise AssertionError(f"harness failed: {r.stderr[-2000:]}")
@@ -1788,8 +1801,8 @@ class ConfigHtmlCopyButtonFeedback(unittest.TestCase):
     quick second click and after a refused copy too — and over plain HTTP
     keyboard focus stays on the button."""
 
-    COPIED = ["✓ copied!", "var(--green, #22c55e)"]
-    BLOCKED = ["✗ blocked", "var(--red)"]
+    COPIED = ["✓ copied!", "var(--green-text)"]   # v3.4.166: AA text shade
+    BLOCKED = ["✗ blocked", "var(--red-text)"]
     LABEL = ["Copy", ""]
 
     @classmethod

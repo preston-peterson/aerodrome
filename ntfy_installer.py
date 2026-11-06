@@ -797,6 +797,25 @@ def install(port: int = 2586, bind: str = "0.0.0.0",
             "status": status,
         }
 
+    # v3.4.166 Repair: a partly installed ntfy (the stamp, with a file
+    # missing) keeps the settings its server.yml still holds. The caller's
+    # port/bind (and a detected base URL) fill in only what the file can't
+    # say — it's the missing piece, or a value in it is unreadable. The
+    # helper re-runs the install over what's there ("a re-run repairs it").
+    repairing = status["state"] == "partial"
+    if repairing:
+        cur = current_config()
+        if cur:
+            if cur.get("port") is not None:
+                port, bind = cur["port"], cur.get("bind") or bind
+            if base_url is None and cur.get("base_url"):
+                base_url = cur["base_url"]
+            upstream_relay = bool(cur.get("upstream"))
+        try:
+            _validate_install_args(port, bind, base_url)
+        except ValueError as e:
+            return {"ok": False, "message": str(e), "status": status}
+
     topic = topic or _generate_topic()
     if base_url is None:
         # Fresh install only: the LAN address phones can reach, else
@@ -816,8 +835,11 @@ def install(port: int = 2586, bind: str = "0.0.0.0",
     version = res.get("version")
     return {
         "ok": True,
-        "message": f"ntfy {version} installed and started. "
-                   f"Subscribe from the ntfy mobile app.",
+        "message": (f"ntfy {version} repaired and started. Your settings and topic are unchanged."
+                    if repairing else
+                    f"ntfy {version} installed and started. "
+                    f"Subscribe from the ntfy mobile app."),
+        "repaired": repairing,
         "status": install_status(),
         "topic": topic,
         "version": version,

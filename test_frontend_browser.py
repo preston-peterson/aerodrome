@@ -25,7 +25,7 @@ ROOT = Path(os.environ.get("FRONTEND_ROOT") or Path(__file__).resolve().parent)
 BASE = "http://aerodrome.test"
 HOLD = object()
 PAGES = {"/": "index.html", "/board": "board.html", "/status": "status.html",
-         "/updates": "updates.html"}
+         "/updates": "updates.html", "/config": "config.html"}
 
 
 def _chrome():
@@ -418,6 +418,121 @@ def _status_page(notifications, **extra):
     }
     answer["system"] = {"ok": False, "error": "not in this test"}
     return answer
+
+
+_CONFIG = {
+    "receiver": {"ip": "192.0.2.10", "port": 8080, "path": "/data/aircraft.json", "latitude": 37.5,
+                 "longitude": -122.1, "poll_interval": 60, "distance_unit": "mi"},
+    "web": {"host": "0.0.0.0", "port": 8000},
+    "retention": {"all_days": 30, "military_days": 30, "watchlist_days": 30},
+    "data": {"db_file": "aircraft_history.db"},
+    "logging": {"dir": "logs", "level": "INFO"},
+    "military": {"enabled": True, "default_color": "#ef4444", "special_aircraft": {}},
+    "watchlist_alerts": {"enabled": True, "trigger": "live", "effect": "pulse_dot", "color": "#f59e0b"},
+    "notifications": {"enabled": True, "url": "http://localhost:2586/example-topic",
+                      "events": {"receiver_offline": True}},
+}
+
+
+def _ntfy_status(state, stale=False, missing=()):
+    """/api/ntfy/status for a state; `missing` names the files a partial install lacks."""
+    present = {k: {"present": state in ("aerodrome_managed", "partial") and k not in missing}
+               for k in ("binary", "config", "unit")}
+    return {"ok": True, "latest_available": "2.11.0", "stale_data": stale,
+            "status": dict(present, state=state, installable=state in ("not_installed", "partial"),
+                           arch="amd64", version=None if state == "not_installed" else "2.11.0",
+                           service={"active": True}, stamp={"present": state != "not_installed"}),
+            "config": {"base_url": "http://192.0.2.20:2586", "upstream_relay": True, "problems": []}}
+
+
+class _ConfigPage(BrowserCase):
+    WIDTH = 1280
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        PAGES["/config"] = "config.html"
+
+    def open_config(self, ntfy, width=None):
+        self.page.set_viewport_size({"width": width or self.WIDTH, "height": 900})
+        self.site.api["/api/config"] = _CONFIG
+        self.site.api["/api/ntfy/status"] = ntfy
+        self.site.api["/api/status"] = _status()
+        self.site.api["/api/notifications/stats"] = {"ok": True, "stats": None}
+        self.site.api["/api/notifications/recent"] = {"ok": True, "items": []}
+        self.open("/config")
+        self.advance(1000)
+
+    def tab(self, name):
+        self.page.evaluate(f"switchTab({json.dumps(name)})")
+        self.advance(500, step=250)
+        if name == "notifications":
+            self.page.evaluate("nfToggleInstallPanel(true)")
+            self.advance(500, step=250)
+
+
+class TestConfigFitsOnPhones(_ConfigPage):
+    """No tab of the Configuration page is wider than a phone's screen. A long
+    dropdown option or the desktop 200px field floor used to widen it to 554 px."""
+
+    def wider_than_screen(self):
+        return self.page.evaluate(
+            "document.documentElement.scrollWidth - document.documentElement.clientWidth")
+
+    def test_every_tab_fits(self):
+        for width in (320, 390):
+            for state in ("not_installed", "partial"):
+                self.open_config(_ntfy_status(state, stale=True), width)
+                tabs = self.page.evaluate("TABS.map(t => t.id)")
+                self.assertIn("notifications", tabs)
+                for name in tabs:
+                    with self.subTest(width=width, state=state, tab=name):
+                        self.tab(name)
+                        self.assertLessEqual(self.wider_than_screen(), 0)
+
+    def test_the_cleanup_command_copies_as_written(self):
+        self.open_config(_ntfy_status("not_installed", stale=True), 320)
+        self.tab("notifications")
+        self.assertEqual(self.page.text_content("#nfStaleCacheCmd"),
+                         "sudo /usr/local/libexec/aerodrome/aerodrome-helper ntfy-uninstall --purge")
+
+
+class TestNtfyRepair(_ConfigPage):
+    """A partly installed ntfy offers Repair beside Uninstall. Repair keeps the
+    phone's topic: it sends the current one and leaves notifications.url alone."""
+
+    def panel(self, missing):
+        self.open_config(_ntfy_status("partial", missing=missing))
+        self.tab("notifications")
+        return self.text("#nfNtfyPanel")
+
+    def test_the_panel_names_what_is_missing(self):
+        text = self.panel(("binary",))
+        self.assertIn("the ntfy program is missing", text)
+        self.assertIn("keeps your settings and topic", text)
+        self.assertEqual(self.page.locator("#nfInstallPort").count(), 0, "no fields: the settings are kept")
+        self.assertEqual(self.page.locator("#nfNtfyPanel button").all_inner_texts(), ["Repair", "Uninstall"])
+
+    def test_a_missing_settings_file_asks_for_port_and_bind(self):
+        text = self.panel(("config", "unit"))
+        self.assertIn("its settings file and its service are missing", text)
+        self.assertEqual(self.page.locator("#nfInstallPort").count(), 1)
+
+    def test_repair_sends_the_current_topic_and_keeps_the_url(self):
+        sent = []
+        def install(req):
+            sent.append(json.loads(req.post_data))
+            return {"ok": True, "repaired": True, "topic": "example-topic", "port": 2586,
+                    "version": "2.11.0", "message": "ntfy 2.11.0 repaired and started."}
+        self.site.api["/api/ntfy/install"] = install
+        self.panel(("binary",))
+        self.page.on("dialog", lambda d: d.accept())
+        self.page.click("#nfRepairBtn")
+        self.advance(1000, step=250)
+        self.assertEqual(sent, [{"port": 2586, "bind": "0.0.0.0", "topic": "example-topic"}])
+        self.assertEqual(self.page.evaluate("getAt(workingConfig, 'notifications.url')"),
+                         "http://localhost:2586/example-topic")
+        self.assertIn("ntfy repaired", self.text(".alert-modal"))
 
 
 class TestStatusNotificationsCard(BrowserCase):
@@ -970,6 +1085,106 @@ class TestUpdatesGithubCannotReadTheTag(BrowserCase):
 
     def test_a_readable_older_tag_still_says_latest(self):
         self.assertIn("latest version", self.card_text("v3.4.53", False))
+
+
+_CONTRAST_JS = """(sel) => {
+    const el = document.querySelector(sel);
+    if (!el) return null;
+    const rgba = (s) => {
+        const m = s.match(/([\\d.]+),\\s*([\\d.]+),\\s*([\\d.]+)(?:,\\s*([\\d.]+))?/);
+        return m ? [+m[1], +m[2], +m[3], m[4] === undefined ? 1 : +m[4]] : null;
+    };
+    const chan = (c) => { c /= 255;
+        return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+    const lum = (c) => 0.2126 * chan(c[0]) + 0.7152 * chan(c[1]) + 0.0722 * chan(c[2]);
+    const fg = rgba(getComputedStyle(el).color);
+    let bg = null;
+    for (let n = el; n && !bg; n = n.parentElement) {
+        const c = rgba(getComputedStyle(n).backgroundColor);
+        if (c && c[3] >= 1) bg = c;
+    }
+    if (!fg || !bg) return null;
+    const a = lum(fg), b = lum(bg);
+    return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+}"""
+
+
+class TestTextContrast(BrowserCase):
+    """WCAG AA (4.5:1) for themed text, measured in the browser from live
+    computed styles: each element's `color` against the first opaque
+    `background-color` found by walking up from it."""
+
+    AA = 4.5
+
+    def themed(self, theme):
+        """A fresh /config page with `theme` saved and the OS scheme matching."""
+        self.context.close()
+        self.context = self.browser.new_context(
+            timezone_id=self.TIMEZONE, service_workers="block", color_scheme=theme)
+        self.page = self.context.new_page()
+        self.page.set_default_timeout(15000)
+        self.errors = []
+        self.page.on("pageerror", lambda e: self.errors.append(str(e)))
+        self.site = Site(self.page)
+        self.page.clock.install(time=self.START)
+        self.page.add_init_script(f"localStorage.setItem('aerodrome-theme', '{theme}')")
+        self.open("/config")
+
+    def assertAA(self, selector, theme, what):
+        r = self.page.evaluate(_CONTRAST_JS, selector)
+        self.assertIsNotNone(r, f"nothing on the page matches {selector}")
+        self.assertGreaterEqual(r, self.AA,
+                                f"{what} in {theme} theme: {r:.2f}:1 < {self.AA}:1")
+
+    def test_alert_modal_titles_and_ok_button_meet_aa_in_both_themes(self):
+        for theme in ("light", "dark"):
+            self.themed(theme)
+            for kind in ("error", "warning", "success", "info"):
+                with self.subTest(theme=theme, kind=kind):
+                    # A dismissed dialog is a resolved promise; dismiss any a
+                    # failed subTest left open so each kind measures its own.
+                    self.page.evaluate(
+                        "() => document.querySelectorAll('.alert-modal-ok')"
+                        ".forEach(b => b.click())")
+                    # Braces so the arrow returns undefined, not the dialog's
+                    # promise — that one only resolves when the user dismisses.
+                    self.page.evaluate(f"() => {{ alertModal('Title', 'Body', '{kind}'); }}")
+                    self.assertAA(".alert-modal .modal-title", theme, f"{kind} dialog title")
+                    self.assertAA(".alert-modal .alert-modal-ok", theme, f"{kind} OK button")
+                    self.page.click(".alert-modal-ok")
+
+    def test_copy_feedback_text_meets_aa_in_both_themes(self):
+        for theme in ("light", "dark"):
+            self.themed(theme)
+            self.page.evaluate("""() => {
+                try {
+                    Object.defineProperty(navigator, 'clipboard',
+                                          {value: undefined, configurable: true});
+                } catch (e) {}
+                const btn = document.createElement('button');
+                btn.className = 'btn'; btn.id = 'contrastCopyBtn';
+                btn.textContent = 'Copy';
+                document.body.appendChild(btn);
+            }""")
+            for copied, label in ((True, "✓ copied!"), (False, "✗ blocked")):
+                with self.subTest(theme=theme, result=label):
+                    self.page.evaluate("ok => { document.execCommand = () => ok; }", copied)
+                    self.page.evaluate("""() => {
+                        copyToClipboard('x', document.getElementById('contrastCopyBtn'));
+                    }""")
+                    self.page.wait_for_timeout(250)   # the 150ms color transition settles
+                    self.assertEqual(self.text("#contrastCopyBtn"), label)
+                    self.assertAA("#contrastCopyBtn", theme, f"copy feedback {label!r}")
+
+    def test_light_primary_button_meets_aa(self):
+        self.themed("light")
+        self.page.evaluate("""() => {
+            const btn = document.createElement('button');
+            btn.className = 'btn btn-primary'; btn.id = 'contrastPrimaryBtn';
+            btn.textContent = 'Save';
+            document.body.appendChild(btn);
+        }""")
+        self.assertAA("#contrastPrimaryBtn", "light", "primary button")
 
 
 if __name__ == "__main__":

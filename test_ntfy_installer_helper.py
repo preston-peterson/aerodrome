@@ -76,5 +76,48 @@ class OnlyHelperCalls(unittest.TestCase):
         self.assertEqual(self.host.f("/etc/ntfy/server.yml").read_text(), cfg)
 
 
+    # --- v3.4.166 Repair: a partly installed ntfy is reinstalled over what's
+    # there, keeping the settings server.yml still holds. ---
+
+    def partial(self, binary=True, cfg=True, unit=True,
+                yml=ntfy_installer.render_server_yml(2700, "127.0.0.1", "http://192.0.2.30:2700", False)):
+        self.host.f("/var/lib/ntfy/aerodrome-installed").write_text("2.10.0\n")
+        if binary:
+            self.host.f("/usr/local/bin/ntfy").write_bytes(b"old ntfy")
+        if cfg:
+            self.host.f("/etc/ntfy/server.yml").write_text(yml)
+        if unit:
+            self.host.f("/etc/systemd/system/ntfy.service").write_text(ntfy_installer.NTFY_UNIT_TEXT)
+        self.assertEqual(ntfy_installer.install_status()["state"], "partial")
+        return yml
+
+    def test_repair_puts_back_the_program_and_keeps_the_settings(self):
+        yml = self.partial(binary=False)
+        r = ntfy_installer.install(port=2586, bind="0.0.0.0", topic="example-topic")   # the form's defaults
+        self.assertTrue(r["ok"], r)
+        self.assertTrue(r["repaired"])
+        self.assertEqual(r["topic"], "example-topic")
+        self.assertIn("repaired", r["message"])
+        self.assertTrue(self.host.f("/usr/local/bin/ntfy").exists())
+        self.assertEqual(self.host.f("/etc/ntfy/server.yml").read_text(), yml)
+        self.assertEqual(ntfy_installer.install_status()["state"], "aerodrome_managed")
+
+    def test_repair_of_a_missing_service_keeps_the_settings(self):
+        self.partial(unit=False)
+        r = ntfy_installer.install(port=2586, bind="0.0.0.0")
+        self.assertTrue(r["ok"], r)
+        cur = ntfy_installer.current_config()
+        self.assertEqual((cur["port"], cur["bind"], cur["base_url"], cur["upstream"]),
+                         (2700, "127.0.0.1", "http://192.0.2.30:2700", False))
+        self.assertEqual(ntfy_installer.install_status()["state"], "aerodrome_managed")
+
+    def test_repair_of_a_missing_settings_file_uses_the_form(self):
+        self.partial(cfg=False)
+        r = ntfy_installer.install(port=2590, bind="127.0.0.1")
+        self.assertTrue(r["ok"], r)
+        cur = ntfy_installer.current_config()
+        self.assertEqual((cur["port"], cur["bind"]), (2590, "127.0.0.1"))
+        self.assertEqual(ntfy_installer.install_status()["state"], "aerodrome_managed")
+
 if __name__ == "__main__":
     unittest.main()

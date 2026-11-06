@@ -1,4 +1,4 @@
-<!-- Version: 3.4.165 -->
+<!-- Version: 3.4.166 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -224,6 +224,12 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
    mobile where the grid collapses to one column. */
 .form-input-aside { grid-column: 2; }
 @media (max-width:640px) { .form-input-aside { grid-column: 1; } }
+/* Two-up and label/field grids inside the tabs' own cards. */
+.cfg-pair { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); }
+.cfg-label-field { display:grid; grid-template-columns:120px minmax(0, 1fr); }
+.cfg-label-field > *, .cfg-pair > * { min-width:0; }
+.cfg-field-action { display:grid; grid-template-columns:200px minmax(0, 1fr); }
+.cfg-toggle-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); padding-left:50px; }
 
 /* Inputs — bare-element styling for the config form's many fields.
    Dimensions match the standard .ctrl-input from theme.css (32px tall,
@@ -240,6 +246,22 @@ input[type="text"], input[type="number"], select, textarea {
     box-sizing:border-box; line-height:1.2;
 }
 input[type="text"], input[type="number"], select { height:32px; }
+/* Phones (v3.4.166): nothing on this page may be wider than the screen.
+   Kept AFTER the input rules above so its min-width:0 wins. The
+   single column may shrink below its widest dropdown option (a select's
+   long option text no longer widens every row), and fields keep their own
+   widths instead of the desktop 200px floor (it overrode the ntfy Port box's
+   72px and the capacity boxes' 150px). */
+@media (max-width:640px) {
+    .form-grid { grid-template-columns:minmax(0, 1fr); }
+    .form-grid > * { min-width:0; }
+    input[type="text"], input[type="number"], select, textarea { min-width:0; max-width:100%; }
+    .form-label-hint { overflow-wrap:anywhere; }
+}
+@media (max-width:480px) {
+    .cfg-pair, .cfg-field-action { grid-template-columns:minmax(0, 1fr); }
+    .cfg-toggle-grid { grid-template-columns:minmax(0, 1fr); padding-left:0; }
+}
 input:focus, select:focus, textarea:focus {
     border-color:var(--cyan);
     box-shadow:0 0 0 2px rgba(6,182,212,0.2);
@@ -620,16 +642,18 @@ function toast(msg, type='') {
 // Alert modal (v2.40.1)
 // =========================================================================
 // Must-dismiss centered dialog for errors and substantive install/upgrade/
-// uninstall results. See index.html for the full rationale — kept duplicated
-// (not shared) because config.html is served as its own template with its
-// own script context. Keep the two implementations in sync when updating.
+// uninstall results. This page is the only one that has it (index.html's
+// copy is gone), so there is no second implementation to keep in sync.
 function alertModal(title, message, kind){
     kind = kind || 'info';
+    // `color` is the accent fill (top border); `text` is the AA-contrast
+    // text shade used for the title and the icon glyph — the fills below
+    // are under 4.5:1 as text on the modal's --bg2 in the light theme.
     const accents = {
-        error:   {color: 'var(--red)',   icon: '!', iconBg: 'rgba(239,68,68,.15)'},
-        warning: {color: 'var(--amber)', icon: '!', iconBg: 'rgba(245,158,11,.15)'},
-        success: {color: 'var(--green)', icon: '✓', iconBg: 'rgba(16,185,129,.15)'},
-        info:    {color: 'var(--cyan)',  icon: 'i', iconBg: 'rgba(6,182,212,.15)'},
+        error:   {color: 'var(--red)',   text: 'var(--red-text)',   icon: '!', iconBg: 'rgba(239,68,68,.15)'},
+        warning: {color: 'var(--amber)', text: 'var(--amber-text)', icon: '!', iconBg: 'rgba(245,158,11,.15)'},
+        success: {color: 'var(--green)', text: 'var(--green-text)', icon: '✓', iconBg: 'rgba(16,185,129,.15)'},
+        info:    {color: 'var(--cyan)',  text: 'var(--cyan)',       icon: 'i', iconBg: 'rgba(6,182,212,.15)'},
     };
     const a = accents[kind] || accents.info;
     return new Promise(resolve => {
@@ -643,11 +667,11 @@ function alertModal(title, message, kind){
         modal.innerHTML = `
             <div class="alert-modal-head" style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
                 <span class="alert-modal-icon" style="width:22px;height:22px;border-radius:50%;
-                    background:${a.iconBg};color:${a.color};display:inline-flex;
+                    background:${a.iconBg};color:${a.text};display:inline-flex;
                     align-items:center;justify-content:center;font-size:13px;font-weight:600;">
                     ${a.icon}
                 </span>
-                <div class="modal-title" style="color:${a.color};margin-bottom:0">${_escHtmlCfg(title)}</div>
+                <div class="modal-title" style="color:${a.text};margin-bottom:0">${_escHtmlCfg(title)}</div>
             </div>
             <div class="alert-modal-body" style="font-size:13px;line-height:1.6;color:var(--t1);white-space:pre-wrap;margin-bottom:16px">${_escHtmlCfg(message)}</div>
             <div class="modal-actions">
@@ -713,8 +737,8 @@ async function copyToClipboard(text, feedbackEl) {
             feedbackEl._copyFeedback = null;
         }, 1500);
     };
-    const showCopied = () => show('✓ copied!', 'var(--green, #22c55e)');
-    const showBlocked = () => show('✗ blocked', 'var(--red)');
+    const showCopied = () => show('✓ copied!', 'var(--green-text)');
+    const showBlocked = () => show('✗ blocked', 'var(--red-text)');
 
     // Tier 1: async Clipboard API (HTTPS / localhost only)
     if (navigator.clipboard && window.isSecureContext) {
@@ -2387,7 +2411,7 @@ function sectionStats() {
             extraSettings = `
                 <div style="padding-left:26px;margin-top:14px;padding-top:12px;border-top:1px dotted var(--bdr);${dimStyle}">
                     <div style="font-size:11px;color:var(--t3);font-family:var(--mono);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px">Range rose settings</div>
-                    <div style="display:grid;grid-template-columns:120px 1fr;gap:10px 12px;align-items:center;font-size:13px">
+                    <div class="cfg-label-field" style="gap:10px 12px;align-items:center;font-size:13px">
                         <label style="color:var(--t2)">Time window</label>
                         <div>
                             <select data-path="stats.range_rose.window" onchange="onFieldChange(this); refreshActiveTab()" style="width:220px">${windowOpts}</select>
@@ -2441,7 +2465,7 @@ function sectionStats() {
                 <span style="font-size:11px;color:var(--t3);font-family:var(--mono)">${g.hint}</span>
             </div>
             ${disabledNote}
-            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:4px 16px;padding-left:50px;margin-top:8px;${dimStyle}">${items}</div>
+            <div class="cfg-toggle-grid" style="gap:4px 16px;margin-top:8px;${dimStyle}">${items}</div>
             ${extraSettings}
         </div>`;
     }).join('');
@@ -2997,7 +3021,7 @@ function sectionNotifications() {
                 Defaults are just "receiver offline / recovered." The rest are off
                 until you turn them on.
             </div>
-            <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px 16px">
+            <div class="cfg-pair" style="gap:8px 16px">
                 ${_nfEventRow('receiver_offline', 'Receiver offline',
                               'Collector cannot reach the receiver for N polls')}
                 ${_nfEventRow('receiver_recovered', 'Receiver recovered',
@@ -3033,7 +3057,7 @@ function sectionNotifications() {
                 Sections with no content auto-trim, so quiet days produce a
                 short message.
             </div>
-            <div style="display:grid;grid-template-columns:200px 1fr;gap:16px;align-items:end">
+            <div class="cfg-field-action" style="gap:16px;align-items:end">
                 <div>
                     <div style="font-size:11px;color:var(--t2);margin-bottom:4px;
                                 text-transform:uppercase;letter-spacing:.04em">
@@ -3080,7 +3104,7 @@ function sectionNotifications() {
                 Both conditions trigger the same <code>capacity_low</code> event
                 — turn that event off above to disable all capacity alerts.
             </div>
-            <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px 16px">
+            <div class="cfg-pair" style="gap:12px 16px">
                 <div>
                     <div style="font-size:11px;color:var(--t2);margin-bottom:4px;
                                 text-transform:uppercase;letter-spacing:.04em">
@@ -3592,6 +3616,32 @@ document.addEventListener('input', function(e) {
     }
 });
 
+// Port + Bind for a fresh install, and for a repair whose settings file is
+// the missing piece (#nfInstallPort / #nfInstallBind, read by both actions).
+// Wraps on a phone; the desktop look is unchanged.
+function _nfPortBindFields() {
+    return `
+            <div style="margin-bottom:10px">
+                <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:6px">
+                    <label style="display:flex;align-items:center;gap:4px;font-size:11px;min-width:0;max-width:100%">
+                        Port: <input id="nfInstallPort" type="number" value="2586"
+                                     min="1" max="65535" style="width:72px;padding:2px 6px;
+                                     background:var(--bg2);border:1px solid var(--bdr);
+                                     color:var(--t1);border-radius:3px;font-family:var(--mono)">
+                    </label>
+                    <label style="display:flex;align-items:center;gap:4px;font-size:11px;min-width:0;max-width:100%">
+                        <span>Bind:</span>
+                        <select id="nfInstallBind" style="flex:1 1 auto;padding:2px 6px;background:var(--bg2);
+                                border:1px solid var(--bdr);color:var(--t1);border-radius:3px">
+                            <option value="0.0.0.0">0.0.0.0 (LAN-accessible)</option>
+                            <option value="127.0.0.1">127.0.0.1 (localhost-only)</option>
+                        </select>
+                    </label>
+                </div>
+            </div>
+`;
+}
+
 function _renderNtfyPanel(statusPayload) {
     const s = statusPayload.status || {};
     const state = s.state || 'unknown';
@@ -3618,7 +3668,9 @@ function _renderNtfyPanel(statusPayload) {
         // v3.4.150: the system helper's purge with nothing installed (it
         // removes both caches Aerodrome's ntfy has used, one of them in a
         // folder only root can see). On a narrow screen the Copy button drops
-        // under the command, so no path splits.
+        // under the command, and the command breaks only after a slash, never
+        // inside a name (<wbr> and nowrap spans; Copy reads textContent, so it
+        // copies the plain command).
         const staleNote = statusPayload.stale_data
             ? `<div style="margin-bottom:10px;padding:8px 10px;background:rgba(245,158,11,.08);
                            border-left:2px solid var(--amber);border-radius:0 4px 4px 0;
@@ -3627,7 +3679,7 @@ function _renderNtfyPanel(statusPayload) {
                    To start fresh, run this on the Aerodrome machine first, then reinstall:
                    <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:6px;padding:6px 8px;
                                background:var(--bg2);border:1px solid var(--bdr);border-radius:4px">
-                       <code id="nfStaleCacheCmd" style="flex:1 1 260px;min-width:0;overflow-wrap:anywhere">sudo /usr/local/libexec/aerodrome/aerodrome-helper ntfy-uninstall --purge</code>
+                       <code id="nfStaleCacheCmd" style="flex:1 1 260px;min-width:0">sudo /usr/local/libexec/<wbr>aerodrome/<wbr><span style="white-space:nowrap">aerodrome-helper</span> <span style="white-space:nowrap">ntfy-uninstall</span> --purge</code>
                        <button type="button" class="btn" style="flex:none;margin-left:auto;font-size:11px;padding:3px 10px;background:var(--bg3)"
                                onclick="copyToClipboard(document.getElementById('nfStaleCacheCmd').textContent, this)">Copy</button>
                    </div>
@@ -3638,24 +3690,7 @@ function _renderNtfyPanel(statusPayload) {
             <div style="margin-bottom:8px">
                 Not installed. Aerodrome can fetch and install a local ntfy server.
             </div>
-            <div style="margin-bottom:10px">
-                <div style="display:flex;gap:8px;margin-bottom:6px">
-                    <label style="display:flex;align-items:center;gap:4px;font-size:11px">
-                        Port: <input id="nfInstallPort" type="number" value="2586"
-                                     min="1" max="65535" style="width:72px;padding:2px 6px;
-                                     background:var(--bg2);border:1px solid var(--bdr);
-                                     color:var(--t1);border-radius:3px;font-family:var(--mono)">
-                    </label>
-                    <label style="display:flex;align-items:center;gap:4px;font-size:11px">
-                        <span>Bind:</span>
-                        <select id="nfInstallBind" style="padding:2px 6px;background:var(--bg2);
-                                border:1px solid var(--bdr);color:var(--t1);border-radius:3px">
-                            <option value="0.0.0.0">0.0.0.0 (LAN-accessible)</option>
-                            <option value="127.0.0.1">127.0.0.1 (localhost-only)</option>
-                        </select>
-                    </label>
-                </div>
-            </div>
+            ${_nfPortBindFields()}
             <button class="btn btn-primary" onclick="nfInstallNtfy()" id="nfInstallBtn">
                 Install local ntfy
             </button>`;
@@ -3672,15 +3707,30 @@ function _renderNtfyPanel(statusPayload) {
     }
 
     if (state === 'partial') {
+        // v3.4.166: Repair beside Uninstall. Repair re-runs the install over
+        // what's there and keeps the settings server.yml still holds (the
+        // server reads them) and the current topic (nfRepairNtfy passes it),
+        // so a subscribed phone keeps working. Port/Bind are asked for only
+        // when the settings file is the missing piece.
+        const missing = [];
+        if (!(s.binary && s.binary.present)) missing.push('the ntfy program');
+        if (!(s.config && s.config.present)) missing.push('its settings file');
+        if (!(s.unit && s.unit.present)) missing.push('its service');
+        const what = missing.length
+            ? `${missing.join(' and ')} ${missing.length === 1 ? 'is' : 'are'} missing`
+            : 'a file is missing';
+        const needsSettings = !(s.config && s.config.present);
         return `
-            <div style="color:var(--red)">ntfy install is in a partial state.</div>
-            <div style="margin-top:6px">Some files are present, some are missing.
-                Easiest fix: uninstall and reinstall.
+            <div style="color:var(--red-text, var(--red))">ntfy is only partly installed: ${what}.</div>
+            <div style="margin-top:6px">Repair puts back what's missing and keeps your
+                ${needsSettings ? 'topic' : 'settings and topic'}, so your phone stays subscribed.
+                ${needsSettings ? 'The settings file is written new, with these:'
+                                : "Uninstall removes what's left instead."}
             </div>
-            <div style="margin-top:10px">
-                <button class="btn btn-red" onclick="nfUninstallNtfy()">
-                    Uninstall (clean up partial install)
-                </button>
+            ${needsSettings ? `<div style="margin-top:8px">${_nfPortBindFields()}</div>` : ''}
+            <div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:8px">
+                <button class="btn btn-primary" onclick="nfRepairNtfy()" id="nfRepairBtn">Repair</button>
+                <button class="btn btn-red" onclick="nfUninstallNtfy()">Uninstall</button>
             </div>`;
     }
 
@@ -4155,6 +4205,60 @@ function nfHelperAlert(j, failTitle) {
     if (j.code === 'busy') return alertModal('Busy', msg, 'warning');
     if (j.code === 'helper_unavailable') return alertModal('System permissions need a refresh', msg, 'warning');
     return alertModal(failTitle, msg, 'error');
+}
+
+// v3.4.166: repair a partly installed ntfy. Same endpoint as Install (the
+// server sees the partial state and keeps server.yml's settings), but it
+// passes the current topic and leaves notifications.url alone unless it's
+// empty, so a phone already subscribed keeps receiving.
+function _nfTopicFromUrl(url) {
+    try { return new URL(url).pathname.split('/').filter(Boolean).pop() || ''; }
+    catch (e) { return ''; }
+}
+
+async function nfRepairNtfy() {
+    if (nfInstallInProgress) return;
+    if (!confirm(
+        'Aerodrome will download ntfy again (~15MB) from GitHub, verify the SHA256 '
+      + 'checksum, and put back what is missing. Your settings and topic stay as they are.'
+      + '\n\nProceed?'
+    )) return;
+
+    nfInstallInProgress = true;
+    const btn = document.getElementById('nfRepairBtn');
+    const portEl = document.getElementById('nfInstallPort');
+    const bindEl = document.getElementById('nfInstallBind');
+    const body = {port: portEl ? (Number(portEl.value) || 2586) : 2586,
+                  bind: bindEl ? bindEl.value : '0.0.0.0'};
+    const url = getAt(workingConfig, 'notifications.url') || '';
+    const topic = _nfTopicFromUrl(url);
+    if (topic) body.topic = topic;
+    if (btn) { btn.disabled = true; btn.textContent = 'Repairing… (this may take 30-60s)'; }
+
+    try {
+        const r = await fetch('/api/ntfy/install', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body),
+        });
+        const j = await r.json();
+        if (j.ok) {
+            if (!url) {
+                setAt(workingConfig, 'notifications.url',
+                      'http://localhost:' + (j.port || body.port) + '/' + (j.topic || 'aerodrome'));
+                renderAll();
+                updateSaveBar();
+            }
+            await alertModal('ntfy repaired', j.message || 'ntfy is running again.', 'success');
+        } else {
+            await nfHelperAlert(j, 'Repair failed');
+        }
+    } catch (e) {
+        await alertModal('Repair failed', 'Network or server error: ' + e.message, 'error');
+    } finally {
+        nfInstallInProgress = false;
+        loadNtfyStatus();
+    }
 }
 
 async function nfInstallNtfy() {
