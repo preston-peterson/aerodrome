@@ -29,9 +29,10 @@ ALL_UP = {"receiver": True, "database": True, "collector": True, "webserver": Tr
 CALM = {"load_average": {"15m": 0.5}, "cpu_cores": 4}
 
 
-def summary(core=None, hexdb_ok=True, capacity_ok=True, sudoers=None, system=CALM, notifications=None):
+def summary(core=None, hexdb_ok=True, capacity_ok=True, sudoers=None, system=CALM, notifications=None,
+            flightaware=None):
     return server._health_summary(core or ALL_UP, hexdb_ok, capacity_ok, sudoers, system,
-                                  notifications=notifications)
+                                  notifications=notifications, flightaware=flightaware)
 
 
 NOTIFY_DOWN = {"enabled": True, "ok": False, "reachable": False}
@@ -42,6 +43,18 @@ class TestHealthSummary(unittest.TestCase):
 
     def test_all_well(self):
         self.assertEqual(summary(), ("ok", [], None))
+
+    def test_a_refused_flightaware_key_is_a_warning(self):
+        severity, failing, reason = summary(flightaware={"configured": True, "key_state": "invalid", "paused": False})
+        self.assertEqual((severity, failing), ("warn", ["flightaware"]))
+        self.assertIn("FlightAware didn't accept the API key", reason)
+
+    def test_a_used_up_flightaware_budget_is_not(self):
+        # The budget running out is the limit doing its job: the card says so, the dot stays green.
+        for fa in ({"configured": True, "key_state": "ok", "paused": True},
+                   {"configured": True, "key_state": "untested", "paused": False},
+                   {"configured": False, "key_state": "invalid"}, None):
+            self.assertEqual(summary(flightaware=fa), ("ok", [], None), fa)
 
     def test_a_core_component_down_is_an_error_and_says_which(self):
         severity, failing, reason = summary(core=dict(ALL_UP, receiver=False, database=False))

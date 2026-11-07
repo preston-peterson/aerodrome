@@ -1,5 +1,5 @@
 # =============================================================================
-# Version: 3.4.168
+# Version: 3.4.169
 # Aerodrome — Example/Reference Configuration
 # =============================================================================
 # This is the canonical default config shipped with each Aerodrome release.
@@ -152,7 +152,8 @@ flightaware:
   # Aerodrome stops asking FlightAware after this many lookups in a calendar
   # month (UTC) and uses the free route list until the 1st. A lookup costs
   # $0.005, so 900 is $4.50, inside the $5 monthly free credit ($10 for
-  # ADS-B feeders). 0 turns lookups off.
+  # ADS-B feeders; 1,900 = $9.50). 0 turns lookups off. Configuration shows
+  # it as a dollar budget.
   monthly_limit: 900
   # Look up watchlist aircraft as soon as they appear, so their alerts show
   # the route without opening them. Off by default: busy watchlist aircraft

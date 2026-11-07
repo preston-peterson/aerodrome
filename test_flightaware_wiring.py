@@ -58,6 +58,10 @@ class FakeClient:
         self.calls.append(("test_key",))
         return {"state": "ok", "message": "Key works."}
 
+    def cached_usage(self):
+        self.calls.append(("cached_usage",))
+        return {"total_cost": 0.95, "total_discount_cost": 0.0, "total_calls": 190, "as_of": 1}
+
 
 class _App(unittest.TestCase):
     FA = {"api_key": KEY, "monthly_limit": 900, "watchlist_lookups": False}
@@ -208,6 +212,28 @@ class TestFlightAwareEndpoints(_App):
         server.CONFIG["flightaware"]["api_key"] = ""
         out = self.endpoint("/api/flightaware/test", "POST")()
         self.assertEqual((out["ok"], out["state"]), (False, "no_key"))
+        self.assertEqual(self.client.calls, [])
+
+
+class TestStatusComponent(_App):
+    """v3.4.169: /api/status carries a flightaware component when a key is set,
+    built without calling FlightAware (every page polls /api/status)."""
+
+    def status(self):
+        with mock.patch.object(server.req, "get", side_effect=OSError("no receiver in tests")):
+            return self.endpoint("/api/status")()
+
+    def test_a_key_adds_the_component_without_calling_flightaware(self):
+        fa = self.status()["components"]["flightaware"]
+        self.assertEqual((fa["count"], fa["limit"], fa["key_last4"]), (212, 900, "7c2e"))
+        self.assertEqual(fa["usage"]["total_cost"], 0.95)
+        self.assertEqual(fa["usage_url"], flightaware.USAGE_URL)
+        self.assertNotIn(("usage",), self.client.calls)
+        self.assertNotIn(KEY, repr(fa))
+
+    def test_no_key_no_component(self):
+        server.CONFIG["flightaware"]["api_key"] = ""
+        self.assertIsNone(self.status()["components"]["flightaware"])
         self.assertEqual(self.client.calls, [])
 
 

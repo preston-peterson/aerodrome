@@ -80,7 +80,7 @@ The `?icaos=` query string is comma-separated. The response is `{hex: registrati
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/status` | Comprehensive health check — collector, web server, database, receiver, hexdb resolver, notifications, system info |
+| GET | `/api/status` | Comprehensive health check — collector, web server, database, receiver, hexdb resolver, notifications, FlightAware (`components.flightaware`, only when a key is set: this month's lookups and budget, the last lookup, FlightAware's usage figure as last fetched; built without calling FlightAware), system info. A FlightAware key FlightAware refused is a warning (`failing` includes `flightaware`) |
 | GET | `/api/sudoers/status` | Check if /etc/sudoers.d/aerodrome matches the expected version; every reply carries `recovery_command`, the permissions-refresh command to run on the server. From rules version 6, `live_version` counts only as far as the system helper the rules name (`rules_version`, `helper_version`); with no rules file at all, `can_verify` and `managed` are false and nothing needs doing (also where Aerodrome's account can't look inside `/etc/sudoers.d`, as on Fedora/RHEL, sudo won't show it a rules file and there is no system helper); with one Aerodrome can't read, it asks the helper itself |
 
 `/api/status` is used both by the Status page and by external health-check tooling. The response shape is documented in the comment block above the handler. It's the most stable endpoint in the API — deliberately kept backward-compatible.

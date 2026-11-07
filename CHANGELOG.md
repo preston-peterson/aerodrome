@@ -19,6 +19,24 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.169] — 2026-11-06
+
+**FlightAware usage now has its own card on the Status page, and its monthly limit is a dollar budget.**
+
+- **A FlightAware card on the Status page.** With a FlightAware key set, the Status page shows a card next to Notifications: whether the key works, this month's lookups against your budget with a bar, the estimated cost, FlightAware's own figure for the month (before and after your free credit), the last lookup Aerodrome made (time, flight and route), and when the count resets, with links to your usage page on FlightAware and to the settings. Without a key there's no card.
+- **A refused key shows on every page.** If FlightAware stops accepting your key, routes quietly fall back to the free list, so the Status dot in every page's header turns amber, as it does for an unreachable notification server, and the Status page names it. Running out of the month's budget shows on the card only, because that's the budget doing its job.
+- **The monthly limit is now a budget in dollars.** Configuration → Display → FlightAware routes asks for a monthly budget, such as $9.50 if you feed FlightAware and get $10 of free credit, and shows how many lookups that buys at half a cent each. Your current limit carries over unchanged.
+
+### Operational notes
+
+This is an ordinary update with a normal restart and no database change. Reload an open Status page to see the card.
+
+### Behind the scenes
+
+- `/api/status` gains `components.flightaware` when a key is set, built only from what Aerodrome already knows (its own count, the key's last test, the last lookup, FlightAware's usage figure as last fetched), so the endpoint every page polls never calls FlightAware. The Status page fetches a fresh figure through the free `/api/flightaware/status` at most every 10 minutes. `_health_summary` reports a refused key as the advisory `flightaware` warning.
+- The budget is still stored as `flightaware.monthly_limit` in lookups; Configuration converts dollars at $0.005 a lookup.
+- `FlightAware.status()` adds `last_lookup` (in memory only), and `FlightAware.cached_usage()` returns the last usage figure without a call.
+
 ## [3.4.168] — 2026-11-06
 
 **Accurate flight routes from FlightAware, with your own AeroAPI key.**

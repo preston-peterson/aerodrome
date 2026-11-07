@@ -192,6 +192,7 @@ class FlightAware:
         self._stamps = []       # lookups that hit the network, for RATE_MAX
         self._blocked_until = 0.0   # set by a 429
         self._usage = None      # {"data": dict, "expires": ts}
+        self._last = None       # the last lookup sent to FlightAware (memory only), for the Status page
         st = atomic_io.read_json(state_path) or {}
         self._month = str(st.get("month") or "")
         try:
@@ -356,6 +357,7 @@ class FlightAware:
             with self._lock:
                 self._refund_locked(reserved)
                 self._cache_put_locked(cs, "error", now)
+                self._note_locked(cs, now, "error")
             return {"status": "error", "message": message}
 
         status_code = getattr(resp, "status_code", 0)
@@ -366,6 +368,7 @@ class FlightAware:
             with self._lock:
                 self._refund_locked(reserved)
                 self._blocked_until = now + RATE_WINDOW_S
+                self._note_locked(cs, now, "busy")
             return {"status": "busy"}
 
         # Every remaining reply — 200, 404, 401, 500 — is billed, so the
@@ -380,6 +383,7 @@ class FlightAware:
                 self._key_state = KEY_INVALID
                 self._tested_at = now
                 self._persist_locked()
+                self._note_locked(cs, now, "invalid_key")
             return {"status": "invalid_key", "message": message}
 
         if status_code == 200:
@@ -392,6 +396,7 @@ class FlightAware:
                             f"object, cached {ERROR_TTL_S}s")
                 with self._lock:
                     self._cache_put_locked(cs, "error", now)
+                    self._note_locked(cs, now, "error")
                 return {"status": "error", "message": "Unreadable response body"}
             flight = _pick_flight(payload.get("flights"))
             route = None
@@ -404,15 +409,18 @@ class FlightAware:
                 with self._lock:
                     self._cache_put_locked(cs, "found", now, route=route,
                                            expires=self._found_ttl(route, now))
+                    self._note_locked(cs, now, "found", route)
                 return {"status": "found", "route": route}
             with self._lock:
                 self._cache_put_locked(cs, "none", now)
+                self._note_locked(cs, now, "none")
             return {"status": "none"}
 
         if status_code == 404:
             # A callsign AeroAPI has no flight for: a real answer, billed.
             with self._lock:
                 self._cache_put_locked(cs, "none", now)
+                self._note_locked(cs, now, "none")
             return {"status": "none"}
 
         message = self._safe(key, f"FlightAware returned HTTP {status_code}")
@@ -420,7 +428,15 @@ class FlightAware:
                     f"{ERROR_TTL_S}s (billed anyway): {message}")
         with self._lock:
             self._cache_put_locked(cs, "error", now)
+            self._note_locked(cs, now, "error")
         return {"status": "error", "message": message}
+
+    def _note_locked(self, cs: str, now: int, status: str, route=None) -> None:
+        """Remember the last lookup sent to FlightAware, for the Status page."""
+        o = (route or {}).get("origin") or {}
+        d = (route or {}).get("destination") or {}
+        self._last = {"ts": now, "callsign": cs, "status": status,
+                      "origin": o.get("icao"), "destination": d.get("icao")}
 
     @staticmethod
     def _json(resp):
@@ -463,6 +479,13 @@ class FlightAware:
         with self._lock:
             self._usage = {"data": dict(data), "expires": now + USAGE_TTL_S}
         return data
+
+    def cached_usage(self) -> Optional[dict]:
+        """FlightAware's usage figure from the last usage() call, however old
+        (its "as_of" says when), or None. Never touches the network: for
+        /api/status, which every page polls."""
+        with self._lock:
+            return dict(self._usage["data"]) if self._usage else None
 
     @staticmethod
     def _num(value):
@@ -529,7 +552,8 @@ class FlightAware:
                     "paused": limit <= 0 or count >= limit,
                     "resets_on": _next_month_reset(month),
                     "cost_estimate": round(count * LOOKUP_COST_USD, 4),
-                    "limit_cost": round(limit * LOOKUP_COST_USD, 4)}
+                    "limit_cost": round(limit * LOOKUP_COST_USD, 4),
+                    "last_lookup": dict(self._last) if self._last else None}
 
 
 def state_path_for(config) -> str:

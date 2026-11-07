@@ -1,4 +1,4 @@
-<!-- Version: 3.4.168 -->
+<!-- Version: 3.4.169 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2893,6 +2893,22 @@ function _faDay(ymd) {
 
 function _faMoney(n) { return '$' + (Number(n) || 0).toFixed(2); }
 
+// v3.4.169: the monthly budget is typed in dollars and stored as lookups
+// (flightaware.monthly_limit), the number Aerodrome actually counts.
+const FA_LOOKUP_USD = 0.005;
+function _faBudgetNote(lookups) {
+    return `a month · about ${Number(lookups).toLocaleString()} lookup${lookups === 1 ? '' : 's'}`;
+}
+function faBudgetChanged(el) {
+    const dollars = Number(el.value);
+    const lookups = (el.value === '' || !isFinite(dollars)) ? null
+        : Math.min(200000, Math.max(0, Math.floor(dollars / FA_LOOKUP_USD + 1e-6)));
+    setAt(workingConfig, 'flightaware.monthly_limit', lookups);
+    const note = document.getElementById('faBudgetNote');
+    if (note) note.textContent = _faBudgetNote(lookups == null ? 900 : lookups);
+    updateSaveBar();
+}
+
 function _faKeyInput(note) {
     // A key pasted but not saved yet keeps its value across re-renders.
     const typed = _faKeyState() === 'pasted' ? String(getAt(workingConfig, 'flightaware.api_key') || '') : '';
@@ -2947,8 +2963,8 @@ function faInner() {
         </div>`;
     } else if (st) {
         if (st.paused && st.limit > 0) {
-            top += `<div class="fa-warn"><b>Monthly limit reached.</b> Aerodrome has stopped asking FlightAware this month
-                and is using the free route list until ${escapeAttr(_faDay(st.resets_on))}. Raise the limit below to start again now.</div>`;
+            top += `<div class="fa-warn"><b>This month's budget is used up.</b> Aerodrome has stopped asking FlightAware
+                and is using the free route list until ${escapeAttr(_faDay(st.resets_on))}. Raise the budget below to start again now.</div>`;
         }
         const pct = st.limit > 0 ? Math.min(100, Math.round(100 * st.count / st.limit)) : 0;
         const u = st.usage;
@@ -2960,7 +2976,7 @@ function faInner() {
         top += `<div class="fa-usage">
             <div class="big">${Number(st.count).toLocaleString()} of ${Number(st.limit).toLocaleString()} lookups this month</div>
             <div class="bar${st.paused ? ' full' : ''}"><i style="width:${pct}%"></i></div>
-            <div class="sub">About ${_faMoney(st.cost_estimate)} of your ${_faMoney(st.limit_cost)} limit · counts reset on ${escapeAttr(_faDay(st.resets_on))}</div>
+            <div class="sub">About ${_faMoney(st.cost_estimate)} of your ${_faMoney(st.limit_cost)} budget · counts reset on ${escapeAttr(_faDay(st.resets_on))}</div>
             <div class="sub">${faLine}</div>
           </div>`;
     } else {
@@ -2989,13 +3005,14 @@ function faInner() {
         <div class="form-label"><span class="form-label-name">FlightAware API key</span>
           <span class="form-label-hint">Stored in this install's config.yaml; never shown again in full.</span></div>
         <div class="form-field">${keyField}</div>
-        <div class="form-label"><span class="form-label-name">Monthly limit</span>
-          <span class="form-label-hint">Aerodrome stops asking FlightAware after this many lookups in a month and uses
-          the free list until the 1st. A lookup costs half a cent, so 900 is $4.50, inside the $5 free credit. If you
-          feed FlightAware, up to 1,900 ($9.50) stays inside your $10. 0 turns lookups off.</span></div>
-        <div class="form-field"><div class="fa-key"><input type="number" class="form-input" data-path="flightaware.monthly_limit"
-            min="0" max="200000" value="${escapeAttr(limit)}" style="min-width:0;width:110px" oninput="onFieldChange(this)">
-            <span style="color:var(--t2);font-size:13px">lookups a month</span></div></div>
+        <div class="form-label"><span class="form-label-name">Monthly budget</span>
+          <span class="form-label-hint">Aerodrome stops asking FlightAware once this month's lookups reach this amount,
+          and uses the free list until the 1st. A lookup costs half a cent. FlightAware's free credit is $5 a month,
+          or $10 if you feed FlightAware. $0 turns lookups off.</span></div>
+        <div class="form-field"><div class="fa-key"><span style="color:var(--t2);font-size:13px">$</span><input type="number"
+            class="form-input" id="faBudget" min="0" max="1000" step="0.5" value="${(limit * FA_LOOKUP_USD).toFixed(2)}"
+            style="min-width:0;width:110px" oninput="faBudgetChanged(this)">
+            <span style="color:var(--t2);font-size:13px" id="faBudgetNote">${_faBudgetNote(limit)}</span></div></div>
         <div class="form-label"><span class="form-label-name">Look up watchlist aircraft automatically</span>
           <span class="form-label-hint">Asks FlightAware when a watchlist aircraft's alert goes out, so the alert shows
           the route without opening it. Busy watchlist aircraft can use up a month's lookups quickly, so this is off

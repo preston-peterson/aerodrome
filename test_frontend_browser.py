@@ -548,8 +548,21 @@ class TestFlightAwareSettings(_ConfigPage):
 
     def test_the_limit_reached_state(self):
         self.open_with("__kept__", dict(self.STATUS, count=900, paused=True, cost_estimate=4.5))
-        self.assertIn("Monthly limit reached", self.box())
+        self.assertIn("This month's budget is used up", self.box())
         self.assertIn("paused until Dec", self.box())
+
+    def test_the_budget_is_typed_in_dollars_and_stored_as_lookups(self):
+        self.open_with("__kept__")
+        self.assertEqual(self.page.input_value("#faBudget"), "4.50")
+        self.assertIn("about 900 lookups", self.text("#faBudgetNote"))
+        self.page.fill("#faBudget", "9.50")
+        self.assertEqual(self.page.evaluate("workingConfig.flightaware.monthly_limit"), 1900)
+        self.assertIn("about 1,900 lookups", self.text("#faBudgetNote"))
+        self.assertTrue(self.page.evaluate("tabIsDirty('display')"))
+        self.page.fill("#faBudget", "0")
+        self.assertEqual(self.page.evaluate("workingConfig.flightaware.monthly_limit"), 0)
+        self.page.fill("#faBudget", "")
+        self.assertIsNone(self.page.evaluate("workingConfig.flightaware.monthly_limit"))
 
     def test_remove_and_replace_change_only_the_unsaved_copy(self):
         self.open_with("__kept__")
@@ -613,6 +626,64 @@ class TestNtfyRepair(_ConfigPage):
         self.assertEqual(self.page.evaluate("getAt(workingConfig, 'notifications.url')"),
                          "http://localhost:2586/example-topic")
         self.assertIn("ntfy repaired", self.text(".alert-modal"))
+
+
+class TestStatusFlightAwareCard(BrowserCase):
+    """v3.4.169: with a FlightAware key, the Status page shows this month's
+    lookups and budget, FlightAware's own figure and the last lookup; a refused
+    key is amber there and on the Status dot, a used-up budget on the card only."""
+
+    FA = {"configured": True, "key_last4": "7c2e", "key_state": "ok", "tested_at": 1, "month": "2026-11",
+          "count": 212, "limit": 900, "paused": False, "resets_on": "2026-12-01", "cost_estimate": 1.06,
+          "limit_cost": 4.5, "usage": {"total_cost": 0.95, "total_discount_cost": 0.0, "total_calls": 190,
+                                       "as_of": 4102444800},
+          "usage_url": "https://flightaware.example/usage",
+          "last_lookup": {"ts": 1781539200, "callsign": "EXA412", "status": "found",
+                          "origin": "KBOS", "destination": "KDEN"}}
+
+    def card(self, fa, **extra):
+        st = _status_page({"enabled": False, "ok": True}, **extra)
+        st["components"]["flightaware"] = fa
+        self.site.api["/api/status"] = st
+        self.site.api["/api/flightaware/status"] = dict(fa or {}, ok=True)
+        self.open("/status")
+        self.advance(1000)
+        self.assertNotIn("Failed to load status", self.page.inner_text("body"))
+        if self.page.locator("#flightawareCard").count() == 0:
+            return None
+        return self.text("#flightawareCard")
+
+    def test_no_key_no_card(self):
+        self.assertIsNone(self.card(None))
+        self.assertIsNone(self.card({"configured": False}))
+
+    def test_connected(self):
+        text = self.card(self.FA)
+        for want in ("Connected", "212 of 900 lookups", "$1.06 of $4.50 budget", "$0.95 · $0.00 after credit",
+                     "EXA412 · KBOS → KDEN", "December 1", "key …7c2e"):
+            self.assertIn(want, text)
+        self.assertEqual(self.page.get_attribute("#flightawareCard .fa-links a >> nth=1", "href"), "/config#display")
+        self.assertEqual(self.site.count("/api/flightaware/status"), 0, "a fresh figure isn't fetched again")
+
+    def test_a_missing_figure_is_fetched_once(self):
+        text = self.card(dict(self.FA, usage=None))
+        self.assertIn("Not fetched yet", text)
+        self.advance(25000, step=5000)
+        self.assertEqual(self.site.count("/api/flightaware/status"), 1)
+
+    def test_budget_used_up(self):
+        text = self.card(dict(self.FA, count=900, paused=True, cost_estimate=4.5))
+        self.assertIn("Paused until December 1", text)
+        self.assertIn("budget is used up", text)
+
+    def test_refused_key_is_named_in_the_banner(self):
+        text = self.card(dict(self.FA, key_state="invalid",
+                              last_lookup=dict(self.FA["last_lookup"], status="invalid_key")),
+                         severity="warn", failing=["flightaware"],
+                         health_reason="FlightAware didn't accept the API key — routes come from the free list")
+        self.assertIn("Key not accepted", text)
+        self.assertIn("key refused", text)
+        self.assertIn("FlightAware key", self.page.inner_text(".overall"))
 
 
 class TestStatusNotificationsCard(BrowserCase):

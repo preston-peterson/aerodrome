@@ -636,6 +636,8 @@ class TestStatus(FlightAwareTestCase):
         fa.lookup(cfg, CS)
         fa.lookup(cfg, "EXA413")
         st = fa.status(cfg)
+        self.assertEqual(st.pop("last_lookup"), {"ts": NOW, "callsign": "EXA413", "status": "none",
+                                                 "origin": None, "destination": None})
         self.assertEqual(st, {
             "configured": True, "key_last4": "e5f6", "key_state": "untested",
             "tested_at": None, "month": "2026-11", "count": 2, "limit": 400,
@@ -728,6 +730,38 @@ class TestThreading(FlightAwareTestCase):
         self.assertEqual([r["status"] for r in results].count("paused"), 2)
         self.assertEqual(fa.status(cfg)["count"], 2)
         self.assertEqual(self.http.calls_made, 2)
+
+
+class TestStatusPageNumbers(FlightAwareTestCase):
+    """The Status page's card (v3.4.169): the last lookup sent to FlightAware,
+    and FlightAware's usage figure from the cache only, never a call."""
+
+    def test_the_last_lookup_names_the_flight_and_its_route(self):
+        fa = self.client(FakeResponse(200, payload(flight())))
+        self.assertIsNone(fa.status(self.cfg())["last_lookup"])
+        fa.lookup(self.cfg(), CS)
+        self.assertEqual(fa.status(self.cfg())["last_lookup"],
+                         {"ts": NOW, "callsign": CS, "status": "found", "origin": "KEXA", "destination": "KEXB"})
+
+    def test_a_cache_hit_isnt_a_lookup(self):
+        fa = self.client(FakeResponse(200, payload(flight())))
+        fa.lookup(self.cfg(), CS)
+        self.clock.advance(60)
+        fa.lookup(self.cfg(), CS)
+        self.assertEqual(fa.status(self.cfg())["last_lookup"]["ts"], NOW)
+
+    def test_a_refused_key_is_the_last_lookup(self):
+        fa = self.client(FakeResponse(401, {"status": 401}))
+        fa.lookup(self.cfg(), CS)
+        self.assertEqual(fa.status(self.cfg())["last_lookup"]["status"], "invalid_key")
+
+    def test_cached_usage_never_calls(self):
+        fa = self.client(FakeResponse(200, USAGE_OK))
+        self.assertIsNone(fa.cached_usage())
+        fa.usage(self.cfg())
+        self.clock.advance(3600)                      # long past USAGE_TTL_S
+        self.assertEqual(fa.cached_usage()["total_cost"], 1.235)
+        self.assertEqual(self.http.calls_made, 1)
 
 
 class TestReviewFixes(FlightAwareTestCase):

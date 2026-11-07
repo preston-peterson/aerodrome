@@ -1,4 +1,4 @@
-# Version: 3.4.168
+# Version: 3.4.169
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -4581,6 +4581,22 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             logger.debug(f"notifications check failed in /api/status: {e}")
             notify_check = {"enabled": False, "ok": True}
 
+        # --- FlightAware (v3.4.169): only when a key is set. Built from what
+        # Aerodrome already knows (its own count, the key's last test, the
+        # last lookup, FlightAware's usage figure as last fetched): never a
+        # call to FlightAware, because every page polls this endpoint.
+        fa_check = None
+        try:
+            fa_cfg = CONFIG.get("flightaware") or {}
+            if str(fa_cfg.get("api_key") or "").strip():
+                import flightaware as _flightaware
+                _fa = _fa_client()
+                fa_check = dict(_fa.status(fa_cfg), usage=_fa.cached_usage(),
+                                usage_url=_flightaware.USAGE_URL)
+        except Exception as e:
+            logger.debug(f"flightaware status failed in /api/status: {type(e).__name__}")
+            fa_check = None
+
         # --- Severity: see _health_summary ---
         core_ok = all([
             receiver_check["ok"],
@@ -4613,7 +4629,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
              "collector": collector_check["ok"], "webserver": webserver_check["ok"]},
             hexdb_ok=advisory_ok, capacity_ok=capacity_ok,
             sudoers=nonlocal_state.get("last_sudoers_check"), system=system_info,
-            notifications=notify_check,
+            notifications=notify_check, flightaware=fa_check,
         )
 
         # v3.0.0: GitHub update availability. The gear-menu badge driver
@@ -4650,6 +4666,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 "receiver": receiver_check,
                 "hexdb_resolver": hexdb_check,
                 "notifications": notify_check,
+                "flightaware": fa_check,
             },
             "system": system_info,
             "retention": CONFIG["retention"],
@@ -13509,7 +13526,8 @@ def _notifications_check(nt_cfg: Optional[Dict[str, Any]], stats: Optional[Dict[
 def _health_summary(core: Dict[str, bool], hexdb_ok: bool, capacity_ok: bool,
                     sudoers: Optional[Dict[str, Any]],
                     system: Optional[Dict[str, Any]],
-                    notifications: Optional[Dict[str, Any]] = None) -> Tuple[str, List[str], Optional[str]]:
+                    notifications: Optional[Dict[str, Any]] = None,
+                    flightaware: Optional[Dict[str, Any]] = None) -> Tuple[str, List[str], Optional[str]]:
     """(severity, failing, reason) for /api/status: the one place that decides
     the colour of the health dot and gear on every page, and the Status banner.
 
@@ -13519,12 +13537,16 @@ def _health_summary(core: Dict[str, bool], hexdb_ok: bool, capacity_ok: bool,
     1.5x cores for 15 minutes (not 1 minute, so it doesn't flap on a spike, and
     not 1x, which is normal on a busy tracker). `reason` says why, for the dot's
     tooltip and the Live tab's toast. `notifications` is /api/status's component
-    of that name: on and not ok is a warning too (alerts aren't arriving)."""
+    of that name: on and not ok is a warning too (alerts aren't arriving).
+    `flightaware` (v3.4.169) likewise: a key FlightAware refused is a warning
+    (routes quietly fall back to the free list); reaching the monthly limit is
+    not, because that's the limit doing its job."""
     notify_bad = bool(notifications and notifications.get("enabled") and not notifications.get("ok"))
+    fa_bad = bool(flightaware and flightaware.get("configured") and flightaware.get("key_state") == "invalid")
     down = [name for name, ok in core.items() if not ok]
     if down:
         failing = (down + ([] if hexdb_ok else ["hexdb_resolver"]) + ([] if capacity_ok else ["capacity"])
-                   + (["notifications"] if notify_bad else []))
+                   + (["notifications"] if notify_bad else []) + (["flightaware"] if fa_bad else []))
         return "error", failing, ", ".join(down) + " offline"
 
     warnings = []
@@ -13542,6 +13564,9 @@ def _health_summary(core: Dict[str, bool], hexdb_ok: bool, capacity_ok: bool,
                          "notification server unreachable — alerts aren't reaching your phone"
                          if not notifications.get("reachable")
                          else "the last alert failed to send — see Status"))
+    if fa_bad:
+        warnings.append(("flightaware",
+                         "FlightAware didn't accept the API key — routes come from the free list"))
     load = ((system or {}).get("load_average") or {}).get("15m")
     cores = (system or {}).get("cpu_cores")
     if load is not None and cores and load >= cores * 1.5:
