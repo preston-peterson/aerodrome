@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.4.171
+# Version: 3.4.172
 # =============================================================================
 # package-release.sh — Build the release zip + SHA256 for the current VERSION
 # =============================================================================
@@ -269,13 +269,17 @@ esac
 # without it only the LAST cp's status would count). A tracked file deleted
 # in the working tree without `git rm` is refused: an accidental deletion and
 # an intended removal look the same, and `git rm` costs nothing.
+# Files marked export-ignore in .gitattributes (the test suite, the release
+# tooling) are tracked but don't ship: skipped here exactly as `git archive`
+# skips them, so the self-check below still compares like with like.
 mkdir -p "$RELEASE_DIR"
-( cd "$PROJECT_DIR" && git ls-files -z | \
-  while IFS= read -r -d '' f; do
+( cd "$PROJECT_DIR" && git ls-files -z | git check-attr -z --stdin export-ignore | \
+  while IFS= read -r -d '' f && IFS= read -r -d '' _attr && IFS= read -r -d '' ignored; do
       if [ ! -e "$f" ] && [ ! -L "$f" ]; then
           echo "    $f is tracked but deleted in the working tree — git rm it (or restore it)" >&2
           exit 1
       fi
+      [ "$ignored" = set ] && continue
       mkdir -p "$RELEASE_DIR/$(dirname "$f")" || exit 1
       cp -p "$f" "$RELEASE_DIR/$f" || exit 1
   done ) || fail "staging the tracked files failed (above) — nothing packaged"

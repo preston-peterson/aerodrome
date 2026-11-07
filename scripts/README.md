@@ -3,6 +3,11 @@
 Helper scripts that don't run as part of the Aerodrome service. Everything
 here is developer / maintainer tooling, safe to ignore at runtime.
 
+The release tooling (`screenshots.py`, `check_release_zip.py`,
+`check_installers.py`, `check_docs.py`, `build_overview_pdf.py`,
+`tech_debt_audit.py`, `package-release.sh`, `publish-release.sh`) is in the
+repository only: the release download leaves it out (`.gitattributes`).
+
 ## `screenshots.py`
 
 Regenerates every PNG in `docs/` from the current HTML templates using

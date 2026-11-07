@@ -19,6 +19,27 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.172] — 2026-11-07
+
+**Installing is lighter and safer: no compiler on Debian and Ubuntu, a proper upgrade on Arch, correct SELinux labels, and a second copy can no longer take over the first.**
+
+- **No compiler on Debian and Ubuntu.** When Python's venv module was missing, the installer also added `python3-pip`, and apt brought along its recommended C compiler and build tools: about 600 MB, enough to fill a small disk. The installer now adds only Python's venv package. Aerodrome's own environment brings its own pip, so nothing else changes. On a fresh Ubuntu 24.04 that's 4 packages instead of 64.
+- **No more debconf warnings.** Package installs now run non-interactively, so installing over ssh or with the one-line installer no longer prints "debconf: unable to initialize frontend" lines.
+- **Arch Linux: one full upgrade, not a partial one.** When the installer had to add packages, it refreshed the package list and then installed in a separate step. That's a partial upgrade, which Arch doesn't support and which can break other programs. It now runs a single `pacman -Syu`, which brings the rest of the system up to date along with Aerodrome's packages, and it says so before it starts.
+- **SELinux labels (Fedora, openSUSE and the like).** The installer now gives the install folder its proper SELinux labels. Before, the files the one-line installer unpacked kept the label of the temporary folder they were unpacked in. Aerodrome ran anyway, but the labels were wrong. On openSUSE, the system helper is now labelled too.
+- **A second install can't take over the first.** Running `install.sh` from a second folder while Aerodrome was already installed rewrote the service to run the new copy, which left the first one stranded. It now stops, names the folder Aerodrome runs from, and says how to update that copy or move it. If that folder has been deleted, the new install takes the service over and says so.
+- **A smaller download.** The release zip no longer includes the test suite or the maintainer's release tools (about 1.8 MB). They stay in the GitHub repository. Updating an existing install leaves the old test files in its top folder. Nothing uses them, and you can delete them.
+
+### Operational notes
+
+Only the installers and the download's contents changed. An update through the Updates page restarts Aerodrome as usual and makes no database change.
+
+### Behind the scenes
+
+- Files marked `export-ignore` in the new `.gitattributes` (`test_*.py`, `bump-version.sh`, `.github/`, `requirements-dev.txt`, and the release and gate scripts) are left out of the zip. `git archive` honours the attribute and `scripts/package-release.sh` skips the same files, so the zip still equals `git archive <commit>`.
+- `install.sh` detects SELinux from its mounted filesystem (`/sys/fs/selinux`), not from `selinuxenabled` on the PATH: openSUSE keeps the SELinux tools in `/usr/sbin`, which a regular account's PATH there doesn't include.
+- Checked on fresh Ubuntu 24.04, Debian 12, Fedora 44 (SELinux enforcing), Arch and openSUSE Tumbleweed (SELinux enforcing) machines: direct and one-line installs, a second install refused, a re-run, and uninstall.
+
 ## [3.4.171] — 2026-11-06
 
 **The aircraft page now keeps the routes FlightAware confirmed, the Performance diagnostic runs in seconds, and the "Today" cards are right in half-hour time zones.**

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.4.171
+# Version: 3.4.172
 # =============================================================================
 # Aerodrome — Server Install Script
 # =============================================================================
@@ -237,6 +237,11 @@ valid_account() {
 }
 
 # systemd's EFFECTIVE view of aerodrome.service (drop-ins included). Sets
+# SELinux is on when its filesystem is mounted. Not `command -v selinuxenabled`:
+# openSUSE keeps the SELinux tools in /usr/sbin, which isn't on a regular
+# account's PATH there (sudo's own PATH has it, so `sudo restorecon` works).
+selinux_on() { [ -e "${AERODROME_SELINUX_ENFORCE:-/sys/fs/selinux/enforce}" ]; }
+
 # UNIT_LOAD, UNIT_WD and UNIT_USER. Read-only; empty when there is no systemd.
 read_unit() {
     local out
@@ -409,7 +414,7 @@ install_helper() {
         echo -e "  ${RED}✗${RESET} Could not move the new system helper into place — nothing was changed."
         return 1
     fi
-    if command -v restorecon > /dev/null 2>&1; then
+    if selinux_on; then
         sudo restorecon "$HELPER" 2> /dev/null || true
     fi
     echo -e "  ${GREEN}✓${RESET} System helper installed (${HELPER}, run by ${2})"
@@ -596,6 +601,26 @@ fi
 INSTALL_REAL="$(realpath -e -- "$INSTALL_DIR" 2>/dev/null || printf '%s' "$INSTALL_DIR")"
 KEEP_ACCOUNT=false
 read_unit
+# A second install must not take over the first one's service: rewriting
+# aerodrome.service from this directory would move the OTHER install's unit
+# here (the privileges-only refresh refuses the same case in
+# resolve_service_user). A unit whose folder was deleted by hand no longer
+# runs anything, so this install may take the (now orphaned) service.
+if [ "$UNIT_LOAD" = loaded ] && [ -n "$UNIT_WD" ]; then
+    if real_wd="$(realpath -e -- "$UNIT_WD" 2>/dev/null)"; then
+        if [ "$real_wd" != "$INSTALL_REAL" ]; then
+            echo -e "${RED}Aerodrome is already installed in ${UNIT_WD} (${SERVICE_NAME}.service runs it from there).${RESET}" >&2
+            echo "This install, in ${INSTALL_DIR}, would take that service over. Nothing was changed." >&2
+            echo "" >&2
+            echo "  To update that copy: open its web UI → Updates" >&2
+            echo "  To move Aerodrome here: run that copy's uninstall.sh first" >&2
+            echo "             (bash $(printf %q "${UNIT_WD}/uninstall.sh"))" >&2
+            exit 2
+        fi
+    else
+        echo -e "${YELLOW}⚠${RESET}  ${SERVICE_NAME}.service pointed at ${UNIT_WD}, which no longer exists — this install takes the service over." >&2
+    fi
+fi
 if [ "$UNIT_LOAD" = loaded ] && [ -n "$UNIT_USER" ] && [ "$UNIT_USER" != root ] \
         && [ "$(realpath -e -- "$UNIT_WD" 2>/dev/null || true)" = "$INSTALL_REAL" ]; then
     if ! valid_account "$UNIT_USER"; then
@@ -723,9 +748,12 @@ pkg_detect() {
     fi
     case "$PKG_FAMILY" in
         debian)
+            # Never asks: debconf would otherwise try a dialog (and warn
+            # over a non-tty ssh). No python3-pip: apt's recommends for it
+            # are a C toolchain (~600 MB), and the venv brings its own pip.
             PKG_REFRESH_CMD="sudo apt-get update -qq"
-            PKG_INSTALL_CMD="sudo apt-get install -y -qq"
-            PKG_PYTHON3="python3"; PKG_PIP="python3-pip"
+            PKG_INSTALL_CMD="sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq"
+            PKG_PYTHON3="python3"; PKG_PIP=""
             PKG_VENV="python3-venv"; PKG_CURL="curl"; PKG_UNZIP="unzip" ;;
         fedora)
             PKG_REFRESH_CMD=""
@@ -733,8 +761,10 @@ pkg_detect() {
             PKG_PYTHON3="python3"; PKG_PIP="python3-pip"
             PKG_VENV=""; PKG_CURL="curl"; PKG_UNZIP="unzip" ;;
         arch)
-            PKG_REFRESH_CMD="sudo pacman -Sy --noconfirm"
-            PKG_INSTALL_CMD="sudo pacman -S --needed --noconfirm"
+            # -Syu in one step: a refresh followed by a separate -S is a
+            # partial upgrade, which Arch doesn't support.
+            PKG_REFRESH_CMD=""
+            PKG_INSTALL_CMD="sudo pacman -Syu --needed --noconfirm"
             PKG_PYTHON3="python"; PKG_PIP="python-pip"
             PKG_VENV=""; PKG_CURL="curl"; PKG_UNZIP="unzip" ;;
         opensuse)
@@ -790,6 +820,9 @@ else
         echo -e "  ${YELLOW}⚠${RESET}  Package index refresh failed — trying the install anyway:"
         tail -n 5 "$PKG_LOG" | sed 's/^/      /'
     fi
+    if [ "$PKG_FAMILY" = arch ]; then
+        echo "    (Arch: pacman -Syu brings the rest of the system up to date first; Arch doesn't support partial upgrades)"
+    fi
     if ! pkg_install "$PKG_PYTHON3" "$PKG_PIP" "$PKG_VENV" "$PKG_CURL" >> "$PKG_LOG" 2>&1; then
         echo -e "  ${RED}✗${RESET} Installing system packages failed (${PKG_FAMILY} package manager):"
         tail -n 20 "$PKG_LOG" | sed 's/^/      /'
@@ -799,7 +832,7 @@ else
         exit 1
     fi
     rm -f "$PKG_LOG"
-    echo -e "  ${GREEN}✓${RESET} Python3, pip, venv installed (via $PKG_FAMILY package manager)"
+    echo -e "  ${GREEN}✓${RESET} Python3, venv and curl installed (via $PKG_FAMILY package manager)"
 fi
 
 echo -e "${CYAN}[2/5]${RESET} Setting up Python virtual environment..."
@@ -829,6 +862,17 @@ chown -R "${USER}:${SVC_GROUP}" \
     "${INSTALL_DIR}/.backups" \
     "${INSTALL_DIR}/venv" 2>/dev/null || true
 echo -e "  ${GREEN}✓${RESET} Log, update, and backup directories created"
+
+# SELinux: files keep the label of wherever they were created, so a tree
+# unpacked under /tmp and moved here (the bootstrap does that) stays
+# user_tmp_t. Give the whole install folder its proper labels.
+if selinux_on; then
+    if sudo restorecon -R -- "$INSTALL_DIR" 2> /dev/null; then
+        echo -e "  ${GREEN}✓${RESET} SELinux labels set on ${INSTALL_DIR}"
+    else
+        echo -e "  ${YELLOW}⚠${RESET}  Couldn't reset SELinux labels on ${INSTALL_DIR} (restorecon failed) — continuing"
+    fi
+fi
 
 # v3.4.40: resolve which port the synthetic feeder will use BEFORE
 # the config.yaml-write branch (which needs the value to set

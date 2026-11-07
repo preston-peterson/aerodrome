@@ -144,6 +144,7 @@ STUBS = {
                '  printf "#!/bin/sh\\nexit 0\\n" > "$3/bin/pip"; chmod +x "$3/bin/pip"\n'
                'fi\nexit 0\n',
     "pip": LOGGER,
+    "restorecon": LOGGER,
     "sleep": "#!/bin/sh\nexit 0\n",
     "chown": LOGGER,
     "ss": "#!/bin/sh\nexit 0\n",
@@ -242,6 +243,7 @@ class _Harness(unittest.TestCase):
              "TEST_TMP": str(self.tmp), "UNIT_SHOW": str(self.unit_show),
              "KILL_COUNTER": str(self.tmp / "kill-counter"),
              "AERODROME_BOOTSTRAP_OS_RELEASE": str(self.os_release),
+             "AERODROME_SELINUX_ENFORCE": str(self.tmp / "no-selinuxfs"),
              "AERODROME_HELPER_PYTHONS": str(self.stubs / "py3"),
              "REAL_PYTHON": sys.executable,
              "MIGRATE_OUT_DEFAULT": '{"ok": true, "migrated": false}'}
@@ -414,6 +416,45 @@ class FullInstall(_Harness):
         self.assertIn("Unrecognised distribution", r.stdout)
         self.assertIn("apt-get install -y -qq python3", self.log_text())
 
+    def test_apt_never_asks_and_installs_no_pip(self):
+        # python3-pip's recommends are a C toolchain (~600 MB); the venv
+        # brings its own pip. Non-interactive: no debconf dialog or warnings.
+        d = self.make_install("plain")
+        r = self.run_install(d, PY_MISSING=1)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        log = self.log_text()
+        self.assertIn("sudo[valid] env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "
+                      "python3 python3-venv curl\n", log)
+        self.assertNotIn("python3-pip", log)
+        self.assertIn("Python3, venv and curl installed", r.stdout)
+
+    def test_arch_upgrades_and_installs_in_one_step(self):
+        # pacman -Sy followed by a separate -S is a partial upgrade.
+        self.os_release.write_text('ID=arch\nPRETTY_NAME="Example Arch"\n')
+        d = self.make_install("plain")
+        r = self.run_install(d, PY_MISSING=1)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        pacman = [l for l in self.log_text().splitlines() if l.startswith("pacman ")]
+        self.assertEqual(pacman, ["pacman -Syu --needed --noconfirm python python-pip curl"])
+        self.assertIn("doesn't support partial upgrades", r.stdout)
+
+    # ---- SELinux labels ------------------------------------------------------------
+    def test_selinux_relabels_the_install_folder(self):
+        d = self.make_install("plain")
+        on = self.tmp / "selinux-enforce"     # the mounted selinuxfs's enforce file
+        on.write_text("1\n")
+        r = self.run_install(d, AERODROME_SELINUX_ENFORCE=on)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"restorecon -R -- {d}\n", self.log_text())
+        self.assertIn("SELinux labels set", r.stdout)
+
+    def test_without_selinux_nothing_is_relabelled(self):
+        d = self.make_install("plain")
+        r = self.run_install(d)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("restorecon -R", self.log_text())
+        self.assertNotIn("SELinux", r.stdout)
+
     # ---- (a) sudoers validated, then swapped in -----------------------------------
     def test_sudoers_installed_0440_via_dot_temp_and_rename(self):
         d = self.make_install("plain")
@@ -521,6 +562,46 @@ class FullInstall(_Harness):
         r = self.run_install(d, FAKE_WHOAMI="demo-user")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("User=demo-user\n", self.unit_file())
+
+    # ---- a second install must not take over the first one's service ------------
+    def test_unit_running_from_another_install_is_refused(self):
+        other = self.make_tree(self.tmp / "srv" / "example-a")
+        d = self.make_install("plain")
+        self.set_unit(other, "svc-a")
+        r = self.run_install(d, **self.as_root())
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn(f"Aerodrome is already installed in {other}", r.stderr)
+        self.assertIn("would take that service over. Nothing was changed.", r.stderr)
+        self.assertIn(f"(bash {other}/uninstall.sh)", r.stderr)
+        self.assertFalse((self.fr / "etc/systemd/system/aerodrome.service").exists())
+        self.assertFalse(self.live.exists())
+        self.assertFalse(self.helper().exists())
+        self.assertNotIn("[1/5]", r.stdout)
+        log = self.log_text()
+        self.assertNotIn("sudo", log)
+        for verb in ("apt-get", "dnf ", "pacman", "zypper", "-m venv", "pip ", "chown",
+                     "systemctl daemon-reload", "systemctl enable", "systemctl restart"):
+            self.assertNotIn(verb, log, f"refused run ran {verb!r}")
+
+    def test_unit_whose_directory_is_gone_is_taken_over_with_a_note(self):
+        d = self.make_install("plain")
+        self.set_unit(self.tmp / "srv" / "example-gone", "svc-a")   # never existed
+        r = self.run_install(d, **self.as_root())
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("aerodrome.service pointed at", r.stderr)
+        self.assertIn("no longer exists", r.stderr)
+        self.assertIn("takes the service over", r.stderr)
+        self.assertIn(f"WorkingDirectory={d}\n", self.unit_file())
+        self.assertIn("User=admin-b\n", self.unit_file())            # the typed-sudo account
+
+    def test_rerun_in_the_units_own_directory_is_not_refused(self):
+        d = self.make_install("plain")
+        self.set_unit(d, "svc-a")
+        r = self.run_install(d, **self.as_root())
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("takes the service over", r.stdout + r.stderr)
+        self.assertNotIn("already installed in", r.stderr)
+        self.assertIn("keeping service account svc-a", r.stdout)
 
     # ---- SUDO_USER counts only as root ---------------------------------------------
     def assert_service_account(self, r, account, group):

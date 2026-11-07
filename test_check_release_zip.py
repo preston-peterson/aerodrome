@@ -393,6 +393,21 @@ class TestPackageRelease(unittest.TestCase):
         self.assertFalse(self.staging.exists())
         rc, cout = check(self.zip, self.ver, "HEAD", self.t)
         self.assertEqual(rc, 0, cout)
+        # export-ignore (.gitattributes): the test suite and the release
+        # tooling stay in the repository; everything an install runs ships.
+        w = f"aerodrome-v{self.ver}/"
+        with zipfile.ZipFile(self.zip) as z:
+            names = {n[len(w):] for n in z.namelist() if not n.endswith("/")}
+        for gone in ("test_install_sh.py", "bump-version.sh", ".gitattributes", ".gitignore",
+                     "scripts/package-release.sh", "scripts/check_release_zip.py",
+                     "requirements-dev.txt"):
+            self.assertNotIn(gone, names)
+        self.assertFalse([n for n in names if n.startswith(".github/")
+                          or n.rsplit("/", 1)[-1].startswith("test_")])
+        for kept in ("server.py", "install.sh", "uninstall.sh", "requirements.txt",
+                     "scripts/aerodrome-helper", "scripts/bootstrap.sh",
+                     "scripts/recover-sudoers.sh", "tools/synthetic_feeder/serve.py"):
+            self.assertIn(kept, names)
 
     def test_02_uncommitted_edit_ships_the_working_tree(self):
         with open(self.t / "server.py", "a") as f:
@@ -787,6 +802,12 @@ class TestPublish(unittest.TestCase):
         self.assertEqual(self.gh_calls(), [])
 
     def test_03_wrong_target(self):
+        # A commit that changes a SHIPPED file (the fixture's own last commit
+        # only touches publish-release.sh, which is export-ignored: its parent
+        # archives identically).
+        with open(self.t / "server.py", "a") as f:
+            f.write("# a later change\n")
+        git(self.t, "commit", "-qam", "change a shipped file")
         self.make_zip()
         rc, out = self.publish("--target", "HEAD~1", "--check-only")
         self.assertEqual(rc, 1, out[-3000:])

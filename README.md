@@ -1,5 +1,5 @@
 # Aerodrome
-<!-- Version: 3.4.171 -->
+<!-- Version: 3.4.172 -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -120,6 +120,9 @@ Three moving parts in one Python process:
   busy hour doesn't spam your phone.
 
 ## Project structure
+
+The repository. The release download leaves out the test files and the
+release tooling (marked `export-ignore` in `.gitattributes`).
 
 ```
 aerodrome/

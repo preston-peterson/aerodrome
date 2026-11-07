@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Version: 3.4.171
+# Version: 3.4.172
 # =============================================================================
 # Aerodrome — Curl Install Bootstrap
 # =============================================================================
@@ -215,9 +215,12 @@ pkg_detect() {
     fi
     case "$PKG_FAMILY" in
         debian)
+            # Never asks: debconf would otherwise try a dialog (and warn
+            # over a non-tty ssh). No python3-pip: apt's recommends for it
+            # are a C toolchain (~600 MB), and the venv brings its own pip.
             PKG_REFRESH_CMD="sudo apt-get update -qq"
-            PKG_INSTALL_CMD="sudo apt-get install -y -qq"
-            PKG_PYTHON3="python3"; PKG_PIP="python3-pip"
+            PKG_INSTALL_CMD="sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq"
+            PKG_PYTHON3="python3"; PKG_PIP=""
             PKG_VENV="python3-venv"; PKG_CURL="curl"; PKG_UNZIP="unzip" ;;
         fedora)
             PKG_REFRESH_CMD=""
@@ -225,8 +228,10 @@ pkg_detect() {
             PKG_PYTHON3="python3"; PKG_PIP="python3-pip"
             PKG_VENV=""; PKG_CURL="curl"; PKG_UNZIP="unzip" ;;
         arch)
-            PKG_REFRESH_CMD="sudo pacman -Sy --noconfirm"
-            PKG_INSTALL_CMD="sudo pacman -S --needed --noconfirm"
+            # -Syu in one step: a refresh followed by a separate -S is a
+            # partial upgrade, which Arch doesn't support.
+            PKG_REFRESH_CMD=""
+            PKG_INSTALL_CMD="sudo pacman -Syu --needed --noconfirm"
             PKG_PYTHON3="python"; PKG_PIP="python-pip"
             PKG_VENV=""; PKG_CURL="curl"; PKG_UNZIP="unzip" ;;
         opensuse)
@@ -754,6 +759,9 @@ fi
 if [ ${#NEED_PKGS[@]} -gt 0 ]; then
     log_info "Need to install: ${NEED_PKGS[*]}"
     log_info "Using: $PKG_INSTALL_CMD"
+    if [ "$PKG_FAMILY" = arch ]; then
+        log_info "(Arch: pacman -Syu brings the rest of the system up to date first; Arch doesn't support partial upgrades)"
+    fi
     pkg_refresh
     pkg_install "${NEED_PKGS[@]}" >/dev/null
     log_ok "Prerequisites installed"

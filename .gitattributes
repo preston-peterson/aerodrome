@@ -1,0 +1,21 @@
+# Tracked in the repo but left out of the release zip: the maintainer's
+# release tooling and the test suite. `git archive` honours export-ignore, so
+# the zip still equals `git archive <commit>`; scripts/package-release.sh
+# skips the same files when it stages the release tree.
+/.gitattributes export-ignore
+/.gitignore export-ignore
+/.pii-allowlist export-ignore
+/.github export-ignore
+/.github/** export-ignore
+/bump-version.sh export-ignore
+/requirements-dev.txt export-ignore
+/scripts/package-release.sh export-ignore
+/scripts/publish-release.sh export-ignore
+/scripts/check_release_zip.py export-ignore
+/scripts/check_installers.py export-ignore
+/scripts/check_docs.py export-ignore
+/scripts/build_overview_pdf.py export-ignore
+/scripts/tech_debt_audit.py export-ignore
+/scripts/screenshots.py export-ignore
+/scripts/reviewed-doc-images.sha256 export-ignore
+test_*.py export-ignore

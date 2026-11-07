@@ -515,7 +515,7 @@ class UnknownDistro(_Sandbox):
                                 "--from-zip", "/nonexistent", "--prefix", str(self.home / "aerodrome"))
         self.assertIn("continuing per --force", out)
         self.assertNotIn("unbound variable", out)
-        self.assertRegex(self.sudo_log.read_text(), r"sudo apt-get install -y -qq .*\bunzip\b")
+        self.assertRegex(self.sudo_log.read_text(), r"sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq .*\bunzip\b")
         self.assertEqual(rc, 1, out)           # then stops at the missing --from-zip
         self.assertIn("--from-zip path not readable", out)
 

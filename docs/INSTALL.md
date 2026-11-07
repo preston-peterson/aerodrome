@@ -1879,7 +1879,6 @@ flow gives you the building block.
 aerodrome/
 ├── install.sh              # One-time server setup
 ├── uninstall.sh            # Clean uninstall
-├── bump-version.sh         # Version management + doc rebuild pipeline
 ├── main.py                 # Entry point (start/stop/status/restart)
 ├── collector.py            # ADS-B fetching and classification
 ├── server.py               # FastAPI web server and API
@@ -1891,7 +1890,6 @@ aerodrome/
 ├── config.yaml             # All settings
 ├── config.yaml.example     # Reference defaults (used for auto-merging new keys on upgrade)
 ├── requirements.txt        # Runtime Python dependencies (installed by install.sh)
-├── requirements-dev.txt    # Dev-only deps (reportlab, playwright) for docs tooling
 ├── VERSION                 # Single source of truth for version
 ├── README.md               # Project front door
 ├── CHANGELOG.md            # Version history
@@ -1911,13 +1909,11 @@ aerodrome/
 │   ├── SEARCH_SYNTAX.md    # Search parser tokens reference
 │   ├── Aerodrome_Overview.pdf  # Shareable project overview
 │   └── screenshot-*.png    # UI screenshots
-├── scripts/                # Developer tooling (not run at service runtime), plus:
+├── scripts/
 │   ├── aerodrome-helper    # The system helper install.sh installs to /usr/local/libexec/aerodrome/
 │   ├── recover-sudoers.sh  # Refreshes Aerodrome's system permissions (hands off to install.sh)
-│   ├── README.md           # What's in here and how to run it
-│   ├── screenshots.py      # Regenerates docs/screenshot-*.png from the templates
-│   ├── build_overview_pdf.py  # Regenerates docs/Aerodrome_Overview.pdf
-│   └── check_docs.py       # Documentation drift detector (run by bump-version.sh)
+│   ├── bootstrap.sh        # The one-line installer (see Install)
+│   └── README.md           # What's in here
 ├── update/                 # Drop a new release here to stage it for the Updates page
 ├── .backups/               # Auto-created — snapshots of previous installs after each update
 ├── logs/                   # Auto-created
