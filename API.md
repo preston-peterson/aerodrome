@@ -40,6 +40,7 @@ Core endpoints the dashboard's tabs consume. All return a list of aircraft objec
 | GET | `/api/search` | Full-text search across every aircraft (`?q=...&from_ts=...&to_ts=...&preset=today&limit=...&offset=...`; `preset=today` starts from midnight in Aerodrome's timezone). The response adds `time_label` (the date window in words) and `time_tokens` (the date tokens as typed); with a window active, each row adds `window_sightings` |
 | GET | `/api/all/drill` | Per-aircraft sighting history (ICAO + window). Used by the aircraft detail page. |
 | GET | `/api/first-seen` | Per-ICAO first-seen timestamps (for "new today" highlighting) |
+| GET | `/api/callsign/{callsign}/route` | A flight's route, looked up by callsign. With `lat`/`lon` (and `track`), a route from the free list that doesn't fit where the plane is comes back `found: false, mismatch: true`. With `fa=1` (sent when you open an aircraft) and a FlightAware key set, FlightAware is asked first; its answer carries `source: "flightaware"`, `departed_at` and `arrives_at` (Unix timestamps). The display board never sends `fa=1`. |
 
 `/api/search` is the canonical "browse every aircraft" endpoint — replaces the old `/api/all` (which was removed in v2.67.0 alongside the All tab). It accepts a parsed query string (`q=`) plus optional filters and pagination. See `search.py` for the parser grammar (callsigns, ICAO, types, countries, operators, dates, `today`, `hour:N`, `distance:LO-HI`, `military`, `watchlist`).
 
@@ -90,9 +91,11 @@ The `?icaos=` query string is comma-separated. The response is `{hex: registrati
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/config` | Current config as JSON |
+| GET | `/api/config` | Current config as JSON. A saved FlightAware key comes back as `__kept__`, never in full; a `PUT` carrying `__kept__` keeps the stored key |
 | PUT | `/api/config` | Replace config (full document) |
 | GET | `/api/ui-config` | UI-only subset of config (track link provider, distance unit, map prefs including `map.carto_api_key`, etc.) |
+| GET | `/api/flightaware/status` | The FlightAware key's state (`key_last4` only, never the key), this month's lookups against `monthly_limit`, whether lookups are paused, and FlightAware's own usage figure (`usage`; a free call, cached 10 minutes, can lag an hour) |
+| POST | `/api/flightaware/test` | Check the saved FlightAware key with FlightAware's free usage call: `{ok, state: ok\|invalid\|error\|no_key, message}` |
 | GET | `/api/config/backups` | List automatic config backups (made on every save) |
 | GET | `/api/config/backup/{name}` | Fetch a specific backup as YAML text |
 | GET | `/api/config/export` | Current config as a downloadable YAML file |

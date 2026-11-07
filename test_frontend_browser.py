@@ -497,6 +497,86 @@ class TestConfigFitsOnPhones(_ConfigPage):
                          "sudo /usr/local/libexec/aerodrome/aerodrome-helper ntfy-uninstall --purge")
 
 
+class TestFlightAwareSettings(_ConfigPage):
+    """Configuration → Display → FlightAware routes (v3.4.168): sign-up steps
+    without a key; a saved key shows as its last 4 characters only, with this
+    month's lookups; Replace and Remove only change the unsaved copy."""
+
+    STATUS = {"ok": True, "configured": True, "key_last4": "7c2e", "key_state": "ok", "tested_at": 1,
+              "month": "2026-11", "count": 212, "limit": 900, "paused": False, "resets_on": "2026-12-01",
+              "cost_estimate": 1.06, "limit_cost": 4.5,
+              "usage": {"total_cost": 0.95, "total_discount_cost": 0.0, "total_calls": 190, "as_of": 1},
+              "usage_url": "https://flightaware.example/usage", "signup_url": "https://flightaware.example/"}
+
+    def open_with(self, key, status=None):
+        cfg = json.loads(json.dumps(_CONFIG))
+        cfg["display"] = dict(cfg.get("display") or {}, show_routes=True)
+        cfg["flightaware"] = {"api_key": key, "monthly_limit": 900, "watchlist_lookups": False}
+        self.site.api["/api/flightaware/status"] = status or self.STATUS
+        self.page.set_viewport_size({"width": self.WIDTH, "height": 900})
+        self.site.api["/api/config"] = cfg
+        self.site.api["/api/status"] = _status()
+        self.open("/config")
+        self.advance(1000)
+        self.tab("display")
+        self.advance(500, step=250)
+
+    def box(self):
+        return self.text("#faBox")
+
+    def test_opening_the_tab_changes_nothing(self):
+        for key in ("", "__kept__"):
+            self.open_with(key)
+            self.assertTrue(self.page.evaluate("deepEqual(originalConfig, workingConfig)"), key)
+            self.assertFalse(self.page.evaluate("tabIsDirty('display')"), key)
+
+    def test_no_key_shows_the_steps_and_asks_for_nothing(self):
+        self.open_with("")
+        self.assertIn("Sign up for AeroAPI Personal", self.box())
+        self.assertIn("personal use only", self.box())
+        self.assertEqual(self.site.count("/api/flightaware/status"), 0)
+        self.assertEqual(self.page.evaluate("document.getElementById('faKeyInput').type"), "password")
+
+    def test_a_saved_key_shows_only_its_last_4_and_the_months_lookups(self):
+        self.open_with("__kept__")
+        box = self.box()
+        self.assertIn("•••• •••• •••• 7c2e", box)
+        self.assertIn("212 of 900 lookups this month", box)
+        self.assertIn("$0.95 so far, $0.00 after your free credit", box)
+        self.assertIn("connected", box)
+        self.assertIsNone(self.page.query_selector("#faKeyInput"))
+
+    def test_the_limit_reached_state(self):
+        self.open_with("__kept__", dict(self.STATUS, count=900, paused=True, cost_estimate=4.5))
+        self.assertIn("Monthly limit reached", self.box())
+        self.assertIn("paused until Dec", self.box())
+
+    def test_remove_and_replace_change_only_the_unsaved_copy(self):
+        self.open_with("__kept__")
+        self.page.click("#faBox button:has-text('Remove')")
+        self.advance(300, step=150)
+        self.assertEqual(self.page.evaluate("workingConfig.flightaware.api_key"), "")
+        self.assertIn("removed when you save", self.box())
+        self.assertTrue(self.page.evaluate("tabIsDirty('display')"))
+        self.page.evaluate("faCancelReplace()")
+        self.advance(300, step=150)
+        self.assertEqual(self.page.evaluate("workingConfig.flightaware.api_key"), "__kept__")
+        self.page.click("#faBox button:has-text('Replace')")
+        self.advance(300, step=150)
+        self.page.fill("#faKeyInput", "EXAMPLEkey1111111111111111111111")
+        self.assertEqual(self.page.evaluate("workingConfig.flightaware.api_key"), "EXAMPLEkey1111111111111111111111")
+        self.assertEqual(self.page.evaluate("tabForPath('flightaware.api_key')"), "display")
+
+    def test_test_key_reports_the_result(self):
+        self.open_with("__kept__")
+        self.site.api["/api/flightaware/test"] = {"ok": False, "state": "invalid",
+                                                  "message": "FlightAware didn't accept this key."}
+        self.page.click("#faTestBtn")
+        self.advance(600, step=200)
+        self.assertIn("FlightAware didn't accept this key.", self.box())
+        self.assertGreaterEqual(self.site.count("/api/flightaware/status"), 2, "status re-read after the test")
+
+
 class TestNtfyRepair(_ConfigPage):
     """A partly installed ntfy offers Repair beside Uninstall. Repair keeps the
     phone's topic: it sends the current one and leaves notifications.url alone."""
@@ -890,6 +970,50 @@ class TestRoutesOnlyWithALivePosition(BrowserCase):
         self.page.wait_for_timeout(400)
         self.assertEqual(self.site.count("/api/callsign/DEMO42/route"), 0)
         self.assertIsNone(self.route_line())
+
+    def queries(self, path):
+        return [q for p, q in self.site.calls if p == path]
+
+    def test_the_aircraft_page_asks_flightaware_and_labels_its_route(self):
+        self.site.api["/api/callsign/DEMO1/route"] = dict(self.ROUTE, source="flightaware",
+                                                          departed_at=1700000000, arrives_at=1700009000)
+        self.open("/aircraft/A00001")
+        self.page.wait_for_timeout(400)
+        self.assertEqual(self.queries("/api/callsign/DEMO1/route")[0].get("fa"), ["1"])
+        self.assertIn("FlightAware", self.route_line() or "")
+
+    def test_the_map_panel_shows_a_flightaware_routes_label_and_times(self):
+        self.site.api["/api/callsign/DEMO1/route"] = dict(self.ROUTE, source="flightaware",
+                                                          departed_at=1700000000, arrives_at=1700009000)
+        self.site.api["/api/ui-config"] = {}
+        self.open("/")
+        self.advance(1000)
+        self.page.click("#bLive .row-card[data-icao='A00001']")
+        self.advance(800, step=200)
+        self.assertEqual(self.queries("/api/callsign/DEMO1/route")[-1].get("fa"), ["1"])
+        times = self.text("#roTimes")
+        self.assertRegex(times, r"^Departed .+ · arrives about .+$")
+        self.assertIn("FlightAware", self.text("#roAirline"))
+        title = self.page.get_attribute("#roAirline .ro-fa", "title")
+        self.assertIn("Contains AeroAPI data © FlightAware LLC", title)
+
+    def test_a_free_list_route_has_no_label_or_times(self):
+        self.site.api["/api/ui-config"] = {}
+        self.open("/")
+        self.advance(1000)
+        self.page.click("#bLive .row-card[data-icao='A00001']")
+        self.advance(800, step=200)
+        self.assertFalse(self.page.is_visible("#roTimes"))
+        self.assertNotIn("FlightAware", self.text("#roAirline"))
+
+    def test_the_board_never_asks_flightaware(self):
+        self.open("/board?mode=board")
+        self.advance(1000)
+        self.page.evaluate("routeFor({callsign: 'DEMO1', lat: 40, lon: -90})")
+        self.page.wait_for_timeout(200)
+        asked = self.queries("/api/callsign/DEMO1/route")
+        self.assertTrue(asked)
+        self.assertTrue(all("fa" not in q for q in asked))
 
     def test_the_board_doesnt_ask_without_a_position(self):
         self.open("/board?mode=board")

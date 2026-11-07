@@ -19,6 +19,28 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.168] — 2026-11-06
+
+**Accurate flight routes from FlightAware, with your own AeroAPI key.**
+
+The free route list Aerodrome uses is often out of date, so many flights show no route, or one that 3.4.167 now hides because it doesn't match the plane. If you add your own FlightAware AeroAPI key, Aerodrome asks FlightAware for the real route of a flight when you open it on the Live map or its aircraft page, and the map panel also shows when it departed and when it's expected to land. Set it up under Configuration → Display → FlightAware routes, which walks you through getting a key. FlightAware's Personal plan includes the first $5 of lookups each month free, or $10 if you feed ADS-B data to FlightAware. Without a key, nothing changes.
+
+- **Where FlightAware routes appear.** In the Live map's aircraft panel, with a FlightAware label and "Departed 3:12 PM · arrives about 6:05 PM", and on the aircraft page's route line. The display board never uses FlightAware data, because the Personal plan is for personal use and rules out business displays. Flights you haven't opened keep using the free route list.
+- **It can't overspend.** Each lookup costs half a cent, and FlightAware has no spending cap of its own. So Aerodrome counts its lookups and stops at a monthly limit you set (900 by default, $4.50, inside the free $5), then uses the free route list until the 1st. The FlightAware box shows this month's lookups against your limit, and FlightAware's own figure, which can lag an hour, with a link to your usage page. A flight is looked up once and remembered until it lands, so looking at it again is free.
+- **Your key stays private.** It's kept in config.yaml and never shown again in full: the Configuration page sees only its last four characters. Test key checks it without using a lookup. Replace and Remove take effect when you save.
+- **Routes in watchlist alerts (optional, off by default).** Turn on "Look up watchlist aircraft automatically" and a watchlist alert gets a "Route: KBOS Boston → KDEN Denver (FlightAware)" line. It costs one lookup per alert that actually goes out, so a busy watchlist aircraft can use up the month's lookups quickly.
+
+### Operational notes
+
+This is an ordinary update with a normal restart and no database change. Reload any open pages to pick up the change. A config export or a full backup contains your FlightAware key, like the rest of config.yaml, so keep those files private. The monthly count is kept in `.flightaware-state.json` beside the database; uninstalling removes it along with the database.
+
+### Behind the scenes
+
+- `flightaware.py` asks `GET /flights/{callsign}` with `ident_type=designator`, one page, and picks the flight that has taken off and not landed. Every reply except HTTP 429 is billed, so a slot is counted before each request and given back for a 429 or no reply at all; at most 10 lookups a minute; a rejected key stops lookups until it changes. Answers are cached until 30 minutes after the expected landing (at most 18 hours), "no flight" for 20 minutes, errors for 2 minutes, and a cached answer is served even while lookups are paused. The usage figure and Test key use FlightAware's free `/account/usage`.
+- `GET /api/callsign/{callsign}/route?fa=1` asks FlightAware first when a key is set; its answer carries `source: "flightaware"`, `departed_at` and `arrives_at`. New: `GET /api/flightaware/status` and `POST /api/flightaware/test`. `GET /api/config` returns a saved key as `__kept__`, and a save carrying `__kept__` keeps the stored key.
+- `Notifier.notify(extra_line=…)` computes an extra line only once an alert has passed every check and is really being sent; watchlist alerts use it for the route.
+- New `flightaware:` config section (`api_key`, `monthly_limit`, `watchlist_lookups`), validated and live-reloadable.
+
 ## [3.4.167] — 2026-11-06
 
 **A flight's route now shows only when it matches where the plane actually is.**

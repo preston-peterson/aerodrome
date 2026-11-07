@@ -1,5 +1,5 @@
 # =============================================================================
-# Version: 3.4.167
+# Version: 3.4.168
 # Aerodrome — Example/Reference Configuration
 # =============================================================================
 # This is the canonical default config shipped with each Aerodrome release.
@@ -139,6 +139,25 @@ map:
   type_shapes: true
   # (Aircraft labels are controlled by the on-map "Aa" button on the radar,
   # which cycles All / Selected / Off — there's no config key for it.)
+
+# v3.4.168: optional FlightAware AeroAPI lookups for accurate flight routes.
+# Leave api_key blank to use only the free route list (display.show_routes).
+# Configuration → Display → FlightAware routes walks you through getting a
+# key. FlightAware's Personal plan is for personal use only, not for a
+# business's display. Live-reloadable (no restart needed).
+flightaware:
+  # Your AeroAPI key. Treat it like a password: anyone who has it can make
+  # lookups that you pay for. The Configuration page never shows it in full.
+  api_key: ""
+  # Aerodrome stops asking FlightAware after this many lookups in a calendar
+  # month (UTC) and uses the free route list until the 1st. A lookup costs
+  # $0.005, so 900 is $4.50, inside the $5 monthly free credit ($10 for
+  # ADS-B feeders). 0 turns lookups off.
+  monthly_limit: 900
+  # Look up watchlist aircraft as soon as they appear, so their alerts show
+  # the route without opening them. Off by default: busy watchlist aircraft
+  # can use up a month's lookups quickly.
+  watchlist_lookups: false
 
 # --- Data Retention (days) ---
 # Each tab keeps its own history. Data older than these limits is

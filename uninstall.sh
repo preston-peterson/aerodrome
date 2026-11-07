@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.4.167
+# Version: 3.4.168
 # =============================================================================
 # Aerodrome — Uninstall Script
 # =============================================================================
@@ -426,7 +426,8 @@ else
         "${DATA_DIR}/.${_DBN}.restore-staged-shm" "${DATA_DIR}/.${_DBN}.restore-staged-journal" \
         "${DB_FILE}".restore-failed.* \
         "${DATA_DIR}/.${_DBN}".bak.*.pre-restore.tmp* \
-        "${DATA_DIR}/.daily-summary-state.json" "${_LINK_SIDE[@]}" || true
+        "${DATA_DIR}/.daily-summary-state.json" "${DATA_DIR}/.flightaware-state.json" \
+        "${_LINK_SIDE[@]}" || true
 fi
 remove_or_keep "Backups & update snapshots" "${INSTALL_DIR}/.backups" || true
 if _inside_install "$LOG_DIR"; then

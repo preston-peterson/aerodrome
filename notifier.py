@@ -33,7 +33,7 @@ import threading
 import time
 from collections import deque
 from datetime import datetime
-from typing import Any, Deque, Dict, List, Optional, Tuple
+from typing import Any, Deque, Dict, List, Optional, Tuple, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
@@ -322,7 +322,8 @@ class Notifier:
                tags: Optional[List[str]] = None,
                aircraft_icao: Optional[str] = None,
                click_route: Optional[str] = None,
-               track_url: Optional[str] = None) -> bool:
+               track_url: Optional[str] = None,
+               extra_line: Optional[Callable[[], Optional[str]]] = None) -> bool:
         """Attempt to send a notification. Returns True if sent, False
         if suppressed for any reason. Never raises.
 
@@ -343,6 +344,10 @@ class Notifier:
             track link) that becomes a 'Track' action button on the
             notification. Only applicable to watchlist/military/special
             events. Gracefully omitted if None.
+        extra_line — v3.4.168: called only once every gate has passed (the
+            alert is really going out), and its line, if any, is appended to
+            the body. For work that costs something per call, such as a
+            FlightAware route lookup for a watchlist alert. Errors are ignored.
         """
         now_ts = time.time()
 
@@ -410,6 +415,15 @@ class Notifier:
             actions = self._build_actions(track_url)
 
         # --- release lock before network call ---
+        if extra_line is not None:
+            try:
+                line = extra_line()
+            except Exception as e:
+                log.debug("notify(): extra line failed: %s", type(e).__name__)
+                line = None
+            if line:
+                body = f"{body}\n{line}"
+
         ok, http_code, err = self._post_ntfy(
             url, title, body, effective_priority, tags,
             click_url=click_url, actions=actions,

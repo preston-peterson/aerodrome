@@ -1,4 +1,4 @@
-<!-- Version: 3.4.167 -->
+<!-- Version: 3.4.168 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -181,6 +181,8 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
 .route-line .route-val .city { color:var(--t3); }
 .route-line .route-val .arr { color:var(--cyan); margin:0 5px; }
 .route-line .route-val .airline { color:var(--t3); margin-left:9px; }
+.route-line .route-val .route-src { font:600 9.5px/1 var(--mono); color:var(--cyan); white-space:nowrap;
+    border:1px solid rgba(6,182,212,.45); border-radius:999px; padding:3px 6px; margin-left:8px; vertical-align:middle; }
 
 .metrics-grid {
     display:grid; grid-template-columns:repeat(5, 1fr);
@@ -1036,8 +1038,10 @@ function maybeEnrichRoute(callsign, icao) {
         .then(live => {
             const ac = live && (live.aircraft || []).find(a => (a.icao || '').toUpperCase() === up);
             if (!ac || ac.lat == null || ac.lon == null) return null;
+            // fa=1: you opened this aircraft, so a FlightAware key (if set) may
+            // spend a lookup on it (v3.4.168).
             const q = `?lat=${encodeURIComponent(ac.lat)}&lon=${encodeURIComponent(ac.lon)}`
-                + (ac.track != null ? `&track=${encodeURIComponent(ac.track)}` : '');
+                + (ac.track != null ? `&track=${encodeURIComponent(ac.track)}` : '') + '&fa=1';
             return fetch(`/api/callsign/${encodeURIComponent(cs)}/route${q}`);
         })
         .then(r => r && r.ok ? r.json() : null)
@@ -1061,7 +1065,11 @@ function maybeEnrichRoute(callsign, icao) {
             const ap = (s) => `<span class="ap">${escapeHtml(s.icao)}</span>`
                 + (s.name ? ` <span class="city">${escapeHtml(s.name)}</span>` : '');
             const air = j.airline ? `<span class="airline">${escapeHtml(j.airline)}</span>` : '';
-            val.innerHTML = stops.map(ap).join(`<span class="arr">→</span>`) + air;
+            // v3.4.168: a route looked up on FlightAware says so (credit line as the tooltip).
+            const src = j.source === 'flightaware'
+                ? `<span class="route-src" title="Contains AeroAPI data © FlightAware LLC ${new Date().getFullYear()}">FlightAware</span>`
+                : '';
+            val.innerHTML = stops.map(ap).join(`<span class="arr">→</span>`) + air + src;
             line.style.display = '';
         })
         .catch(() => { /* best-effort; leave the line hidden */ });

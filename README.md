@@ -1,5 +1,5 @@
 # Aerodrome
-<!-- Version: 3.4.167 -->
+<!-- Version: 3.4.168 -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -143,6 +143,7 @@ aerodrome/
 ├── designators.py                aircraft type and operator decoders
 ├── hexdb_resolver.py             registration lookup (hexdb.io client)
 ├── route_resolver.py             callsign → flight-route lookup (adsb.lol client)
+├── flightaware.py                optional FlightAware AeroAPI route lookups, with a monthly limit
 ├── photo_resolver.py             aircraft photo lookup (planespotters.net client)
 ├── slow_query_log.py             query-timing instrumentation
 ├── ntfy_installer.py             local ntfy server status + install/configure/remove (through the helper)
@@ -192,6 +193,8 @@ aerodrome/
 ├── test_config_write_safety.py   unit tests — all-or-nothing config writes, recovery, private files
 ├── test_designators.py           unit tests — aircraft type and operator decoders
 ├── test_destructive_endpoints.py unit tests — switch-to-real + watchlist-history deletes
+├── test_flightaware.py           unit tests — FlightAware client: lookups, monthly limit, key state
+├── test_flightaware_wiring.py    unit tests — FlightAware key masking, route endpoint, watchlist alert route
 ├── test_frontend_browser.py      tests — real pages in Chromium with scripted answers: hangs, failures, late replies
 ├── test_icao_hex.py              unit tests — ICAO hex ingest validation
 ├── test_install_sh.py            installer tests — install.sh + recover-sudoers.sh under stub sudo

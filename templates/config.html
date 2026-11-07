@@ -1,4 +1,4 @@
-<!-- Version: 3.4.167 -->
+<!-- Version: 3.4.168 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -210,6 +210,32 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
     padding:6px 10px;
 }
 .carto-step .hint { font-size:11px; color:var(--t3); margin-top:6px; line-height:1.4; }
+/* v3.4.168: Display → FlightAware routes (optional AeroAPI key). */
+.fa-box { grid-column:1 / -1; border:1px solid var(--bdr); border-radius:10px; padding:14px 16px 6px;
+          background:var(--bg1); margin:4px 0 10px; min-width:0; }
+.fa-title { display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size:14px; font-weight:600; color:var(--t1); margin-bottom:6px; }
+.fa-tag { font:600 10.5px/1 var(--mono); padding:4px 7px; border-radius:999px; border:1px solid var(--bdr); color:var(--t3); }
+.fa-tag.ok { color:var(--green-text); border-color:var(--green-text); }
+.fa-tag.warn { color:var(--amber-text); border-color:var(--amber-text); }
+.fa-tag.bad { color:var(--red-text); border-color:var(--red-text); }
+.fa-lead { font-size:12.5px; color:var(--t2); line-height:1.5; margin:0 0 12px; max-width:760px; }
+.fa-box .form-grid { margin-top:4px; }
+.fa-key { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+.fa-key .masked { font-family:var(--mono); font-size:12.5px; color:var(--t1); background:var(--bg2);
+                  border:1px solid var(--bdr); border-radius:6px; padding:7px 10px; letter-spacing:.06em; }
+.fa-note { font-size:11.5px; color:var(--t3); margin-top:6px; line-height:1.4; }
+.fa-note.ok { color:var(--green-text); }
+.fa-note.bad { color:var(--red-text); }
+.fa-usage { border:1px solid var(--bdr); border-radius:8px; padding:10px 12px; background:var(--bg2); margin:2px 0 12px; }
+.fa-usage .big { font-size:15px; color:var(--t1); font-weight:600; }
+.fa-usage .bar { height:8px; border-radius:4px; background:var(--bg3); margin:8px 0 6px; overflow:hidden; }
+.fa-usage .bar > i { display:block; height:100%; background:var(--cyan); }
+.fa-usage .bar.full > i { background:var(--amber-text); }
+.fa-usage .sub { font-size:12px; color:var(--t2); line-height:1.5; }
+.fa-usage .sub a, .fa-box a.fa-link { color:var(--link); }
+.fa-warn { border:1px solid var(--amber-text); color:var(--t1); background:rgba(245,158,11,.08); border-radius:8px;
+           padding:9px 12px; font-size:12.5px; line-height:1.45; margin:0 0 12px; }
+.fa-warn b { color:var(--amber-text); }
 
 /* Form grid */
 .form-grid { display:grid; grid-template-columns:200px 1fr; gap:14px 18px; align-items:start; }
@@ -547,7 +573,7 @@ const RESTART_FIELDS = new Set([
 const TABS = [
     { id:'receiver',      label:'Receiver',         render:() => sectionReceiver(),         prefix:'receiver' },
     { id:'web',           label:'Web server',       render:() => sectionWeb(),              prefix:'web' },
-    { id:'display',       label:'Display',          render:() => sectionDisplay(),          prefix:'display' },
+    { id:'display',       label:'Display',          render:() => sectionDisplay(),          prefix:'display', also:['flightaware'] },
     { id:'map',           label:'Map',              render:() => sectionMap(),              prefix:'map' },
     { id:'retention',     label:'Retention',        render:() => sectionRetention(),        prefix:'retention' },
     { id:'data',          label:'Database',         render:() => sectionData(),             prefix:'data' },
@@ -575,7 +601,10 @@ let activeTab = _tabIdFromHash() || 'receiver';
 // Return the tab id whose prefix matches a given config path (e.g. "receiver.ip" → "receiver")
 function tabForPath(path){
     for(const t of TABS){
-        if(path === t.prefix || path.startsWith(t.prefix + '.')) return t.id;
+        // v3.4.168: a tab can also own other config sections (Display owns flightaware.*).
+        for(const pre of [t.prefix, ...(t.also || [])]){
+            if(path === pre || path.startsWith(pre + '.')) return t.id;
+        }
     }
     return null;
 }
@@ -584,10 +613,9 @@ function tabForPath(path){
 function tabIsDirty(tabId){
     const t = TABS.find(x => x.id === tabId);
     if(!t || !originalConfig || !workingConfig) return false;
-    // Compare just the slice of config that belongs to this tab
-    const origSlice = originalConfig[t.prefix];
-    const workSlice = workingConfig[t.prefix];
-    return JSON.stringify(origSlice) !== JSON.stringify(workSlice);
+    // Compare just the slices of config that belong to this tab
+    return [t.prefix, ...(t.also || [])].some(pre =>
+        JSON.stringify(originalConfig[pre]) !== JSON.stringify(workingConfig[pre]));
 }
 
 // Does the tab have any validation errors?
@@ -1447,6 +1475,7 @@ function sectionDisplay() {
                 {value:'24h',  label:'24-hour (09:54)'},
             ]})}
             ${field({label:'Flight routes', hint:'Show each flight\'s route (origin → destination) on the radar overlay, the aircraft detail page, and the display board while the aircraft is being received. Routes come from adsb.lol\'s community-maintained schedule data, matched by callsign, and that data is often out of date, so a route shows only when it fits where the plane is and where it\'s heading. Turning this off hides route lines everywhere and stops the outbound lookups. Applies on next page load.', path:'display.show_routes', type:'checkbox'})}
+            ${faBoxHtml()}
             ${field({label:'Wallboard layout', hint:'Default layout for the /board wall display (a full-screen page for an FBO or office TV). "Ask" shows a one-time layout picker on each new screen. Each screen can still override this for itself — via the on-screen picker, the board\'s corner gear icon, or a /board?mode=radar|board|hybrid URL — and that per-screen choice wins. Applies the next time a board loads.', path:'display.wallboard_layout', type:'select', options:[
                 {value:'ask',    label:'Ask — each screen picks on first visit'},
                 {value:'radar',  label:'Radar wall — full-screen radar scope'},
@@ -2202,6 +2231,8 @@ async function saveChanges() {
         originalConfig = deepClone(workingConfig);
         validationErrors = {};
         toast('Configuration saved', 'ok');
+        _faStatus = null; _faReplacing = false;
+        if (activeTab === 'display') faPaint();
 
         // Refresh the header timestamp so the user sees it update
         // v2.85.12: shared formatter respects display.time_format.
@@ -2828,6 +2859,200 @@ function onTimezonePickerChange(selectEl){
 
 function escapeAttr(s){
     return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// =============================================================================
+// FlightAware routes (v3.4.168) — Display tab
+// =============================================================================
+// An optional FlightAware AeroAPI key: Aerodrome asks FlightAware for the real
+// route of a flight you open. The key is billed per lookup, so GET /api/config
+// shows a saved key as FA_KEY_KEPT and the server keeps the stored key when a
+// save carries it back. The box is painted after every Display render and after
+// a save; its numbers come from GET /api/flightaware/status.
+const FA_KEY_KEPT = '__kept__';
+const FA_SIGNUP_URL = 'https://www.flightaware.com/commercial/aeroapi/';
+let _faStatus = null, _faLoading = false, _faReplacing = false, _faTestMsg = null;
+
+function faBoxHtml() {
+    return `<div class="fa-box" id="faBox"></div>`;
+}
+
+function _faKeyState() {
+    const cur = String(getAt(workingConfig, 'flightaware.api_key') || '');
+    const orig = String(getAt(originalConfig, 'flightaware.api_key') || '');
+    if (!cur) return orig ? 'removing' : 'none';
+    return cur === orig ? 'saved' : 'pasted';
+}
+
+function _faDay(ymd) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd || '');
+    if (!m) return 'the 1st';
+    return new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])).toLocaleDateString(undefined,
+        {month: 'long', day: 'numeric', timeZone: 'UTC'});
+}
+
+function _faMoney(n) { return '$' + (Number(n) || 0).toFixed(2); }
+
+function _faKeyInput(note) {
+    // A key pasted but not saved yet keeps its value across re-renders.
+    const typed = _faKeyState() === 'pasted' ? String(getAt(workingConfig, 'flightaware.api_key') || '') : '';
+    return `<div class="fa-key"><input type="password" class="form-input" id="faKeyInput"
+              data-path="flightaware.api_key" autocomplete="off" spellcheck="false" value="${escapeAttr(typed)}"
+              placeholder="Paste your AeroAPI key" style="min-width:0;width:260px"
+              oninput="onFieldChange(this)">
+            ${_faReplacing ? '<button type="button" class="btn" onclick="faCancelReplace()">Cancel</button>' : ''}
+            <button type="button" class="btn" disabled title="Save the key first">Test key</button></div>
+            ${note ? `<div class="fa-note">${note}</div>` : ''}`;
+}
+
+function faInner() {
+    const ks = _faKeyState();
+    const st = _faStatus;
+    const saved = ks === 'saved';
+    const lim = getAt(workingConfig, 'flightaware.monthly_limit');
+    const limit = (lim == null || lim === '') ? 900 : lim;
+    const watch = getAt(workingConfig, 'flightaware.watchlist_lookups') === true;
+
+    let tag = '<span class="fa-tag">optional</span>';
+    if (saved && st) {
+        if (st.paused && st.limit > 0) tag = `<span class="fa-tag warn">paused until ${escapeAttr(_faDay(st.resets_on).replace(/^(\w{3})\w*/, '$1'))}</span>`;
+        else if (st.limit === 0) tag = '<span class="fa-tag warn">lookups off</span>';
+        else if (st.key_state === 'invalid') tag = '<span class="fa-tag bad">key not accepted</span>';
+        else if (st.key_state === 'ok') tag = '<span class="fa-tag ok">connected</span>';
+        else tag = '<span class="fa-tag">not tested yet</span>';
+    }
+
+    let top = '';
+    if (!saved) {
+        top = `<p class="fa-lead">The free route list is often out of date, so many flights show no route at all.
+            With your own FlightAware key, Aerodrome asks FlightAware for the flight's real route when you open an
+            aircraft. Without a key, routes keep coming from the free list.</p>
+        <div class="carto-steps">
+          <div class="carto-step"><div class="carto-n">1</div><div>
+            <h3>Sign up for AeroAPI Personal</h3>
+            <p>Sign in with your FlightAware account and choose the Personal plan. The first $5 of lookups each month
+               are free, or $10 if you feed ADS-B data to FlightAware. Sign-up asks for a credit card, which is
+               charged only for use past the free amount. The Personal plan is for personal use only.</p>
+            <div class="carto-row"><a class="btn" href="${FA_SIGNUP_URL}" target="_blank" rel="noopener">Open AeroAPI sign-up ↗</a></div>
+          </div></div>
+          <div class="carto-step"><div class="carto-n">2</div><div>
+            <h3>Create a key</h3>
+            <p>In My AeroAPI, open API Keys and click Add Key. Treat the key like a password: anyone who has it can
+               make lookups that you pay for.</p>
+          </div></div>
+          <div class="carto-step"><div class="carto-n">3</div><div>
+            <h3>Paste it here, Save, then Test key</h3>
+            <p>Testing doesn't use a lookup.</p>
+          </div></div>
+        </div>`;
+    } else if (st) {
+        if (st.paused && st.limit > 0) {
+            top += `<div class="fa-warn"><b>Monthly limit reached.</b> Aerodrome has stopped asking FlightAware this month
+                and is using the free route list until ${escapeAttr(_faDay(st.resets_on))}. Raise the limit below to start again now.</div>`;
+        }
+        const pct = st.limit > 0 ? Math.min(100, Math.round(100 * st.count / st.limit)) : 0;
+        const u = st.usage;
+        const link = `<a href="${escapeAttr(st.usage_url || '')}" target="_blank" rel="noopener">View usage on FlightAware ↗</a>`;
+        const faLine = u
+            ? `FlightAware's own figure: ${_faMoney(u.total_cost)} so far, ${_faMoney(u.total_discount_cost)} after your
+               free credit. It can lag an hour behind. ${link}`
+            : `FlightAware's own figure isn't available right now. ${link}`;
+        top += `<div class="fa-usage">
+            <div class="big">${Number(st.count).toLocaleString()} of ${Number(st.limit).toLocaleString()} lookups this month</div>
+            <div class="bar${st.paused ? ' full' : ''}"><i style="width:${pct}%"></i></div>
+            <div class="sub">About ${_faMoney(st.cost_estimate)} of your ${_faMoney(st.limit_cost)} limit · counts reset on ${escapeAttr(_faDay(st.resets_on))}</div>
+            <div class="sub">${faLine}</div>
+          </div>`;
+    } else {
+        top = `<p class="fa-lead">Loading…</p>`;
+    }
+
+    let keyField;
+    if (ks === 'none') keyField = _faKeyInput('');
+    else if (ks === 'removing') keyField = _faKeyInput('The saved key will be removed when you save.');
+    else if (ks === 'pasted') keyField = _faKeyInput('Save, then use Test key.');
+    else if (_faReplacing) keyField = _faKeyInput('Paste the new key, then save.');
+    else {
+        const last4 = st && st.key_last4 ? escapeAttr(st.key_last4) : '••••';
+        let note = '';
+        if (_faTestMsg) note = `<div class="fa-note ${_faTestMsg.ok ? 'ok' : 'bad'}">${_faTestMsg.ok ? '✓ ' : ''}${escapeAttr(_faTestMsg.text)}</div>`;
+        else if (st && st.key_state === 'invalid') note = `<div class="fa-note bad">FlightAware didn't accept this key. Replace it, or check it in My AeroAPI.</div>`;
+        keyField = `<div class="fa-key"><span class="masked">•••• •••• •••• ${last4}</span>
+            <button type="button" class="btn" id="faTestBtn" onclick="faTest()">Test key</button>
+            <button type="button" class="btn" onclick="faReplace()">Replace</button>
+            <button type="button" class="btn" onclick="faRemove()">Remove</button></div>${note}`;
+    }
+
+    return `<div class="fa-title">FlightAware routes ${tag}</div>
+      ${top}
+      <div class="form-grid">
+        <div class="form-label"><span class="form-label-name">FlightAware API key</span>
+          <span class="form-label-hint">Stored in this install's config.yaml; never shown again in full.</span></div>
+        <div class="form-field">${keyField}</div>
+        <div class="form-label"><span class="form-label-name">Monthly limit</span>
+          <span class="form-label-hint">Aerodrome stops asking FlightAware after this many lookups in a month and uses
+          the free list until the 1st. A lookup costs half a cent, so 900 is $4.50, inside the $5 free credit. If you
+          feed FlightAware, up to 1,900 ($9.50) stays inside your $10. 0 turns lookups off.</span></div>
+        <div class="form-field"><div class="fa-key"><input type="number" class="form-input" data-path="flightaware.monthly_limit"
+            min="0" max="200000" value="${escapeAttr(limit)}" style="min-width:0;width:110px" oninput="onFieldChange(this)">
+            <span style="color:var(--t2);font-size:13px">lookups a month</span></div></div>
+        <div class="form-label"><span class="form-label-name">Look up watchlist aircraft automatically</span>
+          <span class="form-label-hint">Asks FlightAware when a watchlist aircraft's alert goes out, so the alert shows
+          the route without opening it. Busy watchlist aircraft can use up a month's lookups quickly, so this is off
+          unless you turn it on.</span></div>
+        <div class="form-field"><input type="checkbox" data-path="flightaware.watchlist_lookups" ${watch ? 'checked' : ''} onchange="onFieldChange(this)"></div>
+      </div>`;
+}
+
+function faPaint() {
+    const box = document.getElementById('faBox');
+    if (!box) return;
+    box.innerHTML = faInner();
+    if (_faKeyState() === 'saved' && _faStatus === null && !_faLoading) loadFaStatus();
+}
+
+async function loadFaStatus() {
+    _faLoading = true;
+    try {
+        const r = await fetch('/api/flightaware/status');
+        _faStatus = r.ok ? await r.json() : null;
+    } catch (e) {
+        _faStatus = null;
+    } finally {
+        _faLoading = false;
+    }
+    if (_faStatus) faPaint();
+}
+
+async function faTest() {
+    const btn = document.getElementById('faTestBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Testing…'; }
+    try {
+        const r = await fetch('/api/flightaware/test', {method: 'POST'});
+        const j = await r.json();
+        _faTestMsg = j.ok ? {ok: true, text: 'Key works.'}
+                          : {ok: false, text: j.message || "FlightAware didn't accept this key."};
+    } catch (e) {
+        _faTestMsg = {ok: false, text: "Couldn't reach Aerodrome. Try again."};
+    }
+    _faStatus = null;
+    faPaint();
+}
+
+function faReplace() { _faReplacing = true; _faTestMsg = null; faPaint(); }
+
+function faCancelReplace() {
+    _faReplacing = false;
+    setAt(workingConfig, 'flightaware.api_key', getAt(originalConfig, 'flightaware.api_key') || '');
+    faPaint();
+    updateSaveBar();
+}
+
+function faRemove() {
+    _faReplacing = false; _faTestMsg = null;
+    setAt(workingConfig, 'flightaware.api_key', '');
+    faPaint();
+    updateSaveBar();
 }
 
 // =============================================================================
@@ -5931,6 +6156,7 @@ function renderAll() {
     if (activeTab === 'retention') {
         populateRetentionPreview();
     }
+    if (activeTab === 'display') faPaint();
 }
 
 // v2.41.32: shared helper — attaches scroll-arrow behaviour to a

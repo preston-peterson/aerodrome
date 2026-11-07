@@ -176,6 +176,7 @@ class Purge(_Case):
         for f in (f"{db}-wal", f"{db}-shm", f"{db}.bak.{ts}.pre-restore"):
             Path(f).write_text("data\n")
         (db.parent / ".daily-summary-state.json").write_text("{}\n")
+        (db.parent / ".flightaware-state.json").write_text("{}\n")
         (i / "logs").mkdir()
         (i / "logs" / "tracker.log").write_text("log\n")
         (i / "logs" / "tracker.log.1").write_text("log\n")
@@ -319,7 +320,8 @@ class Purge(_Case):
     def test_m_outside_sqlite_db_and_its_side_files(self):
         o = self.tmp / "data"
         db = sqlite_file(o / "a.db")
-        for f in ("a.db-wal", "a.db.bak.20261021-101010.pre-restore", ".daily-summary-state.json"):
+        for f in ("a.db-wal", "a.db.bak.20261021-101010.pre-restore", ".daily-summary-state.json",
+                  ".flightaware-state.json"):
             (o / f).write_text("x\n")
         (o / "unrelated").write_text("keep\n")
         self.config(db=f'  db_file: "{db}"')
@@ -357,7 +359,7 @@ class Purge(_Case):
         o = self.tmp / "data"
         db = sqlite_file(o / "a.db")
         for f in ("a.db-wal", "a.db-shm", "a.db.bak.20261021-101010.pre-restore",
-                  ".daily-summary-state.json", *self.RESTORE_FILES):
+                  ".daily-summary-state.json", ".flightaware-state.json", *self.RESTORE_FILES):
             (o / f).write_text("x\n")
         (o / "unrelated").write_text("keep\n")
         link = self.inst / "aircraft_history.db"

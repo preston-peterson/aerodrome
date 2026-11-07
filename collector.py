@@ -1,4 +1,4 @@
-# Version: 3.4.167
+# Version: 3.4.168
 """
 collector.py — ADS-B data fetcher and classifier.
 
@@ -676,6 +676,35 @@ def _safe_notify(event: str, title: str, body: str, **kwargs) -> None:
         _notifier.notify(event, title, body, **kwargs)
     except Exception as e:
         logger.warning("Notifier threw (ignoring): %s", e)
+
+
+def _watchlist_route_line(config: Dict, callsign: Optional[str]):
+    """v3.4.168: when flightaware.watchlist_lookups is on (and a key is set), a
+    callable for Notifier.notify(extra_line=...) that looks the flight up on
+    FlightAware and returns "Route: KBOS Boston → KDEN Denver (FlightAware)".
+    Notify calls it only for an alert that actually sends, so the cooldown
+    keeps it to one lookup per alert. None when the setting is off."""
+    fa_cfg = (config or {}).get("flightaware") or {}
+    if not fa_cfg.get("watchlist_lookups") or not str(fa_cfg.get("api_key") or "").strip():
+        return None
+    cs = (callsign or "").strip().upper()
+    if not cs:
+        return None
+
+    def line():
+        import flightaware
+        res = flightaware.shared(flightaware.state_path_for(config)).lookup(fa_cfg, cs)
+        if not isinstance(res, dict) or res.get("status") != "found":
+            return None
+        r = res.get("route") or {}
+        o, d = r.get("origin") or {}, r.get("destination") or {}
+        if not (o.get("icao") and d.get("icao")):
+            return None
+
+        def place(ap):
+            return f"{ap['icao']} {ap.get('city') or ap.get('name') or ''}".strip()
+        return f"Route: {place(o)} → {place(d)} (FlightAware)"
+    return line
 
 
 def _flush_dirty_to_fts(conn: sqlite3.Connection) -> int:
@@ -4541,6 +4570,7 @@ def _poll_once(config: Dict, watchlist_lookup: Dict):
                         ac["hex"],
                         receiver.get("track_link_provider") or "airplanes_live",
                     ),
+                    extra_line=_watchlist_route_line(config, ac.get("callsign")),
                 )
         except Exception as e:
             conn.execute("ROLLBACK TO poll_aircraft")

@@ -1,4 +1,4 @@
-<!-- Version: 3.4.167 -->
+<!-- Version: 3.4.168 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -699,6 +699,10 @@
         .ro-route.loading { display:block; color:var(--t3); font-style:italic;
             background:none; border-color:transparent; padding:2px 0; }
         .ro-airline { font-size:10.5px; color:var(--t3); margin-top:-4px; padding-left:1px; }
+        /* v3.4.168: a FlightAware route's times line and source label. */
+        .ro-times { font-size:11px; color:var(--t2); margin-top:-2px; padding-left:1px; }
+        .ro-fa { font:600 9.5px/1 var(--mono); color:var(--cyan); border:1px solid rgba(6,182,212,.45);
+            border-radius:999px; padding:3px 6px; margin-left:6px; white-space:nowrap; }
         .ro-telemetry { display:grid; grid-template-columns:1fr 1fr; gap:8px 10px; margin-top:2px; }
         .ro-telemetry .tcell .k { display:block; font-size:10px; color:var(--t3);
             text-transform:uppercase; letter-spacing:.05em; }
@@ -2319,6 +2323,7 @@
                 </div>
                 <div class="ro-sub" id="roSub"></div>
                 <div class="ro-route" id="roRoute" style="display:none"></div>
+                <div class="ro-times" id="roTimes" style="display:none"></div>
                 <div class="ro-airline" id="roAirline" style="display:none"></div>
                 <div class="ro-owner" id="roOwner"></div>
                 <div class="ro-telemetry" id="roTelemetry"></div>
@@ -4081,8 +4086,10 @@ function openRadarOverlay(icao){
     const roCs = (ac.callsign || '').trim();
     if(roCs && showRoutes && ac.lat != null && ac.lon != null){
         _radarSetRoute('loading');
+        // fa=1: you opened this aircraft, so a FlightAware key (if set) may
+        // spend a lookup on it (v3.4.168).
         const roQ = `?lat=${encodeURIComponent(ac.lat)}&lon=${encodeURIComponent(ac.lon)}`
-            + (ac.track != null ? `&track=${encodeURIComponent(ac.track)}` : '');
+            + (ac.track != null ? `&track=${encodeURIComponent(ac.track)}` : '') + '&fa=1';
         fetch(`/api/callsign/${encodeURIComponent(roCs)}/route${roQ}`)
             .then(r => r.ok ? r.json() : null)
             .then(j => { if(_radar.selectedIcao === icao) _radarSetRoute(j); })
@@ -4231,13 +4238,16 @@ function _radarRouteStops(info){
 function _radarSetRoute(info){
     const el  = document.getElementById('roRoute');
     const air = document.getElementById('roAirline');
+    const times = document.getElementById('roTimes');
     if(!el) return;
     const hideAirline = () => { if(air){ air.style.display = 'none'; air.textContent = ''; } };
+    const hideTimes = () => { if(times){ times.style.display = 'none'; times.textContent = ''; } };
     if(info === 'loading'){
         el.style.display = '';
         el.className = 'ro-route loading';
         el.textContent = 'Route …';
         hideAirline();
+        hideTimes();
         return;
     }
     const stops = _radarRouteStops(info);
@@ -4252,12 +4262,27 @@ function _radarSetRoute(info){
         el.innerHTML = stops.map((s, i) =>
             ep(s.icao, s.name, i === stops.length - 1)
         ).join(`<span class="arr">→</span>`);
+        // v3.4.168: a route from FlightAware (looked up with the owner's own
+        // key) says so, with FlightAware's credit line as its tooltip, and
+        // brings the flight's departure and expected arrival times.
+        const fa = info.source === 'flightaware';
+        if(times){
+            const dep = fa && info.departed_at ? `Departed ${formatTime(info.departed_at)}` : '';
+            const arr = fa && info.arrives_at ? `${dep ? 'arrives' : 'Arrives'} about ${formatTime(info.arrives_at)}` : '';
+            const line = [dep, arr].filter(Boolean).join(' · ');
+            if(line){ times.style.display = ''; times.textContent = line; }
+            else hideTimes();
+        }
         if(air){
-            if(info.airline){ air.style.display = ''; air.textContent = info.airline; }
-            else hideAirline();
+            if(info.airline || fa){
+                air.style.display = '';
+                air.innerHTML = escapeHtml(info.airline || '')
+                    + (fa ? `<span class="ro-fa" title="Contains AeroAPI data © FlightAware LLC ${new Date().getFullYear()}">FlightAware</span>` : '');
+            } else hideAirline();
         }
         return;
     }
+    hideTimes();
     el.style.display = 'none';
     el.innerHTML = '';
     hideAirline();

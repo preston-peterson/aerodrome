@@ -10,7 +10,7 @@ Usage:
         # each error: {"path": "receiver.port", "message": "Must be 1-65535"}
         return error_response(errors)
 """
-# Version: 3.4.167
+# Version: 3.4.168
 
 import re
 import socket
@@ -999,6 +999,33 @@ def validate_config(cfg: Any) -> Errors:
             # harmless: the validator ignores unknown keys and the radar reads
             # its label state from the browser, not config.)
 
+    # v3.4.168: optional FlightAware AeroAPI route lookups.
+    if "flightaware" in cfg and cfg["flightaware"] is not None:
+        fa = cfg["flightaware"]
+        if not isinstance(fa, dict):
+            errs.append(("flightaware", "Must be a mapping"))
+        else:
+            key = fa.get("api_key")
+            if key is not None:
+                if not isinstance(key, str):
+                    errs.append(("flightaware.api_key", "Must be a string"))
+                else:
+                    k = key.strip()
+                    if k and not all(ch.isalnum() for ch in k):
+                        errs.append(("flightaware.api_key",
+                                     "Doesn't look like an AeroAPI key (letters and digits only)"))
+                    elif len(k) > 128:
+                        errs.append(("flightaware.api_key", "Must be 128 characters or fewer"))
+            lim = fa.get("monthly_limit")
+            if lim is not None:
+                if not isinstance(lim, int) or isinstance(lim, bool):
+                    errs.append(("flightaware.monthly_limit", "Must be a whole number"))
+                elif lim < 0 or lim > 200000:
+                    errs.append(("flightaware.monthly_limit", "Must be between 0 and 200,000"))
+            wl = fa.get("watchlist_lookups")
+            if wl is not None and not isinstance(wl, bool):
+                errs.append(("flightaware.watchlist_lookups", "Must be true or false"))
+
     return errs
 # The collector re-reads these from CONFIG on each poll interval.
 LIVE_KEYS = {
@@ -1043,6 +1070,8 @@ LIVE_KEYS = {
     "map",
     # v3.4.140: the Host-allowlist middleware reads it per request.
     "web.allowed_hosts",
+    # v3.4.168: FlightAware lookups read CONFIG["flightaware"] on every lookup.
+    "flightaware",
 }
 
 # Everything else requires a restart. The frontend uses this list to show

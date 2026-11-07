@@ -1,4 +1,4 @@
-# Version: 3.4.167
+# Version: 3.4.168
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -64,6 +64,10 @@ import restore_io
 # v3.4.150: the one module that runs sudo (the system helper, the restart
 # and the sudoers read).
 import privhelper
+
+# v3.4.168: GET /api/config shows a saved FlightAware AeroAPI key as this placeholder,
+# never in full (lookups are billed to the key's owner); a save carrying it keeps the key.
+FA_KEY_KEPT = "__kept__"
 
 logger = logging.getLogger("adsb.server")
 
@@ -7691,7 +7695,14 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
     @app.get("/api/config")
     def get_full_config():
-        """Return the full current config as JSON."""
+        """Return the full current config as JSON. v3.4.168: a saved FlightAware
+        key comes back as FA_KEY_KEPT, never in full (lookups are billed to its
+        owner); a save carrying FA_KEY_KEPT keeps the stored key."""
+        fa = CONFIG.get("flightaware")
+        if isinstance(fa, dict) and str(fa.get("api_key") or "").strip():
+            out = dict(CONFIG)
+            out["flightaware"] = dict(fa, api_key=FA_KEY_KEPT)
+            return out
         return CONFIG
 
     class ConfigPayload(BaseModel):
@@ -7704,6 +7715,9 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         from config_validator import validate_config, diff_keys, requires_restart
 
         new_cfg = payload.config
+        fa_new = new_cfg.get("flightaware")
+        if isinstance(fa_new, dict) and fa_new.get("api_key") == FA_KEY_KEPT:
+            fa_new["api_key"] = str((CONFIG.get("flightaware") or {}).get("api_key") or "")
         errors = validate_config(new_cfg)
         if errors:
             return JSONResponse(
@@ -12715,11 +12729,79 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         cur = _read() or cur
         return {"ok": True, "icao": key, **cur}
 
+    def _fa_client():
+        import flightaware as _flightaware
+        return _flightaware.shared(_flightaware.state_path_for(CONFIG))
+
+    async def _flightaware_route(cs: str) -> Optional[dict]:
+        """v3.4.168: the flight's real route from FlightAware AeroAPI, or None
+        (no key, paused at the monthly limit, busy, not found, error) so the
+        caller falls back to the free list. FlightAware's route is the
+        flight's own, so it isn't checked against the plane's position."""
+        cfg = CONFIG.get("flightaware") or {}
+        if not str(cfg.get("api_key") or "").strip():
+            return None
+        try:
+            res = await asyncio.wait_for(asyncio.to_thread(_fa_client().lookup, cfg, cs), timeout=9.0)
+        except Exception as e:
+            logger.debug(f"FlightAware lookup failed for {cs}: {type(e).__name__}")
+            return None
+        if not isinstance(res, dict) or res.get("status") != "found":
+            return None
+        r = res.get("route") or {}
+        o, d = r.get("origin") or {}, r.get("destination") or {}
+        if not (o.get("icao") and d.get("icao")):
+            return None
+
+        def _place(ap):
+            return ap.get("city") or ap.get("name") or ""
+        return {"ok": True, "found": True, "source": "flightaware", "callsign": cs,
+                "origin_icao": o["icao"], "origin_name": _place(o),
+                "dest_icao": d["icao"], "dest_name": _place(d),
+                "airline": airline_name(cs[:3]) or "",
+                "airports": [{"icao": o["icao"], "name": _place(o)},
+                             {"icao": d["icao"], "name": _place(d)}],
+                "current_leg": None,
+                "departed_at": r.get("departed_at"), "arrives_at": r.get("arrives_at")}
+
+    @app.get("/api/flightaware/status")
+    def flightaware_status():
+        """v3.4.168: the Configuration box's numbers: key state (never the key;
+        only its last 4 characters), this month's lookups against the limit,
+        and FlightAware's own usage figure (a free call, cached 10 minutes,
+        which can lag an hour)."""
+        import flightaware as _flightaware
+        cfg = CONFIG.get("flightaware") or {}
+        client = _fa_client()
+        st = client.status(cfg)
+        usage = None
+        if st.get("configured"):
+            try:
+                usage = client.usage(cfg)          # free; the client times out after 6 s
+            except Exception:
+                usage = None
+        return {"ok": True, **st, "usage": usage,
+                "usage_url": _flightaware.USAGE_URL, "signup_url": _flightaware.SIGNUP_URL}
+
+    @app.post("/api/flightaware/test")
+    def flightaware_test():
+        """v3.4.168: check the saved key with FlightAware's free usage call."""
+        cfg = CONFIG.get("flightaware") or {}
+        if not str(cfg.get("api_key") or "").strip():
+            return {"ok": False, "state": "no_key", "message": "Save a key first, then test it."}
+        try:
+            res = _fa_client().test_key(cfg)     # the client times out after 6 s
+        except Exception:
+            return {"ok": False, "state": "error",
+                    "message": "FlightAware didn't answer. Try again in a minute."}
+        return {"ok": res.get("state") == "ok", **res}
+
     @app.get("/api/callsign/{callsign}/route")
     async def get_callsign_route(callsign: str,
                                  lat: Optional[float] = None,
                                  lon: Optional[float] = None,
-                                 track: Optional[float] = None):
+                                 track: Optional[float] = None,
+                                 fa: bool = False):
         """v3.4.97: resolve + return the route for one flight callsign — the
         route line on the radar overlay + detail page. v3.4.109: re-sourced
         from adsbdb.com to adsb.lol's VRS standing data (the old source
@@ -12747,6 +12829,12 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         Without a position the route is returned unchecked; the pages only
         ask with one.
 
+        v3.4.168: fa=1 (sent by the radar panel and the aircraft page, when you
+        open an aircraft) asks FlightAware first if a key is set; its answer
+        carries source="flightaware", departed_at and arrives_at. The display
+        board never sends fa=1: FlightAware's personal license rules out
+        business displays.
+
         Returns {ok, found, callsign[, origin_icao, origin_name, dest_icao,
         dest_name, airline, airports, current_leg], cached}. origin/dest are
         the chain's first/last stops; `airports` is the full ordered chain;
@@ -12760,6 +12848,11 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         # resolver re-validates with its [A-Z0-9]{2,8} charset rule.
         if not (2 <= len(cs) <= 8) or not cs.isalnum():
             return {"ok": True, "found": False, "callsign": cs}
+
+        if fa:
+            fa_route = await _flightaware_route(cs)
+            if fa_route is not None:
+                return fa_route
 
         import route_resolver as _route_resolver
 
