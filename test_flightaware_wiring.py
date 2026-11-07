@@ -38,6 +38,7 @@ FOUND = {"status": "found", "route": {
 class FakeClient:
     def __init__(self, answer=None):
         self.answer = answer or {"status": "none"}
+        self.cached_route = None
         self.calls = []
 
     def lookup(self, cfg, callsign):
@@ -57,6 +58,10 @@ class FakeClient:
     def test_key(self, cfg):
         self.calls.append(("test_key",))
         return {"state": "ok", "message": "Key works."}
+
+    def cached(self, callsign):
+        self.calls.append(("cached", callsign))
+        return self.cached_route
 
     def cached_usage(self):
         self.calls.append(("cached_usage",))
@@ -155,7 +160,7 @@ class TestRouteAsksFlightAwareOnlyWhenOpened(_App):
 
     def test_an_opened_aircraft_gets_flightawares_route(self):
         self.client.answer = FOUND
-        out = self.ask(lat=40.0, lon=-100.0, track=270.0, fa=True)
+        out = self.ask(lat=40.0, lon=-100.0, track=270.0, fa="1")
         self.assertEqual(out["source"], "flightaware")
         self.assertEqual((out["origin_icao"], out["origin_name"], out["dest_icao"], out["dest_name"]),
                          ("KBOS", "Boston", "KDEN", "Denver"))
@@ -163,8 +168,21 @@ class TestRouteAsksFlightAwareOnlyWhenOpened(_App):
         self.assertIsNone(out["current_leg"])
         self.assertEqual(self.free_asked, 0, "FlightAware answered, so the free list isn't asked")
 
+    def test_cached_uses_a_route_already_looked_up_and_never_spends(self):
+        # The display board's rows and cards (v3.4.170).
+        self.client.cached_route = FOUND["route"]
+        out = self.ask(lat=40.0, lon=-100.0, track=270.0, fa="cached")
+        self.assertEqual((out["source"], out["origin_icao"], out["dest_icao"]), ("flightaware", "KBOS", "KDEN"))
+        self.assertEqual(self.client.calls, [("cached", "EXA412")])
+        self.assertEqual(self.free_asked, 0)
+
+    def test_cached_with_nothing_cached_uses_the_free_list(self):
+        out = self.ask(lat=40.5, lon=-95.0, track=255.0, fa="cached")
+        self.assertNotEqual(out.get("source"), "flightaware")
+        self.assertNotIn(("lookup", "EXA412"), self.client.calls)
+        self.assertEqual(self.free_asked, 1)
+
     def test_without_fa_flightaware_is_never_asked(self):
-        # The display board never sends fa=1 (business displays are outside the personal license).
         self.client.answer = FOUND
         out = self.ask(lat=40.0, lon=-87.9, track=270.0)
         self.assertEqual(self.client.calls, [])
@@ -173,18 +191,18 @@ class TestRouteAsksFlightAwareOnlyWhenOpened(_App):
     def test_no_answer_from_flightaware_falls_back_to_the_free_list(self):
         for status in ("none", "paused", "busy", "error", "invalid_key"):
             self.client.answer = {"status": status}
-            out = self.ask(lat=40.5, lon=-95.0, track=255.0, fa=True)
+            out = self.ask(lat=40.5, lon=-95.0, track=255.0, fa="1")
             self.assertNotEqual(out.get("source"), "flightaware", status)
         self.assertEqual(self.free_asked, 5)
 
     def test_no_key_never_asks(self):
         server.CONFIG["flightaware"]["api_key"] = ""
-        self.ask(lat=40.5, lon=-95.0, track=255.0, fa=True)
+        self.ask(lat=40.5, lon=-95.0, track=255.0, fa="1")
         self.assertEqual(self.client.calls, [])
 
     def test_a_route_with_an_unknown_end_falls_back(self):
         self.client.answer = {"status": "found", "route": dict(FOUND["route"], destination=None)}
-        out = self.ask(lat=40.5, lon=-95.0, track=255.0, fa=True)
+        out = self.ask(lat=40.5, lon=-95.0, track=255.0, fa="1")
         self.assertNotEqual(out.get("source"), "flightaware")
 
 

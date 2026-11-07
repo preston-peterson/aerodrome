@@ -1077,14 +1077,29 @@ class TestRoutesOnlyWithALivePosition(BrowserCase):
         self.assertFalse(self.page.is_visible("#roTimes"))
         self.assertNotIn("FlightAware", self.text("#roAirline"))
 
-    def test_the_board_never_asks_flightaware(self):
+    def test_the_boards_rows_only_use_routes_already_looked_up(self):
         self.open("/board?mode=board")
         self.advance(1000)
         self.page.evaluate("routeFor({callsign: 'DEMO1', lat: 40, lon: -90})")
         self.page.wait_for_timeout(200)
         asked = self.queries("/api/callsign/DEMO1/route")
         self.assertTrue(asked)
-        self.assertTrue(all("fa" not in q for q in asked))
+        self.assertTrue(all(q.get("fa") == ["cached"] for q in asked), asked)
+
+    def test_opening_a_planes_details_on_the_board_asks_flightaware(self):
+        self.site.api["/api/callsign/DEMO1/route"] = lambda req: dict(
+            self.ROUTE, **({"source": "flightaware", "departed_at": 1700000000, "arrives_at": 1700009000}
+                           if "fa=1" in req.url else {}))
+        self.open("/board?mode=radar")
+        self.advance(1000)
+        self.page.evaluate("routeFor(LIVE.find(a => a.icao === 'A00001'))")
+        self.page.wait_for_timeout(200)
+        self.page.evaluate("openDetail('A00001')")
+        self.advance(600, step=200)
+        self.assertEqual(self.queries("/api/callsign/DEMO1/route")[-1].get("fa"), ["1"])
+        detail = self.page.evaluate("document.querySelector('.dp-rt') && document.querySelector('.dp-rt').textContent")
+        self.assertIn("FlightAware", detail or "")
+        self.assertRegex(detail or "", r"Departed .+ · arrives about .+")
 
     def test_the_board_doesnt_ask_without_a_position(self):
         self.open("/board?mode=board")

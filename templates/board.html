@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
-<!-- Version: 3.4.169 -->
+<!-- Version: 3.4.170 -->
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Display board — Aerodrome</title>
@@ -178,6 +178,9 @@ body.mouse .scope-wrap .board-tools .mapbtn{opacity:1;pointer-events:auto}
 .dp-rt .arr{color:var(--cyan);padding:0 .35rem}
 .dp-rt small{color:var(--t3);font-size:.8rem;display:block;margin-top:.2rem;
   font-family:var(--font)}
+.dp-rt small.dp-when{color:var(--t2)}
+.dp-rt .dp-fa{font-family:var(--font);font-weight:600;font-size:.7rem;color:var(--cyan);border:1px solid rgba(6,182,212,.45);
+  border-radius:999px;padding:.1rem .4rem;margin-left:.5rem;white-space:nowrap;vertical-align:middle}
 .dp-grid{display:grid;grid-template-columns:1fr 1fr;gap:.7rem 1rem;margin-top:1rem;
   border-top:1px solid var(--bdr);padding-top:.9rem}
 .dp-grid .l{font-size:.66rem;color:var(--t3);text-transform:uppercase;letter-spacing:.1em}
@@ -1203,6 +1206,16 @@ function _wxSetOpacity(v){
 let SEL = null;                    // icao shown in the details panel
 const DETAIL_IDLE_MS = 90 * 1000;
 function openDetail(icao){
+  // v3.4.170: opening a plane's details may spend one FlightAware lookup on
+  // it (if a key is set), like the Live map; the board's rows and cards only
+  // ever use a FlightAware route already looked up.
+  const a = LIVE.find(x => x.icao === icao);
+  const cs = a && (a.callsign || '').trim().toUpperCase();
+  if (cs && !FA_OPENED.has(cs)) {
+    FA_OPENED.add(cs);
+    const e = routeMemo.get(cs);
+    if (e) e.until = 0;   // ask again now; the current route stays up meanwhile
+  }
   SEL = icao;
   _drawSelTrail(icao);
   renderAll();
@@ -1270,11 +1283,20 @@ function renderDetail(st){
     ? `<img src="${escapeHtml(ph.url)}" alt="">`
     : `<div class="phfall">${escapeHtml(a.type_desc || a.aircraft_type || 'no photo')}</div>`;
   const tail = tailBadge(a);
+  // v3.4.170: a FlightAware route says so (credit line as the tooltip), with
+  // its departure and expected arrival times, like the Live map's panel.
+  const fa = rt && rt.source === 'flightaware';
+  const fmtT = ts => (window.formatTime ? formatTime(ts) : new Date(ts * 1000).toLocaleTimeString());
+  const dep = fa && rt.departed_at ? `Departed ${fmtT(rt.departed_at)}` : '';
+  const arr = fa && rt.arrives_at ? `${dep ? 'arrives' : 'Arrives'} about ${fmtT(rt.arrives_at)}` : '';
+  const when = [dep, arr].filter(Boolean).join(' · ');
+  const faTag = fa ? `<span class="dp-fa" title="Contains AeroAPI data © FlightAware LLC ${new Date().getFullYear()}">FlightAware</span>` : '';
   const rtHtml = rt
-    ? rt.stops.map(s => escapeHtml(s.icao)).join('<span class="arr">→</span>')
+    ? rt.stops.map(s => escapeHtml(s.icao)).join('<span class="arr">→</span>') + faTag
       + ((rt.stops[0].name && rt.stops[rt.stops.length - 1].name)
          ? `<small>${escapeHtml(rt.stops[0].name)} to ${escapeHtml(rt.stops[rt.stops.length - 1].name)}${rt.airline ? ' · ' + escapeHtml(rt.airline) : ''}</small>`
          : (rt.airline ? `<small>${escapeHtml(rt.airline)}</small>` : ''))
+      + (when ? `<small class="dp-when">${escapeHtml(when)}</small>` : '')
     : '';
   const vr = a.vertical_rate;
   const cell = (l, v) => `<div><div class="l">${l}</div><div class="v">${v}</div></div>`;
@@ -1430,7 +1452,8 @@ function renderScope(el, opts){
 }
 
 /* ============================ route/photo/owner memos ============================ */
-const routeMemo = new Map();   // callsign → {v: {stops, airline} | null, until}
+const routeMemo = new Map();   // callsign → {v: {stops, airline, source, departed_at, arrives_at} | null, until}
+const FA_OPENED = new Set();   // callsigns whose details were opened: their route may spend a FlightAware lookup
 const photoMemo = new Map();   // icao → {v: {url} | null, until}
 const ownerMemo = new Map();   // icao → {v: {owner, reg} | null, until}
 const LOOKUP_RETRY_MS = 2 * 60000;     // the request failed: ask again soon
@@ -1462,8 +1485,11 @@ function routeFor(a){
   // is and hides one that doesn't fit (v3.4.167; the callsign data is often
   // wrong), and without a position there's nothing to check it against.
   if (!cs || a.lat == null || a.lon == null) return null;
+  // fa=cached: a FlightAware route only if one was already looked up (free);
+  // fa=1 once this plane's details were opened (v3.4.170).
   const q = `?lat=${encodeURIComponent(a.lat)}&lon=${encodeURIComponent(a.lon)}`
-    + (a.track != null ? `&track=${encodeURIComponent(a.track)}` : '');
+    + (a.track != null ? `&track=${encodeURIComponent(a.track)}` : '')
+    + `&fa=${FA_OPENED.has(cs) ? '1' : 'cached'}`;
   return lookup(routeMemo, cs, `/api/callsign/${encodeURIComponent(cs)}/route${q}`, j => {
     let v = null;
     if (j.found) {
@@ -1477,7 +1503,8 @@ function routeFor(a){
         stops = [{icao: j.origin_icao, name: j.origin_name},
                  {icao: j.dest_icao,   name: j.dest_name}];
       }
-      if (stops) v = {stops, airline: j.airline || ''};
+      if (stops) v = {stops, airline: j.airline || '', source: j.source || '',
+                      departed_at: j.departed_at || null, arrives_at: j.arrives_at || null};
     }
     // A flight number can fly more than one leg, so even a good answer is re-asked.
     return [v, LOOKUP_RECHECK_MS];

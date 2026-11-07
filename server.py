@@ -1,4 +1,4 @@
-# Version: 3.4.169
+# Version: 3.4.170
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -12750,22 +12750,32 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         import flightaware as _flightaware
         return _flightaware.shared(_flightaware.state_path_for(CONFIG))
 
-    async def _flightaware_route(cs: str) -> Optional[dict]:
+    async def _flightaware_route(cs: str, cached_only: bool = False) -> Optional[dict]:
         """v3.4.168: the flight's real route from FlightAware AeroAPI, or None
         (no key, paused at the monthly limit, busy, not found, error) so the
         caller falls back to the free list. FlightAware's route is the
-        flight's own, so it isn't checked against the plane's position."""
+        flight's own, so it isn't checked against the plane's position.
+        v3.4.170: cached_only answers only from routes already looked up,
+        never spending a lookup (the display board's rows and cards)."""
         cfg = CONFIG.get("flightaware") or {}
         if not str(cfg.get("api_key") or "").strip():
             return None
-        try:
-            res = await asyncio.wait_for(asyncio.to_thread(_fa_client().lookup, cfg, cs), timeout=9.0)
-        except Exception as e:
-            logger.debug(f"FlightAware lookup failed for {cs}: {type(e).__name__}")
-            return None
-        if not isinstance(res, dict) or res.get("status") != "found":
-            return None
-        r = res.get("route") or {}
+        if cached_only:
+            try:
+                r = _fa_client().cached(cs)
+            except Exception:
+                r = None
+            if not r:
+                return None
+        else:
+            try:
+                res = await asyncio.wait_for(asyncio.to_thread(_fa_client().lookup, cfg, cs), timeout=9.0)
+            except Exception as e:
+                logger.debug(f"FlightAware lookup failed for {cs}: {type(e).__name__}")
+                return None
+            if not isinstance(res, dict) or res.get("status") != "found":
+                return None
+            r = res.get("route") or {}
         o, d = r.get("origin") or {}, r.get("destination") or {}
         if not (o.get("icao") and d.get("icao")):
             return None
@@ -12818,7 +12828,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                                  lat: Optional[float] = None,
                                  lon: Optional[float] = None,
                                  track: Optional[float] = None,
-                                 fa: bool = False):
+                                 fa: Optional[str] = None):
         """v3.4.97: resolve + return the route for one flight callsign — the
         route line on the radar overlay + detail page. v3.4.109: re-sourced
         from adsbdb.com to adsb.lol's VRS standing data (the old source
@@ -12846,11 +12856,12 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         Without a position the route is returned unchecked; the pages only
         ask with one.
 
-        v3.4.168: fa=1 (sent by the radar panel and the aircraft page, when you
-        open an aircraft) asks FlightAware first if a key is set; its answer
-        carries source="flightaware", departed_at and arrives_at. The display
-        board never sends fa=1: FlightAware's personal license rules out
-        business displays.
+        v3.4.168: fa=1 (sent when you open an aircraft: the radar panel, the
+        aircraft page, the display board's details panel) asks FlightAware
+        first if a key is set, spending a lookup unless it's cached; its answer
+        carries source="flightaware", departed_at and arrives_at. v3.4.170:
+        fa=cached (the display board's rows and cards) uses a FlightAware route
+        only if one was already looked up, and never spends a lookup.
 
         Returns {ok, found, callsign[, origin_icao, origin_name, dest_icao,
         dest_name, airline, airports, current_leg], cached}. origin/dest are
@@ -12866,8 +12877,9 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         if not (2 <= len(cs) <= 8) or not cs.isalnum():
             return {"ok": True, "found": False, "callsign": cs}
 
-        if fa:
-            fa_route = await _flightaware_route(cs)
+        fa_mode = str(fa or "").strip().lower()
+        if fa_mode in ("1", "true", "yes", "cached"):
+            fa_route = await _flightaware_route(cs, cached_only=(fa_mode == "cached"))
             if fa_route is not None:
                 return fa_route
 

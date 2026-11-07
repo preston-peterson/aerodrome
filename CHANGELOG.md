@@ -19,6 +19,20 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.170] — 2026-11-06
+
+**The display board now uses your FlightAware routes, the same way the Live map does.**
+
+With a FlightAware key set, tapping a plane on the display board to open its details now asks FlightAware for its route, just as opening a plane on the Live map does: one lookup per flight, counted against your monthly budget. The details card then shows the route with a FlightAware label and "Departed 3:12 PM · arrives about 6:05 PM". The board's rows and photo-rail cards never spend a lookup: they show the FlightAware route for any flight that's already been looked up, from the board, the Live map or a watchlist alert, and the free route list for the rest. Without a key, nothing changes.
+
+### Operational notes
+
+This is an ordinary update with a normal restart and no database change. Reload the display board to pick up the change.
+
+### Behind the scenes
+
+- `GET /api/callsign/{callsign}/route` takes `fa=cached` as well as `fa=1`: `cached` uses a FlightAware route only if one was already looked up and never spends a lookup. The board's rows and cards ask with `fa=cached`; opening a plane's details switches that flight to `fa=1`.
+
 ## [3.4.169] — 2026-11-06
 
 **FlightAware usage now has its own card on the Status page, and its monthly limit is a dollar budget.**
