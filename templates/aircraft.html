@@ -1,4 +1,4 @@
-<!-- Version: 3.4.170 -->
+<!-- Version: 3.4.171 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -357,7 +357,8 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
    space (1fr) since coordinate strings are the longest content. */
 .row-card.sightings-grid, .row-grid-header.sightings-grid {
     display: grid;
-    grid-template-columns: minmax(140px, max-content) minmax(80px, max-content) minmax(80px, max-content) minmax(80px, max-content) minmax(180px, 1fr);
+    /* v3.4.171: Route (FlightAware-confirmed) after Callsign. */
+    grid-template-columns: minmax(140px, max-content) minmax(80px, max-content) minmax(110px, max-content) minmax(80px, max-content) minmax(80px, max-content) minmax(180px, 1fr);
     column-gap: 12px;
     align-items: center;
 }
@@ -369,6 +370,9 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
 }
 .row-card.sightings-grid .num { text-align: right; }
 .row-card.sightings-grid .dim { color: var(--t3); }
+.row-card.sightings-grid .sg-route { white-space: nowrap; }
+.row-card.sightings-grid .sg-fa { font: 600 9px/1 var(--mono); color: var(--cyan); border: 1px solid rgba(6,182,212,.45);
+    border-radius: 999px; padding: 2px 5px; margin-left: 6px; vertical-align: middle; }
 .row-grid-header.sightings-grid .num { text-align: right; }
 /* v2.97.2: card-list spacing. Both the header and rows live as
    direct children of #sightingsTableWrap; using flex column with
@@ -1559,6 +1563,7 @@ function _renderSightingsTable() {
         <div class="row-grid-header sightings-grid">
             <span class="sortable" data-c="seen_at" onclick="srtSightings('seen_at')">Time<span class="arr"></span></span>
             <span class="sortable" data-c="callsign" onclick="srtSightings('callsign')">Callsign<span class="arr"></span></span>
+            <span title="Routes FlightAware confirmed for flights that were looked up">Route</span>
             <span class="sortable num" data-c="altitude" onclick="srtSightings('altitude')">Alt<span class="arr"></span></span>
             <span class="sortable num" data-c="speed" onclick="srtSightings('speed')">Speed<span class="arr"></span></span>
             <span>Position</span>
@@ -1575,6 +1580,9 @@ function _renderSightingsTable() {
             <div class="row-card sightings-grid${cls}" data-seen-at="${r.seen_at}">
                 <span class="dim" title="${escapeHtml(fmtDateTime(r.seen_at))}">${escapeHtml(fmtRelativeTime(r.seen_at))}</span>
                 <span>${escapeHtml(r.callsign || '—')}</span>
+                ${r.route && r.route.origin && r.route.dest
+                    ? `<span class="sg-route">${escapeHtml(r.route.origin)} → ${escapeHtml(r.route.dest)}<span class="sg-fa" title="Contains AeroAPI data © FlightAware LLC ${new Date().getFullYear()}">FA</span></span>`
+                    : '<span class="dim">—</span>'}
                 <span class="num">${fmtAltitude(r.altitude)}</span>
                 <span class="num">${fmtSpeed(r.speed)}</span>
                 <span class="dim">${escapeHtml(fmtPosition(r.lat, r.lon))}</span>

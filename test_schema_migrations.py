@@ -927,7 +927,7 @@ class TestRouteCacheMigration(unittest.TestCase):
             self.assertTrue(result["ok"], result.get("error"))
             self.assertEqual(result["starting_version"], 11)
             self.assertEqual(result["ending_version"], CURRENT_SCHEMA_VERSION)
-            self.assertEqual(len(result["applied"]), 7)  # v12 (route_cache) + v13 (photo_cache) + v14 (airports_json, v3.4.109) + v15 (hexdb type_code) + v16 (source-type cleanup, v3.4.138) + v17 (category re-derive, v3.4.141) + v18 (regionals, v3.4.142)
+            self.assertEqual(len(result["applied"]), 8)  # v12 (route_cache) + v13 (photo_cache) + v14 (airports_json, v3.4.109) + v15 (hexdb type_code) + v16 (source-type cleanup, v3.4.138) + v17 (category re-derive, v3.4.141) + v18 (regionals, v3.4.142) + v19 (flight_routes, v3.4.171)
             self.assertIn("route_cache", self._tables(conn))
         finally:
             conn.close()
@@ -1034,7 +1034,7 @@ class TestPhotoCacheMigration(unittest.TestCase):
             self.assertTrue(result["ok"], result.get("error"))
             self.assertEqual(result["starting_version"], 12)
             self.assertEqual(result["ending_version"], CURRENT_SCHEMA_VERSION)
-            self.assertEqual(len(result["applied"]), 6)  # v13 (photo_cache) + v14 (route airports_json) + v15 (hexdb type_code) + v16 (source-type cleanup) + v17 (category re-derive) + v18 (regionals)
+            self.assertEqual(len(result["applied"]), 7)  # v13 (photo_cache) + v14 (route airports_json) + v15 (hexdb type_code) + v16 (source-type cleanup) + v17 (category re-derive) + v18 (regionals) + v19 (flight_routes, v3.4.171)
             self.assertIn("photo_cache", self._tables(conn))
         finally:
             conn.close()
@@ -1155,7 +1155,7 @@ class TestRouteAirportsMigration(unittest.TestCase):
             self.assertTrue(result["ok"], result.get("error"))
             self.assertEqual(result["starting_version"], 13)
             self.assertEqual(result["ending_version"], CURRENT_SCHEMA_VERSION)
-            self.assertEqual(len(result["applied"]), 5)  # v14 + v15 (hexdb type_code) + v16 (source-type cleanup) + v17 (category re-derive) + v18 (regionals)
+            self.assertEqual(len(result["applied"]), 6)  # v14 + v15 (hexdb type_code) + v16 (source-type cleanup) + v17 (category re-derive) + v18 (regionals) + v19 (flight_routes, v3.4.171)
             self.assertEqual(self._cols(conn), self.EXPECTED_COLS)
             self.assertEqual(
                 conn.execute("SELECT COUNT(*) FROM route_cache").fetchone()[0], 0)
@@ -1259,7 +1259,7 @@ class TestHexdbTypeCodeMigration(unittest.TestCase):
             result = apply_schema_migrations(conn, "test")
             self.assertTrue(result["ok"], result.get("error"))
             self.assertEqual(result["starting_version"], 14)
-            self.assertEqual(len(result["applied"]), 4)  # v15 + v16 (source-type cleanup) + v17 (category re-derive) + v18 (regionals)
+            self.assertEqual(len(result["applied"]), 5)  # v15 + v16 (source-type cleanup) + v17 (category re-derive) + v18 (regionals) + v19 (flight_routes, v3.4.171)
             self.assertEqual(
                 conn.execute("SELECT registration, hit_count, type_code "
                              "FROM hexdb_cache WHERE icao='A1B2C3'").fetchone(),
@@ -1346,7 +1346,7 @@ class TestFeedSourceTypeCleanupMigration(unittest.TestCase):
         result = apply_schema_migrations(self.conn, "test")
         self.assertTrue(result["ok"], result.get("error"))
         self.assertEqual(result["starting_version"], 15)
-        self.assertEqual(len(result["applied"]), 3)  # v16 + v17 (category re-derive) + v18 (regionals)
+        self.assertEqual(len(result["applied"]), 4)  # v16 + v17 (category re-derive) + v18 (regionals) + v19 (flight_routes, v3.4.171)
 
     def test_seen_aircraft_cleaned_and_recategorized(self):
         from categorize import classify
@@ -1432,7 +1432,7 @@ class TestCategoryRederiveMigration(unittest.TestCase):
         result = apply_schema_migrations(self.conn, "test")
         self.assertTrue(result["ok"], result.get("error"))
         self.assertEqual(result["starting_version"], 16)
-        self.assertEqual(len(result["applied"]), 2)  # v17 + v18 (regionals)
+        self.assertEqual(len(result["applied"]), 3)  # v17 + v18 (regionals) + v19 (flight_routes, v3.4.171)
 
     def test_categories_rederived_military_kept(self):
         apply_schema_migrations(self.conn, "test")
@@ -1510,7 +1510,7 @@ class TestRegionalAirlinersMigration(unittest.TestCase):
         result = apply_schema_migrations(self.conn, "test")
         self.assertTrue(result["ok"], result.get("error"))
         self.assertEqual(result["starting_version"], 17)
-        self.assertEqual(len(result["applied"]), 1)
+        self.assertEqual(len(result["applied"]), 2)
 
     def test_regionals_move_military_and_utility_kept(self):
         apply_schema_migrations(self.conn, "test")

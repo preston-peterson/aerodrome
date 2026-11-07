@@ -1,4 +1,4 @@
-# Version: 3.4.170
+# Version: 3.4.171
 """
 collector.py — ADS-B data fetcher and classifier.
 
@@ -693,7 +693,8 @@ def _watchlist_route_line(config: Dict, callsign: Optional[str]):
 
     def line():
         import flightaware
-        res = flightaware.shared(flightaware.state_path_for(config)).lookup(fa_cfg, cs)
+        res = flightaware.shared(flightaware.state_path_for(config),
+                                 db_path=(config.get("data") or {}).get("db_file")).lookup(fa_cfg, cs)
         if not isinstance(res, dict) or res.get("status") != "found":
             return None
         r = res.get("route") or {}
@@ -2501,7 +2502,15 @@ def init_db(db_path: str, poll_interval=None):
     # Covering index for the COUNT(DISTINCT watchlist_label) variant.
     conn.execute("CREATE INDEX IF NOT EXISTS idx_watch_hourly_bucket_label ON watchlist_hourly(hour_bucket, watchlist_label)")
 
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_all_seen ON all_sightings(seen_at)")
+    # v3.4.171: idx_all_seen(seen_at) is dropped, as v2.50.22 dropped
+    # idx_mil_seen / idx_watch_seen: idx_all_seen_icao(seen_at, icao) and
+    # idx_all_seen_lat_lon(seen_at, ...) both lead with seen_at, so every
+    # seen_at range, ORDER BY and retention delete still uses an index (checked
+    # by tracing the endpoints' queries and comparing their plans: none became a
+    # table scan). It was ~6% of a large file and one more index on every insert
+    # and delete; nothing names it in an INDEXED BY hint. The freed pages are
+    # reused as the file grows (no VACUUM needed).
+    conn.execute("DROP INDEX IF EXISTS idx_all_seen")
     # The per-aircraft index is idx_all_icao_seen: see ensure_lookup_indexes.
     # v2.50.17: covering indexes for the military_count and watchlist_count
     # Stats card paths. Same shape as the v2.50.11 idx_hourly_bucket_icao
@@ -4085,6 +4094,9 @@ def _poll_once(config: Dict, watchlist_lookup: Dict):
 
     if not raw_list:
         logger.debug("No aircraft from receiver")
+        # v3.4.171: a quiet sky still ages data out (cleanup used to wait for
+        # the next poll with aircraft in it).
+        run_due_cleanup(db_path, config["retention"])
         return
 
     conn = _open_db_conn(db_path)

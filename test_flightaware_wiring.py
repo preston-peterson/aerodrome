@@ -87,7 +87,7 @@ class _App(unittest.TestCase):
         self.cfg_path.write_text(yaml.safe_dump(cfg, sort_keys=False))
         self.app = server.get_app(cfg, str(self.cfg_path))
         self.client = FakeClient()
-        p = mock.patch.object(flightaware, "shared", side_effect=lambda path: self.client)
+        p = mock.patch.object(flightaware, "shared", side_effect=lambda path, **kw: self.client)
         p.start()
         self.addCleanup(p.stop)
 

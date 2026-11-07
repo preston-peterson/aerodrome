@@ -538,6 +538,31 @@ class TestThroughTheApp(_DbCase):
                     searched = self.api_search(f"today hour:{hour}")
                     self.assertTrue(icaos <= {r["icao"] for r in searched["rows"]}, hour)
 
+    def test_half_hour_zone_today_cards_start_at_midnight(self):
+        """v3.4.171: in Kolkata the hour holding midnight is half yesterday; the
+        Today cards count 00:10 today and not 23:50 yesterday."""
+        self.app_for("Asia/Kolkata")
+        start = tzwindow.today_bounds(KOLKATA)[0]
+        if int(time.time()) < start + 900:
+            self.skipTest("too close to Kolkata midnight for a 00:11 reading to exist yet")
+        for icao, ts, alt, spd in (("A00010", start + 600, 30000, 450), ("A00010", start + 660, 30100, 452),
+                                   ("A00011", start - 600, 41000, 500), ("A00011", start - 540, 41000, 501)):
+            self.sight(icao, ts)
+            self.conn.execute("UPDATE all_sightings SET altitude=?, speed=?, aircraft_type='B738', callsign=? "
+                              "WHERE icao=? AND seen_at=?", (alt, spd, "EX" + icao[-2:], icao, ts))
+            self.conn.execute("UPDATE sightings_hourly SET max_altitude=MAX(COALESCE(max_altitude,0),?), "
+                              "min_nonzero_altitude=MIN(COALESCE(min_nonzero_altitude,1e9),?), "
+                              "max_speed=MAX(COALESCE(max_speed,0),?), aircraft_type='B738', callsign=? "
+                              "WHERE icao=? AND hour_bucket=?", (alt, alt, spd, "EX" + icao[-2:], icao, ts - ts % 3600))
+        self.conn.commit()
+        cards = self.endpoint("/api/stats")()["cards"]
+        self.assertEqual(cards["unique_today"], 1)
+        self.assertEqual([a["icao"] for a in cards["top_aircraft"]], ["A00010"])
+        self.assertEqual(cards["top_aircraft"][0]["n"], 2)
+        self.assertEqual(cards["highest_altitude"]["icao"], "A00010")
+        self.assertEqual(cards["lowest_altitude"]["icao"], "A00010")
+        self.assertEqual((cards["fastest"] or {}).get("icao"), "A00010")
+
     def test_half_hour_zone_day_edges_agree(self):
         """Both ends of a Kolkata day fall inside a UTC rollup bucket."""
         self.app_for("Asia/Kolkata")

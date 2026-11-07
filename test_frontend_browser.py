@@ -25,7 +25,8 @@ ROOT = Path(os.environ.get("FRONTEND_ROOT") or Path(__file__).resolve().parent)
 BASE = "http://aerodrome.test"
 HOLD = object()
 PAGES = {"/": "index.html", "/board": "board.html", "/status": "status.html",
-         "/updates": "updates.html", "/config": "config.html"}
+         "/updates": "updates.html", "/config": "config.html",
+         "/performance": "performance.html"}
 
 
 def _chrome():
@@ -53,6 +54,25 @@ def _status(**extra):
               "system": {"load_average": {"15m": 0.1}, "cpu_cores": 4}}
     answer.update(extra)
     return answer
+
+
+def _perf(table_sizes=None, size_bytes=2_800_000_000):
+    """A /api/perf/diagnostics answer. Sizes are only in it when the run
+    measured them (v3.4.171); the database is a 2.6 GB one, which is what the
+    page's estimate of the cost is worked out from."""
+    return {"ok": True, "generated_at": 1781539200, "aerodrome_version": "0.0.0",
+            "sqlite_version": "3.46.1", "python_version": "3.12.0",
+            "platform": {"system": "Linux", "machine": "x86_64", "processor": "x86_64",
+                         "release": "6.6.0"},
+            "storage": {"db_file": "/opt/aerodrome/data/history.db",
+                        "size_bytes": size_bytes, "size_human": "2.6 GB"},
+            "table_sizes": table_sizes,
+            "tables": [{"name": "all_sightings", "rows": 1200, "count_ms": 4.0,
+                        "size_bytes": 2_411_724 if table_sizes else None},
+                       {"name": "seen_aircraft", "rows": 40, "count_ms": 0.4}],
+            "indexes": [{"name": "idx_all_seen_icao", "table": "all_sightings"}],
+            "queries": [], "hints": [], "pragmas": {}, "io_baseline": {},
+            "include_legacy": False, "legacy_probes_skipped": 1}
 
 
 class Site:
@@ -1036,6 +1056,21 @@ class TestRoutesOnlyWithALivePosition(BrowserCase):
         self.assertEqual(self.site.count("/api/callsign/DEMO1/route"), 1)
         self.assertIn("KAAA", self.route_line() or "")
 
+    def test_the_sightings_list_shows_looked_up_routes(self):
+        # v3.4.171: rows of a flight FlightAware confirmed carry its route.
+        self.site.api["/api/all/drill"] = {"ok": True, "total_count": 2, "sightings": [
+            {"seen_at": 1700000000, "callsign": "DEMO1", "altitude": 36000, "speed": 450, "lat": 40, "lon": -90,
+             "route": {"origin": "KBOS", "dest": "KDEN", "source": "flightaware"}},
+            {"seen_at": 1699990000, "callsign": "DEMO9", "altitude": 34000, "speed": 440, "lat": 40, "lon": -90}]}
+        self.open("/aircraft/A00001")
+        self.page.wait_for_timeout(500)
+        rows = self.page.evaluate("[...document.querySelectorAll('.row-card.sightings-grid')].map(r => r.textContent)")
+        self.assertEqual(len(rows), 2)
+        self.assertIn("KBOS → KDEN", rows[0])
+        self.assertIn("FA", rows[0])
+        self.assertNotIn("→", rows[1])
+        self.assertIn("ROUTE", self.text(".row-grid-header.sightings-grid").upper())
+
     def test_a_plane_not_being_received_shows_no_route(self):
         self.open("/aircraft/A00042")
         self.page.wait_for_timeout(400)
@@ -1221,6 +1256,59 @@ class TestWatchlistAlertInLiveMode(BrowserCase):
         self.set_live(self.UNWATCHED)
         self.poll()
         self.assertIsNone(self.alert_class())
+
+
+class TestPerformanceTableSizesAreOptIn(BrowserCase):
+    """v3.4.171: measuring every table's size reads the whole database, so the
+    Performance page no longer waits for it — it offers the measurement, and
+    once one exists it says when that was instead."""
+
+    MEASURED = {"measured_at": 1781539200, "took_ms": 34_000}      # 11:00 on the page's day
+
+    def open_perf(self, report, path="/performance"):
+        self.site.api["/api/perf/diagnostics"] = report
+        self.open(path)
+        self.advance(1000)
+
+    def test_a_normal_run_offers_the_measurement_instead_of_waiting_for_it(self):
+        self.open_perf(_perf())
+        body = self.text("#content")
+        self.assertIn("Table sizes aren't measured in a normal run", body)
+        self.assertIn("2.6 GB here, about 30 seconds", body)
+        self.assertEqual(self.page.inner_text("#sizesBtn"), "Measure table sizes")
+
+    def test_the_button_measures_and_the_page_then_says_when(self):
+        self.open_perf(_perf())
+        self.site.api["/api/perf/diagnostics"] = _perf(table_sizes=self.MEASURED)
+        self.page.click("#sizesBtn")
+        self.advance(1000, step=250)
+        self.assertEqual(self.site.calls[-1], ("/api/perf/diagnostics", {"sizes": ["true"]}))
+        body = self.text("#content")
+        self.assertIn("Sizes measured today at", body)
+        self.assertIn("(took 34 s)", body)
+        self.assertEqual(self.errors, [])
+
+    def test_measuring_keeps_the_legacy_flag_the_url_asked_for(self):
+        self.open_perf(_perf(), path="/performance?include_legacy=true")
+        self.page.click("#sizesBtn")
+        self.advance(1000, step=250)
+        self.assertEqual(self.site.calls[-1][1], {"include_legacy": ["true"], "sizes": ["true"]})
+
+    def test_a_measurement_from_another_day_shows_its_date(self):
+        self.open_perf(_perf(table_sizes={"measured_at": 1781539200 - 86_400, "took_ms": 30_500}))
+        body = self.text("#content")
+        self.assertIn("Sizes measured Jun 14", body)
+        self.assertIn("(took 31 s)", body)
+        self.assertNotIn("today at", body)
+
+    def test_the_copied_report_says_whether_sizes_were_measured(self):
+        self.open_perf(_perf())
+        self.assertIn("Table sizes: not measured", self.page.evaluate("buildReportText(_lastReport)"))
+        self.site.api["/api/perf/diagnostics"] = _perf(table_sizes=self.MEASURED)
+        self.page.click("#sizesBtn")
+        self.advance(1000, step=250)
+        text = self.page.evaluate("buildReportText(_lastReport)")
+        self.assertIn("Table sizes measured 2026-06-15 16:00:00 UTC (took 34 s)", text)
 
 
 class TestNoPageErrors(BrowserCase):

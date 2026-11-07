@@ -193,6 +193,7 @@ class FlightAware:
         self._blocked_until = 0.0   # set by a 429
         self._usage = None      # {"data": dict, "expires": ts}
         self._last = None       # the last lookup sent to FlightAware (memory only), for the Status page
+        self.on_found = None    # v3.4.171: called (callsign, route) after a lookup finds a flight; errors ignored
         st = atomic_io.read_json(state_path) or {}
         self._month = str(st.get("month") or "")
         try:
@@ -410,6 +411,11 @@ class FlightAware:
                     self._cache_put_locked(cs, "found", now, route=route,
                                            expires=self._found_ttl(route, now))
                     self._note_locked(cs, now, "found", route)
+                if self.on_found is not None:
+                    try:
+                        self.on_found(cs, route)
+                    except Exception as e:
+                        logger.info(f"flightaware {cs}: recording the route failed: {type(e).__name__}")
                 return {"status": "found", "route": route}
             with self._lock:
                 self._cache_put_locked(cs, "none", now)
@@ -563,15 +569,45 @@ def state_path_for(config) -> str:
     return str(Path(db).resolve().parent / STATE_FILE)
 
 
+def record_route(db_path, callsign: str, route: dict) -> None:
+    """v3.4.171: keep what a lookup found, derived fields only (never the raw
+    reply), in flight_routes for the aircraft page's route history."""
+    fid = (route or {}).get("fa_flight_id")
+    o, d = (route or {}).get("origin") or {}, (route or {}).get("destination") or {}
+    if not db_path or not fid or not (o.get("icao") and d.get("icao")):
+        return
+    import sqlite3
+    conn = sqlite3.connect(str(db_path), timeout=10)
+    try:
+        conn.execute("""
+            INSERT INTO flight_routes (fa_flight_id, callsign, registration, origin_icao, origin_name,
+                                       dest_icao, dest_name, departed_at, arrives_at, looked_up_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(fa_flight_id) DO UPDATE SET
+                origin_icao = excluded.origin_icao, origin_name = excluded.origin_name,
+                dest_icao = excluded.dest_icao, dest_name = excluded.dest_name,
+                departed_at = excluded.departed_at, arrives_at = excluded.arrives_at,
+                registration = excluded.registration, looked_up_at = excluded.looked_up_at
+        """, (fid, _norm(callsign), route.get("registration"),
+              o["icao"], o.get("city") or o.get("name"), d["icao"], d.get("city") or d.get("name"),
+              route.get("departed_at"), route.get("arrives_at"), int(time.time())))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 _shared = None
 _shared_lock = threading.Lock()
 
 
-def shared(state_path) -> "FlightAware":
+def shared(state_path, db_path=None) -> "FlightAware":
     """The process's one client. The web server and the collector run in the
-    same process, so they share its caches and its monthly count."""
+    same process, so they share its caches and its monthly count. With
+    `db_path`, a found route is also kept in that database's flight_routes."""
     global _shared
     with _shared_lock:
         if _shared is None or str(_shared.state_path) != str(state_path):
             _shared = FlightAware(state_path)
+        if db_path:
+            _shared.on_found = lambda cs, route, _db=str(db_path): record_route(_db, cs, route)
         return _shared

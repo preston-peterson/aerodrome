@@ -1,4 +1,4 @@
-<!-- Version: 3.4.170 -->
+<!-- Version: 3.4.171 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -97,6 +97,16 @@ a { color:var(--cyan); }
 .tbl td { padding:6px 10px 6px 0; border-bottom:1px solid rgba(42,58,84,.4); font-family:var(--mono); color:var(--t1); }
 .tbl td.num { text-align:right; }
 .tbl tr:last-child td { border-bottom:none; }
+
+/* v3.4.171: table sizes are opt-in; these are the two states under the
+   Tables card's table — never measured yet (note + button), or measured
+   (when it happened + measure again). */
+.sizes-note { margin-top:10px; padding:10px 12px; border:1px solid var(--bdr);
+              border-radius:6px; font-size:12.5px; color:var(--t2); }
+.sizes-note .btn { margin-left:6px; }
+.sizes-measured { margin-top:10px; font-size:12px; color:var(--t3); }
+.link-btn { background:none; border:none; padding:0; cursor:pointer;
+            font:inherit; color:var(--cyan); text-decoration:underline; }
 
 .code-block { background:var(--bg0); border:1px solid var(--bdr); border-radius:6px; padding:12px 14px; font-family:var(--mono); font-size:11px; color:var(--t2); line-height:1.6; white-space:pre-wrap; word-break:break-word; max-height:360px; overflow-y:auto; }
 
@@ -224,22 +234,59 @@ function _queryMsClass(ms) {
     return 'q-bad';
 }
 
-async function runDiagnostic() {
+// v3.4.171: "today at 14:05" or "Jun 14, 09:12" for the last measurement,
+// through the shared time helpers so it respects display.time_format.
+function _measuredWhen(ts) {
+    if (!ts) return '—';
+    const d = new Date(ts * 1000);
+    const sameDay = d.toDateString() === new Date().toDateString();
+    return sameDay ? 'today at ' + formatTime(d) : formatDateTime(d);
+}
+
+// v3.4.171: the line under the Tables card's table. Size comes from dbstat,
+// which reads every page of the file, so it's no longer part of a normal
+// run: without a measurement say what measuring costs, with one say when it
+// happened. Either way the button re-runs the diagnostic with sizes=true.
+function _sizesNoteHtml(j) {
+    const sizes = j.table_sizes;
+    if (!sizes) {
+        const dbBytes = (j.storage || {}).size_bytes || 0;
+        const secs = Math.max(5, Math.round(dbBytes / 90e6 / 5) * 5);
+        return `<div class="sizes-note">
+            Table sizes aren't measured in a normal run: measuring reads the whole
+            database (${_fmtBytes(dbBytes)} here, about ${secs} seconds), and other
+            pages can be slower for a few minutes afterwards.
+            <button class="btn" id="sizesBtn" onclick="runDiagnostic(true)">Measure table sizes</button>
+        </div>`;
+    }
+    const took = Math.max(1, Math.round((sizes.took_ms || 0) / 1000));
+    return `<div class="sizes-measured">Sizes measured ${_esc(_measuredWhen(sizes.measured_at))} (took ${took} s).
+        <button class="link-btn" id="sizesBtn" onclick="runDiagnostic(true)">Measure again</button>
+    </div>`;
+}
+
+async function runDiagnostic(withSizes) {
     const btn = document.getElementById('runBtn');
     const content = document.getElementById('content');
     btn.disabled = true;
     btn.textContent = 'Running…';
-    content.innerHTML = `<div class="card"><div class="loading"><span class="spinner"></span>Measuring your system. This can take several seconds on large databases.</div></div>`;
+    content.innerHTML = `<div class="card"><div class="loading"><span class="spinner"></span>${
+        withSizes ? 'Measuring table sizes. This reads the whole database, so it can take a while.'
+                  : 'Measuring your system. This can take several seconds on large databases.'}</div></div>`;
 
     try {
         // v3.4.13: URL param replaces the checkbox UI removed in this
         // release. Power users who want the legacy raw-fallback probe
         // included pass ?include_legacy=true; default omits it.
-        const includeLegacy =
-            new URL(window.location.href).searchParams.get('include_legacy') === 'true';
-        const url = includeLegacy
-            ? '/api/perf/diagnostics?include_legacy=true'
-            : '/api/perf/diagnostics';
+        // v3.4.171: `withSizes` adds sizes=true, which is what makes the
+        // server pay for the dbstat walk over every page (see the note
+        // under the Tables card). Kept off the routine path.
+        const params = [];
+        if (new URL(window.location.href).searchParams.get('include_legacy') === 'true') {
+            params.push('include_legacy=true');
+        }
+        if (withSizes) params.push('sizes=true');
+        const url = '/api/perf/diagnostics' + (params.length ? '?' + params.join('&') : '');
         const r = await fetch(url);
         const j = await r.json();
         _lastReport = j;
@@ -340,6 +387,7 @@ function renderReport(j) {
                 }).join('')}
                 </tbody>
             </table>
+            ${_sizesNoteHtml(j)}
         </div>`;
     }
 
@@ -524,6 +572,15 @@ function buildReportText(j) {
     }
 
     lines.push('--- Tables ---');
+    // v3.4.171: sizes are opt-in now, so the pasteable report has to say
+    // whether the size= figures below were measured at all, and when.
+    const tsz = j.table_sizes;
+    if (tsz) {
+        const took = Math.max(1, Math.round((tsz.took_ms || 0) / 1000));
+        lines.push('  Table sizes measured ' + _fmtTs(tsz.measured_at) + ' (took ' + took + ' s)');
+    } else {
+        lines.push('  Table sizes: not measured');
+    }
     (j.tables || []).forEach(t => {
         // v2.80.2: render null rows count as em-dash for parity with the
         // HTML view (line ~354), which already uses '—' for missing

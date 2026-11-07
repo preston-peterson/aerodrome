@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 # Current schema version. Bump whenever a new migration is added.
 # v2.51.0 introduces schema version 1 (the search-feature schema).
 # Any DB without a schema_version table is implicitly at version 0.
-CURRENT_SCHEMA_VERSION = 18
+CURRENT_SCHEMA_VERSION = 19
 
 
 # A migration is a (target_version, description, callable) tuple.
@@ -1655,6 +1655,38 @@ def _migration_v18_regional_airliners_commercial(conn: sqlite3.Connection) -> No
 # Ordered list of all migrations. NEVER edit a shipped migration —
 # always add a new one. The list is the source of truth for what
 # CURRENT_SCHEMA_VERSION should be.
+def _migration_v19_flight_routes(conn: sqlite3.Connection) -> None:
+    """v3.4.171: add `flight_routes` — one row per flight FlightAware AeroAPI
+    confirmed (keyed by its fa_flight_id), so the aircraft page's Sightings list
+    can show the route each looked-up flight actually flew.
+
+    Only what Aerodrome derives from a lookup is kept (callsign, tail, airports,
+    departure/arrival times); FlightAware's raw replies are never stored (its
+    personal license limits raw data to 30 days, derived data may be kept).
+    Rows are written only when a lookup finds a flight, so the table stays small
+    (at most a few thousand rows a month); it isn't pruned with the sightings.
+    Standalone (not columns on the big sightings tables). Idempotent: CREATE ...
+    IF NOT EXISTS — a re-run is a no-op.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS flight_routes (
+            fa_flight_id  TEXT PRIMARY KEY NOT NULL,
+            callsign      TEXT NOT NULL,
+            registration  TEXT,
+            origin_icao   TEXT,
+            origin_name   TEXT,
+            dest_icao     TEXT,
+            dest_name     TEXT,
+            departed_at   INTEGER,
+            arrives_at    INTEGER,
+            looked_up_at  INTEGER NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_flight_routes_callsign "
+                 "ON flight_routes(callsign, departed_at)")
+    logger.info("Migration v19: ensured flight_routes table exists")
+
+
 MIGRATIONS: List[Migration] = [
     (1, "search schema: denormalized columns, indexes, FTS5 + triggers, backfill",
      _migration_v1_search_schema),
@@ -1692,6 +1724,8 @@ MIGRATIONS: List[Migration] = [
      _migration_v17_category_rederive),
     (18, "regional airliners (ATR, Dash 8, Saab, Dornier 328, …) categorized commercial (v3.4.142)",
      _migration_v18_regional_airliners_commercial),
+    (19, "flight_routes table: FlightAware-confirmed routes for the aircraft page's route history (v3.4.171)",
+     _migration_v19_flight_routes),
 ]
 
 

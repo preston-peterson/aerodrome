@@ -38,7 +38,7 @@ Core endpoints the dashboard's tabs consume. All return a list of aircraft objec
 | GET | `/api/watchlist` | Historical + current watchlist hits |
 | GET | `/api/military` | Historical + current military hits |
 | GET | `/api/search` | Full-text search across every aircraft (`?q=...&from_ts=...&to_ts=...&preset=today&limit=...&offset=...`; `preset=today` starts from midnight in Aerodrome's timezone). The response adds `time_label` (the date window in words) and `time_tokens` (the date tokens as typed); with a window active, each row adds `window_sightings` |
-| GET | `/api/all/drill` | Per-aircraft sighting history (ICAO + window). Used by the aircraft detail page. |
+| GET | `/api/all/drill` | Per-aircraft sighting history (ICAO + window). Used by the aircraft detail page. A row of a flight FlightAware confirmed (it was looked up) carries `route: {origin, dest, source: "flightaware"}`. |
 | GET | `/api/first-seen` | Per-ICAO first-seen timestamps (for "new today" highlighting) |
 | GET | `/api/callsign/{callsign}/route` | A flight's route, looked up by callsign. With `lat`/`lon` (and `track`), a route from the free list that doesn't fit where the plane is comes back `found: false, mismatch: true`. With `fa=1` (sent when you open an aircraft: the Live map's panel, the aircraft page, the display board's details) and a FlightAware key set, FlightAware is asked first, spending a lookup unless the route is cached; its answer carries `source: "flightaware"`, `departed_at` and `arrives_at` (Unix timestamps). With `fa=cached` (the display board's rows and cards) a FlightAware route is used only if one was already looked up; it never spends a lookup. |
 
@@ -148,7 +148,7 @@ Backups are taken live — the SQLite database is copied via SQLite's online bac
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/perf/diagnostics` | Run a live benchmark: db size, row counts, pragmas, index coverage, query timings, disk-read throughput, auto-generated hints |
+| GET | `/api/perf/diagnostics` | Run a live benchmark: db size, row counts, pragmas, index coverage, query timings, disk-read throughput, auto-generated hints. Per-table sizes only with `?sizes=true` (measuring reads every page of the database); `table_sizes` says when sizes were last measured (`measured_at`, `took_ms`, `fresh`), and a normal run reuses them |
 | POST | `/api/perf/analyze` | Run `ANALYZE` on the SQLite database to refresh query planner stats |
 
 `/api/perf/diagnostics` is the most expensive endpoint in the API — it runs six representative queries in sequence and can take several seconds on a large database. Intended for manual invocation from the Performance page, not for polling.

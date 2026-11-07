@@ -1,4 +1,4 @@
-# Version: 3.4.170
+# Version: 3.4.171
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -2890,12 +2890,38 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         """, (icao, from_ts, to_ts),
         endpoint="/api/all/drill", label="drill_count", fetch="one")
         total = total_row["n"]
+        # v3.4.171: the FlightAware-confirmed route of each looked-up flight
+        # (flight_routes), matched by callsign and time: one indexed query for
+        # the page's callsigns, then each row picks the flight whose departure
+        # to arrival (an hour either side) contains it.
+        routes_by_cs: Dict[str, list] = {}
+        callsigns = sorted({(r["callsign"] or "").strip().upper() for r in rows} - {""})
+        if callsigns:
+            try:
+                marks = ",".join("?" * len(callsigns))
+                for fr in conn.execute(
+                        f"SELECT callsign, origin_icao, dest_icao, departed_at, arrives_at, looked_up_at "
+                        f"FROM flight_routes WHERE callsign IN ({marks})", callsigns):
+                    routes_by_cs.setdefault(fr["callsign"], []).append(fr)
+            except sqlite3.OperationalError:
+                routes_by_cs = {}
         conn.close()
+
+        def _route_for(cs, ts):
+            for fr in routes_by_cs.get((cs or "").strip().upper(), ()):
+                lo = (fr["departed_at"] or fr["looked_up_at"] - 43200) - 3600
+                hi = (fr["arrives_at"] or fr["looked_up_at"] + 43200) + 3600
+                if lo <= ts <= hi:
+                    return {"origin": fr["origin_icao"], "dest": fr["dest_icao"], "source": "flightaware"}
+            return None
 
         sightings = []
         for row in rows:
             entry = dict(row)
             entry["distance"] = _distance_from_receiver(entry.get("lat"), entry.get("lon"))
+            route = _route_for(entry.get("callsign"), entry.get("seen_at") or 0)
+            if route:
+                entry["route"] = route
             sightings.append(entry)
 
         return {
@@ -5168,6 +5194,25 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         cards = st.get("cards") or {}
         groups = st.get("groups") or {}
         start_ts, end_ts = _day_bounds_ts()
+        # v3.4.171: a half-hour time zone's day starts mid-way through a UTC
+        # rollup hour (see search.window_sources). Today's rollup cards read
+        # the whole hours from the rollups and the partial edges from the raw
+        # tables, as the 7-day card already did; in other zones there are no
+        # edges and nothing changes.
+        _today_whole, _today_edges = window_sources(start_ts, end_ts)
+
+        def _today_parts(rollup_sql: str, raw_sql: str):
+            """SELECTs (and their params) covering today: rollup_sql takes
+            `hour_bucket >= ? AND hour_bucket < ?`, raw_sql `seen_at >= ? AND
+            seen_at < ?`, in that order."""
+            parts, params = [], []
+            if _today_whole:
+                parts.append(rollup_sql)
+                params += list(_today_whole)
+            for edge in _today_edges:
+                parts.append(raw_sql)
+                params += list(edge)
+            return parts, tuple(params)
 
         db_path = CONFIG.get("data", {}).get("db_file", "aircraft_history.db")
         if not Path(db_path).is_absolute():
@@ -5315,8 +5360,10 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 # difference on busy installs). The rollup-table version
                 # is small enough that planner choice doesn't matter
                 # — sightings_hourly fits in cache trivially.
-                row = q("SELECT COUNT(DISTINCT icao) AS n FROM sightings_hourly "
-                        "WHERE hour_bucket >= ?", (start_ts,))
+                parts, params = _today_parts(
+                    "SELECT icao FROM sightings_hourly WHERE hour_bucket >= ? AND hour_bucket < ?",
+                    "SELECT icao FROM all_sightings WHERE seen_at >= ? AND seen_at < ?")
+                row = q(f"SELECT COUNT(*) AS n FROM ({' UNION '.join(parts)})", params)
                 result["cards"]["unique_today"] = row[0]["n"] if row else 0
 
             if card_check("peak_simultaneous"):
@@ -5368,10 +5415,10 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 except Exception:
                     _mil_phase = None
                 if _mil_phase == "complete":
-                    row = q(
-                        "SELECT COUNT(DISTINCT icao) AS n FROM military_hourly "
-                        "WHERE hour_bucket >= ?",
-                        (start_ts,))
+                    parts, params = _today_parts(
+                        "SELECT icao FROM military_hourly WHERE hour_bucket >= ? AND hour_bucket < ?",
+                        "SELECT icao FROM military_sightings WHERE seen_at >= ? AND seen_at < ?")
+                    row = q(f"SELECT COUNT(*) AS n FROM ({' UNION '.join(parts)})", params)
                 else:
                     row = q(
                         "SELECT COUNT(DISTINCT icao) AS n FROM military_sightings "
@@ -5386,10 +5433,10 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 except Exception:
                     _watch_phase = None
                 if _watch_phase == "complete":
-                    row = q(
-                        "SELECT COUNT(DISTINCT icao) AS n FROM watchlist_hourly "
-                        "WHERE hour_bucket >= ?",
-                        (start_ts,))
+                    parts, params = _today_parts(
+                        "SELECT icao FROM watchlist_hourly WHERE hour_bucket >= ? AND hour_bucket < ?",
+                        "SELECT icao FROM watchlist_sightings WHERE seen_at >= ? AND seen_at < ?")
+                    row = q(f"SELECT COUNT(*) AS n FROM ({' UNION '.join(parts)})", params)
                 else:
                     row = q(
                         "SELECT COUNT(DISTINCT icao) AS n FROM watchlist_sightings "
@@ -5510,14 +5557,20 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 # if the upstream feeder gets weird. Same for the ~hex
                 # icao exclusion (TIS-B/MLAT pseudo-targets often have
                 # ATC-relayed altitude readings that are less reliable).
-                rows = q("""
-                    SELECT icao, callsign, max_altitude AS altitude, aircraft_type
-                    FROM sightings_hourly
-                    WHERE hour_bucket >= ? AND max_altitude IS NOT NULL
-                      AND typeof(max_altitude) IN ('integer', 'real')
-                      AND icao NOT LIKE '~%'
-                    ORDER BY max_altitude DESC LIMIT 50
-                """, (start_ts,))
+                parts, params = _today_parts(
+                    """SELECT icao, callsign, max_altitude AS altitude, aircraft_type
+                       FROM sightings_hourly
+                       WHERE hour_bucket >= ? AND hour_bucket < ? AND max_altitude IS NOT NULL
+                         AND typeof(max_altitude) IN ('integer', 'real') AND icao NOT LIKE '~%'""",
+                    # The raw edge, one row per aircraft like the rollup.
+                    """SELECT icao, MAX(callsign) AS callsign, MAX(altitude) AS altitude,
+                              MAX(aircraft_type) AS aircraft_type
+                       FROM all_sightings
+                       WHERE seen_at >= ? AND seen_at < ? AND altitude IS NOT NULL
+                         AND typeof(altitude) IN ('integer', 'real') AND icao NOT LIKE '~%'
+                       GROUP BY icao""")
+                rows = q(f"SELECT * FROM ({' UNION ALL '.join(parts)}) "
+                         "ORDER BY altitude DESC LIMIT 50", params)
                 result["cards"]["highest_altitude"] = next(
                     (dict(r) for r in rows if _collector_mod.altitude_is_plausible(
                         r["aircraft_type"], r["altitude"])), None)
@@ -5537,14 +5590,19 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 # Original v2.42.7 typeof guard preserved against
                 # stringy values, ~hex exclusion preserved for TIS-B/
                 # MLAT pseudo-targets.
-                rows = q("""
-                    SELECT icao, callsign, min_nonzero_altitude AS altitude, aircraft_type
-                    FROM sightings_hourly
-                    WHERE hour_bucket >= ? AND min_nonzero_altitude IS NOT NULL
-                      AND typeof(min_nonzero_altitude) IN ('integer', 'real')
-                      AND icao NOT LIKE '~%'
-                    ORDER BY min_nonzero_altitude ASC LIMIT 1
-                """, (start_ts,))
+                parts, params = _today_parts(
+                    """SELECT icao, callsign, min_nonzero_altitude AS altitude, aircraft_type
+                       FROM sightings_hourly
+                       WHERE hour_bucket >= ? AND hour_bucket < ? AND min_nonzero_altitude IS NOT NULL
+                         AND typeof(min_nonzero_altitude) IN ('integer', 'real') AND icao NOT LIKE '~%'""",
+                    """SELECT icao, MAX(callsign) AS callsign, MIN(altitude) AS altitude,
+                              MAX(aircraft_type) AS aircraft_type
+                       FROM all_sightings
+                       WHERE seen_at >= ? AND seen_at < ? AND altitude > 0
+                         AND typeof(altitude) IN ('integer', 'real') AND icao NOT LIKE '~%'
+                       GROUP BY icao""")
+                rows = q(f"SELECT * FROM ({' UNION ALL '.join(parts)}) "
+                         "ORDER BY altitude ASC LIMIT 1", params)
                 result["cards"]["lowest_altitude"] = dict(rows[0]) if rows else None
 
             if card_check("fastest"):
@@ -5590,14 +5648,17 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 # backs up (see the spike check in collector.py). One indexed
                 # lookup per row, and the walk stops as soon as no later row can
                 # beat the best so far: usually one or two.
+                # v3.4.171: from the hour that holds midnight (a half-hour zone's
+                # first hour straddles it); an agreed reading from before
+                # midnight doesn't count for today.
                 rows = q("""
                     SELECT icao, callsign, max_speed AS speed, aircraft_type, hour_bucket
                     FROM sightings_hourly
-                    WHERE hour_bucket >= ? AND max_speed IS NOT NULL
+                    WHERE hour_bucket >= ? AND hour_bucket < ? AND max_speed IS NOT NULL
                       AND typeof(max_speed) IN ('integer', 'real')
                       AND icao NOT LIKE '~%'
                     ORDER BY max_speed DESC LIMIT 50
-                """, (start_ts,))
+                """, (start_ts // 3600 * 3600, end_ts))
                 window = _collector_mod.speed_agree_window(CONFIG["receiver"].get("poll_interval"))
                 fastest = None
                 for r in rows:
@@ -5605,6 +5666,8 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                         break
                     found = _collector_mod.best_agreed_speed(
                         conn, r["icao"], r["hour_bucket"], r["aircraft_type"], window)
+                    if found and found[1] < start_ts:
+                        continue
                     if found and (not fastest or found[0] > fastest["speed"]):
                         fastest = {"icao": r["icao"], "callsign": r["callsign"],
                                    "speed": found[0], "aircraft_type": r["aircraft_type"]}
@@ -5699,11 +5762,14 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 # reduces it to 5 rows, then joins seen_aircraft for only
                 # those 5. Same top-5 result; verified equivalent on
                 # synthetic data (41ms -> 7ms, 0 mismatches).
-                rows = q("""
+                parts, params = _today_parts(
+                    "SELECT icao, sighting_count AS n FROM sightings_hourly "
+                    "WHERE hour_bucket >= ? AND hour_bucket < ?",
+                    "SELECT icao, 1 AS n FROM all_sightings WHERE seen_at >= ? AND seen_at < ?")
+                rows = q(f"""
                     WITH top AS (
-                        SELECT icao, SUM(sighting_count) AS n
-                        FROM sightings_hourly
-                        WHERE hour_bucket >= ?
+                        SELECT icao, SUM(n) AS n
+                        FROM ({' UNION ALL '.join(parts)})
                         GROUP BY icao
                         ORDER BY n DESC LIMIT 5
                     )
@@ -5717,7 +5783,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                     FROM top
                     JOIN seen_aircraft s ON s.icao = top.icao
                     ORDER BY top.n DESC
-                """, (start_ts,))
+                """, params)
                 # v3.4.56: param is start_ts (seconds), NOT start_ts//3600.
                 # hour_bucket is stored as (seen_at/3600)*3600 — truncated
                 # to the hour but in SECONDS. Passing hours made the filter
@@ -9493,10 +9559,24 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     # itself a useful data point — we time it and report it rather than
     # try to avoid it.
 
+    # Table sizes from the last run that asked for them (?sizes=true), so a
+    # normal run can show when they were last measured instead of paying for
+    # them again. One per app instance, like the other per-app state.
+    _perf_table_sizes: Dict[str, Any] = {}
+
     @app.get("/api/perf/diagnostics")
-    def perf_diagnostics(include_legacy: bool = False):
+    def perf_diagnostics(include_legacy: bool = False, sizes: bool = False):
         """Performance diagnostic snapshot. Returns storage footprint,
         query timings, index coverage, and system context.
+
+        v3.4.171: sizes query parameter (default False) controls the two
+        dbstat passes that produce per-table size_bytes. dbstat reads every
+        page of the database file — on a multi-GB install that is most of a
+        30-second run, and in doing so it pushes the rest of the database out
+        of the page cache, so other pages stay slow for a few minutes after.
+        Measuring is therefore opt-in: a normal run reports no sizes (or the
+        last remembered ones) and the page offers a "Measure table sizes"
+        button that re-runs with ?sizes=true.
 
         v2.50.26: include_legacy query parameter (default False) controls
         whether the legacy raw-fallback and window-functions reference
@@ -9529,6 +9609,10 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 "release": platform.release(),
             },
         }
+        # True only on the run that actually measured (see table_sizes).
+        sizes_measured = False
+        # Overwritten at the end from whatever this run measured or remembered.
+        report["table_sizes"] = None
 
         # --- Storage footprint ---
         storage = {"db_file": str(db_path)}
@@ -9659,73 +9743,111 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                         pass
                 tables_info.append(info)
 
-            # FTS5 shadow tables — SQLite creates these automatically
-            # for every FTS5 virtual table. They store the inverted
-            # index, content cache, and config. On busy installs the
-            # _data shadow can be substantial. We aggregate them as
-            # one synthetic row in the inventory rather than listing
-            # each shadow separately, because users care about "how
-            # much disk is FTS5 costing me" more than the per-shadow
-            # breakdown.
-            try:
-                fts_shadows = ("seen_aircraft_fts_data",
-                               "seen_aircraft_fts_idx",
-                               "seen_aircraft_fts_content",
-                               "seen_aircraft_fts_docsize",
-                               "seen_aircraft_fts_config")
-                shadow_total_bytes = 0
-                shadow_present = []
-                for sh in fts_shadows:
-                    try:
-                        # dbstat is a virtual table that exposes per-
-                        # btree page counts. Available on SQLite >=
-                        # 3.7.9 (compiled with SQLITE_ENABLE_DBSTAT_VTAB,
-                        # which the manylinux wheels include). If
-                        # missing, the except branch falls through.
-                        r = conn.execute(
-                            "SELECT SUM(pgsize) AS b FROM dbstat WHERE name = ?",
-                            (sh,)
-                        ).fetchone()
-                        if r and r["b"]:
-                            shadow_total_bytes += int(r["b"])
-                            shadow_present.append(sh)
-                    except sq.DatabaseError:
-                        # Shadow doesn't exist or dbstat unavailable;
-                        # skip silently.
-                        pass
-                if shadow_present:
-                    tables_info.append({
-                        "name": "seen_aircraft_fts (shadows)",
-                        "rows": None,
-                        "size_bytes": shadow_total_bytes,
-                        "shadow_tables": shadow_present,
-                        "note": (f"FTS5 backing storage across "
-                                 f"{len(shadow_present)} shadow tables"),
-                    })
-            except Exception as e:
-                logger.debug(f"FTS5 shadow size lookup failed: {e}")
+            # --- Table sizes (dbstat, opt-in since v3.4.171) ---
+            # Both passes below read dbstat, which walks every page of the
+            # file, so they only run when the caller asked for sizes. When
+            # they do run they're timed together and remembered, so the next
+            # normal run can still show the numbers it didn't pay for.
+            sizes_t0 = time.time()
+            measured_sizes: Dict[str, int] = {}
+            if sizes:
+                # FTS5 shadow tables — SQLite creates these automatically
+                # for every FTS5 virtual table. They store the inverted
+                # index, content cache, and config. On busy installs the
+                # _data shadow can be substantial. We aggregate them as
+                # one synthetic row in the inventory rather than listing
+                # each shadow separately, because users care about "how
+                # much disk is FTS5 costing me" more than the per-shadow
+                # breakdown.
+                try:
+                    fts_shadows = ("seen_aircraft_fts_data",
+                                   "seen_aircraft_fts_idx",
+                                   "seen_aircraft_fts_content",
+                                   "seen_aircraft_fts_docsize",
+                                   "seen_aircraft_fts_config")
+                    shadow_total_bytes = 0
+                    shadow_present = []
+                    for sh in fts_shadows:
+                        try:
+                            # dbstat is a virtual table that exposes per-
+                            # btree page counts. Available on SQLite >=
+                            # 3.7.9 (compiled with SQLITE_ENABLE_DBSTAT_VTAB,
+                            # which the manylinux wheels include). If
+                            # missing, the except branch falls through.
+                            r = conn.execute(
+                                "SELECT SUM(pgsize) AS b FROM dbstat WHERE name = ?",
+                                (sh,)
+                            ).fetchone()
+                            if r and r["b"]:
+                                shadow_total_bytes += int(r["b"])
+                                shadow_present.append(sh)
+                        except sq.DatabaseError:
+                            # Shadow doesn't exist or dbstat unavailable;
+                            # skip silently.
+                            pass
+                    if shadow_present:
+                        tables_info.append({
+                            "name": "seen_aircraft_fts (shadows)",
+                            "rows": None,
+                            "size_bytes": shadow_total_bytes,
+                            "shadow_tables": shadow_present,
+                            "note": (f"FTS5 backing storage across "
+                                     f"{len(shadow_present)} shadow tables"),
+                        })
+                        measured_sizes["seen_aircraft_fts (shadows)"] = \
+                            shadow_total_bytes
+                except Exception as e:
+                    logger.debug(f"FTS5 shadow size lookup failed: {e}")
 
-            # Per-table size_bytes via dbstat. Done as a second pass so
-            # the COUNT(*) timing above isn't padded by dbstat overhead.
-            # dbstat aggregates btree pages including indexes; we want
-            # just the table's primary btree, which is identified by
-            # name == table_name.
-            try:
+                # Per-table size_bytes via dbstat. Done as a second pass so
+                # the COUNT(*) timing above isn't padded by dbstat overhead.
+                # dbstat aggregates btree pages including indexes; we want
+                # just the table's primary btree, which is identified by
+                # name == table_name.
+                try:
+                    for info in tables_info:
+                        if "shadow_tables" in info:
+                            continue  # already populated above
+                        name = info["name"]
+                        try:
+                            r = conn.execute(
+                                "SELECT SUM(pgsize) AS b FROM dbstat WHERE name = ?",
+                                (name,)
+                            ).fetchone()
+                            if r and r["b"]:
+                                info["size_bytes"] = int(r["b"])
+                                measured_sizes[name] = int(r["b"])
+                        except sq.DatabaseError:
+                            pass
+                except Exception as e:
+                    logger.debug(f"per-table size lookup failed: {e}")
+
+                if measured_sizes:
+                    sizes_measured = True
+                    _perf_table_sizes.clear()
+                    _perf_table_sizes.update({
+                        "measured_at": int(time.time()),
+                        "took_ms": int(round((time.time() - sizes_t0) * 1000)),
+                        "sizes": measured_sizes,
+                    })
+            if not measured_sizes and _perf_table_sizes:
+                # Nothing measured on this run (either sizes weren't asked
+                # for, or dbstat isn't available), but an earlier run did:
+                # fill the sizes in from what's remembered. `table_sizes`
+                # says when they were taken so nobody reads stale bytes as
+                # current ones.
+                remembered = _perf_table_sizes.get("sizes") or {}
                 for info in tables_info:
-                    if "shadow_tables" in info:
-                        continue  # already populated above
-                    name = info["name"]
-                    try:
-                        r = conn.execute(
-                            "SELECT SUM(pgsize) AS b FROM dbstat WHERE name = ?",
-                            (name,)
-                        ).fetchone()
-                        if r and r["b"]:
-                            info["size_bytes"] = int(r["b"])
-                    except sq.DatabaseError:
-                        pass
-            except Exception as e:
-                logger.debug(f"per-table size lookup failed: {e}")
+                    remembered_bytes = remembered.get(info["name"])
+                    if remembered_bytes:
+                        info["size_bytes"] = int(remembered_bytes)
+                # The search index's storage is a synthetic row that only a
+                # measuring run builds; bring it back from memory too.
+                fts_row = "seen_aircraft_fts (shadows)"
+                if remembered.get(fts_row) and not any(t["name"] == fts_row for t in tables_info):
+                    tables_info.append({"name": fts_row, "rows": None,
+                                        "size_bytes": int(remembered[fts_row]),
+                                        "note": "FTS5 backing storage (search index)"})
 
             # Indexes present, for coverage verification
             index_rows = conn.execute(
@@ -10126,6 +10248,12 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             report["error"] = f"Diagnostic failed: {e}"
 
         report["tables"] = tables_info
+        if _perf_table_sizes:
+            report["table_sizes"] = {
+                "measured_at": _perf_table_sizes.get("measured_at"),
+                "took_ms": _perf_table_sizes.get("took_ms"),
+                "fresh": sizes_measured,
+            }
 
         # --- Hardware hints ---
         # Not authoritative, but enough to match reports to known hardware
@@ -12748,7 +12876,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
     def _fa_client():
         import flightaware as _flightaware
-        return _flightaware.shared(_flightaware.state_path_for(CONFIG))
+        return _flightaware.shared(_flightaware.state_path_for(CONFIG), db_path=CONFIG["data"]["db_file"])
 
     async def _flightaware_route(cs: str, cached_only: bool = False) -> Optional[dict]:
         """v3.4.168: the flight's real route from FlightAware AeroAPI, or None

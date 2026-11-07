@@ -169,7 +169,7 @@ def _compute_capacity_metrics(db_path: str, retention_days: int = 30) -> Dict[st
         conn.row_factory = sqlite3.Row
         try:
             now_ts = int(time.time())
-            # MIN(seen_at): cheap index seek (SEARCH ... idx_all_seen),
+            # MIN(seen_at): cheap index seek (SEARCH ... a seen_at-leading index),
             # kept inline and uncached so days-of-data reflects current
             # retention pruning. See v3.4.45 for the MIN/COUNT split.
             min_ts = conn.execute(

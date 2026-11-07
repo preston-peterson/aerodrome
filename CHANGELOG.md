@@ -19,6 +19,26 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.171] — 2026-11-06
+
+**The aircraft page now keeps the routes FlightAware confirmed, the Performance diagnostic runs in seconds, and the "Today" cards are right in half-hour time zones.**
+
+- **Route history on the aircraft page.** If you use a FlightAware key, every flight Aerodrome looks up is remembered, and the aircraft page's Sightings list has a new Route column showing it ("KBOS → KDEN" with a FlightAware label) on the sightings of that flight. Flights that weren't looked up show a dash. Only what Aerodrome needs is kept (the airports and times), never FlightAware's raw replies.
+- **The Performance diagnostic runs in seconds.** Measuring each table's size meant reading the whole database file, which on a large install took about half a minute and left other pages slow for a few minutes afterwards. A normal run now skips it. A "Measure table sizes" button below the Tables list measures them when you want them, saying first how big the database is and roughly how long it will take, and the last measurement stays on the page with when it was taken.
+- **"Today" cards in half-hour time zones.** In zones such as India's (UTC+5:30), the unique aircraft, military, watchlist, highest, lowest, fastest and most-seen cards missed whatever was seen in the first half hour after midnight. They now count from midnight exactly.
+- **Old data is cleared even when the sky is quiet.** Retention cleanup used to wait for a poll that saw at least one aircraft; it now also runs when there's nothing in range.
+
+### Operational notes
+
+This update changes the database: it adds a small table for FlightAware routes (schema version 19) and removes the `idx_all_seen` index, which another index already covers. Both happen automatically at the first start and take a few seconds. The space the index used is reused as the database grows, so the file doesn't shrink but stops growing for a while. Reload open pages afterwards.
+
+### Behind the scenes
+
+- Schema v19 adds `flight_routes` (keyed by FlightAware's flight id: callsign, tail, airports, departure and arrival times), written when a FlightAware lookup finds a flight. `GET /api/all/drill` rows of a looked-up flight carry `route: {origin, dest, source}`, matched by callsign and the flight's departure-to-arrival window.
+- `idx_all_seen(seen_at)` is dropped at startup, as `idx_mil_seen` and `idx_watch_seen` were in v2.50.22: `idx_all_seen_icao` and `idx_all_seen_lat_lon` both lead with `seen_at`. Every query the main pages run against `all_sightings` was traced and its plan compared with and without the index: none became a table scan.
+- `GET /api/perf/diagnostics` measures table sizes only with `?sizes=true` and reports `table_sizes` (`measured_at`, `took_ms`, `fresh`); a normal run reuses the last measurement.
+- The Stats endpoint's rollup-based Today cards read whole UTC hours from the rollups and the partial first half hour from the raw tables, as the 7-day card already did.
+
 ## [3.4.170] — 2026-11-06
 
 **The display board now uses your FlightAware routes, the same way the Live map does.**

@@ -1,5 +1,5 @@
 # Aerodrome
-<!-- Version: 3.4.170 -->
+<!-- Version: 3.4.171 -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -194,6 +194,7 @@ aerodrome/
 ├── test_designators.py           unit tests — aircraft type and operator decoders
 ├── test_destructive_endpoints.py unit tests — switch-to-real + watchlist-history deletes
 ├── test_flightaware.py           unit tests — FlightAware client: lookups, monthly limit, key state
+├── test_flight_routes.py         unit tests — FlightAware route history: schema v19, write and read paths
 ├── test_flightaware_wiring.py    unit tests — FlightAware key masking, route endpoint, watchlist alert route
 ├── test_frontend_browser.py      tests — real pages in Chromium with scripted answers: hangs, failures, late replies
 ├── test_icao_hex.py              unit tests — ICAO hex ingest validation

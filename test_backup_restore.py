@@ -3137,7 +3137,7 @@ class TestRestoreChecksThatHadNoTest(_Restore):
     def test_a_valid_header_with_damaged_pages_is_400(self):
         # quick_check reports a damaged index page, and raises on a damaged table
         # page. Either way the backup is refused.
-        for name, wanted in (("idx_all_seen", "quick_check"), ("all_sightings", "can't be opened")):
+        for name, wanted in (("idx_all_seen_icao", "quick_check"), ("all_sightings", "can't be opened")):
             with self.subTest(damaged=name):
                 src = self.work / f"damaged-{name}.db"
                 make_history_db(src, 0xC00000, 4000)

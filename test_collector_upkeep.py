@@ -413,6 +413,58 @@ EMERGENCY = {"hex": "a00077", "flight": "DEMO77", "lat": 40.0, "lon": -90.0, "al
              "gs": 200, "t": "B738", "squawk": "7700"}
 
 
+class TestReleaseDUpkeep(_DbCase):
+    """v3.4.171: a poll with no aircraft still runs cleanup; idx_all_seen(seen_at)
+    is gone (the seen_at-leading composites cover it) and range reads still search
+    an index."""
+
+    def plan(self, sql, params=()):
+        conn = sqlite3.connect(self.db)
+        try:
+            return " | ".join(r[3] for r in conn.execute("EXPLAIN QUERY PLAN " + sql, params))
+        finally:
+            conn.close()
+
+    def indexes(self):
+        conn = sqlite3.connect(self.db)
+        try:
+            return {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='all_sightings'")}
+        finally:
+            conn.close()
+
+    def test_a_poll_with_no_aircraft_still_cleans_up(self):
+        cfg = yaml.safe_load((REPO / "config.yaml.example").read_text())
+        cfg["data"]["db_file"] = self.db
+        cfg["watchlist"] = []
+        with mock.patch.object(collector.requests, "get", return_value=_feed([])), \
+                mock.patch.object(collector, "run_due_cleanup") as clean:
+            collector.fetch_and_store(cfg, collector.build_watchlist_lookup(cfg))
+        clean.assert_called_once_with(self.db, cfg["retention"])
+
+    def test_a_fresh_install_has_no_idx_all_seen(self):
+        self.assertNotIn("idx_all_seen", self.indexes())
+        self.assertIn("idx_all_seen_icao", self.indexes())
+
+    def test_an_upgrade_drops_it(self):
+        conn = sqlite3.connect(self.db)
+        conn.execute("CREATE INDEX idx_all_seen ON all_sightings(seen_at)")
+        conn.commit()
+        conn.close()
+        self.assertIn("idx_all_seen", self.indexes())
+        collector.init_db(self.db)
+        self.assertNotIn("idx_all_seen", self.indexes())
+
+    def test_seen_at_reads_still_search_an_index(self):
+        for sql in ("SELECT icao FROM all_sightings WHERE seen_at >= ? ORDER BY seen_at LIMIT 1",
+                    "SELECT COUNT(*) FROM all_sightings WHERE seen_at >= ?",
+                    "SELECT rowid FROM all_sightings WHERE seen_at < ? LIMIT 5000"):
+            plan = self.plan(sql, (1,))
+            self.assertIn("USING", plan, sql)
+            self.assertNotIn("idx_all_seen ", plan + " ", sql)
+            self.assertFalse(plan.startswith("SCAN all_sightings") and "INDEX" not in plan, plan)
+
+
 class TestPollNotifications(_DbCase):
 
     def setUp(self):
