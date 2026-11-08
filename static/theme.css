@@ -98,7 +98,7 @@ html[data-theme="light"] { color-scheme: light; }
     border-right:1px solid var(--bdr); font-family:var(--font);
 }
 .theme-seg button:last-child { border-right:none; }
-.theme-seg button.on { background:var(--cyan); color:#fff; }
+.theme-seg button.on { background:var(--cyan); color:var(--bg0); }
 .theme-seg button:not(.on):hover { background:var(--bg3); color:var(--t1); }
 
 /* v2.49.5: header health dot. Previously each template defined its own
@@ -195,8 +195,8 @@ body .toast {
    working on any of the gear list items" because the button didn't go
    amber/red even when the JS had toggled the class. Centralized here so
    every template gets the same treatment. */
-.settings-btn.warn  { border-color: var(--amber) !important; color: var(--amber) !important; }
-.settings-btn.error { border-color: var(--red)   !important; color: var(--red)   !important; }
+.settings-btn.warn  { border-color: var(--amber) !important; color: var(--amber-text) !important; }
+.settings-btn.error { border-color: var(--red)   !important; color: var(--red-text)   !important; }
 .settings-btn { position: relative; }
 .settings-btn.warn::after,
 .settings-btn.error::after {
@@ -218,11 +218,11 @@ body .toast {
    pulsing dot on the gear itself for a complete visual link. */
 .settings-btn.warn ~ .settings-menu .menu-item:first-child,
 .settings-btn.warn + .settings-menu .menu-item:first-child {
-    color: var(--amber) !important;
+    color: var(--amber-text) !important;
 }
 .settings-btn.error ~ .settings-menu .menu-item:first-child,
 .settings-btn.error + .settings-menu .menu-item:first-child {
-    color: var(--red) !important;
+    color: var(--red-text) !important;
 }
 .settings-btn.warn ~ .settings-menu .menu-item:first-child::before,
 .settings-btn.warn + .settings-menu .menu-item:first-child::before {
@@ -383,11 +383,11 @@ input, select, textarea, button {
 .btn-danger {
     background: transparent;
     border-color: var(--red);
-    color: var(--red);
+    color: var(--red-text);
 }
 .btn-danger:hover {
     background: rgba(239, 68, 68, 0.1);
-    color: var(--red);
+    color: var(--red-text);
     border-color: var(--red);
 }
 

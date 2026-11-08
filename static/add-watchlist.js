@@ -54,8 +54,8 @@
   align-items:center;justify-content:center;font-size:14px;font-weight:600;
   line-height:1;padding:0;transition:all .15s;}
 .add-wl-btn:hover{border-color:var(--cyan);color:var(--cyan);}
-.add-wl-btn.added{border-color:var(--green);color:var(--green);cursor:default;}
-.add-wl-btn.added:hover{border-color:var(--green);color:var(--green);}
+.add-wl-btn.added{border-color:var(--green);color:var(--green-text);cursor:default;}
+.add-wl-btn.added:hover{border-color:var(--green);color:var(--green-text);}
 .awl-modal-bg{position:fixed;inset:0;background:rgba(10,14,23,.7);display:none;
   align-items:center;justify-content:center;z-index:500;}
 .awl-modal-bg.on{display:flex;}

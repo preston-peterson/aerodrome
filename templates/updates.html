@@ -1,4 +1,4 @@
-<!-- Version: 3.4.172 -->
+<!-- Version: 3.4.173 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -48,8 +48,8 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
 .dot.warn { background:var(--amber); animation:pulse 2s infinite; }
 .dot.off { background:var(--red); animation:none; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
-.settings-btn.warn { border-color:var(--amber) !important; color:var(--amber) !important; }
-.settings-btn.error { border-color:var(--red) !important; color:var(--red) !important; }
+.settings-btn.warn { border-color:var(--amber) !important; color:var(--amber-text) !important; }
+.settings-btn.error { border-color:var(--red) !important; color:var(--red-text) !important; }
 .settings-btn.warn::after, .settings-btn.error::after {
     content:''; position:absolute; top:-2px; right:-2px;
     width:7px; height:7px; border-radius:50%;
@@ -80,8 +80,8 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
 .badge { display:inline-block; font-size:9px; font-family:var(--mono); padding:2px 8px;
          border-radius:3px; background:var(--bg3); color:var(--t2);
          text-transform:uppercase; letter-spacing:.05em; margin-left:8px; }
-.badge.soon { background:rgba(245,158,11,.15); color:var(--amber); }
-.badge.ready { background:rgba(34,197,94,.15); color:var(--green); }
+.badge.soon { background:rgba(245,158,11,.15); color:var(--amber-text); }
+.badge.ready { background:rgba(34,197,94,.15); color:var(--green-text); }
 
 .info-grid {
     display:grid; grid-template-columns:140px 1fr; gap:10px 16px;
@@ -89,14 +89,14 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
 }
 .info-label { color:var(--t2); font-family:var(--mono); font-size:12px; }
 .info-value { color:var(--t1); font-family:var(--mono); font-size:13px; }
-.info-value.highlight { color:var(--green); font-weight:600; }
+.info-value.highlight { color:var(--green-text); font-weight:600; }
 .info-value.muted { color:var(--t3); }
 
 .status-msg { padding:10px 14px; border-radius:6px; font-size:13px; margin-bottom:14px; }
 .status-msg.info { background:var(--bg1); border:1px solid var(--bdr); color:var(--t2); }
-.status-msg.ready { background:rgba(34,197,94,.08); border:1px solid rgba(34,197,94,.3); color:var(--green); }
-.status-msg.warn { background:rgba(245,158,11,.08); border:1px solid rgba(245,158,11,.3); color:var(--amber); }
-.status-msg.err { background:rgba(239,68,68,.08); border:1px solid rgba(239,68,68,.3); color:var(--red); }
+.status-msg.ready { background:rgba(34,197,94,.08); border:1px solid rgba(34,197,94,.3); color:var(--green-text); }
+.status-msg.warn { background:rgba(245,158,11,.08); border:1px solid rgba(245,158,11,.3); color:var(--amber-text); }
+.status-msg.err { background:rgba(239,68,68,.08); border:1px solid rgba(239,68,68,.3); color:var(--red-text); }
 /* v3.4.147: refusal / rollback detail, collapsed by default */
 .maint-details { margin-top:8px; font-size:12px; }
 .maint-details summary { cursor:pointer; color:var(--t2); }
@@ -174,10 +174,10 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
     text-transform:uppercase; letter-spacing:.05em;
     padding:2px 8px; border-radius:3px; margin-right:6px; vertical-align:middle;
 }
-.cl-type-added    { background:rgba(34,197,94,.15);  color:var(--green); }
+.cl-type-added    { background:rgba(34,197,94,.15);  color:var(--green-text); }
 .cl-type-changed  { background:rgba(6,182,212,.15);  color:var(--cyan); }
-.cl-type-fixed    { background:rgba(245,158,11,.15); color:var(--amber); }
-.cl-type-removed  { background:rgba(239,68,68,.15);  color:var(--red); }
+.cl-type-fixed    { background:rgba(245,158,11,.15); color:var(--amber-text); }
+.cl-type-removed  { background:rgba(239,68,68,.15);  color:var(--red-text); }
 .cl-type-security { background:rgba(139,92,246,.15); color:var(--purple); }
 .cl-type-other    { background:var(--bg3);           color:var(--t2); }
 .cl-section { margin-bottom:6px; }
@@ -572,9 +572,9 @@ function showSudoersRequiredModal(opts){
         modal.innerHTML = `
             <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
                 <span style="width:22px;height:22px;border-radius:50%;background:rgba(245,158,11,.15);
-                       color:var(--amber);display:inline-flex;align-items:center;
+                       color:var(--amber-text);display:inline-flex;align-items:center;
                        justify-content:center;font-size:13px;font-weight:600;">!</span>
-                <div style="font-size:16px;font-weight:500;color:var(--amber);">Sudoers update required</div>
+                <div style="font-size:16px;font-weight:500;color:var(--amber-text);">Sudoers update required</div>
             </div>
             <div style="font-size:12px;color:var(--t2);margin:0 0 14px 32px;">
                 Release ${_esc(opts.update_version || '?')} · requires a one-time permission refresh
@@ -586,7 +586,7 @@ function showSudoersRequiredModal(opts){
             </p>
             <div style="background:rgba(245,158,11,.05);border-left:2px solid var(--amber);
                         padding:10px 14px;border-radius:0 4px 4px 0;margin:14px 0;">
-                <div style="font-size:11px;color:var(--amber);text-transform:uppercase;
+                <div style="font-size:11px;color:var(--amber-text);text-transform:uppercase;
                             letter-spacing:.06em;margin-bottom:6px;font-weight:600;">
                     What's changing
                 </div>
@@ -638,7 +638,7 @@ function showSudoersRequiredModal(opts){
         copyBtn.onclick = async () => {
             const showCopied = () => {
                 copyBtn.textContent = 'Copied!';
-                copyBtn.style.color = 'var(--green)';
+                copyBtn.style.color = 'var(--green-text)';
                 setTimeout(() => {
                     copyBtn.textContent = 'Copy';
                     copyBtn.style.color = 'var(--t2)';
@@ -690,19 +690,19 @@ function showSudoersRequiredModal(opts){
                 const j = await r.json();
                 const s = j.sudoers || {};
                 if (s.can_verify && !s.needs_refresh) {
-                    statusEl.innerHTML = '<span style="color:var(--green)">✓ Sudoers refreshed — ready to apply</span>';
+                    statusEl.innerHTML = '<span style="color:var(--green-text)">✓ Sudoers refreshed — ready to apply</span>';
                     applyBtn.disabled = false;
                     applyBtn.title = '';
                     recheckBtn.style.display = 'none';
                     applyBtn.focus();
                 } else if (s.can_verify && s.needs_refresh) {
                     const lv = s.live_version != null ? s.live_version : '(none)';
-                    statusEl.innerHTML = `<span style="color:var(--red)">✗ Still seeing sudoers version ${_esc(lv)}. Did the command run successfully?</span>`;
+                    statusEl.innerHTML = `<span style="color:var(--red-text)">✗ Still seeing sudoers version ${_esc(lv)}. Did the command run successfully?</span>`;
                 } else {
-                    statusEl.innerHTML = '<span style="color:var(--amber)">Cannot verify. The live sudoers file may still be unreadable.</span>';
+                    statusEl.innerHTML = '<span style="color:var(--amber-text)">Cannot verify. The live sudoers file may still be unreadable.</span>';
                 }
             } catch(e) {
-                statusEl.innerHTML = `<span style="color:var(--red)">Check failed: ${_esc(e.message)}</span>`;
+                statusEl.innerHTML = `<span style="color:var(--red-text)">Check failed: ${_esc(e.message)}</span>`;
             } finally {
                 recheckBtn.disabled = false;
                 recheckBtn.textContent = 'Re-check';
@@ -1461,7 +1461,7 @@ async function pollReadyAndReload(opts){
                 );
             } else {
                 render(
-                    `<span style="color:var(--green)">✓</span> ` +
+                    `<span style="color:var(--green-text)">✓</span> ` +
                     `Update complete — now running ${_esc(liveVersion)} and fully ready. ` +
                     `Reloading page…`,
                     'ready'
@@ -1540,8 +1540,8 @@ async function checkNtfyUpdate() {
         // state === 'aerodrome_managed'
         const canUpgrade = latest && current && current !== '—' && latest !== current;
         const runningText = running
-            ? '<span style="color:var(--green, #22c55e)">● running</span>'
-            : '<span style="color:var(--red)">● stopped</span>';
+            ? '<span style="color:var(--green-text)">● running</span>'
+            : '<span style="color:var(--red-text)">● stopped</span>';
 
         if (canUpgrade) {
             badge.textContent = `upgrade available`;
@@ -2239,7 +2239,7 @@ async function applyGithubUpdate(tag){
                     try {
                         await navigator.clipboard.writeText(cmd);
                         copyBtn.textContent = 'Copied!';
-                        copyBtn.style.color = 'var(--green)';
+                        copyBtn.style.color = 'var(--green-text)';
                         setTimeout(() => {
                             copyBtn.textContent = 'Copy';
                             copyBtn.style.color = 'var(--t2)';

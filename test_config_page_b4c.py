@@ -116,7 +116,7 @@ class TestProposedRestoreUI(unittest.TestCase):
         body = _body(self.html, "function choiceModal(", "async function _restoreRequest(")
         for m in re.finditer(r"\$\{([^}]*)\}", body):
             expr = m.group(1).strip()
-            ok = (expr.startswith("_escHtmlCfg(") or expr in ("a", "list", "i")
+            ok = (expr.startswith("_escHtmlCfg(") or expr in ("a", "aText", "list", "i")
                   or expr.startswith("items.map(") or expr.startswith("buttons.map(")
                   or expr.startswith("b.primary"))
             self.assertTrue(ok, f"unescaped interpolation: ${{{expr}}}")

@@ -1,4 +1,4 @@
-<!-- Version: 3.4.172 -->
+<!-- Version: 3.4.173 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -48,8 +48,8 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
 .dot.warn { background:var(--amber); animation:pulse 2s infinite; }
 .dot.off { background:var(--red); animation:none; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
-.settings-btn.warn { border-color:var(--amber) !important; color:var(--amber) !important; }
-.settings-btn.error { border-color:var(--red) !important; color:var(--red) !important; }
+.settings-btn.warn { border-color:var(--amber) !important; color:var(--amber-text) !important; }
+.settings-btn.error { border-color:var(--red) !important; color:var(--red-text) !important; }
 .settings-btn.warn::after, .settings-btn.error::after {
     content:''; position:absolute; top:-2px; right:-2px;
     width:7px; height:7px; border-radius:50%;
@@ -75,7 +75,7 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
 }
 .banner.show { display:flex; }
 .banner .icon { font-size:18px; }
-.banner .text { flex:1; color:var(--amber); font-size:13px; }
+.banner .text { flex:1; color:var(--amber-text); font-size:13px; }
 .banner .btn-restart {
     font-family:var(--font); font-size:12px; font-weight:500;
     padding:6px 14px; border-radius:6px;
@@ -92,10 +92,10 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
 .banner .btn-dismiss {
     font-family:var(--font); font-size:12px; font-weight:500;
     padding:6px 14px; border-radius:6px; cursor:pointer;
-    background:transparent; color:var(--amber); border:1px solid rgba(245,158,11,.5);
+    background:transparent; color:var(--amber-text); border:1px solid rgba(245,158,11,.5);
 }
 .banner .btn-dismiss:hover { background:rgba(245,158,11,.12); }
-.busy-note { font-size:11px; color:var(--amber); font-family:var(--mono); margin:-8px 0 14px; }
+.busy-note { font-size:11px; color:var(--amber-text); font-family:var(--mono); margin:-8px 0 14px; }
 /* v3.4.149: the restore notice — amber like the others; a restore that put
    the previous data back is red, one that worked green. */
 .banner.notice-banner.ok { background:rgba(16,185,129,.08); border-color:rgba(16,185,129,.3); }
@@ -106,7 +106,7 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
 .restore-problems { margin:8px 0 0; padding-left:18px; font-family:var(--mono); font-size:12px; }
 .restore-problems li { margin:2px 0; overflow-wrap:anywhere; }
 .br-item .pr-actions { display:flex; gap:8px; align-items:center; flex-shrink:0; }
-.br-item .pr-inuse { font-size:11px; color:var(--amber); font-family:var(--mono); }
+.br-item .pr-inuse { font-size:11px; color:var(--amber-text); font-family:var(--mono); }
 
 /* Tab bar — horizontal, matches the main dashboard's style */
 /* v2.41.32: tab-bar scroll affordances.
@@ -190,8 +190,8 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
     font-size:13px; line-height:1.5; color:var(--t1);
 }
 .carto-why.ok { background:rgba(34,197,94,.08); border-color:rgba(34,197,94,.3); }
-.carto-why .k { color:var(--amber); font-weight:600; }
-.carto-why.ok .k { color:var(--green); }
+.carto-why .k { color:var(--amber-text); font-weight:600; }
+.carto-why.ok .k { color:var(--green-text); }
 .carto-steps { display:flex; flex-direction:column; gap:10px; margin:0 0 16px; }
 .carto-step {
     display:grid; grid-template-columns:28px 1fr; gap:10px; align-items:start;
@@ -294,9 +294,9 @@ input:focus, select:focus, textarea:focus {
 }
 input.error, select.error, textarea.error { border-color:var(--red); }
 input[disabled] { opacity:.5; cursor:not-allowed; }
-.field-error { font-size:11px; color:var(--red); margin-top:2px; }
+.field-error { font-size:11px; color:var(--red-text); margin-top:2px; }
 .field-tag { display:inline-block; font-size:9px; font-family:var(--mono); padding:1px 6px;
-             border-radius:3px; background:rgba(245,158,11,.15); color:var(--amber);
+             border-radius:3px; background:rgba(245,158,11,.15); color:var(--amber-text);
              vertical-align:middle; margin-left:6px; letter-spacing:.05em; }
 
 /* Prefix/ICAO list editor */
@@ -306,7 +306,7 @@ input[disabled] { opacity:.5; cursor:not-allowed; }
 /* config-only extension: danger-variant icon button for inline list-row
    "remove" affordances. Base .btn-icon styling (32x32 square, border,
    hover) comes from theme.css. */
-.btn-icon.danger:hover { border-color:var(--red); color:var(--red); }
+.btn-icon.danger:hover { border-color:var(--red); color:var(--red-text); }
 
 /* Special aircraft rows — fits within form-field column */
 .special-row {
@@ -1089,7 +1089,7 @@ function showOnboardingModal(opts) {
             const j = await r.json();
             if (!j.ok) {
                 testStatus.textContent = '⚠ ' + (j.message || 'Send failed');
-                testStatus.style.color = 'var(--red)';
+                testStatus.style.color = 'var(--red-text)';
                 testBtn.disabled = false;
                 testBtn.textContent = 'Try again';
                 testing = false;
@@ -1130,7 +1130,7 @@ function showOnboardingModal(opts) {
                                 + 'You should land on a confirmation page.'
                                 + '</div>';
                         } else {
-                            tapHint = '<div style="margin-top:8px;font-size:12px;color:var(--amber);">'
+                            tapHint = '<div style="margin-top:8px;font-size:12px;color:var(--amber-text);">'
                                 + '⚠ Notification sent, but tap-to-open won\'t work — '
                                 + '<b>Public URL for tap actions</b> is blank above. '
                                 + 'Fill it in and test again to verify the full path.'
@@ -1141,7 +1141,7 @@ function showOnboardingModal(opts) {
                           + formatTimeFull(latest.ts)
                           + ' (HTTP ' + latest.response_code + ').</div>'
                           + tapHint;
-                        testStatus.style.color = 'var(--green, #22c55e)';
+                        testStatus.style.color = 'var(--green-text)';
 
                         // v3.4.21: a confirmed-delivered test is the
                         // verification event for the whole setup chain —
@@ -1162,7 +1162,7 @@ function showOnboardingModal(opts) {
                                 _refreshNfStateRow();
                             }
                             testStatus.innerHTML +=
-                                '<div style="margin-top:8px;font-size:12px;color:var(--green, #22c55e)">'
+                                '<div style="margin-top:8px;font-size:12px;color:var(--green-text)">'
                               + '✓ Notifications are now enabled. Save changes on the '
                               + 'Notifications page to keep this.'
                               + '</div>';
@@ -1177,7 +1177,7 @@ function showOnboardingModal(opts) {
                         testStatus.textContent =
                             '⚠ Not sent: ' + (latest.reason || 'unknown')
                           + (latest.response_error ? ' — ' + latest.response_error : '');
-                        testStatus.style.color = 'var(--amber)';
+                        testStatus.style.color = 'var(--amber-text)';
                         testBtn.disabled = false;
                         testBtn.textContent = 'Try again';
                         testing = false;
@@ -1192,7 +1192,7 @@ function showOnboardingModal(opts) {
                     testStatus.textContent =
                         '⚠ No delivery confirmation after ' + maxAttempts + 's. '
                       + 'Check the recent notifications log below the modal.';
-                    testStatus.style.color = 'var(--amber)';
+                    testStatus.style.color = 'var(--amber-text)';
                     testBtn.disabled = false;
                     testBtn.textContent = 'Try again';
                     testing = false;
@@ -1201,7 +1201,7 @@ function showOnboardingModal(opts) {
             setTimeout(poll, 1000);
         } catch (err) {
             testStatus.textContent = '⚠ Error: ' + err.message;
-            testStatus.style.color = 'var(--red)';
+            testStatus.style.color = 'var(--red-text)';
             testBtn.disabled = false;
             testBtn.textContent = 'Try again';
             testing = false;
@@ -1694,8 +1694,8 @@ function renderRetentionPreview() {
     if (cap.disk_free_mb != null) {
         const effectiveFree = cap.disk_free_mb + cap.db_size_mb;
         const ratio = effectiveFree / projectedMb;
-        const headroomColor = ratio >= 2.0 ? 'var(--green)' :
-                              ratio >= 1.2 ? 'var(--amber)' : 'var(--red)';
+        const headroomColor = ratio >= 2.0 ? 'var(--green-text)' :
+                              ratio >= 1.2 ? 'var(--amber-text)' : 'var(--red-text)';
         const headroomText = ratio < 1.0 ? `would fill the disk` :
                              ratio < 1.2 ? `tight (${ratio.toFixed(2)}× headroom)` :
                              `${ratio.toFixed(1)}× headroom`;
@@ -2158,10 +2158,10 @@ function updateSaveBar() {
             const more = errPaths.length > 1 ? ` (+${errPaths.length - 1} more)` : '';
             const firstLabel = fieldLabels[firstPath] || firstPath;
             status.textContent = `${errPaths.length} error${errPaths.length === 1 ? '' : 's'} — ${firstLabel}: ${firstMsg}${more}`;
-            status.style.color = 'var(--red)';
+            status.style.color = 'var(--red-text)';
         } else {
             status.textContent = 'Unsaved changes';
-            status.style.color = 'var(--amber)';
+            status.style.color = 'var(--amber-text)';
         }
         btnSave.disabled = hasErrors;
         btnReset.disabled = false;
@@ -2414,7 +2414,7 @@ function sectionStats() {
         const dimStyle = groupOn ? '' : 'opacity:0.4;';
         const disabledNote = groupOn
             ? ''
-            : `<div style="font-size:10px;color:var(--amber);font-family:var(--mono);margin-top:2px;font-style:italic">category disabled — card preferences preserved but not shown</div>`;
+            : `<div style="font-size:10px;color:var(--amber-text);font-family:var(--mono);margin-top:2px;font-style:italic">category disabled — card preferences preserved but not shown</div>`;
 
         const items = g.cards.map(([id, label]) => {
             const checked = (cards[id] !== false) ? 'checked' : '';
@@ -3611,7 +3611,7 @@ async function loadNtfyStatus() {
         // hint that fails on most home routers without mDNS broadcasting).
         _refreshNfFormGridUrls();
     } catch (e) {
-        panel.innerHTML = `<span style="color:var(--red)">Error: ${escapeAttr(e.message)}</span>`;
+        panel.innerHTML = `<span style="color:var(--red-text)">Error: ${escapeAttr(e.message)}</span>`;
         // v3.4.19: refresh state row from working-config-only data so the
         // row doesn't stick at "Loading state…" when status fetch fails.
         // We lose the localhost-but-no-ntfy detection, but enabled/disabled
@@ -3892,7 +3892,7 @@ function _renderNtfyPanel(statusPayload) {
 
     const serviceActive = s.service && s.service.active;
     const serviceLine = state === 'aerodrome_managed'
-        ? `<div>Service: <span style="color:${serviceActive ? 'var(--green, #22c55e)' : 'var(--red)'}">
+        ? `<div>Service: <span style="color:${serviceActive ? 'var(--green-text)' : 'var(--red-text)'}">
                 ${serviceActive ? 'running' : 'stopped'}
            </span></div>`
         : '';
@@ -3993,7 +3993,7 @@ function _renderNtfyPanel(statusPayload) {
     // Warn visibly if base-url is pointing at localhost — that guarantees
     // the phone can't reach it. See the v2.40.5 "How it works" README section.
     const localhostWarning = baseIsLocalhost
-        ? `<div style="color:var(--amber);font-size:11px;margin-top:4px;line-height:1.5">
+        ? `<div style="color:var(--amber-text);font-size:11px;margin-top:4px;line-height:1.5">
                ⚠ base-url points at localhost — phones won't be able to reach this server.${detectedIpErr ? ' <span style="opacity:0.85">(auto-detection failed: ' + escapeAttr(detectedIpErr) + ')</span>' : ''}
                ${panelCanSelfHeal
                    ? `<div style="margin-top:6px">
@@ -4044,7 +4044,7 @@ function _renderNtfyPanel(statusPayload) {
                     <button class="btn" onclick="nfSaveNtfyConfig()" id="nfSaveConfigBtn"
                             style="padding:4px 10px;font-size:11px">Save</button>
                 </div>
-                ${baseUrlProblem ? `<div id="nfBaseUrlError" style="color:var(--red);font-size:11px;margin-top:4px;line-height:1.5">⚠ ${escapeAttr(NF_STORED_URL_MSG)}</div>` : ''}
+                ${baseUrlProblem ? `<div id="nfBaseUrlError" style="color:var(--red-text);font-size:11px;margin-top:4px;line-height:1.5">⚠ ${escapeAttr(NF_STORED_URL_MSG)}</div>` : ''}
                 ${localhostWarning}
             </label>
             <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:11px">
@@ -4115,7 +4115,7 @@ async function loadRecentNotifications() {
         }
         el.innerHTML = items.map(_nfRecentRow).join('');
     } catch (e) {
-        el.innerHTML = `<span style="color:var(--red);font-size:11px">
+        el.innerHTML = `<span style="color:var(--red-text);font-size:11px">
             Failed to load: ${escapeAttr(e.message)}</span>`;
     }
 }
@@ -4166,7 +4166,7 @@ async function loadNotificationStats() {
         }
         el.innerHTML = _nfStatsPanelHtml(s);
     } catch (e) {
-        el.innerHTML = `<span style="color:var(--red);font-size:11px">
+        el.innerHTML = `<span style="color:var(--red-text);font-size:11px">
             Failed to load: ${escapeAttr(e.message)}</span>`;
     }
 }
@@ -4190,32 +4190,32 @@ function _nfStatsPanelHtml(s) {
                             letter-spacing:.05em;margin-bottom:6px">${label}</div>
                 <div style="display:flex;gap:14px;align-items:baseline">
                     <div>
-                        <div style="font-size:18px;color:var(--green, #22c55e);font-weight:500;line-height:1">
+                        <div style="font-size:18px;color:var(--green-text);font-weight:500;line-height:1">
                             ${d.sent}
                         </div>
                         <div style="font-size:9px;color:var(--t3);margin-top:2px">sent</div>
                     </div>
                     <div>
-                        <div style="font-size:18px;color:${d.dropped > 0 ? 'var(--amber)' : 'var(--t3)'};font-weight:500;line-height:1">
+                        <div style="font-size:18px;color:${d.dropped > 0 ? 'var(--amber-text)' : 'var(--t3)'};font-weight:500;line-height:1">
                             ${d.dropped}
                         </div>
                         <div style="font-size:9px;color:var(--t3);margin-top:2px">dropped</div>
                     </div>
                 </div>
                 ${_nfBreakdownHtml(d.by_event, 'events', 'var(--t2)')}
-                ${_nfBreakdownHtml(d.by_drop_reason, 'drop reasons', 'var(--amber)')}
+                ${_nfBreakdownHtml(d.by_drop_reason, 'drop reasons', 'var(--amber-text)')}
             </div>`;
     }).join('');
 
     // Last-sent / last-error footer
     const lastSent = s.last_sent
-        ? `<span style="color:var(--green, #22c55e)">●</span> Last sent:
+        ? `<span style="color:var(--green-text)">●</span> Last sent:
            <code>${escapeAttr(s.last_sent.event || '')}</code>
            (${escapeAttr(s.last_sent.title || '')})
            at ${new Date(s.last_sent.ts * 1000).toLocaleString()}`
         : `<span style="color:var(--t3)">No successful sends yet.</span>`;
     const lastError = s.last_error
-        ? `<span style="color:var(--red)">●</span> Last error:
+        ? `<span style="color:var(--red-text)">●</span> Last error:
            <code>${escapeAttr(s.last_error.event || '')}</code> —
            ${escapeAttr(s.last_error.error || '')}
            at ${new Date(s.last_error.ts * 1000).toLocaleString()}`
@@ -4274,7 +4274,7 @@ async function loadNtfyLogs() {
         const r = await fetch('/api/ntfy/logs?lines=100');
         const j = await r.json();
         if (!j.can_read) {
-            panel.innerHTML = `<div style="font-size:11px;color:var(--amber);
+            panel.innerHTML = `<div style="font-size:11px;color:var(--amber-text);
                 padding:10px 12px;background:rgba(245,158,11,.05);
                 border-left:2px solid var(--amber);border-radius:0 4px 4px 0">
                 ${escapeAttr(j.reason || 'Cannot read ntfy logs')}
@@ -4296,7 +4296,7 @@ async function loadNtfyLogs() {
                 Showing last ${lines.length} lines from journalctl -u ntfy.
             </div>`;
     } catch (e) {
-        panel.innerHTML = `<span style="color:var(--red);font-size:11px">
+        panel.innerHTML = `<span style="color:var(--red-text);font-size:11px">
             Failed to load: ${escapeAttr(e.message)}</span>`;
     }
 }
@@ -4345,23 +4345,23 @@ async function nfSendTest() {
                     + 'Tap the notification on your phone to verify tap-to-open.'
                     + '</div>';
             } else {
-                tapHint = '<div style="margin-top:6px;font-size:12px;color:var(--amber);">'
+                tapHint = '<div style="margin-top:6px;font-size:12px;color:var(--amber-text);">'
                     + '⚠ Tap-to-open won\'t work — <b>Public URL for tap actions</b> is blank. '
                     + 'Fill it in above to enable the tap action.'
                     + '</div>';
             }
-            result.innerHTML = `<div style="color:var(--green, #22c55e)">✓ ${escapeAttr(j.message)}</div>${tapHint}`;
+            result.innerHTML = `<div style="color:var(--green-text)">✓ ${escapeAttr(j.message)}</div>${tapHint}`;
             // Test-send success is a quick confirmation; toast is appropriate.
             toast('Test notification sent');
         } else {
             // Test-send failure is an error the user needs to read.
-            result.innerHTML = `<span style="color:var(--red)">✗ ${escapeAttr(j.message || 'Failed')}</span>`;
+            result.innerHTML = `<span style="color:var(--red-text)">✗ ${escapeAttr(j.message || 'Failed')}</span>`;
             await alertModal('Test notification failed',
                 j.message || 'Unknown error. Check that the ntfy URL is reachable and the topic name is correct.',
                 'error');
         }
     } catch (e) {
-        result.innerHTML = `<span style="color:var(--red)">✗ ${escapeAttr(e.message)}</span>`;
+        result.innerHTML = `<span style="color:var(--red-text)">✗ ${escapeAttr(e.message)}</span>`;
         await alertModal('Test notification failed', e.message || 'Network error', 'error');
     } finally {
         btn.disabled = false;
@@ -4407,7 +4407,7 @@ async function nfSendDailySummaryTest() {
             j = await r.json();
         } catch (parseErr) {
             const txt = await r.text().catch(() => '(no body)');
-            result.innerHTML = `<span style="color:var(--red)">✗ HTTP ${r.status}: non-JSON response</span>`;
+            result.innerHTML = `<span style="color:var(--red-text)">✗ HTTP ${r.status}: non-JSON response</span>`;
             await alertModal('Daily summary test failed',
                 `Server returned HTTP ${r.status}. Response body:\n\n${txt.slice(0, 600)}\n\n` +
                 `Check journalctl for the full traceback:\n  sudo journalctl -u aerodrome -n 100 --no-pager`,
@@ -4421,13 +4421,13 @@ async function nfSendDailySummaryTest() {
             preview.textContent = (j.title ? j.title + '\n\n' : '') + j.body_preview;
         }
         if (j.ok) {
-            result.innerHTML = `<span style="color:var(--green, #22c55e)">✓ sent</span>`;
+            result.innerHTML = `<span style="color:var(--green-text)">✓ sent</span>`;
             toast('Daily summary sent');
         } else {
-            result.innerHTML = `<span style="color:var(--amber, #f59e0b)">⚠ ${escapeAttr(j.message || 'suppressed')}</span>`;
+            result.innerHTML = `<span style="color:var(--amber-text)">⚠ ${escapeAttr(j.message || 'suppressed')}</span>`;
         }
     } catch (e) {
-        result.innerHTML = `<span style="color:var(--red)">✗ ${escapeAttr(e.message)}</span>`;
+        result.innerHTML = `<span style="color:var(--red-text)">✗ ${escapeAttr(e.message)}</span>`;
     } finally {
         btn.disabled = false;
         btn.textContent = 'Send test summary';
@@ -4607,7 +4607,7 @@ async function nfFixLocalhostBaseUrl(detectedIp, port, uiHooks) {
         }
         if (!j.ok) {
             if (status) {
-                status.style.color = 'var(--red)';
+                status.style.color = 'var(--red-text)';
                 status.textContent = '⚠ ' + (j.error || j.message || 'Update failed');
             }
             if (btn) btn.disabled = false;
@@ -4620,7 +4620,7 @@ async function nfFixLocalhostBaseUrl(detectedIp, port, uiHooks) {
         // means the user sees ✓ momentarily even when the caller's own
         // re-render replaces the surrounding DOM.
         if (status) {
-            status.style.color = 'var(--green)';
+            status.style.color = 'var(--green-text)';
             status.textContent = '✓ Base URL set to ' + newUrl;
         }
         // Refresh cached ntfy status so callers see the new base_url.
@@ -4631,7 +4631,7 @@ async function nfFixLocalhostBaseUrl(detectedIp, port, uiHooks) {
         return true;
     } catch (e) {
         if (status) {
-            status.style.color = 'var(--red)';
+            status.style.color = 'var(--red-text)';
             status.textContent = '⚠ ' + (e.message || 'Network error');
         }
         if (btn) btn.disabled = false;
@@ -4754,9 +4754,9 @@ function nfUninstallPrompt() {
         modal.innerHTML = `
             <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
                 <span style="width:22px;height:22px;border-radius:50%;background:rgba(239,68,68,.15);
-                       color:var(--red);display:inline-flex;align-items:center;justify-content:center;
+                       color:var(--red-text);display:inline-flex;align-items:center;justify-content:center;
                        font-size:13px;font-weight:600;">!</span>
-                <div style="font-size:15px;font-weight:500;color:var(--red);">Uninstall local ntfy server</div>
+                <div style="font-size:15px;font-weight:500;color:var(--red-text);">Uninstall local ntfy server</div>
             </div>
             <p style="font-size:13px;line-height:1.6;color:var(--t1);margin:0 0 12px 0;">
                 This removes the binary (<code>/usr/local/bin/ntfy</code>),
@@ -4840,7 +4840,7 @@ function nfShowConfigError(resultEl, msg) {
     if (!resultEl) return;
     resultEl.textContent = '';
     const span = document.createElement('span');
-    span.style.color = 'var(--red)';
+    span.style.color = 'var(--red-text)';
     span.textContent = '⚠ ' + msg;
     resultEl.appendChild(span);
 }
@@ -4889,7 +4889,7 @@ async function nfSaveNtfyConfig(trigger) {
         }
         if (j.ok) {
             if (resultEl) {
-                resultEl.innerHTML = '<span style="color:var(--green, #22c55e)">✓ Saved — ntfy restarted</span>';
+                resultEl.innerHTML = '<span style="color:var(--green-text)">✓ Saved — ntfy restarted</span>';
                 setTimeout(() => { if (resultEl) resultEl.textContent = ''; }, 4000);
             }
             // Re-read status so the panel reflects the new values (and any
@@ -5108,7 +5108,7 @@ function _renderDemoActive() {
 
         <div class="section" style="background:rgba(245,158,11,0.06);border:1px solid rgba(245,158,11,0.3);
                                     padding:16px;border-radius:6px;margin:0">
-            <div style="font-weight:600;color:var(--amber);margin-bottom:8px">
+            <div style="font-weight:600;color:var(--amber-text);margin-bottom:8px">
                 Ready to connect a real receiver?
             </div>
             <div style="font-size:13px;color:var(--t1);line-height:1.6;margin-bottom:14px">
@@ -5620,7 +5620,7 @@ async function loadFullBackupPreview() {
 
         const warningsHtml = warnings.length
             ? warnings.map(w =>
-                `<div style="color:var(--amber);font-size:10px;margin-top:6px;line-height:1.5">⚠ ${escapeAttr(w)}</div>`
+                `<div style="color:var(--amber-text);font-size:10px;margin-top:6px;line-height:1.5">⚠ ${escapeAttr(w)}</div>`
             ).join('')
             : '';
 
@@ -5637,7 +5637,7 @@ async function loadFullBackupPreview() {
             ${warningsHtml}
         `;
     } catch (e) {
-        el.innerHTML = `<span style="color:var(--red)">Failed to load preview: ${escapeAttr(e.message)}</span>`;
+        el.innerHTML = `<span style="color:var(--red-text)">Failed to load preview: ${escapeAttr(e.message)}</span>`;
     }
 }
 
@@ -6332,6 +6332,9 @@ function RESTORE_CONFIRM(what) {
 function choiceModal(title, message, items, buttons, kind) {
     const a = {error: 'var(--red)', warning: 'var(--amber)', success: 'var(--green)',
                info: 'var(--cyan)'}[kind || 'warning'];
+    // v3.4.173: the title is text, so it takes the text shade (the top border keeps the fill).
+    const aText = {error: 'var(--red-text)', warning: 'var(--amber-text)', success: 'var(--green-text)',
+                   info: 'var(--cyan)'}[kind || 'warning'];
     return new Promise(resolve => {
         const bg = document.createElement('div');
         bg.className = 'modal-bg on alert-modal-bg choice-modal-bg';
@@ -6343,7 +6346,7 @@ function choiceModal(title, message, items, buttons, kind) {
         const list = (items && items.length)
             ? `<ul class="restore-problems">${items.map(i => `<li>${_escHtmlCfg(i)}</li>`).join('')}</ul>` : '';
         modal.innerHTML = `
-            <div class="modal-title" style="color:${a};margin-bottom:10px">${_escHtmlCfg(title)}</div>
+            <div class="modal-title" style="color:${aText};margin-bottom:10px">${_escHtmlCfg(title)}</div>
             <div class="alert-modal-body" style="font-size:13px;line-height:1.6;color:var(--t1);white-space:pre-wrap">${_escHtmlCfg(message)}</div>
             ${list}
             <div class="modal-actions" style="margin-top:16px;flex-wrap:wrap">

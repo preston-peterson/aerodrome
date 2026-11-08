@@ -1,4 +1,4 @@
-<!-- Version: 3.4.172 -->
+<!-- Version: 3.4.173 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -48,8 +48,8 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
 .dot.warn { background:var(--amber); animation:pulse 2s infinite; }
 .dot.off { background:var(--red); animation:none; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
-.settings-btn.warn { border-color:var(--amber) !important; color:var(--amber) !important; }
-.settings-btn.error { border-color:var(--red) !important; color:var(--red) !important; }
+.settings-btn.warn { border-color:var(--amber) !important; color:var(--amber-text) !important; }
+.settings-btn.error { border-color:var(--red) !important; color:var(--red-text) !important; }
 .settings-btn.warn::after, .settings-btn.error::after {
     content:''; position:absolute; top:-2px; right:-2px;
     width:7px; height:7px; border-radius:50%;
@@ -73,9 +73,9 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
 .overall.bad { background:rgba(239,68,68,.08); border-color:rgba(239,68,68,.3); }
 .overall.warn { background:rgba(245,158,11,.08); border-color:rgba(245,158,11,.3); }
 .overall-text { font-weight:500; font-size:15px; }
-.overall.ok .overall-text { color:var(--green); }
-.overall.bad .overall-text { color:var(--red); }
-.overall.warn .overall-text { color:var(--amber); }
+.overall.ok .overall-text { color:var(--green-text); }
+.overall.bad .overall-text { color:var(--red-text); }
+.overall.warn .overall-text { color:var(--amber-text); }
 
 /* Status light — solid, no pulse */
 .light { width:12px; height:12px; border-radius:50%; flex-shrink:0; }
@@ -102,9 +102,9 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
 .row:first-of-type { border-top:none; padding-top:0; }
 .row-lbl { color:var(--t2); }
 .row-val { color:var(--t1); font-family:var(--mono); }
-.row-val.ok { color:var(--green); }
-.row-val.bad { color:var(--red); }
-.row-val.warn { color:var(--amber); }
+.row-val.ok { color:var(--green-text); }
+.row-val.bad { color:var(--red-text); }
+.row-val.warn { color:var(--amber-text); }
 
 /* Meter bar */
 .meter { height:4px; background:var(--bg3); border-radius:2px; overflow:hidden; margin-top:4px; }
@@ -116,8 +116,8 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
    >= 2x cores. Tooltip on the element spells out the thresholds. */
 .load-ok       { color: var(--t1); }
 .load-busy     { color: var(--cyan); }
-.load-warn     { color: var(--amber); }
-.load-overload { color: var(--red); font-weight: 500; }
+.load-warn     { color: var(--amber-text); }
+.load-overload { color: var(--red-text); font-weight: 500; }
 /* v2.95.0: swap memory health tiers. ok = swap exists but unused (the
    common case on healthy boxes — render in default text colour, no
    alarm). light = small spillover, cyan to read as "noted but not a
@@ -126,17 +126,17 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
    class set is purely presentation. */
 .swap-ok    { color: var(--t1); }
 .swap-light { color: var(--cyan); }
-.swap-busy  { color: var(--amber); }
-.swap-warn  { color: var(--red); font-weight: 500; }
+.swap-busy  { color: var(--amber-text); }
+.swap-warn  { color: var(--red-text); font-weight: 500; }
 
 .actions { display:flex; gap:8px; margin-top:16px; }
 
-.error-box { background:rgba(239,68,68,.08); border:1px solid rgba(239,68,68,.3); border-radius:6px; padding:8px 10px; margin-top:8px; font-family:var(--mono); font-size:11px; color:var(--red); }
+.error-box { background:rgba(239,68,68,.08); border:1px solid rgba(239,68,68,.3); border-radius:6px; padding:8px 10px; margin-top:8px; font-family:var(--mono); font-size:11px; color:var(--red-text); }
 /* v2.49.6: amber variant for advisory failures (e.g. hexdb resolver
    unreachable). Keeps the same shape as .error-box but uses the amber
    palette so the card matches the gear icon and overall-status banner,
    which already render advisory failures in amber. */
-.warn-box { background:rgba(245,158,11,.08); border:1px solid rgba(245,158,11,.3); border-radius:6px; padding:8px 10px; margin-top:8px; font-family:var(--mono); font-size:11px; color:var(--amber); }
+.warn-box { background:rgba(245,158,11,.08); border:1px solid rgba(245,158,11,.3); border-radius:6px; padding:8px 10px; margin-top:8px; font-family:var(--mono); font-size:11px; color:var(--amber-text); }
 .warn-box a { color:inherit; text-decoration:underline; }
 
 .loading { text-align:center; padding:40px; color:var(--t3); font-size:13px; }
@@ -773,7 +773,7 @@ function render(s) {
                     // red when non-zero so a hexdb outage shouts.
                     const posStr = `${ev.miss_positive.toLocaleString()} positive`;
                     const negStr = `${ev.miss_negative.toLocaleString()} negative`;
-                    const errColor = ev.miss_error > 0 ? 'style="color:var(--red)"' : '';
+                    const errColor = ev.miss_error > 0 ? 'style="color:var(--red-text)"' : '';
                     const errStr = `<span ${errColor}>${ev.miss_error.toLocaleString()} error${ev.miss_error === 1 ? '' : 's'}</span>`;
                     return `
                     <div class="row-group-sep" style="margin-top:10px;padding-top:8px;border-top:1px solid var(--bdr)"></div>

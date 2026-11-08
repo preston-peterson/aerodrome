@@ -1,4 +1,4 @@
-<!-- Version: 3.4.172 -->
+<!-- Version: 3.4.173 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -117,7 +117,7 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
 }
 .title-row .wl-pill {
     background:rgba(245, 158, 11, 0.15);
-    color:var(--amber);
+    color:var(--amber-text);
     padding:3px 10px; border-radius:4px;
     font-size:11px; font-weight:600;
     font-family:var(--font); text-transform:uppercase;
@@ -395,6 +395,24 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
     border-left: 3px solid var(--cyan);
     padding-left: 11px;
 }
+/* v3.4.173: the six columns need 769 px, so below 800 px each sighting
+   takes two lines (Time, Callsign, Route over Alt, Speed, Position)
+   instead of the page scrolling sideways. The header takes the same two
+   lines, so every column can still be sorted. */
+@media (max-width: 800px) {
+    .row-card.sightings-grid, .row-grid-header.sightings-grid {
+        grid-template-columns: 84px 76px minmax(0, 1fr);
+        grid-template-areas: "time call route" "alt speed pos";
+        row-gap: 4px; column-gap: 10px;
+    }
+    .sightings-grid > :nth-child(1) { grid-area: time; }
+    .sightings-grid > :nth-child(2) { grid-area: call; }
+    .sightings-grid > :nth-child(3) { grid-area: route; }
+    .sightings-grid > :nth-child(4) { grid-area: alt; }
+    .sightings-grid > :nth-child(5) { grid-area: speed; }
+    .sightings-grid > :nth-child(6) { grid-area: pos; }
+    .row-card.sightings-grid .num, .row-grid-header.sightings-grid .num { text-align: left; }
+}
 
 /* Legacy table styles — unused after v2.92.0 grid migration but kept
    for one release as a reference. Remove on next pruning pass. */
@@ -440,7 +458,7 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
     background: rgba(245, 158, 11, 0.08);
     border: 1px solid rgba(245, 158, 11, 0.3);
     border-radius: 6px;
-    color: var(--amber);
+    color: var(--amber-text);
     font-size: 13px;
     line-height: 1.4;
     display: flex;
@@ -571,7 +589,7 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
     margin-left:auto; color:var(--t3); font-size:11px;
     font-family:var(--mono);
 }
-.map-controls .meta.truncated { color:var(--amber, #f59e0b); }
+.map-controls .meta.truncated { color:var(--amber-text); }
 #positionMap {
     height:420px; width:100%;
     background:var(--bg1); border:1px solid var(--bdr);
@@ -709,7 +727,8 @@ function fmtRelativeTime(ts) {
     if (diff < 60) return `${diff}s ago`;
     if (diff < 3600) return `${Math.floor(diff/60)} min ago`;
     if (diff < 86400) return `${Math.floor(diff/3600)} hr ago`;
-    return `${Math.floor(diff/86400)} days ago`;
+    const days = Math.floor(diff/86400);
+    return days === 1 ? '1 day ago' : `${days} days ago`;
 }
 
 function fmtAltitude(alt) {

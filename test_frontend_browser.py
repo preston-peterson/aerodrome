@@ -1144,6 +1144,55 @@ class TestRoutesOnlyWithALivePosition(BrowserCase):
         self.assertEqual(self.site.count("/api/callsign/DEMO42/route"), 0)
 
 
+class TestAircraftSightingsFitOnPhones(BrowserCase):
+    """v3.4.173: the Sightings list's six columns need 769 px, so on a narrower
+    screen each row takes two lines instead of the page scrolling sideways."""
+
+    def setUp(self):
+        super().setUp()
+        from datetime import datetime
+        now = int(datetime.fromisoformat(self.START).timestamp())
+        self.site.api["/api/live"] = {"aircraft": [], "receiver": {"lat": 40, "lon": -90, "distance_unit": "mi"}}
+        self.site.api["/api/status"] = _status()
+        self.site.api["/api/aircraft/A00001"] = {
+            "icao": "A00001", "first_seen_at": now - 3 * 86400, "last_seen_at": now - 90000,
+            "sighting_count": 2, "recent_sightings": [], "callsigns": ["DEMO1"], "last_callsign": "DEMO1"}
+        self.site.api["/api/all/drill"] = {"ok": True, "total_count": 2, "sightings": [
+            {"seen_at": now - 90000, "callsign": "DEMO1", "altitude": 36000, "speed": 450, "lat": 40.5, "lon": -90.5,
+             "route": {"origin": "KBOS", "dest": "KDEN", "source": "flightaware"}},
+            {"seen_at": now - 3 * 86400, "callsign": "DEMO1", "altitude": 34000, "speed": 440, "lat": 40.5,
+             "lon": -90.5}]}
+
+    def layout(self, width):
+        self.page.set_viewport_size({"width": width, "height": 900})
+        self.open("/aircraft/A00001", settle=600)
+        return self.page.evaluate("""() => {
+            const d = document.documentElement, row = document.querySelector('.row-card.sightings-grid');
+            const cells = [...row.children].map(c => c.getBoundingClientRect());
+            return {scroll: d.scrollWidth, client: d.clientWidth, right: Math.max(...cells.map(r => r.right)),
+                    lines: new Set(cells.map(r => Math.round(r.top))).size, text: row.textContent}; }""")
+
+    def test_a_phone_shows_every_column_without_scrolling_sideways(self):
+        for width in (360, 390, 768):
+            got = self.layout(width)
+            self.assertEqual(got["scroll"], got["client"], f"page scrolls sideways at {width} px")
+            self.assertLessEqual(got["right"], got["client"], f"a cell is off screen at {width} px")
+            self.assertEqual(got["lines"], 2, f"rows should take two lines at {width} px")
+            for part in ("DEMO1", "KBOS → KDEN", "36,000", "450"):
+                self.assertIn(part, got["text"])
+        self.assertEqual(self.errors, [])
+
+    def test_a_wide_screen_keeps_one_line_a_row(self):
+        got = self.layout(1180)
+        self.assertEqual(got["lines"], 1)
+        self.assertEqual(got["scroll"], got["client"])
+
+    def test_one_day_ago_is_singular(self):
+        self.layout(1180)
+        times = self.page.evaluate("[...document.querySelectorAll('.row-card.sightings-grid')].map(r => r.children[0].textContent)")
+        self.assertEqual(times, ["1 day ago", "3 days ago"])
+
+
 class TestStatsDrillSurvivesRefresh(BrowserCase):
     STATS = {"enabled": True, "timezone": "UTC", "cards": {"unique_today": 5},
              "groups": [{"id": "g", "label": "G", "cards": ["unique_today"]}]}

@@ -1,4 +1,4 @@
-<!-- Version: 3.4.172 -->
+<!-- Version: 3.4.173 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -47,7 +47,7 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
             justify-content:center; font-size:12px; font-family:var(--mono);
             color:var(--t3); font-weight:600; }
 .step-dot.active { background:var(--cyan); color:var(--bg0); border-color:var(--cyan); }
-.step-dot.done { background:rgba(34,197,94,0.15); color:var(--green); border-color:rgba(34,197,94,0.4); }
+.step-dot.done { background:rgba(34,197,94,0.15); color:var(--green-text); border-color:rgba(34,197,94,0.4); }
 .step-line { flex:1; height:1px; background:var(--bdr); }
 .step-line.done { background:rgba(34,197,94,0.4); }
 
@@ -58,9 +58,9 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
 
 .danger-box { background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.35);
               border-radius:6px; padding:16px 18px; margin:16px 0; }
-.danger-box-title { font-weight:600; color:var(--red); margin-bottom:8px; font-size:14px; }
+.danger-box-title { font-weight:600; color:var(--red-text); margin-bottom:8px; font-size:14px; }
 .danger-box-body { font-size:13px; color:var(--t1); line-height:1.6; }
-.danger-box-body strong { color:var(--red); }
+.danger-box-body strong { color:var(--red-text); }
 
 .form-grid { display:grid; grid-template-columns:160px 1fr; gap:14px 18px;
              align-items:center; margin:16px 0; }
@@ -89,12 +89,12 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
                     display:flex; align-items:center; gap:10px; }
 .progress-list li.pending { color:var(--t3); }
 .progress-list li.running { color:var(--cyan); border-color:var(--cyan); }
-.progress-list li.done { color:var(--green); border-color:rgba(34,197,94,0.4); }
-.progress-list li.failed { color:var(--red); border-color:rgba(239,68,68,0.4); }
+.progress-list li.done { color:var(--green-text); border-color:rgba(34,197,94,0.4); }
+.progress-list li.failed { color:var(--red-text); border-color:rgba(239,68,68,0.4); }
 .progress-icon { width:16px; flex-shrink:0; text-align:center; }
 
 .error-box { background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.35);
-             border-radius:6px; padding:14px 16px; margin-top:14px; color:var(--red);
+             border-radius:6px; padding:14px 16px; margin-top:14px; color:var(--red-text);
              font-size:13px; line-height:1.5; }
 
 .hidden { display:none !important; }
@@ -241,7 +241,7 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
 
     <!-- Step 4 — confirmation -->
     <div class="card hidden" id="step4">
-        <div class="card-title" style="color:var(--green)">✓ You're now in real-receiver mode</div>
+        <div class="card-title" style="color:var(--green-text)">✓ You're now in real-receiver mode</div>
         <div class="card-sub">Aerodrome is polling your real ADS-B receiver.</div>
 
         <p style="font-size:14px; line-height:1.7; color:var(--t1); margin-bottom:14px">

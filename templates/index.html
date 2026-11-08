@@ -1,4 +1,4 @@
-<!-- Version: 3.4.172 -->
+<!-- Version: 3.4.173 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -62,8 +62,8 @@
         .dot.warn { background: var(--amber); animation: pulse 2s infinite; }
         .dot.off { background: var(--red); animation: none; }
         /* Gear icon warning state — adds a subtle colored ring */
-        .settings-btn.warn { border-color: var(--amber) !important; color: var(--amber) !important; }
-        .settings-btn.error { border-color: var(--red) !important; color: var(--red) !important; }
+        .settings-btn.warn { border-color: var(--amber) !important; color: var(--amber-text) !important; }
+        .settings-btn.error { border-color: var(--red) !important; color: var(--red-text) !important; }
         .settings-btn.warn::after,
         .settings-btn.error::after {
             content: ''; position: absolute; top: -2px; right: -2px;
@@ -227,7 +227,7 @@
         html[data-theme="light"] .chip-unmatched { border-color: #b45309; }
         html[data-theme="light"] .chip-why { color: #b45309; }
         .chip-x { cursor: pointer; color: var(--t3); width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; border-radius: 50%; font-size: 10px; }
-        .chip-x:hover { background: rgba(239,68,68,.2); color: var(--red); }
+        .chip-x:hover { background: rgba(239,68,68,.2); color: var(--red-text); }
 
         /* Inline "first seen X ago" chip shown next to the label/callsign
            on Watchlist, Military, and All rows. Subdued on purpose — it's
@@ -444,7 +444,7 @@
             font:inherit; font-size:13px; padding:6px 14px; cursor:pointer;
         }
         .live-view-toggle .lv-seg + .lv-seg { border-left:1px solid var(--bdr); }
-        .live-view-toggle .lv-seg.on { background:var(--cyan); color:#fff; }
+        .live-view-toggle .lv-seg.on { background:var(--cyan); color:var(--bg0); }
 
         .live-split { display:flex; align-items:stretch; gap:0; }
         /* List pane width is user-draggable (the resizer below); default 58%.
@@ -626,7 +626,7 @@
         }
         .radar-marker.wl .rm-label {
             display:block; background:rgba(245,158,11,.18);
-            color:var(--amber); border:1px solid rgba(245,158,11,.5);
+            color:var(--amber-text); border:1px solid rgba(245,158,11,.5);
         }
         .radar-marker.selected .rm-glyph { filter:drop-shadow(0 0 4px var(--cyan)); }
         .radar-marker.selected .rm-label { display:block; }
@@ -1123,9 +1123,9 @@
            the left of the label so the state is visible even from other
            tabs. Pulse is slow (2s cycle) to be noticeable without feeling
            like an alarm bell. */
-        .tab.has-emergency { color: var(--red); }
+        .tab.has-emergency { color: var(--red-text); }
         .tab.has-emergency .badge {
-            background: rgba(239,68,68,0.2); color: var(--red);
+            background: rgba(239,68,68,0.2); color: var(--red-text);
         }
         .tab.has-emergency .emergency-dot {
             display: inline-block; width: 7px; height: 7px; border-radius: 50%;
@@ -1143,11 +1143,11 @@
         .emerg-count-pill {
             display: inline-block; margin-left: 12px; padding: 2px 8px;
             border-radius: 3px; font-size: 11px; font-weight: 600;
-            background: rgba(239,68,68,0.12); color: var(--red);
+            background: rgba(239,68,68,0.12); color: var(--red-text);
             font-family: var(--font); vertical-align: middle;
         }
         .sp-label { font-family: var(--font); font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; padding: 2px 6px; border-radius: 3px; margin-left: 4px; white-space: nowrap; }
-        .wl-label { font-family: var(--font); font-size: 11px; font-weight: 500; color: var(--amber); }
+        .wl-label { font-family: var(--font); font-size: 11px; font-weight: 500; color: var(--amber-text); }
         /* v2.57.0: chip-shaped watchlist annotation. Used in the same
            contexts as .sp-label (next to ICAO in row data, in card
            identifier rows on Search, on the aircraft detail page hero
@@ -1169,7 +1169,7 @@
             text-transform: uppercase; letter-spacing: .05em;
             padding: 2px 6px; border-radius: 3px; margin-left: 4px;
             background: rgba(245, 158, 11, 0.15);
-            color: var(--amber);
+            color: var(--amber-text);
             white-space: nowrap;
             display: inline-block;
             max-width: 100%;
@@ -1229,12 +1229,12 @@
            Emergency squawks (7500/7600/7700) get red tint on the value
            plus an EMERGENCY chip with the specific code's meaning. */
         .sq-value { font-family: var(--mono); color: var(--t1); }
-        .sq-value.sq-emergency { color: var(--red); font-weight: 600; }
+        .sq-value.sq-emergency { color: var(--red-text); font-weight: 600; }
         .sq-chip {
             display: inline-block; margin-left: 6px; padding: 1px 6px;
             border-radius: 3px; font-size: 9px; font-family: var(--font);
             font-weight: 600; text-transform: uppercase; letter-spacing: .05em;
-            background: rgba(239,68,68,.15); color: var(--red);
+            background: rgba(239,68,68,.15); color: var(--red-text);
             white-space: nowrap; vertical-align: middle;
         }
 
@@ -1389,7 +1389,7 @@
             display: flex; align-items: center; justify-content: center;
             transition: color .15s, background .15s; margin-left: 2px;
         }
-        .filter-chip .remove-btn:hover { color: var(--red); background: var(--bg3); }
+        .filter-chip .remove-btn:hover { color: var(--red-text); background: var(--bg3); }
         /* Free-text chips visually distinct from filter chips — they
            represent words the parser COULDN'T classify, which is useful
            feedback (typos, unknown countries, etc.) */
@@ -1408,7 +1408,7 @@
             border-color: rgba(239, 68, 68, 0.4);
         }
         .filter-chip-military .label {
-            color: var(--red);
+            color: var(--red-text);
             text-transform: uppercase;
             font-weight: 500;
         }
@@ -1417,7 +1417,7 @@
             border-color: rgba(245, 158, 11, 0.4);
         }
         .filter-chip-watchlist .label {
-            color: var(--amber);
+            color: var(--amber-text);
             text-transform: uppercase;
             font-weight: 500;
         }
@@ -2216,7 +2216,7 @@
      tabs still float above it on scroll. -->
 <div id="systemBanner" style="display:none; margin: 8px 12px 0; padding:10px 14px;
      background:rgba(245,158,11,0.08); border:1px solid rgba(245,158,11,0.3);
-     border-radius:6px; color:var(--amber); font-size:13px;">
+     border-radius:6px; color:var(--amber-text); font-size:13px;">
     <span id="systemBannerText"></span>
 </div>
 
@@ -2621,7 +2621,7 @@
             Loading row count…
         </div>
 
-        <div style="font-size:11px;color:var(--red);margin-bottom:14px">
+        <div style="font-size:11px;color:var(--red-text);margin-bottom:14px">
             This cannot be undone. Your watchlist entries themselves are kept —
             only the historical sightings data is cleared. New sightings will
             start accumulating again on the next poll.
@@ -6253,7 +6253,7 @@ function _rebuildQueryString(filters, freeText, timeTokens){
 
 function _renderSearchError(msg){
     const metaEl = document.getElementById('searchMeta');
-    if (metaEl) metaEl.innerHTML = `<span style="color:var(--red)">Search failed: ${escapeHtml(msg)}</span>`;
+    if (metaEl) metaEl.innerHTML = `<span style="color:var(--red-text)">Search failed: ${escapeHtml(msg)}</span>`;
     const resultsEl = document.getElementById('searchResults');
     if (resultsEl) resultsEl.innerHTML = '';
 }
@@ -6450,7 +6450,7 @@ async function toggleSearchDrill(icao){
         const r = await fetch(`/api/search/aircraft/${encodeURIComponent(icao)}`);
         if (!r.ok){
             const drillEl = document.getElementById(`search-drill-${icao}`);
-            if (drillEl) drillEl.innerHTML = `<div class="search-drill-loading" style="color:var(--red)">Detail not available (${r.status}).</div>`;
+            if (drillEl) drillEl.innerHTML = `<div class="search-drill-loading" style="color:var(--red-text)">Detail not available (${r.status}).</div>`;
             return;
         }
         const j = await r.json();
@@ -6458,7 +6458,7 @@ async function toggleSearchDrill(icao){
         if (drillEl) drillEl.innerHTML = _renderSearchDrill(j);
     } catch (e){
         const drillEl = document.getElementById(`search-drill-${icao}`);
-        if (drillEl) drillEl.innerHTML = `<div class="search-drill-loading" style="color:var(--red)">Error: ${escapeHtml(e.message || String(e))}</div>`;
+        if (drillEl) drillEl.innerHTML = `<div class="search-drill-loading" style="color:var(--red-text)">Error: ${escapeHtml(e.message || String(e))}</div>`;
     }
 }
 
@@ -6618,7 +6618,7 @@ async function toggleSightingsExpansion(icao, ev){
         _searchSightingState.set(icao, state);
         region.innerHTML = _renderSightingsRegion(icao, data, '30d');
     } catch (e){
-        region.innerHTML = `<div class="search-drill-loading" style="color:var(--red)">Could not load sightings: ${escapeHtml(e.message || String(e))}</div>`;
+        region.innerHTML = `<div class="search-drill-loading" style="color:var(--red-text)">Could not load sightings: ${escapeHtml(e.message || String(e))}</div>`;
         state.phase = 'collapsed';
         _searchSightingState.set(icao, state);
     }
@@ -6716,7 +6716,7 @@ async function expandSightingsToLifetime(icao, ev){
         _searchSightingState.set(icao, state);
         region.innerHTML = _renderSightingsRegion(icao, data, 'lifetime');
     } catch (e){
-        region.innerHTML = `<div class="search-drill-loading" style="color:var(--red)">Could not load lifetime: ${escapeHtml(e.message || String(e))}</div>`;
+        region.innerHTML = `<div class="search-drill-loading" style="color:var(--red-text)">Could not load lifetime: ${escapeHtml(e.message || String(e))}</div>`;
     }
 }
 
@@ -7876,7 +7876,7 @@ async function fetchStats(){
     } catch(e) {
         console.error('stats fetch failed', e);
         const grid = document.getElementById('statsGrid');
-        if(grid) grid.innerHTML = `<div class="stats-loading" style="color:var(--red)">Failed to load stats: ${e.message}</div>`;
+        if(grid) grid.innerHTML = `<div class="stats-loading" style="color:var(--red-text)">Failed to load stats: ${e.message}</div>`;
     } finally {
         statsInflight = false;
         if(btn) btn.textContent = '↻ Refresh';

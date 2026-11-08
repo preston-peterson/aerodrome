@@ -166,9 +166,9 @@
         el.style.cssText =
             'display:none; margin: 8px 12px 0; padding:10px 14px; ' +
             'background:rgba(245,158,11,0.13); border:1px solid rgba(245,158,11,0.45); ' +
-            'border-radius:6px; color:var(--amber); font-size:13px;';
+            'border-radius:6px; color:var(--amber-text); font-size:13px;';
         el.innerHTML = 'Demo mode — showing simulated data. ' +
-            '<a href="/config#demo" style="color:var(--amber); ' +
+            '<a href="/config#demo" style="color:var(--amber-text); ' +
             'text-decoration:underline; font-weight:600;">Configure real receiver</a>';
         // Inject above the header so it doesn't push content down within
         // the main content area. document.body's first child is the

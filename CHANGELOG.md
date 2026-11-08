@@ -19,6 +19,25 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.173] — 2026-11-07
+
+**The aircraft page fits on phones, and colored text and selected buttons are easier to read.**
+
+- **The aircraft page on a phone.** The Sightings list needed about 770 pixels across, so on a phone, or a tablet held upright, the whole page scrolled sideways and the last columns were off screen. On screens narrower than 800 pixels each sighting now takes two lines: time, callsign and route on top, then altitude, speed and position underneath. Nothing is hidden, and every column can still be sorted from the header, which takes the same two lines. Wider screens look as before.
+- **Red, amber and green text is easier to read.** In the light theme, red, amber and green text was too pale on white. That covers status values, warnings, error messages and the results of the Configuration page's tests, and amber was the hardest to read. It now uses darker shades of the same colors throughout the app. Status dots, meter bars and borders keep their brighter colors. In the dark theme only red text changes, to a slightly lighter red.
+- **Selected buttons in the dark theme.** The selected choice in the gear menu's Theme switch, and in the Live tab's List / Radar switch on phones, was white on bright cyan, which was hard to read. It's now dark text on cyan, like the app's other cyan buttons.
+- **"1 day ago".** The aircraft page's Sightings list said "1 days ago".
+
+### Operational notes
+
+Only the pages' look changed. An update through the Updates page restarts Aerodrome as usual and makes no database change.
+
+### Behind the scenes
+
+- Text now uses the `--red-text`, `--amber-text` and `--green-text` shades from `static/theme.css` (added in 3.4.166) in about 160 places across 13 files. Fills keep `--red`, `--amber` and `--green`: dots, meter bars, chart bars, dialog borders. Contrast on white: red 3.8:1 → 6.5:1, amber 2.2:1 → 5.0:1, green 3.3:1 → 7.1:1. The display board keeps its own dark-only palette. `test_text_shades.py` fails if a CSS `color:` or a `.style.color` assignment uses a plain fill color again.
+- The selected segmented buttons use `color: var(--bg0)` on the cyan fill: 2.4:1 → 8.0:1 in the dark theme, 5.4:1 → 5.1:1 in the light theme. `test_cyan_fill_text.py` keeps white text off cyan fills.
+- Below 800 px the Sightings grid switches to `grid-template-areas` with two rows. `test_frontend_browser` checks 360, 390 and 768 px for no sideways scroll and two lines a row, and 1180 px for one.
+
 ## [3.4.172] — 2026-11-07
 
 **Installing is lighter and safer: no compiler on Debian and Ubuntu, a proper upgrade on Arch, correct SELinux labels, and a second copy can no longer take over the first.**

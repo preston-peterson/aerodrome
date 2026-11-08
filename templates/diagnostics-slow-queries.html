@@ -1,4 +1,4 @@
-<!-- Version: 3.4.172 -->
+<!-- Version: 3.4.173 -->
 <!DOCTYPE html>
 <!-- theme:inline-fouc-start -->
 <script>(function(){var t=localStorage.getItem('theme');if(t==='light')document.documentElement.classList.add('light');})();</script>
@@ -67,7 +67,7 @@ a { color:var(--cyan); }
    never showed because the span had no styling and `.show` toggled a
    non-existent class. Same 11px / --green / 1500ms-fade pattern as
    performance.html and diagnostics-watchlist.html. */
-.copied-tag { color:var(--green); font-size:11px; margin-left:8px; opacity:0;
+.copied-tag { color:var(--green-text); font-size:11px; margin-left:8px; opacity:0;
               transition:opacity .2s; }
 .copied-tag.show { opacity:1; }
 
@@ -98,9 +98,9 @@ table.sq tr.detail-row pre { background:var(--bg0); padding:8px 12px;
                              white-space:pre-wrap; word-break:break-word; }
 
 .duration { font-weight:600; }
-.duration.fast { color:var(--green); }
+.duration.fast { color:var(--green-text); }
 .duration.med { color:var(--orange); }
-.duration.slow { color:var(--red); }
+.duration.slow { color:var(--red-text); }
 
 .endpoint-pill { display:inline-block; padding:2px 8px; background:var(--bg3);
                  border-radius:3px; font-size:11px; color:var(--t2); }
@@ -142,8 +142,8 @@ table.tuning td { padding:10px; border-bottom:1px solid var(--bdr);
                   vertical-align:top; }
 table.tuning td.tuned-cell { font-family:var(--mono); white-space:nowrap;
                              font-weight:600; }
-table.tuning td.tuned-cell.yes { color:var(--green); }
-table.tuning td.tuned-cell.no { color:var(--red); }
+table.tuning td.tuned-cell.yes { color:var(--green-text); }
+table.tuning td.tuned-cell.no { color:var(--red-text); }
 table.tuning td.endpoint-cell { font-family:var(--mono); white-space:nowrap; }
 table.tuning td.notes-cell { color:var(--t2); }
 
