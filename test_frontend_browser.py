@@ -654,9 +654,11 @@ class TestStatusFlightAwareCard(BrowserCase):
     key is amber there and on the Status dot, a used-up budget on the card only."""
 
     FA = {"configured": True, "key_last4": "7c2e", "key_state": "ok", "tested_at": 1, "month": "2026-11",
-          "count": 212, "limit": 900, "paused": False, "resets_on": "2026-12-01", "cost_estimate": 1.06,
-          "limit_cost": 4.5, "usage": {"total_cost": 0.95, "total_discount_cost": 0.0, "total_calls": 190,
-                                       "as_of": 4102444800},
+          "count": 212, "key_count": 212, "limit": 900, "paused": False, "resets_on": "2026-12-01",
+          "cost_estimate": 1.06, "limit_cost": 4.5,
+          "usage": {"total_cost": 0.95, "total_discount_cost": 0.0, "total_calls": 190, "lookups": 190,
+                    "as_of": 4102444800,
+                    "account": {"total_cost": 0.95, "total_discount_cost": 0.0, "total_calls": 190, "lookups": 190}},
           "usage_url": "https://flightaware.example/usage",
           "last_lookup": {"ts": 1781539200, "callsign": "EXA412", "status": "found",
                           "origin": "KBOS", "destination": "KDEN"}}
@@ -679,11 +681,37 @@ class TestStatusFlightAwareCard(BrowserCase):
 
     def test_connected(self):
         text = self.card(self.FA)
-        for want in ("Connected", "212 of 900 lookups", "$1.06 of $4.50 budget", "$0.95 · $0.00 after credit",
+        for want in ("Connected", "This Aerodrome", "212 of 900 lookups", "$1.06 of $4.50 budget",
+                     "This key", "190 lookups · $0.95", "From FlightAware, as of", "after the free credit",
                      "EXA412 · KBOS → KDEN", "December 1", "key …7c2e"):
             self.assertIn(want, text)
+        self.assertNotIn("Whole account", text, "one key: the account row would only repeat it")
+        self.assertNotIn("earlier key", text)
         self.assertEqual(self.page.get_attribute("#flightawareCard .fa-links a >> nth=1", "href"), "/config#display")
         self.assertEqual(self.site.count("/api/flightaware/status"), 0, "a fresh figure isn't fetched again")
+
+    def test_lookups_with_this_key_made_elsewhere_get_a_note(self):
+        text = self.card(dict(self.FA, usage=dict(self.FA["usage"], lookups=300)))
+        self.assertIn("88 lookups with this key weren't made by this Aerodrome", text)
+
+    def test_two_keys_show_both_figures_and_the_split(self):
+        # v3.4.175: the owner changed keys this month; the count spans both.
+        usage = dict(self.FA["usage"], lookups=3, total_cost=0.01,
+                     account={"total_cost": 0.53, "total_discount_cost": 0.0, "total_calls": 128, "lookups": 105})
+        text = self.card(dict(self.FA, count=28, key_count=3, usage=usage))
+        for want in ("28 of 900 lookups", "3 with this key, 25 with an earlier key",
+                     "This key", "3 lookups · $0.01", "Whole account", "105 lookups · $0.53"):
+            self.assertIn(want, text)
+        self.assertEqual(self.page.locator("#flightawareCard .fa-note").count(), 0)
+
+    def test_an_unknown_key_count_claims_nothing(self):
+        text = self.card(dict(self.FA, key_count=None, usage=dict(self.FA["usage"], lookups=300)))
+        self.assertNotIn("earlier key", text)
+        self.assertEqual(self.page.locator("#flightawareCard .fa-note").count(), 0)
+
+    def test_no_note_when_this_install_covers_the_account(self):
+        self.card(self.FA)
+        self.assertEqual(self.page.locator("#flightawareCard .fa-note").count(), 0)
 
     def test_a_missing_figure_is_fetched_once(self):
         text = self.card(dict(self.FA, usage=None))

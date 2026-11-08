@@ -177,6 +177,37 @@ def _route(flight) -> dict:
             "registration": flight.get("registration") or None}
 
 
+def _usage_params(now, all_keys=False) -> dict:
+    """This month's usage. FlightAware's default covers only the key that
+    asks; `all_keys` covers every key on the account (v3.4.175: the Status
+    card shows both, because an owner may keep separate keys apart)."""
+    params = {"start": f"{_month(now)}-01T00:00:00Z"}
+    if all_keys:
+        params["all_keys"] = "true"
+    return params
+
+
+def billed_lookups(usage) -> Optional[int]:
+    """Lookups actually billed this month, from /account/usage's
+    resource_details: total_resource_calls across every operation EXCEPT the
+    free "GET /account/usage" checks themselves, which FlightAware counts in
+    total_calls. None when resource_details is missing or not a list;
+    non-numeric counts are skipped."""
+    details = usage.get("resource_details") if isinstance(usage, dict) else None
+    if not isinstance(details, list):
+        return None
+    total = 0
+    for entry in details:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("operation") == "GET /account/usage":
+            continue
+        calls = entry.get("total_resource_calls")
+        if isinstance(calls, (int, float)) and not isinstance(calls, bool):
+            total += calls
+    return int(total)
+
+
 class FlightAware:
     """One instance per process, owning the state file and the caches.
 
@@ -203,6 +234,10 @@ class FlightAware:
         self._key_fp = st.get("key_fp") or None
         self._key_state = st.get("key_state") or KEY_UNTESTED
         self._tested_at = st.get("tested_at") if isinstance(st.get("tested_at"), int) else None
+        # v3.4.175: this month's lookups with the CURRENT key. None until known
+        # (a state file from before 3.4.175): usage() fills it in.
+        kc = st.get("key_count")
+        self._key_count = kc if isinstance(kc, int) and not isinstance(kc, bool) else None
 
     # --- state file ---------------------------------------------------------
 
@@ -217,6 +252,7 @@ class FlightAware:
         if self._month != month:
             self._month = month
             self._count = 0
+            self._key_count = 0
             self._persist_locked()
 
     def _adopt_key_locked(self, key: str) -> None:
@@ -225,6 +261,9 @@ class FlightAware:
         previously-invalid one gets another chance once the owner fixes it."""
         fp = self._fp(key)
         if fp != self._key_fp:
+            # A first key on a fresh state starts at the month's count (it is
+            # the only key there has been); a replaced key starts from zero.
+            self._key_count = self._count if self._key_fp is None else 0
             self._key_fp = fp
             self._key_state = KEY_UNTESTED
             self._tested_at = None
@@ -232,6 +271,7 @@ class FlightAware:
 
     def _persist_locked(self) -> None:
         payload = {"month": self._month, "count": self._count,
+                   "key_count": self._key_count,
                    "key_fp": self._key_fp, "key_state": self._key_state,
                    "tested_at": self._tested_at}
         try:
@@ -251,6 +291,8 @@ class FlightAware:
         not to be billed give the slot back (`_refund_locked`)."""
         self._roll_month_locked()
         self._count += 1
+        if self._key_count is not None:
+            self._key_count += 1
         self._persist_locked()
         return self._month
 
@@ -260,6 +302,8 @@ class FlightAware:
         refund lands on a month that never got the charge."""
         if month == self._month and self._count > 0:
             self._count -= 1
+            if self._key_count:
+                self._key_count -= 1
             self._persist_locked()
 
     # --- rate limiting ------------------------------------------------------
@@ -354,9 +398,15 @@ class FlightAware:
                                      "max_pages": 1})
         except Exception as e:
             message = self._safe(key, f"error connecting to FlightAware: {e}")
-            logger.info(f"flightaware {cs}: not billed, cached {ERROR_TTL_S}s: {message}")
+            # v3.4.175: a read timeout means FlightAware got the request and
+            # bills it even though no answer came back in time, so the slot
+            # stands. Only a request that never reached it is given back.
+            billed = isinstance(e, requests.exceptions.ReadTimeout)
+            logger.info(f"flightaware {cs}: {'billed' if billed else 'not billed'}, "
+                        f"cached {ERROR_TTL_S}s: {message}")
             with self._lock:
-                self._refund_locked(reserved)
+                if not billed:
+                    self._refund_locked(reserved)
                 self._cache_put_locked(cs, "error", now)
                 self._note_locked(cs, now, "error")
             return {"status": "error", "message": message}
@@ -454,8 +504,11 @@ class FlightAware:
 
     def usage(self, cfg, force=False) -> Optional[dict]:
         """Spending so far this calendar month, from FlightAware's FREE
-        /account/usage (billed by neither party): {"total_cost",
-        "total_discount_cost", "total_calls", "as_of"}, or None on any error.
+        /account/usage (billed by neither party), for the key Aerodrome uses:
+        {"total_cost", "total_discount_cost", "total_calls", "lookups", "as_of",
+        "account"}, or None on any error. "account" is the same figure for
+        every key on the account (None if that second call fails); `lookups`
+        leaves out the free usage checks (see billed_lookups).
         Cached USAGE_TTL_S unless `force`. Never counted against the limit —
         counting the thing that tells us what we spent would be self-defeating."""
         key = _key(cfg)
@@ -466,9 +519,20 @@ class FlightAware:
             self._adopt_key_locked(key)
             if not force and self._usage and now < self._usage["expires"]:
                 return dict(self._usage["data"])
+        mine = self._usage_figure(key, now, all_keys=False)
+        if mine is None:
+            return None
+        account = self._usage_figure(key, now, all_keys=True)
+        data = dict(mine, as_of=now, account=account)
+        with self._lock:
+            self._seed_key_count_locked(mine, account)
+            self._usage = {"data": dict(data), "expires": now + USAGE_TTL_S}
+        return data
+
+    def _usage_figure(self, key, now, all_keys) -> Optional[dict]:
+        """One free /account/usage call, or None on any error."""
         try:
-            resp = self._get("/account/usage", key,
-                             params={"start": f"{_month(now)}-01T00:00:00Z"})
+            resp = self._get("/account/usage", key, params=_usage_params(now, all_keys))
         except Exception as e:
             logger.info(f"flightaware usage: {self._safe(key, str(e))}")
             return None
@@ -478,13 +542,28 @@ class FlightAware:
             return None
         payload = self._json(resp) or {}
         usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else payload
-        data = {"total_cost": self._num(usage.get("total_cost")),
+        return {"total_cost": self._num(usage.get("total_cost")),
                 "total_discount_cost": self._num(usage.get("total_discount_cost")),
                 "total_calls": self._num(usage.get("total_calls")),
-                "as_of": now}
-        with self._lock:
-            self._usage = {"data": dict(data), "expires": now + USAGE_TTL_S}
-        return data
+                "lookups": billed_lookups(usage)}
+
+    def _seed_key_count_locked(self, mine, account) -> None:
+        """A state file from before 3.4.175 doesn't know how many of this
+        month's lookups used the current key. If other keys on the account
+        were used this month, the key may have changed, so FlightAware's
+        figure for this key is the better guess; otherwise it was all one
+        key. Waits for both figures before deciding."""
+        if self._key_count is not None:
+            return
+        mine_n = mine.get("lookups")
+        acct_n = (account or {}).get("lookups")
+        if mine_n is None or acct_n is None:
+            if mine_n is None and account is not None:
+                self._key_count = self._count
+                self._persist_locked()
+            return
+        self._key_count = min(self._count, mine_n) if acct_n > mine_n else self._count
+        self._persist_locked()
 
     def cached_usage(self) -> Optional[dict]:
         """FlightAware's usage figure from the last usage() call, however old
@@ -508,7 +587,7 @@ class FlightAware:
             self._adopt_key_locked(key)
         try:
             resp = self._get("/account/usage", key,
-                             params={"start": f"{_month(now)}-01T00:00:00Z"})
+                             params=_usage_params(now))
         except Exception as e:
             message = self._safe(key, f"Could not reach FlightAware: {e}")
             logger.info(f"flightaware test_key: {message}")
@@ -518,13 +597,19 @@ class FlightAware:
         if status_code == 200:
             payload = self._json(resp) or {}
             usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else payload
-            calls = self._num(usage.get("total_calls"))
+            n = billed_lookups(usage)
             with self._lock:
                 self._key_state = KEY_VALID
                 self._tested_at = now
                 self._persist_locked()
-            message = (f"Key accepted. {calls:.0f} billed calls so far this month."
-                       if calls is not None else "Key accepted.")
+            account = self._usage_figure(key, now, all_keys=True) if n is not None else None
+            m = (account or {}).get("lookups")
+            if n is None:
+                message = "Key accepted."
+            elif m is not None and m != n:
+                message = f"Key accepted. This key: {n:,} lookups billed this month. Whole account: {m:,}."
+            else:
+                message = f"Key accepted. {n:,} lookups billed to this key this month."
             return {"state": "ok", "message": message}
         if status_code in (401, 403):
             message = self._safe(
@@ -554,6 +639,7 @@ class FlightAware:
                     "tested_at": self._tested_at,
                     "month": month,
                     "count": count,
+                    "key_count": self._key_count,
                     "limit": limit,
                     "paused": limit <= 0 or count >= limit,
                     "resets_on": _next_month_reset(month),

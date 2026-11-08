@@ -1,4 +1,4 @@
-<!-- Version: 3.4.173 -->
+<!-- Version: 3.4.175 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -96,6 +96,8 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
 .fa-bar.full > i { background:var(--amber-text); }
 .fa-links { font-size:12px; margin-top:10px; padding-top:8px; border-top:1px solid var(--bdr); display:flex; gap:14px; flex-wrap:wrap; }
 .fa-links a { color:var(--link); }
+.fa-sub { font-size:11px; color:var(--t3); text-align:right; margin:-4px 0 8px; }
+.fa-note { font-size:12px; color:var(--t2); line-height:1.5; margin-top:8px; }
 .card-subtitle { font-size:11px; color:var(--t3); font-family:var(--mono); margin-left:auto; }
 
 .row { display:flex; justify-content:space-between; padding:6px 0; font-size:12px; border-top:1px solid rgba(42,58,84,.4); }
@@ -362,7 +364,21 @@ function faCard(f) {
     const when = !l ? '' : new Date(l.ts * 1000).toDateString() === new Date().toDateString()
         ? formatTime(l.ts) : new Date(l.ts * 1000).toLocaleDateString(undefined, {month: 'short', day: 'numeric'});
     const last = l ? `${escText(when)} · ${escText(l.callsign)} · ${what}` : 'None since Aerodrome started';
-    const fig = u ? `${_faMoney(u.total_cost)} · ${_faMoney(u.total_discount_cost)} after credit` : 'Not fetched yet';
+    // v3.4.175: FlightAware's figure for the key this Aerodrome uses, and for
+    // every key on the account (shown only when they differ). An owner may keep
+    // keys apart on purpose, so a per-key and a whole-account figure both mean
+    // something. key_count is this Aerodrome's lookups with the current key.
+    const acc = u && u.account;
+    const figOf = x => `${x.lookups != null ? Number(x.lookups).toLocaleString() + ' lookups · ' : ''}${_faMoney(x.total_cost)}`;
+    const keyFig = u ? figOf(u) : 'Not fetched yet';
+    const showAcct = !!(acc && (acc.lookups !== u.lookups || acc.total_cost !== u.total_cost));
+    const credit = acc ? acc.total_discount_cost : (u ? u.total_discount_cost : null);
+    const src = u ? `<div class="fa-sub">From FlightAware, as of ${escText(formatTime(u.as_of))} · ${_faMoney(credit)} after the free credit</div>` : '';
+    const kc = f.key_count;   // null until known (a state file from before 3.4.175)
+    const earlier = kc != null && f.count > kc ? f.count - kc : 0;
+    const split = earlier ? `<div class="fa-sub">${kc.toLocaleString()} with this key, ${earlier.toLocaleString()} with an earlier key</div>` : '';
+    const others = u && kc != null && u.lookups > kc ? u.lookups - kc : 0;
+    const note = others ? `<div class="fa-note">${others.toLocaleString()} lookups with this key weren't made by this Aerodrome, so another install or app is using it.</div>` : '';
     return `
             <div class="card" id="flightawareCard">
                 <div class="card-head">
@@ -371,10 +387,14 @@ function faCard(f) {
                     <div class="card-subtitle">AeroAPI${f.key_last4 ? ' · key …' + escText(f.key_last4) : ''}</div>
                 </div>
                 <div class="row"><span class="row-lbl">Status</span><span class="row-val ${cls}">${state}</span></div>
-                <div class="row"><span class="row-lbl">This month</span><span class="row-val">${Number(f.count).toLocaleString()} of ${Number(f.limit).toLocaleString()} lookups</span></div>
+                <div class="row"><span class="row-lbl">This Aerodrome</span><span class="row-val">${Number(f.count).toLocaleString()} of ${Number(f.limit).toLocaleString()} lookups</span></div>
+                ${split}
                 <div class="fa-bar${paused ? ' full' : ''}"><i style="width:${pct}%"></i></div>
                 <div class="row"><span class="row-lbl">Estimated cost</span><span class="row-val">${_faMoney(f.cost_estimate)} of ${_faMoney(f.limit_cost)} budget</span></div>
-                <div class="row"><span class="row-lbl">FlightAware's figure</span><span class="row-val">${fig}</span></div>
+                <div class="row"><span class="row-lbl">This key</span><span class="row-val">${keyFig}</span></div>
+                ${showAcct ? `<div class="row"><span class="row-lbl">Whole account</span><span class="row-val">${figOf(acc)}</span></div>` : ''}
+                ${src}
+                ${note}
                 <div class="row"><span class="row-lbl">Last lookup</span><span class="row-val">${last}</span></div>
                 <div class="row"><span class="row-lbl">Count resets</span><span class="row-val">${escText(_faDay(f.resets_on))}</span></div>
                 ${warn ? `<div class="warn-box">${warn}</div>` : ''}
@@ -823,8 +843,8 @@ function render(s) {
             })(c.notifications) : ''}
 
             <!-- v3.4.169: FlightAware routes, only when a key is set. Its own
-                 count is exact; FlightAware's figure comes from its free usage
-                 call and can lag an hour. A refused key is amber here and on
+                 count is exact; FlightAware's figures (this key, whole account)
+                 come from its free usage call and can lag an hour. A refused key is amber here and on
                  the Status dot; the monthly budget running out is amber on
                  this card only. -->
             ${c.flightaware && c.flightaware.configured ? faCard(c.flightaware) : ''}

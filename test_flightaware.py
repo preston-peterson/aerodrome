@@ -246,6 +246,19 @@ class TestRequestAndParsing(FlightAwareTestCase):
         self.assertEqual(fa.lookup(self.cfg(), CS)["status"], "error")
         self.assertEqual(fa.status(self.cfg())["count"], 0)
 
+    def test_connect_timeout_is_not_billed(self):
+        import requests
+        fa = self.client(requests.exceptions.ConnectTimeout("connect timed out"))
+        self.assertEqual(fa.lookup(self.cfg(), CS)["status"], "error")
+        self.assertEqual(fa.status(self.cfg())["count"], 0)
+
+    def test_read_timeout_is_billed(self):
+        # v3.4.175: FlightAware got the request and bills it; no answer came back in time.
+        import requests
+        fa = self.client(requests.exceptions.ReadTimeout("read timed out"))
+        self.assertEqual(fa.lookup(self.cfg(), CS)["status"], "error")
+        self.assertEqual(fa.status(self.cfg())["count"], 1)
+
 
 # --- caching (the only genuinely free answer) ------------------------------
 
@@ -406,7 +419,7 @@ class TestCountingAndState(FlightAwareTestCase):
         fa = self.client(FakeResponse(200, payload(flight())))
         fa.lookup(self.cfg(), CS)
         st = json.loads(self.state.read_text(encoding="utf-8"))
-        self.assertEqual(set(st), {"month", "count", "key_fp", "key_state",
+        self.assertEqual(set(st), {"month", "count", "key_count", "key_fp", "key_state",
                                    "tested_at"})
         self.assertEqual(st["month"], "2026-11")
         self.assertEqual(st["count"], 1)
@@ -531,24 +544,49 @@ class TestRateLimit(FlightAwareTestCase):
 # --- usage (free) and test_key ---------------------------------------------
 
 USAGE_OK = {"usage": {"total_cost": 1.235, "total_discount_cost": 1.230,
-                      "total_calls": 247}}
+                      "total_calls": 247,
+                      "resource_details": [
+                          {"operation": "GET /account/usage",
+                           "total_resource_calls": 13},
+                          {"operation": "GET /flights/{ident}",
+                           "total_resource_calls": 101}]}}
+
+
+# v3.4.175: the same figure for every key on the account (all_keys=true)
+USAGE_ACCT = {"usage": {"total_cost": 1.300, "total_discount_cost": 1.295,
+                        "total_calls": 260,
+                        "resource_details": [
+                            {"operation": "GET /account/usage",
+                             "total_resource_calls": 15},
+                            {"operation": "GET /flights/{ident}",
+                             "total_resource_calls": 105}]}}
 
 
 class TestUsage(FlightAwareTestCase):
     def test_usage_parses_the_free_endpoint(self):
-        fa = self.client(FakeResponse(200, USAGE_OK))
+        fa = self.client(FakeResponse(200, USAGE_OK), FakeResponse(200, USAGE_ACCT))
         u = fa.usage(self.cfg())
         self.assertEqual(u, {"total_cost": 1.235, "total_discount_cost": 1.230,
-                             "total_calls": 247, "as_of": NOW})
-        call = self.http.call()
-        self.assertEqual(call["url"], f"{API}/account/usage")
-        self.assertEqual(call["params"], {"start": "2026-11-01T00:00:00Z"})
+                             "total_calls": 247, "lookups": 101, "as_of": NOW,
+                             "account": {"total_cost": 1.300, "total_discount_cost": 1.295,
+                                         "total_calls": 260, "lookups": 105}})
+        mine, every = self.http.call(0), self.http.call(1)
+        self.assertEqual(mine["url"], f"{API}/account/usage")
+        self.assertEqual(mine["params"], {"start": "2026-11-01T00:00:00Z"})     # this key
+        self.assertEqual(every["url"], f"{API}/account/usage")
+        self.assertEqual(every["params"], {"start": "2026-11-01T00:00:00Z", "all_keys": "true"})
+
+    def test_a_failed_account_call_still_returns_this_keys_figure(self):
+        fa = self.client(FakeResponse(200, USAGE_OK), FakeResponse(500))
+        u = fa.usage(self.cfg())
+        self.assertEqual(u["lookups"], 101)
+        self.assertIsNone(u["account"])
 
     def test_usage_is_not_counted_against_the_limit(self):
         cfg = self.cfg(limit=2)
-        fa = self.client(FakeResponse(200, USAGE_OK),
+        fa = self.client(FakeResponse(200, USAGE_OK), FakeResponse(200, USAGE_ACCT),
                         FakeResponse(200, payload()),
-                        FakeResponse(200, USAGE_OK),
+                        FakeResponse(200, USAGE_OK), FakeResponse(200, USAGE_ACCT),
                         FakeResponse(200, payload()))
         fa.usage(cfg)
         fa.lookup(cfg, "EXA1")
@@ -558,20 +596,21 @@ class TestUsage(FlightAwareTestCase):
         self.assertEqual(fa.usage(cfg)["total_calls"], 247)
 
     def test_usage_is_cached(self):
-        fa = self.client(FakeResponse(200, USAGE_OK))
+        fa = self.client(FakeResponse(200, USAGE_OK), FakeResponse(200, USAGE_ACCT),
+                        FakeResponse(200, USAGE_OK), FakeResponse(200, USAGE_ACCT))
         fa.usage(self.cfg())
         fa.usage(self.cfg())
-        self.assertEqual(self.http.calls_made, 1)
+        self.assertEqual(self.http.calls_made, 2)          # this key + every key
         self.clock.advance(USAGE_TTL_S)
         fa.usage(self.cfg())
-        self.assertEqual(self.http.calls_made, 2)
+        self.assertEqual(self.http.calls_made, 4)
 
     def test_force_refetches(self):
-        fa = self.client(FakeResponse(200, USAGE_OK),
-                        FakeResponse(200, {"usage": {"total_calls": 3}}))
+        fa = self.client(FakeResponse(200, USAGE_OK), FakeResponse(200, USAGE_ACCT),
+                        FakeResponse(200, {"usage": {"total_calls": 3}}), FakeResponse(200, USAGE_ACCT))
         fa.usage(self.cfg())
         self.assertEqual(fa.usage(self.cfg(), force=True)["total_calls"], 3)
-        self.assertEqual(self.http.calls_made, 2)
+        self.assertEqual(self.http.calls_made, 4)
 
     def test_usage_errors_return_none(self):
         import requests
@@ -589,17 +628,116 @@ class TestUsage(FlightAwareTestCase):
         self.assertEqual(self.http.calls_made, 0)
 
 
+class TestBilledLookups(unittest.TestCase):
+    def test_no_resource_details_is_none(self):
+        self.assertIsNone(flightaware.billed_lookups({"total_calls": 247}))
+        self.assertIsNone(flightaware.billed_lookups({"resource_details": "nope"}))
+
+    def test_skips_the_free_usage_operation(self):
+        self.assertEqual(flightaware.billed_lookups(USAGE_OK["usage"]), 101)
+
+    def test_sums_several_billed_operations(self):
+        usage = {"resource_details": [
+            {"operation": "GET /account/usage", "total_resource_calls": 13},
+            {"operation": "GET /flights/{ident}", "total_resource_calls": 101},
+            {"operation": "GET /flights/{ident}/history", "total_resource_calls": 20},
+            {"operation": "GET /aircraft/{ident}/position", "total_resource_calls": "nope"}]}
+        self.assertEqual(flightaware.billed_lookups(usage), 121)
+
+
+class TestKeyCount(FlightAwareTestCase):
+    """v3.4.175: this month's lookups with the CURRENT key, so the card can put
+    FlightAware's per-key figure beside the matching count after a key change."""
+
+    def test_counts_with_the_month_on_a_fresh_install(self):
+        fa = self.client(FakeResponse(200, payload()), FakeResponse(200, payload()))
+        fa.lookup(self.cfg(), "EXA1")
+        fa.lookup(self.cfg(), "EXA2")
+        st = fa.status(self.cfg())
+        self.assertEqual((st["count"], st["key_count"]), (2, 2))
+
+    def test_a_new_key_starts_from_zero_but_the_month_carries_on(self):
+        fa = self.client(FakeResponse(200, payload()), FakeResponse(200, payload()))
+        fa.lookup(self.cfg(), "EXA1")
+        other = self.cfg(key="exampleKEY-0000-other")
+        fa.lookup(other, "EXA2")
+        st = fa.status(other)
+        self.assertEqual((st["count"], st["key_count"]), (2, 1))
+
+    def test_an_unbilled_failure_gives_both_back(self):
+        import requests
+        fa = self.client(FakeResponse(200, payload()), requests.exceptions.ConnectionError("dns"))
+        fa.lookup(self.cfg(), "EXA1")
+        fa.lookup(self.cfg(), "EXA2")
+        st = fa.status(self.cfg())
+        self.assertEqual((st["count"], st["key_count"]), (1, 1))
+
+    def test_a_new_month_resets_both(self):
+        fa = self.client(FakeResponse(200, payload()))
+        fa.lookup(self.cfg(), "EXA1")
+        self.clock.advance(31 * 86400)
+        st = fa.status(self.cfg())
+        self.assertEqual((st["count"], st["key_count"]), (0, 0))
+
+    def test_an_older_state_file_is_unknown_until_flightaware_answers(self):
+        self.seeded(count=28)
+        fa = self.client()
+        self.assertIsNone(fa.status(self.cfg())["key_count"])
+
+    def test_seed_after_a_key_change_uses_this_keys_figure(self):
+        # Other keys were used this month, so FlightAware's figure for this key is the better guess.
+        self.seeded(count=28)
+        mine = {"usage": {"resource_details": [{"operation": "GET /flights/{ident}", "total_resource_calls": 3}]}}
+        fa = self.client(FakeResponse(200, mine), FakeResponse(200, USAGE_ACCT))
+        fa.usage(self.cfg())
+        self.assertEqual(fa.status(self.cfg())["key_count"], 3)
+
+    def test_seed_with_one_key_uses_the_months_count(self):
+        self.seeded(count=28)
+        same = {"usage": {"resource_details": [{"operation": "GET /flights/{ident}", "total_resource_calls": 27}]}}
+        fa = self.client(FakeResponse(200, same), FakeResponse(200, same))
+        fa.usage(self.cfg())
+        self.assertEqual(fa.status(self.cfg())["key_count"], 28)
+
+    def test_seed_waits_for_the_account_figure(self):
+        self.seeded(count=28)
+        fa = self.client(FakeResponse(200, USAGE_OK), FakeResponse(500))
+        fa.usage(self.cfg())
+        self.assertIsNone(fa.status(self.cfg())["key_count"])
+
+    def test_a_known_count_is_never_reseeded(self):
+        fa = self.client(FakeResponse(200, payload()), FakeResponse(200, USAGE_OK), FakeResponse(200, USAGE_ACCT))
+        fa.lookup(self.cfg(), "EXA1")
+        fa.usage(self.cfg())
+        self.assertEqual(fa.status(self.cfg())["key_count"], 1)
+
+
 class TestTestKey(FlightAwareTestCase):
     def test_ok_clears_invalid_and_stamps_tested_at(self):
         cfg = self.cfg()
         self.seeded(key_state="invalid", tested_at=NOW - 999)
-        fa = self.client(FakeResponse(200, USAGE_OK))
+        fa = self.client(FakeResponse(200, USAGE_OK), FakeResponse(200, USAGE_ACCT))
         r = fa.test_key(cfg)
         self.assertEqual(r["state"], "ok")
-        self.assertIn("247", r["message"])
+        self.assertEqual(r["message"], "Key accepted. This key: 101 lookups billed this month. Whole account: 105.")
+        self.assertNotIn("all_keys", self.http.call(0)["params"])          # the key itself decides
+        self.assertEqual(self.http.call(1)["params"]["all_keys"], "true")
         st = fa.status(cfg)
         self.assertEqual((st["key_state"], st["tested_at"]), ("ok", NOW))
         self.assertEqual(fa.lookup(cfg, CS)["status"], "none")   # lookups work again
+
+    def test_ok_with_one_key_names_only_this_key(self):
+        for account in (FakeResponse(200, USAGE_OK), FakeResponse(500)):
+            http = FakeHTTP()
+            http.queue(FakeResponse(200, USAGE_OK), account)
+            r = FlightAware(self.state, http_get=http, clock=self.clock).test_key(self.cfg())
+            self.assertEqual(r["message"], "Key accepted. 101 lookups billed to this key this month.")
+
+    def test_ok_without_resource_details_is_just_key_accepted(self):
+        fa = self.client(FakeResponse(200, {"usage": {"total_calls": 5}}))
+        r = fa.test_key(self.cfg())
+        self.assertEqual(r["state"], "ok")
+        self.assertEqual(r["message"], "Key accepted.")
 
     def test_invalid_is_persisted_and_stops_lookups(self):
         cfg = self.cfg()
@@ -640,7 +778,7 @@ class TestStatus(FlightAwareTestCase):
                                                  "origin": None, "destination": None})
         self.assertEqual(st, {
             "configured": True, "key_last4": "e5f6", "key_state": "untested",
-            "tested_at": None, "month": "2026-11", "count": 2, "limit": 400,
+            "tested_at": None, "month": "2026-11", "count": 2, "key_count": 2, "limit": 400,
             "paused": False, "resets_on": "2026-12-01",
             "cost_estimate": round(2 * LOOKUP_COST_USD, 4),
             "limit_cost": round(400 * LOOKUP_COST_USD, 4)})
@@ -756,12 +894,13 @@ class TestStatusPageNumbers(FlightAwareTestCase):
         self.assertEqual(fa.status(self.cfg())["last_lookup"]["status"], "invalid_key")
 
     def test_cached_usage_never_calls(self):
-        fa = self.client(FakeResponse(200, USAGE_OK))
+        fa = self.client(FakeResponse(200, USAGE_OK), FakeResponse(200, USAGE_ACCT))
         self.assertIsNone(fa.cached_usage())
         fa.usage(self.cfg())
         self.clock.advance(3600)                      # long past USAGE_TTL_S
         self.assertEqual(fa.cached_usage()["total_cost"], 1.235)
-        self.assertEqual(self.http.calls_made, 1)
+        self.assertEqual(fa.cached_usage()["account"]["lookups"], 105)
+        self.assertEqual(self.http.calls_made, 2)
 
 
 class TestReviewFixes(FlightAwareTestCase):

@@ -19,6 +19,32 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.175] — 2026-11-07
+
+**The FlightAware card now shows FlightAware's figures for your key and for your whole account beside your Aerodrome's own count, and a lookup FlightAware bills is always counted.**
+
+- **Figures that line up.** The Status page's FlightAware card showed FlightAware's spending figure next to Aerodrome's count without saying what each covered. The card now has three labeled figures:
+  - **This Aerodrome:** this install's own lookups against its monthly budget.
+  - **This key:** FlightAware's count of billed lookups for the key this Aerodrome uses, and what they cost.
+  - **Whole account:** the same for every key on your FlightAware account. It's shown only when it differs from This key.
+
+  A line under them says when FlightAware last updated its figures and what's left after the free credit.
+- **Changing keys.** If you switch to a new key during the month, This Aerodrome still counts the whole month, and a small line under it says how many lookups used the current key and how many used an earlier one, so the figure lines up with This key. Keeping separate keys for separate uses, for example one per install, is a good way to see each one's lookups.
+- **A note when something else uses your key.** If FlightAware shows more lookups on your key than this Aerodrome made with it, the card says how many, so you know another install or app is using it. FlightAware's figures can run up to an hour behind, so right after a lookup they can briefly read lower than Aerodrome's.
+- **Lookups that time out now count.** When FlightAware received a lookup but took longer to answer than Aerodrome waits (6 seconds), Aerodrome treated it as free. FlightAware bills it, so it now counts against your monthly budget, and the budget's limit holds.
+- **The Test key message counts only billed lookups.** It said "billed calls" but included FlightAware's free usage checks. It now says how many lookups were billed to this key this month, and to your whole account when that's different.
+
+### Operational notes
+
+No database change. An update through the Updates page restarts Aerodrome as usual. FlightAware's figures appear the next time the card fetches them, within 10 minutes. If you changed keys earlier this month, Aerodrome works out the split between the keys the first time it fetches them.
+
+### Behind the scenes
+
+- The usage check (`GET /account/usage`) now runs twice, once for the key and once with `all_keys=true`. Both calls are free. `/api/flightaware/status` returns the key's figure in `usage` and every key's in `usage.account`.
+- `flightaware.billed_lookups()` sums `total_resource_calls` over `resource_details`, leaving out `GET /account/usage`.
+- The state file gains `key_count`, this month's lookups with the current key. A new key starts it at zero and a new month resets it. A state file from an earlier version starts with it unknown. On the first usage fetch it's set from FlightAware's figure for the key when other keys on the account were used this month, and to the month's count otherwise.
+- A `requests` `ReadTimeout` keeps the lookup's reserved slot. A connect timeout or connection error still gives it back.
+
 ## [3.4.173] — 2026-11-07
 
 **The aircraft page fits on phones, and colored text and selected buttons are easier to read.**
