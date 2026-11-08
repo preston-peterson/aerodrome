@@ -19,6 +19,23 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.176] — 2026-11-08
+
+**The FlightAware card lists your keys: this Aerodrome's lookups and FlightAware's lookups and cost for each.**
+
+- **A row per key.** The Status page's FlightAware card now has a small table. The **This key** row shows the key this Aerodrome uses, by its last 4 characters, with this Aerodrome's own lookups on it next to FlightAware's lookups and cost for it. **Other keys** covers every other key on your FlightAware account, and **Whole account** adds them up. With only one key, the card shows just the This key row.
+- **Earlier keys are named.** When you change keys, Aerodrome keeps the last 4 characters of the old key and its own count with it for the rest of the month, and shows them under Other keys, for example "earlier: …9b41". It never keeps more of a key than that. A key replaced before this update shows as "an earlier key".
+- **Why other keys are grouped.** FlightAware reports usage only for the key that asks, or for every key together, and can't list an account's keys. So FlightAware's figure for keys this Aerodrome doesn't hold is the account total minus this key.
+- **Notes when the numbers differ.** If FlightAware shows more lookups on this key than this Aerodrome made with it, the card says another install or app is using it. If it shows more on other keys than this Aerodrome made with them, it says how many came from elsewhere.
+
+### Operational notes
+
+No database change. An update through the Updates page restarts Aerodrome as usual.
+
+### Behind the scenes
+
+- The FlightAware state file gains `key_last4` and `earlier_keys` (`{fp, last4, count}` for this month: a 12-character hash fingerprint and the last 4 characters, never the key). A key change moves the outgoing key onto the list, switching back to a listed key takes its count back, and a new month clears the list. `/api/flightaware/status` and `/api/status` carry `earlier_keys` as `{last4, count}`.
+
 ## [3.4.175] — 2026-11-07
 
 **The FlightAware card now shows FlightAware's figures for your key and for your whole account beside your Aerodrome's own count, and a lookup FlightAware bills is always counted.**

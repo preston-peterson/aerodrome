@@ -419,8 +419,8 @@ class TestCountingAndState(FlightAwareTestCase):
         fa = self.client(FakeResponse(200, payload(flight())))
         fa.lookup(self.cfg(), CS)
         st = json.loads(self.state.read_text(encoding="utf-8"))
-        self.assertEqual(set(st), {"month", "count", "key_count", "key_fp", "key_state",
-                                   "tested_at"})
+        self.assertEqual(set(st), {"month", "count", "key_count", "key_last4", "earlier_keys",
+                                   "key_fp", "key_state", "tested_at"})
         self.assertEqual(st["month"], "2026-11")
         self.assertEqual(st["count"], 1)
         self.assertNotIn(API_KEY, self.state.read_text(encoding="utf-8"))
@@ -712,6 +712,61 @@ class TestKeyCount(FlightAwareTestCase):
         self.assertEqual(fa.status(self.cfg())["key_count"], 1)
 
 
+class TestEarlierKeys(FlightAwareTestCase):
+    """v3.4.176: a replaced key stays listed for the month by its last 4, with
+    this Aerodrome's own count on it, so the card can show each key."""
+    OTHER = "exampleKEY-0000-other"
+
+    def test_a_replaced_key_is_listed_with_its_count(self):
+        fa = self.client(FakeResponse(200, payload()), FakeResponse(200, payload()))
+        fa.lookup(self.cfg(), "EXA1")
+        fa.lookup(self.cfg(key=self.OTHER), "EXA2")
+        st = fa.status(self.cfg(key=self.OTHER))
+        self.assertEqual(st["earlier_keys"], [{"last4": API_KEY[-4:], "count": 1}])
+        self.assertEqual((st["count"], st["key_count"], st["key_last4"]), (2, 1, "ther"))
+        saved = self.state.read_text(encoding="utf-8")
+        self.assertNotIn(API_KEY, saved)
+        self.assertNotIn(self.OTHER, saved)
+
+    def test_switching_back_restores_that_keys_count(self):
+        fa = self.client(*[FakeResponse(200, payload()) for _ in range(4)])
+        fa.lookup(self.cfg(), "EXA1")
+        fa.lookup(self.cfg(), "EXA2")
+        fa.lookup(self.cfg(key=self.OTHER), "EXA3")
+        fa.lookup(self.cfg(), "EXA4")
+        st = fa.status(self.cfg())
+        self.assertEqual((st["count"], st["key_count"]), (4, 3))
+        self.assertEqual(st["earlier_keys"], [{"last4": "ther", "count": 1}])
+
+    def test_an_unused_key_is_not_listed(self):
+        fa = self.client()
+        fa.status(self.cfg())
+        st = fa.status(self.cfg(key=self.OTHER))
+        self.assertEqual(st["earlier_keys"], [])
+
+    def test_a_new_month_clears_the_list(self):
+        fa = self.client(FakeResponse(200, payload()))
+        fa.lookup(self.cfg(), "EXA1")
+        fa.status(self.cfg(key=self.OTHER))
+        self.clock.advance(31 * 86400)
+        self.assertEqual(fa.status(self.cfg(key=self.OTHER))["earlier_keys"], [])
+
+    def test_the_list_survives_a_restart(self):
+        fa = self.client(FakeResponse(200, payload()))
+        fa.lookup(self.cfg(), "EXA1")
+        fa.status(self.cfg(key=self.OTHER))
+        again = FlightAware(self.state, http_get=self.http, clock=self.clock)
+        self.assertEqual(again.status(self.cfg(key=self.OTHER))["earlier_keys"],
+                         [{"last4": API_KEY[-4:], "count": 1}])
+
+    def test_an_older_state_file_learns_the_current_keys_last4(self):
+        self.seeded(count=28)
+        fa = self.client()
+        fa.status(self.cfg())
+        st = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertEqual((st["key_last4"], st["earlier_keys"]), (API_KEY[-4:], []))
+
+
 class TestTestKey(FlightAwareTestCase):
     def test_ok_clears_invalid_and_stamps_tested_at(self):
         cfg = self.cfg()
@@ -778,7 +833,7 @@ class TestStatus(FlightAwareTestCase):
                                                  "origin": None, "destination": None})
         self.assertEqual(st, {
             "configured": True, "key_last4": "e5f6", "key_state": "untested",
-            "tested_at": None, "month": "2026-11", "count": 2, "key_count": 2, "limit": 400,
+            "tested_at": None, "month": "2026-11", "count": 2, "key_count": 2, "earlier_keys": [], "limit": 400,
             "paused": False, "resets_on": "2026-12-01",
             "cost_estimate": round(2 * LOOKUP_COST_USD, 4),
             "limit_cost": round(400 * LOOKUP_COST_USD, 4)})

@@ -238,6 +238,13 @@ class FlightAware:
         # (a state file from before 3.4.175): usage() fills it in.
         kc = st.get("key_count")
         self._key_count = kc if isinstance(kc, int) and not isinstance(kc, bool) else None
+        # v3.4.176: the current key's last 4 (never more of it), and this month's
+        # earlier keys with this Aerodrome's own count on each, for the card.
+        self._key_last4 = st.get("key_last4") if isinstance(st.get("key_last4"), str) else None
+        self._earlier = [dict(fp=str(e["fp"]), last4=e.get("last4") if isinstance(e.get("last4"), str) else None,
+                              count=int(e["count"]))
+                         for e in (st.get("earlier_keys") or []) if isinstance(e, dict) and e.get("fp")
+                         and isinstance(e.get("count"), int) and not isinstance(e.get("count"), bool)]
 
     # --- state file ---------------------------------------------------------
 
@@ -253,6 +260,7 @@ class FlightAware:
             self._month = month
             self._count = 0
             self._key_count = 0
+            self._earlier = []
             self._persist_locked()
 
     def _adopt_key_locked(self, key: str) -> None:
@@ -262,16 +270,31 @@ class FlightAware:
         fp = self._fp(key)
         if fp != self._key_fp:
             # A first key on a fresh state starts at the month's count (it is
-            # the only key there has been); a replaced key starts from zero.
-            self._key_count = self._count if self._key_fp is None else 0
+            # the only key there has been). A replaced key goes on this month's
+            # earlier-keys list with its count; the new key starts from zero, or
+            # from its own earlier count if it was used before this month.
+            if self._key_fp is None:
+                self._key_count = self._count
+            else:
+                if self._key_count:
+                    self._earlier.append({"fp": self._key_fp, "last4": self._key_last4,
+                                          "count": self._key_count})
+                back = [e for e in self._earlier if e["fp"] == fp]
+                self._earlier = [e for e in self._earlier if e["fp"] != fp]
+                self._key_count = sum(e["count"] for e in back)
             self._key_fp = fp
+            self._key_last4 = key[-4:]
             self._key_state = KEY_UNTESTED
             self._tested_at = None
+            self._persist_locked()
+        elif self._key_last4 is None:
+            self._key_last4 = key[-4:]      # a state file from before 3.4.176
             self._persist_locked()
 
     def _persist_locked(self) -> None:
         payload = {"month": self._month, "count": self._count,
-                   "key_count": self._key_count,
+                   "key_count": self._key_count, "key_last4": self._key_last4,
+                   "earlier_keys": self._earlier,
                    "key_fp": self._key_fp, "key_state": self._key_state,
                    "tested_at": self._tested_at}
         try:
@@ -640,6 +663,7 @@ class FlightAware:
                     "month": month,
                     "count": count,
                     "key_count": self._key_count,
+                    "earlier_keys": [{"last4": e["last4"], "count": e["count"]} for e in self._earlier],
                     "limit": limit,
                     "paused": limit <= 0 or count >= limit,
                     "resets_on": _next_month_reset(month),
