@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Version: 3.4.176
+# Version: 3.4.177
 # =============================================================================
 # Aerodrome — Curl Install Bootstrap
 # =============================================================================
@@ -98,7 +98,9 @@ Flags:
                          folders are refused (use e.g. --prefix ~/aerodrome),
                          and so are paths containing " \ $ %, a control
                          character (tab, newline) or a trailing space (spaces
-                         inside the path are fine).
+                         inside the path are fine). While SELinux is
+                         enforcing, any folder inside a home folder is
+                         refused too: the service couldn't start there.
                          Pre-v3.3.0 default was ~/aerodrome; override
                          with --prefix ~/aerodrome to restore that layout.
   --version <vX.Y.Z>     Pin to a specific release (default: latest)
@@ -371,6 +373,29 @@ validate_prefix() {
     PREFIX="$lexical"
 }
 
+# --- SELinux home-folder guard ------------------------------------------------
+# validate_prefix allows folders inside a home folder; enforcing SELinux then
+# kills them at start: systemd runs services as init_t, which can't read
+# inside a home folder (user_home_t), and the service ends "Failed to start".
+# The enforce file says 1 under enforcing and 0 under permissive — permissive
+# only logs the denials, so a home install works there and is not refused.
+# $1 is the prefix; $2 (optional) an extra home folder on top of /home, /root
+# and $HOME. AERODROME_SELINUX_ENFORCE stands in for the real enforce file in
+# the tests. selinux_blocks_home() is byte-identical in install.sh (checked on
+# every release by scripts/check_installers.py).
+selinux_blocks_home() {
+    local dir home
+    [ "$(cat -- "${AERODROME_SELINUX_ENFORCE:-/sys/fs/selinux/enforce}" 2> /dev/null)" = 1 ] || return 1
+    dir="$(realpath -m -- "$1")"
+    for home in /home /root "${2:-}" "${HOME:-}"; do
+        [ -n "$home" ] || continue
+        home="$(realpath -m -- "$home")"
+        [ "$home" = / ] && continue
+        case "$dir/" in "$home"/*) return 0 ;; esac
+    done
+    return 1
+}
+
 # --- Existing-install check, without a pipeline ------------------------------
 # install.sh always writes this exact unit path; systemd's own listing is the
 # fallback for a unit installed elsewhere. Capture-then-match: never
@@ -522,6 +547,15 @@ fi
 # Resolve PREFIX to a normalised absolute path (~ expanded) and refuse system
 # and home folders — before the banner and before anything is downloaded.
 validate_prefix "$PREFIX" || exit 1
+
+# A prefix inside a home folder can't start as a service under enforcing
+# SELinux (see selinux_blocks_home above). Refuse here too: nothing has been
+# downloaded or created yet.
+if selinux_blocks_home "$PREFIX"; then
+    log_err "Refusing to install into $PREFIX: SELinux is enforcing here, and it doesn't let system services start programs inside a home folder."
+    log_err "Leave out --prefix to install in /opt/aerodrome (the default), or pick a folder outside your home folder."
+    exit 1
+fi
 
 # With --yes nobody answers the receiver prompt, and the IP is required: it
 # used to loop forever there. Say so now, before anything is downloaded.

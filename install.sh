@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.4.176
+# Version: 3.4.177
 # =============================================================================
 # Aerodrome — Server Install Script
 # =============================================================================
@@ -241,6 +241,29 @@ valid_account() {
 # openSUSE keeps the SELinux tools in /usr/sbin, which isn't on a regular
 # account's PATH there (sudo's own PATH has it, so `sudo restorecon` works).
 selinux_on() { [ -e "${AERODROME_SELINUX_ENFORCE:-/sys/fs/selinux/enforce}" ]; }
+
+# SELinux blocks a home-folder install (refuse it up front, before anything
+# is changed): systemd starts services as init_t, which can't read inside a
+# home folder (user_home_t), so such a service ends with "Failed to start"
+# after the whole install ran. The enforce file says 1 under enforcing and 0
+# under permissive — permissive only logs the denials, so a home install
+# works there and is not refused. $1 is the install dir; $2 (optional) the
+# service account's own home, on top of /home, /root and $HOME. AERODROME_SELINUX_ENFORCE
+# stands in for the real enforce file in the tests. selinux_blocks_home() is
+# byte-identical in scripts/bootstrap.sh (checked on every release by
+# scripts/check_installers.py).
+selinux_blocks_home() {
+    local dir home
+    [ "$(cat -- "${AERODROME_SELINUX_ENFORCE:-/sys/fs/selinux/enforce}" 2> /dev/null)" = 1 ] || return 1
+    dir="$(realpath -m -- "$1")"
+    for home in /home /root "${2:-}" "${HOME:-}"; do
+        [ -n "$home" ] || continue
+        home="$(realpath -m -- "$home")"
+        [ "$home" = / ] && continue
+        case "$dir/" in "$home"/*) return 0 ;; esac
+    done
+    return 1
+}
 
 # UNIT_LOAD, UNIT_WD and UNIT_USER. Read-only; empty when there is no systemd.
 read_unit() {
@@ -661,6 +684,22 @@ SVC_GROUP="$(id -gn "$USER" 2>/dev/null || true)"
 if [ -z "$SVC_GROUP" ]; then
     echo -e "${RED}Could not determine the primary group of user '${USER}' (id -gn failed).${RESET}"
     exit 1
+fi
+
+# A home-folder install can never start under enforcing SELinux (see
+# selinux_blocks_home above). Say so here, before the banner and before
+# anything is changed — not after the whole run, at "Failed to start".
+# Privileges-only refreshes are exempt: they touch no units and start
+# nothing (that path exited far above).
+acct_home="$(getent passwd "$USER" | cut -d: -f6)"
+if selinux_blocks_home "$INSTALL_REAL" "$acct_home"; then
+    echo -e "  ${RED}✗${RESET} Aerodrome can't run from ${INSTALL_DIR}: SELinux is enforcing here, and it" >&2
+    echo "    doesn't let system services start programs inside a home folder. Nothing was changed." >&2
+    echo "" >&2
+    echo "  Move this folder to /opt/aerodrome and run the installer there:" >&2
+    echo "    sudo mv $(printf %q "$INSTALL_DIR") /opt/aerodrome && sudo chown -R $(printf %q "$USER"): /opt/aerodrome" >&2
+    echo "    /opt/aerodrome/install.sh" >&2
+    exit 2
 fi
 
 # v2.40.3 note: if invoked via `sudo ./install.sh`, SUDO_USER points at

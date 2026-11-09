@@ -40,6 +40,9 @@ Boot (main.py, before any other import), on_boot():
                           to put back).
 The running new version confirms itself (main.py's confirm thread):
 note_served() on the first good /api/version answer, commit() 30 s later.
+commit() also moves the files earlier releases left behind (RETIRED_NAMES,
+any top-level test_*.py) into the same .backups/<ts>/: the swap only ever
+touches the names the new release contains, so nothing else removes them.
 A restart the new version's own UI asks for after it has served commits
 first (server.py), so a planned restart is never counted as a failed start.
 
@@ -86,6 +89,16 @@ _NEVER_SWAP = {"update", "__pycache__", ".git", PENDING, LAST_RESULT}
 # caller, a staged directory or a journal says.
 _PROTECTED = {"config.yaml", "venv", ".backups", "logs", ".tracker.pid"}
 _PROTECTED_SUFFIXES = (".db", ".db-wal", ".db-shm")
+# Top-level names earlier releases left in installs that no release ships
+# now: the maintainer's release files (out of the zip since 3.4.172, like the
+# test suite, which retired() matches by pattern) and update/'s own two
+# files, which an updater before 3.4.147 could copy to the top level. When a
+# release stops shipping a top-level name, add it here:
+# test_update_retire.py checks the working tree against the last release tag.
+RETIRED_NAMES = frozenset({
+    ".github", ".gitignore", ".gitkeep", ".pii-allowlist", "audits",
+    "bump-version.sh", "requirements-dev.txt", "UPDATE_README.md",
+})
 # A journal's ts: what server.py's strftime writes (and test names), never
 # a path ('/' and '.' excluded).
 _TS_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -277,6 +290,14 @@ def _swappable(name):
             and name not in _NEVER_SWAP and name not in _PROTECTED
             and not name.endswith(_PROTECTED_SUFFIXES)
             and not name.startswith(".update-"))
+
+
+def retired(name):
+    """True for a top-level name commit() moves aside: a RETIRED_NAMES entry
+    or any test_*.py (no release ships the test suite). Never the install's
+    data or update machinery (_swappable)."""
+    return _swappable(name) and (
+        name in RETIRED_NAMES or (name.startswith("test_") and name.endswith(".py")))
 
 
 def _journal_problem(j):
@@ -829,6 +850,54 @@ def swap_back(install_dir, journal, reason, restore_config=True, record=True,
         pass
 
 
+def _backups_dir(install_dir, ts):
+    """.backups/<ts>/, made when missing. .backups/ is private (0700) when
+    this creates it — the same rule as atomic_io.ensure_private_dir, kept
+    here as a private copy (this module imports no app module). Raises
+    OSError."""
+    try:
+        os.mkdir(install_dir / ".backups", 0o700)
+        os.chmod(install_dir / ".backups", 0o700)
+    except FileExistsError:
+        pass
+    dest = install_dir / ".backups" / ts
+    dest.mkdir(parents=True, exist_ok=True)
+    return dest
+
+
+def _retire_leftovers(install_dir, ts):
+    """Move the retired() names found at the top level into .backups/<ts>/,
+    beside the previous release's copies: out of the install folder, nothing
+    deleted outright. A git checkout keeps them (they are tracked files
+    there). Best effort and idempotent: a commit cut short moves the rest
+    next time, and a failure is logged, never raised. Returns the names
+    moved."""
+    install_dir = Path(install_dir)
+    if _lexists(install_dir / ".git"):
+        return []
+    try:
+        names = sorted(e.name for e in os.scandir(install_dir) if retired(e.name))
+        if not names:
+            return []
+        dest = _backups_dir(install_dir, ts)
+    except OSError as e:
+        _log(f"could not move old files aside: {e}")
+        return []
+    moved = []
+    for name in names:
+        if _lexists(dest / name):
+            _log(f"left {name} in place: .backups/{ts}/{name} already exists")
+            continue
+        try:
+            shutil.move(str(install_dir / name), str(dest / name))
+            moved.append(name)
+        except OSError as e:
+            _log(f"could not move {name} to .backups/{ts}/: {e}")
+    if moved:
+        _log(f"moved {len(moved)} file(s) earlier releases left behind to .backups/{ts}/")
+    return moved
+
+
 def _old_to_backups(install_dir, old_name, ts):
     """Move .update-old-<ts>/ (the previous release) into .backups/<ts>/,
     dropping its config.yaml copy FIRST, so a failure part-way can never
@@ -844,19 +913,10 @@ def _old_to_backups(install_dir, old_name, ts):
         _log(f"could not remove {old_name}/{CONFIG_SNAPSHOT}: {e}")
     if not _lexists(old_dir):
         return True
-    dest = install_dir / ".backups" / ts
     try:
         children = list(old_dir.iterdir())
         if children:
-            # .backups/ is private (0700) when this creates it — the same
-            # rule as atomic_io.ensure_private_dir, kept here as a private
-            # copy (this module imports no app module).
-            try:
-                os.mkdir(install_dir / ".backups", 0o700)
-                os.chmod(install_dir / ".backups", 0o700)
-            except FileExistsError:
-                pass
-            dest.mkdir(parents=True, exist_ok=True)
+            dest = _backups_dir(install_dir, ts)
         for child in children:
             target = dest / child.name
             if _lexists(target):
@@ -891,6 +951,7 @@ def commit(install_dir, journal=None):
             _write_json(install_dir / PENDING, j)     # durable first; raises → retry later
         moved = _old_to_backups(install_dir, j["old_dir"], j["ts"])
         _rmdir_quiet(install_dir / f"{FAILED_PREFIX}{j['ts']}")
+        _retire_leftovers(install_dir, j["ts"])
         if not moved:
             backup_dir = j["old_dir"]
         elif _is_dir(install_dir / ".backups" / j["ts"]):

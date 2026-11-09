@@ -7,8 +7,10 @@ ip, id) plus a curated dir of symlinks to real tools (bash, coreutils, sed,
 awk, grep, unzip, python3, find, …). HOME and TMPDIR live in the sandbox and
 the release comes from a fixture zip (--from-zip), so nothing is downloaded.
 The read-only hooks AERODROME_BOOTSTRAP_OS_RELEASE / AERODROME_BOOTSTRAP_UNIT
-stand in for /etc/os-release and the installed unit, and
-AERODROME_BOOTSTRAP_SOURCE_ONLY=1 defines the functions without running main.
+stand in for /etc/os-release and the installed unit, AERODROME_SELINUX_ENFORCE
+for /sys/fs/selinux/enforce (default: no selinuxfs — the suite passes the same
+way on an enforcing host), and AERODROME_BOOTSTRAP_SOURCE_ONLY=1 defines the
+functions without running main.
 
 Covers #37 (never delete or take over a folder, a pipeline that can't fail at
 random under pipefail, unknown distros), the L10 bootstrap half (temp dir
@@ -149,7 +151,8 @@ class _Sandbox(unittest.TestCase):
              "TERM": "dumb", "LC_ALL": "C.UTF-8", "SUDO_LOG": str(self.sudo_log),
              "STUB_LOG": str(self.stub_log),
              "AERODROME_BOOTSTRAP_OS_RELEASE": str(self.os_release),
-             "AERODROME_BOOTSTRAP_UNIT": str(self.tmp / "no-such-unit.service")}
+             "AERODROME_BOOTSTRAP_UNIT": str(self.tmp / "no-such-unit.service"),
+             "AERODROME_SELINUX_ENFORCE": str(self.tmp / "no-selinuxfs")}
         e.update({k: str(v) for k, v in kw.items()})
         return e
 
@@ -323,6 +326,34 @@ class Refusals(_Sandbox):
                 self.assertIn("Refusing", out)
                 self.assertNotIn("[1/7]", out)
                 self.assertNothingDone(out)
+
+    def test_selinux_enforcing_refuses_a_home_folder_prefix(self):
+        on = self.tmp / "selinux-enforce"          # the mounted selinuxfs's enforce file
+        on.write_text("1\n")
+        prefix = self.home / "aerodrome"           # inside HOME: allowed unless enforcing
+        rc, out = self.run_boot("--yes", "--receiver-ip", "192.0.2.10", "--from-zip", str(self.zip),
+                                "--prefix", str(prefix), AERODROME_SELINUX_ENFORCE=on)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("Refusing to install into", out)
+        self.assertIn("SELinux is enforcing here", out)
+        self.assertIn("doesn't let system services start programs inside a home folder", out)
+        self.assertIn("Leave out --prefix to install in /opt/aerodrome", out)
+        self.assertIn("outside your home folder", out)
+        self.assertNotIn("[1/7]", out)
+        self.assertNothingDone(out)
+        self.assertFalse(prefix.exists())
+        self.assertEqual(self.bootstrap_temps(), [])
+
+    def test_permissive_selinux_gets_past_the_prefix_check(self):
+        # "0" = permissive: denials are only logged, so a home-folder install works.
+        permissive = self.tmp / "selinux-permissive"
+        permissive.write_text("0\n")
+        prefix = self.home / "aerodrome"
+        rc, out = self.run_boot("--yes", "--receiver-ip", "192.0.2.10", "--from-zip", str(self.zip),
+                                "--prefix", str(prefix), AERODROME_SELINUX_ENFORCE=permissive)
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("SELinux", out)
+        self.assertTrue((prefix / "VERSION").is_file())
 
     def test_value_flags_need_a_value(self):
         for args in (["--prefix"], ["--prefix", "--yes"], ["--from-zip"]):

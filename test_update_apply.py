@@ -434,6 +434,71 @@ class TestSwapAndBoot(_InstallCase):
         self.assertEqual(list(self.inst.glob(".update-old-*")), [])
         self.assertEqual(updater.last_result(self.inst)["result"], "applied")
 
+    def _add_leftovers(self):
+        """What earlier releases left at the top level (none is in NEW)."""
+        _write(self.inst / "test_old_suite.py", "OLD TEST\n")
+        _write(self.inst / "bump-version.sh", "#!/bin/bash\n")
+        _write(self.inst / ".github" / "ISSUE_TEMPLATE" / "bug.md", "template\n")
+        _write(self.inst / "audits" / "audit.md", "audit\n")
+        _write(self.inst / "my-test-notes.txt", "the owner's own file\n")
+        return ("test_old_suite.py", "bump-version.sh", ".github", "audits")
+
+    def test_commit_moves_retired_files_to_the_backup(self):
+        names = self._add_leftovers()
+        self.stage_and_swap(ts="20261021-140000")
+        for n in names:                        # the swap itself leaves them alone
+            self.assertTrue((self.inst / n).exists(), n)
+        updater.on_boot(self.inst, ["main.py", "start"], reexec=mock.Mock())
+        self.assertTrue(updater.commit(self.inst))
+        bk = self.inst / ".backups" / "20261021-140000"
+        for n in names:
+            self.assertFalse((self.inst / n).exists(), n)
+            self.assertTrue((bk / n).exists(), n)
+        self.assertEqual((bk / ".github" / "ISSUE_TEMPLATE" / "bug.md").read_text(), "template\n")
+        self.assertEqual((bk / "VERSION").read_text().strip(), OLD)   # beside the old release
+        for n in ("my-test-notes.txt", "user-notes.txt", "config.yaml", "aircraft_history.db",
+                  "only_in_new.py"):
+            self.assertTrue((self.inst / n).exists(), n)
+        self.assertEqual(updater.last_result(self.inst)["result"], "applied")
+
+    def test_rollback_leaves_retired_files_in_place(self):
+        names = self._add_leftovers()
+        self.stage_and_swap()
+        reexec = mock.Mock()
+        for _ in range(updater.MAX_FAILED_STARTS + 1):
+            updater.on_boot(self.inst, ["main.py", "start"], reexec=reexec)
+        self.assertEqual(updater.last_result(self.inst)["result"], "rolled_back")
+        for n in names:
+            self.assertTrue((self.inst / n).exists(), n)
+
+    def test_git_checkout_keeps_retired_files(self):
+        names = self._add_leftovers()
+        (self.inst / ".git").mkdir()
+        self.stage_and_swap(ts="20261021-150000")
+        updater.on_boot(self.inst, ["main.py", "start"], reexec=mock.Mock())
+        self.assertTrue(updater.commit(self.inst))
+        for n in names:
+            self.assertTrue((self.inst / n).exists(), n)
+            self.assertFalse((self.inst / ".backups" / "20261021-150000" / n).exists(), n)
+
+    def test_retire_never_overwrites_a_backup_copy(self):
+        self._add_leftovers()
+        _write(self.inst / ".backups" / "20261021-160000" / "bump-version.sh", "kept\n")
+        self.stage_and_swap(ts="20261021-160000")
+        updater.on_boot(self.inst, ["main.py", "start"], reexec=mock.Mock())
+        self.assertTrue(updater.commit(self.inst))
+        bk = self.inst / ".backups" / "20261021-160000"
+        self.assertEqual((bk / "bump-version.sh").read_text(), "kept\n")
+        self.assertTrue((self.inst / "bump-version.sh").exists())     # left, not lost
+        self.assertTrue((bk / "test_old_suite.py").exists())          # the rest still moved
+
+    def test_retired_names_are_never_install_data(self):
+        for n in ("config.yaml", "venv", "logs", ".backups", "update", "aircraft_history.db",
+                  "test_x.db", ".update-old-x", "user-notes.txt", "main.py", "updater.py"):
+            self.assertFalse(updater.retired(n), n)
+        for n in ("test_anything.py", *updater.RETIRED_NAMES):
+            self.assertTrue(updater.retired(n), n)
+
     def test_swap_failure_rolls_back_immediately(self):
         before = self.snapshot()
         real = os.replace
@@ -734,6 +799,49 @@ class TestKillPoints(_KillCase):
                 self.assertFalse((inst / updater.PENDING).exists())
                 self.assertEqual((inst / ".backups" / ts / "VERSION").read_text().strip(), OLD)
         self.assertGreaterEqual(points, 5)
+
+    def test_e_kill_at_every_point_of_commit_with_leftovers(self):
+        # A commit cut short anywhere, including part-way through moving the
+        # files earlier releases left behind, ends with every one of them in
+        # .backups/<ts>/ once the new version boots, and nothing else changed.
+        points = 0
+        retired = ("test_old_suite.py", "bump-version.sh", "audits")
+        for k in range(1, 80):
+            inst, rel = self.fresh()
+            (inst / "test_old_suite.py").write_text("OLD TEST\n")
+            (inst / "bump-version.sh").write_text("#!/bin/bash\n")
+            (inst / "audits").mkdir()
+            (inst / "audits" / "audit.md").write_text("audit\n")
+            staging, ts = self.staging_of(inst, rel)
+            updater.swap_in(inst, staging, ts, OLD, NEW)
+            got0, _ = _boot(inst, 1)
+            self.assertEqual(got0, NEW)
+            want = {p: t for p, t in _census(inst).items()
+                    if p.split("/", 1)[0] not in retired}
+            updater.note_served(inst)
+            j = updater.pending(inst)
+            j["served_at"] = time.time() - updater.COMMIT_AFTER_SEC - 5
+            updater._write_json(inst / updater.PENDING, j)
+            with _Faults(k):
+                try:
+                    updater.commit(inst)
+                    hit = False
+                except _Kill:
+                    hit = True
+            if not hit:
+                break
+            points += 1
+            with self.subTest(kill_at=k):
+                got, outs = _boot(inst)
+                self.assertEqual(got, NEW, outs)
+                self.assertEqual(_census(inst), want)
+                self.assertFalse((inst / updater.PENDING).exists())
+                bk = inst / ".backups" / ts
+                self.assertEqual((bk / "VERSION").read_text().strip(), OLD)
+                for n in retired:
+                    self.assertTrue((bk / n).exists(), n)
+                self.assertEqual((bk / "audits" / "audit.md").read_text(), "audit\n")
+        self.assertGreaterEqual(points, 8)
 
 
 class TestBootENOSPC(_KillCase):

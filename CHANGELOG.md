@@ -19,6 +19,24 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.177] — 2026-11-08
+
+**Updates now tidy away the files earlier releases left in your install folder, and the installer refuses a home folder up front where SELinux would stop Aerodrome from starting.**
+
+- **Old files moved aside after an update.** An update replaces only the files the new release contains. Files an earlier release shipped and later dropped stayed in your install folder, such as the test suite (`test_*.py`) and the maintainer's release tools (`bump-version.sh`, `.github/` and others). When an update is confirmed, about 30 seconds after the new version starts answering, Aerodrome now moves them into that update's backup folder, `.backups/<timestamp>/`, beside the previous version's files. Nothing is deleted outright: they go when that backup does (Aerodrome keeps the 5 most recent). Your settings, database, logs and your own files are never touched. If your install folder is a git checkout, these files are left where they are, because there they belong to the repository.
+- **A home folder is refused before anything changes, where SELinux is enforcing.** On Fedora, RHEL, openSUSE Tumbleweed and other systems where SELinux is enforcing, Aerodrome can't run as a service from inside a home folder, because SELinux doesn't let system services start programs there. The installer used to run to the end and then report "Failed to start". The bootstrap (`--prefix ~/aerodrome`) and `install.sh` now stop at the start, before anything is downloaded or changed. They explain why and point you to `/opt/aerodrome`, the default install folder. Where SELinux is off or permissive, a home folder still works as before.
+
+### Operational notes
+
+No database change. An update through the Updates page restarts Aerodrome as usual. The first update to this version moves the leftover files aside. Updates from this version onward do the same for any file a later release stops shipping.
+
+### Behind the scenes
+
+- `updater.commit()` calls `_retire_leftovers()` after moving the previous release's files into `.backups/<ts>/`. It moves every top-level name `updater.retired()` matches into the same folder: the names in `RETIRED_NAMES` and any `test_*.py`. Names that are the install's own data, or that the updater manages, never match. It's best effort and idempotent, so a commit that's cut short moves the rest on the next start. It skips a folder that holds `.git` and never overwrites a copy already in the backup.
+- `test_update_retire.py` checks the list against the git checkout. No file the release ships may match it, and every top-level name the last release tag shipped must still ship or be listed.
+- `selinux_blocks_home()` is shared by `install.sh` and `scripts/bootstrap.sh`, and `scripts/check_installers.py` keeps the two copies byte-identical. It refuses only when `/sys/fs/selinux/enforce` reads `1` and the folder is inside `/home`, `/root`, `$HOME` or the service account's home.
+- `test_stats_records`' Today-card tests no longer fail when the suite runs in the first minutes after midnight UTC. They now run in a whole-hour time zone where it's about noon.
+
 ## [3.4.176] — 2026-11-08
 
 **The FlightAware card lists your keys: this Aerodrome's lookups and FlightAware's lookups and cost for each.**

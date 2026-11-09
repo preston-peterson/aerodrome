@@ -257,7 +257,10 @@ add `--yes --receiver-ip <ip>` (or `--yes --demo`).
 folder, system folders (`/`, `/opt`, `/usr/local`, `/etc`, …) and paths
 containing `"`, `\`, `$`, `%`, a control character (such as a tab) or a
 trailing space (systemd can't use those in a unit file; spaces inside the
-path are fine), and suggests a `<folder>/aerodrome` instead. The folder
+path are fine), and suggests a `<folder>/aerodrome` instead. Where
+SELinux is enforcing it also refuses any folder inside a home folder,
+because the service couldn't start from there (see "Install location"
+below). The folder
 must not exist yet, or be an empty folder you can already write: the
 bootstrap never deletes anything in it and never changes the owner of a
 folder it didn't create (it tells you the `chown` or `chmod` to run if you
@@ -519,7 +522,9 @@ third-party Linux service uses. Three reasons it's the default:
    (Fedora, RHEL, openSUSE Tumbleweed) and AppArmor are both permissive
    in `/opt/`. Installing under `/home/` on SELinux-enforcing systems
    doesn't work — systemd can't `ExecStart` a binary in a user's home
-   because the targeted policy denies it. `/opt/` avoids that entirely.
+   because the targeted policy denies it, so the bootstrap and
+   `install.sh` refuse a home folder there before changing anything.
+   `/opt/` avoids that entirely.
 2. **One mental model.** All docs, scripts, examples, and support
    troubleshooting say `/opt/aerodrome`. No "your install location
    depends on your distro" footnotes.
@@ -541,8 +546,11 @@ bash <(curl -fsSL https://install.aerodromeadsb.com) --prefix ~/aerodrome
 ```
 
 This restores the pre-v3.3.0 layout if you have a strong preference.
-It'll only work cleanly on distros without SELinux enforcement
-(Debian/Ubuntu/Arch/openSUSE-Leap).
+It works only where SELinux isn't enforcing (it's off or permissive on
+Debian, Ubuntu and Arch). Where it is enforcing (Fedora, RHEL, openSUSE
+Tumbleweed), the bootstrap and `install.sh` refuse a folder inside a
+home folder up front, before anything is downloaded or changed, and
+point you to `/opt/aerodrome`.
 
 **Existing installs at `~/aerodrome`:** keep working untouched. The
 bootstrap never installs over an existing one: when Aerodrome is already
@@ -778,7 +786,10 @@ release. No SSH required.
    - Your browser will reconnect automatically after a few seconds.
      About 30 seconds after the new version answers, the update is
      confirmed and the previous version is kept in
-     `.backups/<timestamp>/`
+     `.backups/<timestamp>/`. Files earlier releases left in the install
+     folder that no release ships any more (the test suite and release
+     tooling, such as `test_*.py` and `bump-version.sh`) are moved into
+     the same folder then. A git checkout keeps them.
 
 That's it. If you'd rather stage updates from the command line (handy
 for scripted workflows or quick dev iteration), you can drop the
@@ -916,7 +927,9 @@ in a banner, with the reason under Details, until you dismiss it.
 
 **By hand.** To go back to the version before a confirmed update, use
 the snapshot in `.backups/<timestamp>/`. It holds the older version's
-copies of the files the newer release replaced — not a full release.
+copies of the files the newer release replaced — not a full release —
+and any leftover files from earlier releases that the update moved
+aside (copying those back is harmless).
 Move aside the files the snapshot doesn't have first, so none of the
 newer release's are left behind:
 

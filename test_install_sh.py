@@ -24,6 +24,8 @@ guard, the highest-marker hand-off in recover-sudoers.sh, and kill-points.
 And v3.4.150's system helper (install_privileged): its folder must be root's
 alone, the interpreter pick, no helper downgrade, visudo before the helper,
 the rules going live last, ntfy-migrate after them, and kill-points there.
+And the enforcing-SELinux guard: a home-folder install is refused up front
+(nothing ran), while /opt installs and permissive home installs proceed.
 
 Skipped when AERODROME_SKIP_SLOW_TESTS=1, without bash, or as root.
 Account names and paths are invented (one test also runs the real id and
@@ -157,7 +159,7 @@ STUBS = {
     "whoami": '#!/bin/sh\necho "${FAKE_WHOAMI:-svc-a}"\n',
     "getent": '#!/bin/sh\n[ "$1" = passwd ] || exit 2\n'
               'case "$2" in svc-a|svc-c|admin-b|demo-user|svc.dotted|SvcUpper|jdoe@corp.example.com)\n'
-              '  echo "$2:x:1000:1000::/home/$2:/bin/sh"; exit 0 ;; esac\nexit 2\n',
+              '  echo "$2:x:1000:1000::${GETENT_HOME:-/home}/$2:/bin/sh"; exit 0 ;; esac\nexit 2\n',
     "stat": r'''#!/bin/bash
 if [ "$1 $2" = "-c %U" ]; then echo "${FAKE_OWNER:-svc-a}"; exit 0; fi
 if [ "$1 $2" = "-c %u %g %a %F" ]; then
@@ -454,6 +456,52 @@ class FullInstall(_Harness):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertNotIn("restorecon -R", self.log_text())
         self.assertNotIn("SELinux", r.stdout)
+
+    # ---- enforcing SELinux refuses a home-folder install up front ------------------
+    def _refused_at_home(self, r):
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("SELinux is enforcing here", r.stderr)
+        self.assertIn("doesn't let system services start programs inside a home folder", r.stderr)
+        self.assertIn("Nothing was changed.", r.stderr)
+        self.assertIn("Move this folder to /opt/aerodrome", r.stderr)
+        self.assertNotIn("[1/5]", r.stdout)
+        log = self.log_text()
+        for line in log.splitlines():          # only the read-only unit probe ran
+            self.assertTrue(line.startswith("systemctl show"), line)
+        for cmd in ("apt-get", "dnf", "pacman", "zypper", "pip", "python3",
+                    "restorecon", "visudo", "sudo["):
+            self.assertNotIn(cmd, log)
+        self.assertFalse((self.fr / "etc/systemd/system/aerodrome.service").exists())
+        self.assertFalse(self.live.exists())
+        self.assertFalse(self.helper().exists())
+
+    def test_selinux_enforcing_refuses_a_home_folder_install(self):
+        d = self.make_tree(self.tmp / "home" / "aerodrome")   # under $HOME
+        on = self.tmp / "selinux-enforce"                     # enforcing: "1"
+        on.write_text("1\n")
+        r = self.run_install(d, AERODROME_SELINUX_ENFORCE=on)
+        self._refused_at_home(r)
+        self.assertIn(f"sudo mv {d} /opt/aerodrome && sudo chown -R svc-a: /opt/aerodrome",
+                      r.stderr)
+        self.assertIn("/opt/aerodrome/install.sh", r.stderr)
+
+    def test_selinux_enforcing_refuses_the_service_accounts_home(self):
+        # svc-a's getent home, reported away from $HOME and /home: the refusal
+        # must come from the account's own folder, not the canned /home entry.
+        d = self.make_tree(self.tmp / "srv-home" / "svc-a" / "aerodrome")
+        on = self.tmp / "selinux-enforce"
+        on.write_text("1\n")
+        r = self.run_install(d, AERODROME_SELINUX_ENFORCE=on, GETENT_HOME=self.tmp / "srv-home")
+        self._refused_at_home(r)
+
+    def test_permissive_selinux_installs_in_a_home_folder(self):
+        # "0" = permissive: the denials are only logged, so the install works.
+        d = self.make_tree(self.tmp / "home" / "aerodrome")
+        permissive = self.tmp / "selinux-permissive"
+        permissive.write_text("0\n")
+        r = self.run_install(d, AERODROME_SELINUX_ENFORCE=permissive)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("restorecon -R", self.log_text())
 
     # ---- (a) sudoers validated, then swapped in -----------------------------------
     def test_sudoers_installed_0440_via_dot_temp_and_rename(self):

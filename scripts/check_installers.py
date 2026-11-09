@@ -10,9 +10,10 @@ fixtures. Stdlib only.
 
   bash-syntax       every git-tracked *.sh parses (`bash -n`). Outside a git
                     checkout: *.sh and scripts/*.sh.
-  pkg-detect        the pkg_detect() function is byte-identical in install.sh
-                    and scripts/bootstrap.sh (it is duplicated on purpose so
-                    each script works standalone — the copies must not drift).
+  pkg-detect        the pkg_detect() and selinux_blocks_home() functions are
+                    byte-identical in install.sh and scripts/bootstrap.sh (they
+                    are duplicated on purpose so each script works standalone —
+                    the copies must not drift).
   recover-delegates install.sh is the ONE place the sudoers rules live:
                     scripts/recover-sudoers.sh carries no rule line and no
                     SUDOERS_VERSION marker and hands off to
@@ -169,20 +170,27 @@ def _read(path):
         return None
 
 
+SHARED_DUPLICATES = ("pkg_detect", "selinux_blocks_home")
+
+
 def check_pkg_detect(root):
     root = Path(root)
     inst, boot = _read(root / "install.sh"), _read(root / "scripts/bootstrap.sh")
-    a = func_body(inst, "pkg_detect") if inst is not None else None
-    b = func_body(boot, "pkg_detect") if boot is not None else None
-    if a is None or b is None:
-        return ["pkg_detect() not found in install.sh and/or scripts/bootstrap.sh"]
-    if a == b:
-        return []
-    d = list(difflib.unified_diff(a.splitlines(), b.splitlines(), "install.sh",
-                                  "scripts/bootstrap.sh", lineterm="", n=0))
-    return ["pkg_detect() differs between install.sh and scripts/bootstrap.sh "
-            "(copy one over the other; they must stay byte-identical):\n      "
-            + "\n      ".join(d[:20])]
+    errs = []
+    for name in SHARED_DUPLICATES:
+        a = func_body(inst, name) if inst is not None else None
+        b = func_body(boot, name) if boot is not None else None
+        if a is None or b is None:
+            errs.append(f"{name}() not found in install.sh and/or scripts/bootstrap.sh")
+        elif a == b:
+            continue
+        else:
+            d = list(difflib.unified_diff(a.splitlines(), b.splitlines(), "install.sh",
+                                          "scripts/bootstrap.sh", lineterm="", n=0))
+            errs.append(f"{name}() differs between install.sh and scripts/bootstrap.sh "
+                        "(copy one over the other; they must stay byte-identical):\n      "
+                        + "\n      ".join(d[:20]))
+    return errs
 
 
 def _heredoc_match(text, tag):

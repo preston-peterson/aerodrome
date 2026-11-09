@@ -591,14 +591,19 @@ class TestReadPath(_DbCase):
 
     def setUp(self):
         super().setUp()
-        left = DAY - time.time() % DAY
-        if left < 5:
-            time.sleep(left + 0.05)
-        self.today = int(time.time()) // DAY * DAY
+        # A whole-hour zone where it is about noon now, so "today" has hours of
+        # room on both sides whenever the suite runs. With UTC, a run just after
+        # midnight put the rows at today + 60 s in the future, and the Today
+        # cards were empty. Etc/GMT names have the sign the other way round.
+        now = int(time.time())
+        off = (12 - now % DAY // HOUR) % 24
+        if off > 12:
+            off -= 24
+        self.today = (now + off * HOUR) // DAY * DAY - off * HOUR
         cfg = yaml.safe_load((REPO / "config.yaml.example").read_text())
         cfg["data"]["db_file"] = self.db
         cfg["watchlist"] = []
-        cfg.setdefault("stats", {})["timezone"] = "UTC"
+        cfg.setdefault("stats", {})["timezone"] = f"Etc/GMT{-off:+d}" if off else "UTC"
         eps = {r.path: r.endpoint for r in server.get_app(cfg, os.devnull).routes if hasattr(r, "endpoint")}
         self.stats_ep, self.drill_ep = eps["/api/stats"], eps["/api/stats/drill"]
 

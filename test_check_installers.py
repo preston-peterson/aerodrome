@@ -162,6 +162,20 @@ class OneMutationOneFinding(unittest.TestCase):
         self.mutate("scripts/bootstrap.sh", "pkg_detect() {", "pkg_detect_renamed() {")
         self.assertEqual(len(ci.check_pkg_detect(self.root)), 1)
 
+    def test_edited_selinux_blocks_home_line(self):
+        self.mutate("install.sh", "local dir home", "local dir home extra")
+        errs = ci.check_pkg_detect(self.root)
+        self.assertEqual(len(errs), 1, errs)
+        self.assertIn("selinux_blocks_home()", errs[0])
+        self.assertOnlyFinding("pkg-detect")
+
+    def test_missing_selinux_blocks_home(self):
+        self.mutate("scripts/bootstrap.sh", "selinux_blocks_home() {", "selinux_blocks_home_x() {")
+        errs = ci.check_pkg_detect(self.root)
+        self.assertEqual(len(errs), 1, errs)
+        self.assertIn("selinux_blocks_home()", errs[0])
+        self.assertOnlyFinding("pkg-detect")
+
     # -- recover-delegates -------------------------------------------------------
     def test_rule_line_added_to_recover(self):
         self.append("scripts/recover-sudoers.sh",
