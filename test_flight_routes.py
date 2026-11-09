@@ -65,16 +65,16 @@ class TestMigration(_Db):
         conn.close()
         self.assertEqual(self.q("SELECT COUNT(*) FROM flight_routes")[0][0], 1)
 
-    def test_an_upgrade_from_v18_runs_only_v19(self):
+    def test_an_upgrade_from_v18_runs_v19_onward(self):
         conn = sqlite3.connect(self.db)
         conn.execute("DROP TABLE flight_routes")
-        conn.execute("DELETE FROM schema_version WHERE version = 19")
+        conn.execute("DELETE FROM schema_version WHERE version >= 19")
         conn.commit()
         result = apply_schema_migrations(conn, "test")
         conn.close()
         self.assertTrue(result["ok"], result.get("error"))
-        self.assertEqual((result["starting_version"], result["ending_version"]), (18, 19))
-        self.assertEqual(len(result["applied"]), 1)
+        self.assertEqual((result["starting_version"], result["ending_version"]), (18, CURRENT_SCHEMA_VERSION))
+        self.assertEqual(len(result["applied"]), CURRENT_SCHEMA_VERSION - 18)
         self.assertEqual({r[1] for r in self.q("PRAGMA table_info(flight_routes)")}, COLS)
 
 

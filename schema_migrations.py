@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 # Current schema version. Bump whenever a new migration is added.
 # v2.51.0 introduces schema version 1 (the search-feature schema).
 # Any DB without a schema_version table is implicitly at version 0.
-CURRENT_SCHEMA_VERSION = 19
+CURRENT_SCHEMA_VERSION = 20
 
 
 # A migration is a (target_version, description, callable) tuple.
@@ -1687,6 +1687,24 @@ def _migration_v19_flight_routes(conn: sqlite3.Connection) -> None:
     logger.info("Migration v19: ensured flight_routes table exists")
 
 
+def _migration_v20_feed_owner(conn: sqlite3.Connection) -> None:
+    """v3.4.179: add `seen_aircraft.feed_owner`, the registered owner as the
+    receiver's own aircraft database names it (readsb's `ownOp`, sent when it
+    runs with --db-file). It's the legal owner of record, often a bank trustee,
+    where hexdb's `registered_owner` is usually the operator, so the owner line
+    shows both when they differ. The collector writes it on each poll that
+    carries it; no backfill (the feed has it only while an aircraft is in range).
+    Not FTS-indexed. Idempotent: the ALTER tolerates "duplicate column name".
+    """
+    try:
+        conn.execute("ALTER TABLE seen_aircraft ADD COLUMN feed_owner TEXT")
+        logger.info("Migration v20: added seen_aircraft.feed_owner column")
+    except sqlite3.OperationalError as e:
+        if "duplicate column" not in str(e).lower():
+            raise
+        logger.info("Migration v20: seen_aircraft.feed_owner already exists (re-run no-op)")
+
+
 MIGRATIONS: List[Migration] = [
     (1, "search schema: denormalized columns, indexes, FTS5 + triggers, backfill",
      _migration_v1_search_schema),
@@ -1726,6 +1744,8 @@ MIGRATIONS: List[Migration] = [
      _migration_v18_regional_airliners_commercial),
     (19, "flight_routes table: FlightAware-confirmed routes for the aircraft page's route history (v3.4.171)",
      _migration_v19_flight_routes),
+    (20, "feed_owner column: the registered owner from the receiver's aircraft database (readsb ownOp) (v3.4.179)",
+     _migration_v20_feed_owner),
 ]
 
 

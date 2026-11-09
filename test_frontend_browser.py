@@ -253,10 +253,11 @@ class TestBoardNeverLiesAboutBeingLive(BrowserCase):
 
     def test_a_lookup_with_no_answer_is_tried_again_later(self):
         path = "/api/aircraft/A00009/enrich"
-        self.site.api[path] = {"registered_owner": None, "registration": None}
+        self.site.api[path] = {"registered_owner": "", "owner": "", "registration": ""}
         self.page.evaluate("ownerFor('A00009')")
         self.advance(1000)
-        self.site.api[path] = {"registered_owner": "Example Aviation", "registration": "N1EX"}
+        self.site.api[path] = {"registered_owner": "Example Aviation", "owner": "Example Aviation",
+                               "registration": "N1EX"}
         self.advance(600000, step=5000)
         self.page.evaluate("ownerFor('A00009')")
         self.advance(1000)
@@ -1265,6 +1266,70 @@ class TestRoutesOnlyWithALivePosition(BrowserCase):
         self.assertIsNone(self.page.evaluate("routeFor({callsign: 'DEMO42'})"))
         self.page.wait_for_timeout(100)
         self.assertEqual(self.site.count("/api/callsign/DEMO42/route"), 0)
+
+
+class TestOwnerLines(BrowserCase):
+    """v3.4.179: the map panel and the aircraft page add "Registered to" when the
+    receiver's aircraft database names a different owner of record."""
+
+    ENRICH = "/api/aircraft/A00001/enrich"
+
+    def setUp(self):
+        super().setUp()
+        self.site.api["/api/live"] = _aircraft(1)
+        self.site.api["/api/status"] = _status()
+        self.site.api["/api/aircraft/A00001/photo"] = {"found": False}
+
+    def panel(self, enrich):
+        self.site.api[self.ENRICH] = enrich
+        self.open("/")
+        self.advance(1000)
+        self.page.evaluate("openRadarOverlay('A00001')")
+        self.advance(300)
+        return self.page.inner_text("#roOwner")
+
+    def test_the_panel_shows_both_names(self):
+        text = self.panel({"owner": "Example Air", "registered_to": "EXAMPLE BANK NA TRUSTEE",
+                           "registration": "N123EX"})
+        self.assertEqual(text.split("\n"), ["OWNER / OPERATOR", "Example Air (N123EX)",
+                                            "REGISTERED TO", "EXAMPLE BANK NA TRUSTEE"])
+
+    def test_the_panel_shows_one_name_when_theres_one(self):
+        text = self.panel({"owner": "EXAMPLE FLYING CLUB INC", "registered_to": "", "registration": "N123EX"})
+        self.assertNotIn("REGISTERED TO", text.upper())
+        self.assertIn("EXAMPLE FLYING CLUB INC (N123EX)", text)
+
+    def page_lines(self, detail, enrich=None):
+        self.site.api["/api/aircraft/A00001"] = dict({
+            "icao": "A00001", "first_seen_at": 1700000000, "last_seen_at": 1700000000,
+            "sighting_count": 1, "recent_sightings": [], "callsigns": []}, **detail)
+        self.site.api["/api/all/drill"] = {"ok": True, "total_count": 0, "sightings": []}
+        self.site.api["/api/aircraft/A00001/positions"] = {
+            "ok": True, "window": "24h", "count": 0, "truncated": False,
+            "receiver": {"lat": 40, "lon": -90, "distance_unit": "mi"}, "positions": []}
+        if enrich is not None:
+            self.site.api[self.ENRICH] = enrich
+        self.open("/aircraft/A00001", settle=600)
+        return self.page.evaluate("""() => {
+            const o = document.querySelector('#ownerLine .owner-name').textContent;
+            const r = document.getElementById('registeredLine');
+            return [o, r.style.display === 'none' ? null : r.querySelector('.owner-name').textContent]; }""")
+
+    def test_the_aircraft_page_shows_both_names(self):
+        self.assertEqual(self.page_lines({"registered_owner": "Example Air", "owner": "Example Air",
+                                          "registered_to": "EXAMPLE BANK NA TRUSTEE"}),
+                         ["Example Air", "EXAMPLE BANK NA TRUSTEE"])
+        self.assertEqual(self.site.count(self.ENRICH), 0, "hexdb's name is known: no lookup")
+
+    def test_the_aircraft_page_fills_both_lines_when_hexdb_answers(self):
+        lines = self.page_lines({"registered_owner": "", "owner": "EXAMPLE BANK NA TRUSTEE", "registered_to": ""},
+                                enrich={"registered_owner": "Example Air", "owner": "Example Air",
+                                        "registered_to": "EXAMPLE BANK NA TRUSTEE"})
+        self.assertEqual(lines, ["Example Air", "EXAMPLE BANK NA TRUSTEE"])
+
+    def test_the_aircraft_page_hides_the_line_with_one_name(self):
+        self.assertEqual(self.page_lines({"registered_owner": "Example Air", "owner": "Example Air",
+                                          "registered_to": ""}), ["Example Air", None])
 
 
 class TestAircraftSightingsFitOnPhones(BrowserCase):

@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
-<!-- Version: 3.4.178 -->
+<!-- Version: 3.4.179 -->
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Display board — Aerodrome</title>
@@ -1515,10 +1515,11 @@ function photoFor(icao){
     (j.found && j.thumbnail_url) ? [{url: j.thumbnail_url}, Infinity] : [null, LOOKUP_RECHECK_MS]);
 }
 // One /enrich call per airframe feeds both the owner line and (v3.4.139) the
-// tail number — the registration rides in the same response.
+// tail number — the registration rides in the same response. v3.4.179: the
+// owner is hexdb's name, else the receiver's; asked again until hexdb answers.
 function _enrichFor(icao){
   return lookup(ownerMemo, icao, `/api/aircraft/${encodeURIComponent(icao)}/enrich`, j =>
-    [{owner: j.registered_owner || null, reg: j.registration || null},
+    [{owner: j.owner || null, reg: j.registration || null},
      j.registered_owner ? Infinity : LOOKUP_RECHECK_MS]);
 }
 function ownerFor(icao){ const v = _enrichFor(icao); return v ? v.owner : null; }

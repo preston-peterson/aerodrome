@@ -1132,7 +1132,8 @@ window.fetch = async (url) => {{
                          "A12345": "Delta Air Lines Inc",
                          "AAAD47": "Example Aviation LLC",
                          "A134D2": "Example Aviation LLC"}};
-        return j({{ok: true, icao: hex, registered_owner: owners[hex] || null}});
+        return j({{ok: true, icao: hex, registered_owner: owners[hex] || null,
+                   owner: owners[hex] || null, registered_to: ''}});
     }}
     if (url.includes('/api/maintenance/status'))  return j({json.dumps(payloads['maintenance_status'])});
     return j({{}});

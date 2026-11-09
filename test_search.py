@@ -684,7 +684,7 @@ def _make_test_db():
             fts_dirty INTEGER NOT NULL DEFAULT 0,
             last_distance REAL,
             registered_owner TEXT, manufacturer TEXT,
-            best_track_seconds INTEGER);
+            best_track_seconds INTEGER, feed_owner TEXT);
         CREATE INDEX idx_seen_country ON seen_aircraft(country);
         CREATE INDEX idx_seen_type ON seen_aircraft(aircraft_type);
         CREATE INDEX idx_seen_callsign ON seen_aircraft(last_callsign);

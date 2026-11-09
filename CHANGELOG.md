@@ -19,6 +19,25 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.179] — 2026-11-09
+
+**The owner line now also reads your receiver's own aircraft database: it names the registered owner when that's someone else, and fills in the owner and tail number for aircraft hexdb.io doesn't know.**
+
+- **"Registered to" when the owner of record is someone else.** The owner on the map panel and the aircraft page comes from hexdb.io, which for an airliner usually names the airline that flies it. readsb started with `--db-file` also sends each aircraft's registered owner from its own database. When that names someone else (often a bank that holds the aircraft in trust for the airline), a **Registered to** line shows it under the owner. When the two agree ("SkyWest Airlines" and "SKYWEST AIRLINES INC"), you see one line, as before.
+- **Aircraft hexdb.io doesn't know get an owner and a tail number.** In one install hexdb.io had no record for about a quarter of the aircraft overhead, so their owner line read "—". Now the map panel, the aircraft page and the board show the receiver's owner and registration, and Search finds them by registration.
+- **On the aircraft page, the Owner, Registered to and Route values line up**, and a long value wraps inside its own column on a phone.
+
+### Operational notes
+
+Database schema v20 adds one column to the aircraft table; the update applies it at startup in a moment, whatever the database's size. Nothing is backfilled: the receiver sends these names only while an aircraft is in range, so they fill in as aircraft are seen. Feeds that don't send them (dump1090-fa, readsb without `--db-file`) work as before. docs/INSTALL.md has a new section, "Where owner names come from".
+
+### Behind the scenes
+
+- `seen_aircraft.feed_owner` (schema v20) keeps the feed's `ownOp`. Each poll writes it, and fills an empty `registration` from the feed's `r`; hexdb's resolver still writes its own registration over it.
+- `collector.feed_registration()` and `collector.feed_owner()` clean the two fields; non-string values are dropped with the other feed-record hygiene.
+- `search.owner_names()` builds the owner line. `/api/aircraft/{icao}/enrich` and the aircraft detail add `owner`, `registered_to` and `feed_owner`; `registered_owner` is unchanged.
+- New `test_feed_owner.py`; browser tests for the owner lines on the map panel and the aircraft page.
+
 ## [3.4.178] — 2026-11-09
 
 **The Status page's Collector card now says why sightings stopped being saved, and Aerodrome no longer saves a stopped receiver's last data over and over.**

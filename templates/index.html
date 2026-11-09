@@ -1,4 +1,4 @@
-<!-- Version: 3.4.178 -->
+<!-- Version: 3.4.179 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -682,6 +682,7 @@
         .ro-owner .k { color:var(--t3); text-transform:uppercase; font-size:10px;
             letter-spacing:.05em; display:block; }
         .ro-owner .v { color:var(--t1); }
+        .ro-owner .k.ro-regto { margin-top:6px; }
         /* Route line (v3.4.99) — origin → dest as a subtle cyan chip, each
            airport stacked as ICAO code over city. Hidden (with the airline
            line below) when there's no scheduled route. */
@@ -4167,8 +4168,10 @@ function _radarRenderOverlay(ac){
     if(full) full.href = `/aircraft/${encodeURIComponent(ac.icao)}`;
 }
 
-// Owner line. arg: 'loading' | null | {registered_owner, registration} | the
-// operator already on the live record is used as a fallback.
+// Owner line. arg: 'loading' | null | the /enrich answer ({owner,
+// registered_to, registration}) | the operator already on the live record is
+// used as a fallback. v3.4.179: "Registered to" names the owner of record from
+// the receiver's aircraft database when it differs from the owner shown.
 function _radarSetOwner(info){
     const el = document.getElementById('roOwner');
     if(!el) return;
@@ -4178,11 +4181,13 @@ function _radarSetOwner(info){
         el.innerHTML = `<span class="k">Owner / operator</span><span class="v">${op ? escapeHtml(op) : '…'}</span>`;
         return;
     }
-    const owner = (info && info.registered_owner) ? info.registered_owner : '';
+    const owner = (info && info.owner) ? info.owner : '';
     const reg = (info && info.registration) ? info.registration : '';
+    const regTo = (info && info.registered_to) ? info.registered_to : '';
     const val = owner || op || '—';
     const regTxt = reg ? ` <span style="color:var(--t3)">(${escapeHtml(reg)})</span>` : '';
-    el.innerHTML = `<span class="k">Owner / operator</span><span class="v">${escapeHtml(val)}${regTxt}</span>`;
+    el.innerHTML = `<span class="k">Owner / operator</span><span class="v">${escapeHtml(val)}${regTxt}</span>`
+        + (regTo ? `<span class="k ro-regto">Registered to</span><span class="v">${escapeHtml(regTo)}</span>` : '');
 }
 
 // v3.4.108: aircraft photo in the overlay (same planespotters source + endpoint

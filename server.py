@@ -1,4 +1,4 @@
-# Version: 3.4.178
+# Version: 3.4.179
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -38,7 +38,7 @@ from urllib.parse import urlsplit
 from designators import airline_name, aircraft_type_name
 # v2.50.13: central DB-connection helper that applies tuning pragmas
 import tzwindow
-from search import window_sources
+from search import owner_names, window_sources
 from collector import (_open_db_conn, aircraft_type_for, analyze_db, sync_watchlist_tails,
                        watchlist_tail_map, watchlist_tail_status)
 # v2.79.0 (Phase 3 polish): centralized distance + bearing helpers.
@@ -12820,17 +12820,23 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             conn = _open_db_conn(CONFIG["data"]["db_file"])
             try:
                 row = conn.execute(
-                    "SELECT registration, registered_owner, manufacturer "
+                    "SELECT registration, registered_owner, manufacturer, feed_owner "
                     "FROM seen_aircraft WHERE icao = ?", (key,)
                 ).fetchone()
             finally:
                 conn.close()
             if not row:
                 return None
+            # v3.4.179: `owner` and `registered_to` are the owner line (see
+            # search.owner_names); `feed_owner` is the receiver's own name.
+            owner, registered_to = owner_names(row[1], row[3])
             return {
                 "registration": row[0] or "",
                 "registered_owner": row[1] or "",
                 "manufacturer": row[2] or "",
+                "feed_owner": row[3] or "",
+                "owner": owner,
+                "registered_to": registered_to,
             }
 
         cur = _read()

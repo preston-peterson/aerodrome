@@ -1,4 +1,4 @@
-<!-- Version: 3.4.178 -->
+<!-- Version: 3.4.179 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -160,6 +160,10 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
    into the title row's baseline; it now sits as a normal line. */
 .owner-line { color:var(--t2); font-size:13px; margin:0 0 10px 0; font-family:var(--mono); }
 .owner-line .owner-label { color:var(--t3); text-transform:uppercase; font-size:11px; letter-spacing:.04em; margin-right:8px; }
+/* v3.4.179: the labels make one column, so the Owner, Registered to and Route
+   values line up and a long value wraps inside its own column. */
+.owner-line { display:flex; align-items:baseline; }
+.owner-line .owner-label { flex:0 0 9em; }
 /* v3.4.107: aircraft photo (planespotters thumbnail) beside the header — placement A.
    The identity block grows; the photo sits to the right and stacks below on narrow
    screens. The slot is empty until maybeEnrichPhoto() fills it (thumbnail or a
@@ -876,9 +880,12 @@ function renderDetail(d) {
     const country = d.country || '';
     const registration = d.registration || '';
     // v3.4.58: registered owner (e.g. "DISTRIBUTORS DEVELOPMENT INC").
-    // May be empty on first view (not yet resolved) — maybeEnrichOwner()
-    // fetches it lazily below and fills in the line once it returns.
-    const owner = (d.registered_owner || '').trim();
+    // v3.4.179: the server builds the line from hexdb's name and the
+    // receiver's (`owner`, plus `registered_to` when the receiver names
+    // someone else). hexdb's may not be looked up yet — maybeEnrichOwner()
+    // fetches it lazily below and fills in the lines once it returns.
+    const owner = (d.owner || '').trim();
+    const registeredTo = (d.registered_to || '').trim();
 
     // v2.57.0: MIL and WATCHLIST pills in the hero. Backend annotates
     // is_military / mil_label / mil_color and is_watchlist / watchlist_label
@@ -932,6 +939,9 @@ function renderDetail(d) {
 
         <div class="owner-line" id="ownerLine">
             <span class="owner-label">Owner</span><span class="owner-name">${owner ? escapeHtml(owner) : '\u2014'}</span>
+        </div>
+        <div class="owner-line" id="registeredLine"${registeredTo ? '' : ' style="display:none"'}>
+            <span class="owner-label">Registered to</span><span class="owner-name">${escapeHtml(registeredTo)}</span>
         </div>
 
         <div class="owner-line route-line" id="routeLine" style="display:none">
@@ -989,7 +999,7 @@ function renderDetail(d) {
     // v3.4.58: if the registered owner isn't populated yet, fetch it
     // lazily and fill in the owner line. Kept off the main detail payload
     // so the heavy detail query never waits on a hexdb call.
-    maybeEnrichOwner(d.icao, owner);
+    maybeEnrichOwner(d.icao, d.registered_owner);
     maybeEnrichPhoto(d.icao, aircraftType);
     // v3.4.109: route line re-enabled on the adsb.lol source (display was
     // pulled v3.4.105 while adsbdb was the source and its data proved
@@ -1022,20 +1032,22 @@ function maybeShowLiveChip(icao) {
     if (!_liveChipTimer) _liveChipTimer = setInterval(check, 15000);
 }
 
-function maybeEnrichOwner(icao, existingOwner) {
-    // Already shown from the stored payload — nothing to do.
-    if (existingOwner) return;
+function maybeEnrichOwner(icao, lookedUp) {
+    // hexdb's name is already in the stored payload — nothing to look up.
+    if (lookedUp) return;
     // The owner line is always rendered (showing "—" until resolved), so
-    // we only need to fill in the name if a lookup returns one. If it
+    // we only need to fill in the names if a lookup returns one. If it
     // doesn't resolve, the "—" placeholder stays — the tag is always visible.
     fetch(`/api/aircraft/${encodeURIComponent(icao)}/enrich`)
         .then(r => r.ok ? r.json() : null)
         .then(j => {
-            if (!j || !j.registered_owner) return;
-            const line = document.getElementById('ownerLine');
-            if (!line) return;
-            const nameEl = line.querySelector('.owner-name');
-            if (nameEl) nameEl.textContent = j.registered_owner;
+            if (!j || !j.owner) return;
+            const nameEl = document.querySelector('#ownerLine .owner-name');
+            if (nameEl) nameEl.textContent = j.owner;
+            const reg = document.getElementById('registeredLine');
+            if (!reg) return;
+            reg.querySelector('.owner-name').textContent = j.registered_to || '';
+            reg.style.display = j.registered_to ? '' : 'none';
         })
         .catch(() => { /* enrichment is best-effort; leave the placeholder */ });
 }

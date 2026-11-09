@@ -1270,6 +1270,22 @@ no known type has no silhouette on the map and shows a plain chevron.
 
 If you run readsb, starting it with `--db-file` gives the complete answer.
 
+### Where owner names come from
+
+The owner on the map panel, the aircraft page and the board comes from
+hexdb.io. For an airliner, hexdb usually names the airline that flies it.
+
+readsb started with `--db-file` also sends each aircraft's registration and
+its registered owner. Aerodrome keeps both:
+
+- An aircraft hexdb doesn't know shows the receiver's owner and registration,
+  and Search finds it by its registration.
+- When the receiver names a different owner of record (often a bank that holds
+  the aircraft in trust for the airline), the map panel and the aircraft page
+  add a **Registered to** line with that name.
+
+Either name can be out of date: the two lists are updated at different times.
+
 ### Retention (per tab)
 
 ```yaml

@@ -1,4 +1,4 @@
-# Version: 3.4.178
+# Version: 3.4.179
 """
 collector.py — ADS-B data fetcher and classifier.
 
@@ -3801,7 +3801,7 @@ def _to_number(v):
 # used to raise inside the per-aircraft loop and abort the whole poll — every
 # poll, for as long as that aircraft stayed in range.
 _FEED_STR_FIELDS = ("hex", "flight", "callsign", "t", "type", "desc",
-                    "description")
+                    "description", "r", "ownOp")
 
 
 _skipped_record_logged_at = 0.0
@@ -3847,6 +3847,31 @@ def feed_type_code(raw: Dict) -> str:
     if isinstance(ty, str) and _TYPE_DESIGNATOR_RE.match(ty.strip()):
         return ty.strip()
     return ""
+
+
+# v3.4.179: readsb run with --db-file also sends each aircraft's registration
+# (`r`) and its registered owner (`ownOp`, the legal owner of record: often a
+# bank trustee on an airliner). Kept per aircraft so the owner line can show it
+# beside hexdb's name, and for aircraft hexdb doesn't know.
+_REGISTRATION_RE = re.compile(r"^[A-Z0-9][A-Z0-9-]{1,9}$")
+_OWNER_MAX_LEN = 120
+
+
+def feed_registration(raw: Dict) -> str:
+    """The feed's registration (`r`), upper-cased, or '' when it carries none
+    or the value isn't registration-shaped."""
+    r = raw.get("r")
+    r = r.strip().upper() if isinstance(r, str) else ""
+    return r if _REGISTRATION_RE.match(r) else ""
+
+
+def feed_owner(raw: Dict) -> str:
+    """The feed's registered owner (`ownOp`) with control characters turned
+    into spaces and whitespace collapsed, or '' when it carries none."""
+    o = raw.get("ownOp")
+    if not isinstance(o, str):
+        return ""
+    return " ".join("".join(ch if ch.isprintable() else " " for ch in o).split())[:_OWNER_MAX_LEN]
 
 
 def aircraft_type_for(raw: Dict, icao: str = "") -> str:
@@ -3910,6 +3935,9 @@ def normalize(raw: Dict) -> Dict:
         # Squawk is a 4-digit octal transponder code as a string, e.g. "1200".
         # Normalized to uppercase zero-padded 4 chars. Invalid/missing → "".
         "squawk": _normalize_squawk(raw.get("squawk")),
+        # v3.4.179: from the receiver's aircraft database; '' when it has none.
+        "registration": feed_registration(raw),
+        "feed_owner": feed_owner(raw),
     }
 
 
@@ -4527,14 +4555,19 @@ def _poll_once(config: Dict, watchlist_lookup: Dict):
             # window. COALESCE(..., 0) handles the NULL stored on legacy rows
             # (scalar MAX() returns NULL if any argument is NULL). Like
             # sighting_count, it is intentionally unindexed (see migration v11).
+            # v3.4.179: the feed's registration fills the column only while
+            # it's empty (hexdb's resolver writes it otherwise); the feed's
+            # owner follows the feed. Both are NULL when the feed has none.
             conn.execute("""
                 INSERT INTO seen_aircraft (
                     icao, first_seen_at, first_callsign, first_aircraft_type,
                     last_callsign, aircraft_type, aircraft_type_desc, operator, country,
                     last_lat, last_lon, last_distance, last_seen_at, sighting_count,
-                    fts_dirty, category, best_track_seconds
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)
+                    fts_dirty, category, best_track_seconds, registration, feed_owner
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?)
                 ON CONFLICT(icao) DO UPDATE SET
+                    registration = COALESCE(NULLIF(registration, ''), excluded.registration),
+                    feed_owner = COALESCE(excluded.feed_owner, feed_owner),
                     last_callsign = COALESCE(NULLIF(excluded.last_callsign, ''), last_callsign),
                     aircraft_type = COALESCE(NULLIF(excluded.aircraft_type, ''), aircraft_type),
                     aircraft_type_desc = COALESCE(NULLIF(excluded.aircraft_type_desc, ''), aircraft_type_desc),
@@ -4560,12 +4593,13 @@ def _poll_once(config: Dict, watchlist_lookup: Dict):
                         WHEN aircraft_type_desc IS NOT COALESCE(NULLIF(excluded.aircraft_type_desc, ''), aircraft_type_desc) THEN 1
                         WHEN operator IS NOT COALESCE(NULLIF(excluded.operator, ''), operator) THEN 1
                         WHEN country IS NOT COALESCE(excluded.country, country) THEN 1
+                        WHEN COALESCE(registration, '') = '' AND excluded.registration IS NOT NULL THEN 1
                         ELSE fts_dirty
                     END
             """, (ac["hex"], now, _cs, _atype,
                   _cs, _atype, _adesc, _operator, _country,
                   ac.get("lat"), ac.get("lon"), _distance_km, now, _category,
-                  atd_best_dur))
+                  atd_best_dur, ac["registration"] or None, ac["feed_owner"] or None))
 
             # Update all-time records (Wave 3). Each check is a single SELECT and
             # an UPDATE only on the rare case of a new record. No noticeable cost.

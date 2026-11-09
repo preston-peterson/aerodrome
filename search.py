@@ -1717,6 +1717,32 @@ def _fts_quote(s: str) -> str:
 # Per-aircraft detail
 # ---------------------------------------------------------------------------
 
+# v3.4.179: the owner line. hexdb's name (`registered_owner`) is usually the
+# operator ("Delta Air Lines"); the feed's (`feed_owner`, readsb's ownOp) is the
+# legal owner of record, often a bank trustee. The line shows hexdb's name, or
+# the feed's when hexdb has none, and adds "Registered to" with the feed's name
+# when it names someone else. Names match when one's words start the other's,
+# ignoring case, punctuation and company suffixes ("SkyWest Airlines" ==
+# "SKYWEST AIRLINES INC").
+_OWNER_SUFFIXES = frozenset({"INC", "LLC", "LTD", "CO", "CORP", "CORPORATION",
+                             "COMPANY", "PLC", "LP", "LLP", "THE"})
+
+
+def _owner_words(name: str) -> List[str]:
+    return [w for w in re.sub(r"[^A-Z0-9]+", " ", name.upper()).split()
+            if w not in _OWNER_SUFFIXES]
+
+
+def owner_names(looked_up: Optional[str], feed: Optional[str]) -> Tuple[str, str]:
+    """(owner, registered_to) for the owner line; either may be ''."""
+    looked_up, feed = (looked_up or "").strip(), (feed or "").strip()
+    if not looked_up or not feed:
+        return looked_up or feed, ""
+    a, b = _owner_words(looked_up), _owner_words(feed)
+    n = min(len(a), len(b))
+    return looked_up, ("" if n and a[:n] == b[:n] else feed)
+
+
 def detail_for_aircraft(conn: sqlite3.Connection, icao: str) -> Optional[Dict[str, Any]]:
     """Return per-aircraft detail for the /api/search/aircraft/{icao} endpoint.
 
@@ -1729,7 +1755,7 @@ def detail_for_aircraft(conn: sqlite3.Connection, icao: str) -> Optional[Dict[st
         SELECT icao, first_seen_at, first_callsign, first_aircraft_type,
                registration, last_callsign, aircraft_type, aircraft_type_desc,
                operator, country, last_lat, last_lon, last_seen_at, sighting_count,
-               registered_owner, manufacturer
+               registered_owner, manufacturer, feed_owner
         FROM seen_aircraft WHERE icao = ?
     """, (icao,)).fetchone()
     if row is None:
@@ -1748,7 +1774,11 @@ def detail_for_aircraft(conn: sqlite3.Connection, icao: str) -> Optional[Dict[st
         # lazily by the hexdb forward resolver. Empty string when not
         # yet resolved or unknown to hexdb.
         "registered_owner": row[14] or "", "manufacturer": row[15] or "",
+        # v3.4.179: the receiver's own owner name, and the owner line built
+        # from both (see owner_names).
+        "feed_owner": row[16] or "",
     }
+    out["owner"], out["registered_to"] = owner_names(row[14], row[16])
 
     # Sighting history summary from rollup. Cheap — bounded by the
     # number of hourly buckets this aircraft was seen in, typically
