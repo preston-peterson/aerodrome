@@ -105,6 +105,13 @@ def _write(p, text):
     p.write_text(text)
 
 
+def _dated_dirs(d):
+    """The install snapshots in a .backups/ folder: real dated folders only,
+    newest name last (prune_backups is the only thing that retires them)."""
+    return sorted(p.name for p in Path(d).iterdir()
+                  if p.is_dir() and not p.is_symlink() and updater._SNAPSHOT_RE.match(p.name))
+
+
 def _guard_block():
     """The real update-guard block from the repo's main.py (between its markers)."""
     src = (REPO / "main.py").read_text()
@@ -491,6 +498,93 @@ class TestSwapAndBoot(_InstallCase):
         self.assertEqual((bk / "bump-version.sh").read_text(), "kept\n")
         self.assertTrue((self.inst / "bump-version.sh").exists())     # left, not lost
         self.assertTrue((bk / "test_old_suite.py").exists())          # the rest still moved
+
+    SIX_SNAPS = ("20261101-000000", "20261102-000000", "20261103-000000",
+                 "20261104-000000", "20261105-000000", "20261106-000000")
+
+    def _add_snapshots(self, names):
+        """Empty .backups/<ts>/ folders, as an earlier commit left them."""
+        for n in names:
+            (self.inst / ".backups" / n).mkdir(parents=True)
+        return list(names)
+
+    def test_apply_and_commit_leave_five_snapshots(self):
+        # The bug: the prune at apply time ran BEFORE this update's folder
+        # existed, so 5 old snapshots + the new one = 6 on disk.
+        self._add_snapshots(self.SIX_SNAPS)
+        self.stage_and_swap(ts="20261107-120000")
+        updater.on_boot(self.inst, ["main.py", "start"], reexec=mock.Mock())
+        self.assertTrue(updater.commit(self.inst))
+        self.assertEqual(_dated_dirs(self.inst / ".backups"),
+                         ["20261103-000000", "20261104-000000", "20261105-000000",
+                          "20261106-000000", "20261107-120000"])
+        bk = self.inst / ".backups" / "20261107-120000"
+        self.assertEqual((bk / "VERSION").read_text().strip(), OLD)   # the new one is real
+
+    def test_commit_keeps_the_snapshot_it_just_made_even_when_oldest(self):
+        self._add_snapshots(self.SIX_SNAPS[1:] + ("20261107-000000",))
+        self.stage_and_swap(ts="20261101-000000")
+        updater.on_boot(self.inst, ["main.py", "start"], reexec=mock.Mock())
+        self.assertTrue(updater.commit(self.inst))
+        bk = self.inst / ".backups" / "20261101-000000"
+        self.assertEqual((bk / "VERSION").read_text().strip(), OLD)
+        self.assertEqual(_dated_dirs(self.inst / ".backups"),
+                         ["20261101-000000", "20261103-000000", "20261104-000000",
+                          "20261105-000000", "20261106-000000", "20261107-000000"])
+
+    def test_prune_backups_protects_a_named_folder_and_returns_the_count(self):
+        self._add_snapshots(self.SIX_SNAPS + ("20261107-000000",))
+        self.assertEqual(updater.prune_backups(self.inst, protect={"20261101-000000"}), 1)
+        self.assertEqual(_dated_dirs(self.inst / ".backups"),
+                         ["20261101-000000"] + list(self.SIX_SNAPS[2:]) + ["20261107-000000"])
+        self.assertEqual(updater.prune_backups(self.inst), 1)   # nothing protected now
+        self.assertEqual(_dated_dirs(self.inst / ".backups"),
+                         list(self.SIX_SNAPS[2:]) + ["20261107-000000"])
+
+    def test_prune_leaves_everything_that_is_not_a_dated_folder(self):
+        bk = self.inst / ".backups"
+        self._add_snapshots(self.SIX_SNAPS[2:])
+        self._add_snapshots(("20261109-000000", "20261110-000000"))
+        _write(bk / ".tmp" / "spool.bin", "temp\n")
+        _write(bk / "config.yaml.last-good", "web: {port: 18299}\n")
+        _write(bk / ".private-modes-applied", "modes\n")
+        (bk / "20261107-144345-extra").mkdir()
+        _write(bk / "20261101-000000", "a file, never a folder\n")
+        target = self.inst / "example-kept-elsewhere"
+        _write(target / "payload.txt", "keep me\n")
+        os.symlink(str(target), str(bk / "20261102-000000"))
+        self.stage_and_swap(ts="20261111-120000")
+        updater.on_boot(self.inst, ["main.py", "start"], reexec=mock.Mock())
+        self.assertTrue(updater.commit(self.inst))
+        self.assertEqual(_dated_dirs(bk),
+                         ["20261105-000000", "20261106-000000", "20261109-000000",
+                          "20261110-000000", "20261111-120000"])
+        self.assertEqual((bk / "20261101-000000").read_text(), "a file, never a folder\n")
+        self.assertTrue(os.path.islink(bk / "20261102-000000"))
+        self.assertEqual((target / "payload.txt").read_text(), "keep me\n")
+        self.assertEqual((bk / ".tmp" / "spool.bin").read_text(), "temp\n")
+        self.assertEqual((bk / "config.yaml.last-good").read_text(), "web: {port: 18299}\n")
+        self.assertTrue((bk / ".private-modes-applied").exists())
+        self.assertTrue((bk / "20261107-144345-extra").is_dir())
+
+    def test_commit_survives_a_snapshot_it_cannot_remove(self):
+        self._add_snapshots(self.SIX_SNAPS)
+        real = shutil.rmtree
+
+        def flaky(path, *a, **kw):
+            if Path(path).name == "20261101-000000":
+                raise OSError(errno.EACCES, "Permission denied")
+            return real(path, *a, **kw)
+
+        self.stage_and_swap(ts="20261107-120000")
+        updater.on_boot(self.inst, ["main.py", "start"], reexec=mock.Mock())
+        with mock.patch("shutil.rmtree", flaky):
+            self.assertTrue(updater.commit(self.inst))
+        self.assertIsNone(updater.pending(self.inst))
+        self.assertEqual(_dated_dirs(self.inst / ".backups"),
+                         ["20261101-000000", "20261103-000000", "20261104-000000",
+                          "20261105-000000", "20261106-000000", "20261107-120000"])
+        self.assertEqual(updater.last_result(self.inst)["result"], "applied")
 
     def test_retired_names_are_never_install_data(self):
         for n in ("config.yaml", "venv", "logs", ".backups", "update", "aircraft_history.db",

@@ -19,6 +19,35 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.178] — 2026-11-09
+
+**The Status page's Collector card now says why sightings stopped being saved, and Aerodrome no longer saves a stopped receiver's last data over and over.**
+
+- **The Collector card names the cause.** It used to show only "Stalled · No writes in 290s (threshold 45s)". Now its status says what's going on, and a note below says what to do:
+  - **Paused for maintenance:** Aerodrome is refreshing the database's statistics, building a search index, deleting sightings older than your Retention settings, or waiting for the system clock to be set after a boot. The card says which, and how long ago it started. On a large database on an SD card the statistics refresh can take several minutes.
+  - **No aircraft reported:** the receiver answers but lists no aircraft. When its message count has stopped moving too, the card says it isn't hearing anything. It suggests the receiver's own map page, the radio's USB connection and the decoder.
+  - **Receiver data not updating:** the receiver keeps sending the same data (see below).
+  - **Can't read the receiver:** as before, with the error.
+  - **Can't save sightings:** a poll failed while saving. The card says why when it can tell (a full disk, a database that stayed locked, a disk read or write error, a read-only or damaged database file) and what to do.
+  - **Not polling:** the collector is neither polling nor doing maintenance. Restart Aerodrome.
+  - **Starting:** for the first moments after Aerodrome starts, before its first poll.
+
+  Paused, No aircraft and Starting are amber, not red: Aerodrome is waiting, not broken. The Status banner and the health dot on every page turn amber too, so a quiet sky at night no longer turns them red. Times on the card read like "4 min 50 s".
+- **A stopped receiver's last data is no longer saved again and again.** When a decoder (dump1090 or readsb) stops but its last list of aircraft is still being served, every poll used to save those aircraft, at the same positions, as new sightings. Aerodrome now skips an answer that's exactly the same as the one before, and the Collector card says the receiver's data isn't updating. A working receiver's answer changes every second, so normal collection is unaffected.
+- **Updates keep 5 backups, as the docs say.** Aerodrome kept 5 earlier versions in `.backups/` and then added the new update's backup, so 6 stayed on disk. Now the oldest goes once the update is confirmed.
+
+### Operational notes
+
+No database change. An update through the Updates page restarts Aerodrome as usual. A receiver that sends the same answer to two polls in a row has the second one skipped; normally that only happens when its decoder has stopped. A feed that changes less often than Aerodrome polls has its repeats skipped too, so only duplicate rows are left out.
+
+### Behind the scenes
+
+- `collector.get_collector_health()` adds `activity`, `last_poll_seconds_ago`, `uptime_seconds`, `empty_seconds`, `messages_static_seconds`, `feed_static_seconds` and `save_error`. `collector._maintenance()` marks the statistics refresh, index builds, retention cleanup and the clock wait. `fetch_and_store()` notes when each poll starts and keeps the error of a poll that raises.
+- `server._collector_state()` picks the card's state. `/api/status`'s collector component adds `state`, `warn`, `threshold_seconds`, `activity`, `empty_seconds`, `receiver_hearing`, `feed_static_seconds`, `save_error` and `last_poll_seconds_ago`. `ok` now means the state is `running`. The waiting states (`paused`, `no_aircraft`, `starting`) set `warn`, count as up, and make the severity `warn` with a reason.
+- `collector._track_feed()` compares each answer that lists aircraft with the last one stored in the same database.
+- `updater.prune_backups()` runs at the end of `updater.commit()`, never on the backup that commit just made. The server's prune at apply time is gone.
+- New `test_collector_state.py`; browser tests for the Collector card.
+
 ## [3.4.177] — 2026-11-08
 
 **Updates now tidy away the files earlier releases left in your install folder, and the installer refuses a home folder up front where SELinux would stop Aerodrome from starting.**

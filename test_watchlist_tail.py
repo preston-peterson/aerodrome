@@ -307,7 +307,10 @@ class TestSightings(_TailCase):
     """The symptom in the report: aircraft overhead, nothing recorded."""
 
     def poll(self, aircraft, lookup):
-        payload = {"now": 0, "aircraft": aircraft}
+        # A live receiver's clock moves between polls; an unchanged answer is
+        # a stopped decoder, which the collector doesn't store twice.
+        self._now = getattr(self, "_now", 1794000000.0) + 15
+        payload = {"now": self._now, "aircraft": aircraft}
         with mock.patch.object(collector.requests, "get", return_value=_resp(200, payload)):
             collector.fetch_and_store(self.cfg, lookup)
 

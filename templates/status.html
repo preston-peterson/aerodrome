@@ -1,4 +1,4 @@
-<!-- Version: 3.4.177 -->
+<!-- Version: 3.4.178 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -147,6 +147,13 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
    which already render advisory failures in amber. */
 .warn-box { background:rgba(245,158,11,.08); border:1px solid rgba(245,158,11,.3); border-radius:6px; padding:8px 10px; margin-top:8px; font-family:var(--mono); font-size:11px; color:var(--amber-text); }
 .warn-box a { color:inherit; text-decoration:underline; }
+.coll-note { border-radius:6px; padding:8px 10px; margin-top:8px; font-size:12px; line-height:1.5; }
+.coll-note.warn { background:rgba(245,158,11,.08); border:1px solid rgba(245,158,11,.3); color:var(--amber-text); }
+.coll-note.bad { background:rgba(239,68,68,.08); border:1px solid rgba(239,68,68,.3); color:var(--red-text); }
+.coll-note p { margin:0; }
+.coll-note p + p { margin-top:6px; }
+.coll-note .raw { font-family:var(--mono); font-size:11px; opacity:.75; word-break:break-word; }
+
 
 .loading { text-align:center; padding:40px; color:var(--t3); font-size:13px; }
 
@@ -236,6 +243,97 @@ function fmtUptime(seconds) {
     if (h) parts.push(`${h}h`);
     parts.push(`${m}m`);
     return parts.join(' ');
+}
+
+function _collDur(s) {
+    s = Math.max(0, Math.round(Number(s) || 0));
+    if (s < 60) return `${s}\u00a0s`;
+    const m = Math.floor(s / 60), r = s % 60;
+    if (m < 60) return r ? `${m}\u00a0min\u00a0${r}\u00a0s` : `${m}\u00a0min`;
+    const h = Math.floor(m / 60), mm = m % 60;
+    return mm ? `${h}\u00a0h\u00a0${mm}\u00a0min` : `${h}\u00a0h`;
+}
+function _collPolls(n) {
+    return n > 1 ? `The last ${n} polls` : 'The last poll';
+}
+function _collEsc(v) {
+    return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+const _COLL_LABEL = {
+    running: 'Running', paused: 'Paused for maintenance', no_aircraft: 'No aircraft reported',
+    receiver_error: 'Can’t read the receiver', save_error: 'Can’t save sightings',
+    receiver_stale: 'Receiver data not updating', not_polling: 'Not polling',
+    starting: 'Starting', stalled: 'Stalled',
+};
+const _COLL_ACTIVITY = {
+    stats: ['Refreshing the database’s statistics, which keep searches fast.',
+            'On a large database on an SD card this can take several minutes. It runs every 6 hours.'],
+    index: ['Building a search index, once, after an update.', ''],
+    cleanup: ['Deleting sightings older than your Retention settings.', ''],
+    clock: ['Waiting for the system clock to be set: it reads earlier than the newest sighting.',
+            'If the clock still isn’t set after 10 minutes, collection starts anyway.'],
+};
+const _COLL_SAVE = {
+    disk_full: 'the disk is full. Free some space on the disk that holds the database. To keep it from filling again, keep sightings for fewer days (Configuration → Retention).',
+    locked: 'the database stayed busy for longer than Aerodrome waits. Another program, or a second copy of Aerodrome, may be holding it. Restarting Aerodrome usually clears it.',
+    io: 'the disk reported a read or write error. SD cards wear out: check the disk, and keep a recent backup (Configuration → Backup & Restore).',
+    readonly: 'Aerodrome can’t write to the database file. Check that the account Aerodrome runs as owns it.',
+    corrupt: 'the database file looks damaged. Restore a recent backup (Configuration → Backup & Restore).',
+};
+// v3.4.178: the Collector card names why writes stopped. /api/status picks the
+// state (server._collector_state); amber states (cc.warn) are waiting, not broken.
+function collectorCard(cc) {
+    const st = cc.state || (cc.ok ? 'running' : 'stalled');
+    const cls = statusClass(cc.ok, cc.warn);
+    const P = (t) => t ? `<p>${t}</p>` : '';
+    let note = '';
+    if (st === 'paused') {
+        const act = cc.activity || {};
+        const a = _COLL_ACTIVITY[act.kind] || ['Doing database maintenance.', ''];
+        const resume = act.kind === 'clock' ? '' : ' Collection resumes when it’s done.';
+        note = P(`${a[0]} Started ${_collDur(act.seconds)} ago.${resume}`) + P(a[1]);
+    } else if (st === 'receiver_stale') {
+        note = P(`The receiver is answering, but its data hasn’t changed for ${_collDur(cc.feed_static_seconds)}, so its decoder has probably stopped. Aerodrome doesn’t save the same data twice.`)
+             + P('Restart the decoder (dump1090 or readsb) on the receiver, and check the radio’s USB connection.');
+    } else if (st === 'starting') {
+        note = P('Collection starts in a moment.');
+    } else if (st === 'no_aircraft') {
+        note = P(`The receiver is answering, but it has reported no aircraft for ${_collDur(cc.empty_seconds)}.`
+                 + (cc.receiver_hearing === false ? ' Its message count hasn’t moved either, so it isn’t hearing anything.' : ''))
+             + P('If planes should be in range, open the receiver’s own map page. If that’s empty too, check the radio’s USB connection and restart the decoder (dump1090 or readsb).');
+    } else if (st === 'receiver_error') {
+        const n = cc.consecutive_failed_polls || 0;
+        note = P(`${_collPolls(n)} couldn’t read the receiver:`)
+             + `<p class="raw">${_collEsc(cc.last_poll_error)}</p>`;
+    } else if (st === 'save_error') {
+        const e = cc.save_error, n = e.count || 1;
+        const why = _COLL_SAVE[e.kind];
+        note = P(`${_collPolls(n)} couldn’t be saved${why ? ': ' + why : '.'}`)
+             + `<p class="raw">${_collEsc(e.message)}</p>`;
+    } else if (st === 'not_polling') {
+        note = P(`The collector hasn’t polled the receiver for ${_collDur(cc.last_poll_seconds_ago)}, and it isn’t doing database maintenance.`)
+             + P('Restart Aerodrome. If it happens again, the Logs page shows what it was doing last.');
+    } else if (st === 'stalled') {
+        note = cc.last_write_seconds_ago == null ? P('No sightings saved yet.')
+             : P(`No sightings saved for ${_collDur(cc.last_write_seconds_ago)}. Aerodrome expects one at least every ${_collDur(cc.threshold_seconds)}.`);
+    }
+    const age = cc.last_write_seconds_ago;
+    const last = age != null && age >= 0 ? _collDur(age) + ' ago' : '—';
+    const tp = cc.records_per_sec_5m != null ? cc.records_per_sec_5m.toFixed(1) + '/s' : '—';
+    const tpn = cc.records_sample_count_5m != null ? ` <span style="opacity:.6">· ${cc.records_sample_count_5m.toLocaleString()} in last 5m</span>` : '';
+    return `
+            <div class="card" id="collectorCard">
+                <div class="card-head">
+                    <div class="light ${cls}"></div>
+                    <div class="card-title">Collector</div>
+                    <div class="card-subtitle">polling thread</div>
+                </div>
+                <div class="row"><span class="row-lbl">Status</span><span class="row-val ${cls}">${_COLL_LABEL[st] || 'Stalled'}</span></div>
+                <div class="row"><span class="row-lbl">Last write</span><span class="row-val">${last}</span></div>
+                <div class="row"><span class="row-lbl">Throughput</span><span class="row-val">${tp}${tpn}</span></div>
+                ${note ? `<div class="coll-note ${cls}">${note}</div>` : ''}
+            </div>`;
 }
 
 function statusClass(ok, warn) {
@@ -493,62 +591,7 @@ function render(s) {
 
         <div class="grid">
             <!-- Collector -->
-            <div class="card">
-                <div class="card-head">
-                    <div class="light ${statusClass(c.collector.ok)}"></div>
-                    <div class="card-title">Collector</div>
-                    <div class="card-subtitle">polling thread</div>
-                </div>
-                <div class="row"><span class="row-lbl">Status</span><span class="row-val ${statusClass(c.collector.ok)}">${c.collector.ok ? 'Running' : 'Stalled'}</span></div>
-                <div class="row"><span class="row-lbl">Last write</span><span class="row-val">${c.collector.last_write_seconds_ago != null ? c.collector.last_write_seconds_ago + 's ago' : '—'}</span></div>
-                <div class="row"><span class="row-lbl">Throughput</span><span class="row-val">${c.collector.records_per_sec_5m != null ? c.collector.records_per_sec_5m.toFixed(1) + '/s' : '—'}${c.collector.records_sample_count_5m != null ? ` <span style="opacity:.6">· ${c.collector.records_sample_count_5m.toLocaleString()} in last 5m</span>` : ''}</span></div>
-                ${(function(){
-                    // v3.4.41: surface the SPECIFIC poll error inline on the
-                    // Status card when the collector knows one. Without this,
-                    // the user saw only the symptom ("No data written yet" or
-                    // "No writes in Xs") and had to know to grep journalctl
-                    // for the cause. The collector module's
-                    // get_collector_health() now exposes the most recent
-                    // fetch-failure message (e.g. the v3.4.40 non-ADS-B
-                    // detection text) directly to /api/status, so the page
-                    // the user is already looking at tells them what's
-                    // actually wrong.
-                    //
-                    // Render priority:
-                    //   1. last_poll_error from the collector module (most
-                    //      specific — names the actual cause)
-                    //   2. fallback to c.collector.error (generic — "No data
-                    //      written yet" / "No writes in Xs")
-                    // If both exist, show the specific one and a small
-                    // streak-count footnote so the user can tell whether
-                    // it's a one-shot blip or a wedged state.
-                    //
-                    // Defense-in-depth: escape both error strings before
-                    // inlining. They originate from Python exception
-                    // messages — same trust boundary as a server log
-                    // line — and in practice contain only ASCII text +
-                    // em-dashes, but we shouldn't open a new XSS surface
-                    // on a status-page payload that any reverse-proxy or
-                    // browser-extension could see.
-                    function _esc(s){
-                        return String(s == null ? '' : s)
-                            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-                            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-                    }
-                    const specific = c.collector.last_poll_error;
-                    const streak   = c.collector.consecutive_failed_polls || 0;
-                    if (specific) {
-                        const streakNote = streak > 1
-                            ? ` <span style="opacity:0.65; font-size:11px;">(${streak} consecutive failed polls)</span>`
-                            : '';
-                        return `<div class="error-box">${_esc(specific)}${streakNote}</div>`;
-                    }
-                    if (c.collector.error) {
-                        return `<div class="error-box">${_esc(c.collector.error)}</div>`;
-                    }
-                    return '';
-                })()}
-            </div>
+            ${collectorCard(c.collector)}
 
             <!-- Web Server -->
             <div class="card">

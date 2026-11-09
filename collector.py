@@ -1,4 +1,4 @@
-# Version: 3.4.177
+# Version: 3.4.178
 """
 collector.py — ADS-B data fetcher and classifier.
 
@@ -6,6 +6,7 @@ Polls your receiver, stores EVERY aircraft in the 'all_sightings' table,
 and additionally tags military + watchlist matches into their own tables.
 """
 
+import contextlib
 import logging
 import math
 import os
@@ -92,16 +93,129 @@ def get_collector_health():
         has already fired for the current streak (resets when a
         successful poll lands).
 
-    All three reflect the current in-memory state; they are not
+    v3.4.178 adds what the card needs to name the other causes: the
+    maintenance running now (`activity`), seconds since the last poll
+    started, since the receiver last reported aircraft, since its message
+    counter last moved, since its answer last changed (`_track_feed`), and
+    the last poll that raised (`save_error`). server._collector_state picks
+    the state.
+
+    All of it reflects the current in-memory state; it is not
     persisted across restarts. After a service restart the streak
     counter is 0 and last_poll_error is empty regardless of the
     pre-restart state — the next poll re-evaluates from scratch.
     """
+    now = time.monotonic()
+    since = lambda t: None if t is None else round(now - t, 1)
+    act = _activity
+    save = _save_error
     return {
         "last_poll_error": _last_offline_reason or None,
         "consecutive_failed_polls": int(_consecutive_failed_polls),
         "offline_notified": bool(_offline_notified),
+        # v3.4.178: why writes may have stopped (see server._collector_state).
+        "activity": {"kind": act[0], "seconds": since(act[1])} if act else None,
+        "last_poll_seconds_ago": since(_last_poll_at),
+        "uptime_seconds": since(_LOADED_AT),
+        "empty_seconds": since(_empty_since),
+        "messages_static_seconds": since(_messages_moved_at),
+        "feed_static_seconds": since(_feed_changed_at) if _feed_last else None,
+        "save_error": None if not save else {
+            "message": save["message"], "kind": save["kind"], "count": save["count"],
+            "seconds_ago": since(save["at"])},
     }
+
+
+# v3.4.178: what the Collector card needs to say why writes stopped. All times are
+# time.monotonic() (the wall clock may be unset or jump at boot) and in-memory only.
+_LOADED_AT = time.monotonic()
+_activity = None              # (kind, started): maintenance that holds up collection
+_last_poll_at = None          # when the last poll started
+_empty_since = None           # first of an unbroken run of polls with no aircraft
+_messages_last = None         # the feed's "messages" counter at the last poll
+_messages_moved_at = None     # when that counter last changed
+_feed_last = None             # (db_path, hash of the body) of the last poll with aircraft
+_feed_changed_at = None       # when the receiver's answer last changed
+_save_error = None            # {"message", "kind", "count", "at"}: polls that raised
+
+
+def _track_feed(db_path, body, data, aircraft_count):
+    """Note the receiver's answer. True when it is, byte for byte, the answer
+    the last poll already stored: a stopped decoder whose last file is still
+    being served. A live one differs every second (its clock and each
+    aircraft's `seen`), so storing it again would only record the same
+    positions as new sightings. An answer with no aircraft is never a repeat
+    worth skipping (nothing is stored either way)."""
+    global _feed_last, _feed_changed_at, _messages_last, _messages_moved_at, _empty_since
+    global _repeat_logged
+    t = time.monotonic()
+    msgs = data.get("messages") if isinstance(data, dict) else None
+    if isinstance(msgs, (int, float)) and not isinstance(msgs, bool):
+        if msgs != _messages_last:
+            _messages_last, _messages_moved_at = msgs, t
+    else:
+        _messages_last = _messages_moved_at = None
+    if not aircraft_count:
+        _feed_last, _feed_changed_at = None, t
+        if _empty_since is None:
+            _empty_since = t
+        return False
+    key = (db_path, hash(body))
+    if key == _feed_last:
+        if not _repeat_logged:
+            _repeat_logged = True
+            logger.warning("The receiver sent the same answer as the last poll, so its decoder may "
+                           "have stopped. Aerodrome doesn't store a repeat; collection resumes when "
+                           "the receiver's data changes.")
+        return True
+    if _repeat_logged:
+        _repeat_logged = False
+        logger.info("The receiver's data is changing again; collection resumed.")
+    _feed_last, _feed_changed_at, _empty_since = key, t, None
+    return False
+
+
+_repeat_logged = False        # a run of repeats has been logged
+
+
+@contextlib.contextmanager
+def _maintenance(kind):
+    """Mark database upkeep that holds up collection ('stats', 'index',
+    'cleanup', or 'clock' while waiting for the system clock), so the Status
+    page says so instead of "Stalled"."""
+    global _activity
+    previous = _activity
+    _activity = (kind, time.monotonic())
+    try:
+        yield
+    finally:
+        _activity = previous
+
+
+def _poll_error_kind(e):
+    """A save failure's kind, for the Collector card's advice."""
+    text = str(e).lower()
+    errno_ = getattr(e, "errno", None)
+    if "disk is full" in text or errno_ == 28:                       # ENOSPC
+        return "disk_full"
+    if "locked" in text or "busy" in text:
+        return "locked"
+    if "readonly" in text or "read-only" in text:
+        return "readonly"
+    if "malformed" in text or "not a database" in text:
+        return "corrupt"
+    if "disk i/o error" in text or errno_ == 5:                      # EIO
+        return "io"
+    return "other"
+
+
+def _note_poll_error(e):
+    global _save_error
+    mod = type(e).__module__
+    name = type(e).__name__ if mod in ("builtins", "__main__") else f"{mod}.{type(e).__name__}"
+    count = (_save_error or {}).get("count", 0) + 1
+    _save_error = {"message": f"{name}: {e}"[:300], "kind": _poll_error_kind(e),
+                   "count": count, "at": time.monotonic()}
 
 
 # v3.4.42: demo-mode auto-recovery state. The recovery walks the same
@@ -958,12 +1072,13 @@ def wait_for_plausible_clock(db_path: str) -> None:
                    f"{newest - time.time():,.0f}s, so it may not be set yet. Collection "
                    f"waits for it, for up to {CLOCK_WAIT_MAX_SEC // 60} minutes.")
     started = time.monotonic()
-    while time.time() < newest - CLOCK_BEHIND_MARGIN_SEC:
-        if time.monotonic() - started >= CLOCK_WAIT_MAX_SEC:
-            logger.warning("The system clock still reads earlier than the newest sighting. "
-                           "Collecting anyway, with the time it has.")
-            return
-        time.sleep(CLOCK_WAIT_STEP_SEC)
+    with _maintenance("clock"):
+        while time.time() < newest - CLOCK_BEHIND_MARGIN_SEC:
+            if time.monotonic() - started >= CLOCK_WAIT_MAX_SEC:
+                logger.warning("The system clock still reads earlier than the newest sighting. "
+                               "Collecting anyway, with the time it has.")
+                return
+            time.sleep(CLOCK_WAIT_STEP_SEC)
     logger.info("The system clock is set. Collection starts.")
 
 
@@ -991,38 +1106,44 @@ def ensure_lookup_indexes(db_path: str) -> None:
         # row of the sort in RAM.
         conn.execute("PRAGMA temp_store = FILE")
         conn.execute("PRAGMA cache_size = -65536")
-        for name, target, replaces in missing:
-            table = target.split("(")[0]
-            rows = conn.execute(f"SELECT COALESCE(MAX(rowid), 0) FROM {table}").fetchone()[0]
-            free = shutil.disk_usage(os.path.dirname(os.path.abspath(db_path))).free
-            if free < rows * _INDEX_BUILD_BYTES_PER_ROW + _INDEX_BUILD_SPARE_BYTES:
-                logger.warning(f"Not building index {name}: only {free // (1024 * 1024)} MB free. "
-                               f"Searches and aircraft pages work without it, more slowly. "
-                               f"Trying again at the next start.")
-                continue
-            if rows > 100_000:
-                logger.warning(f"Building index {name} on {rows:,} rows, once. The web UI stays up; "
-                               f"collection pauses until it's done.")
-            started = time.time()
-            conn.execute("BEGIN IMMEDIATE")
-            try:
-                conn.execute(f"CREATE INDEX IF NOT EXISTS {name} ON {target}")
-                if replaces:
-                    conn.execute(f"DROP INDEX IF EXISTS {replaces}")
-                conn.commit()
-            except BaseException:
-                conn.rollback()
-                raise
-            # The planner needs numbers for the new index straight away.
-            conn.execute(f"PRAGMA analysis_limit = {STATS_OPTIMIZE_ANALYSIS_LIMIT}")
-            analyze_db(conn, table)
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
-            logger.info(f"Index {name} built in {time.time() - started:.1f}s")
+        with _maintenance("index"):
+            _build_indexes(conn, db_path, missing)
     except (sqlite3.Error, OSError) as e:
         logger.warning(f"Could not build an index ({e}). Searches and aircraft pages work "
                        f"without it, more slowly. Trying again at the next start.")
     finally:
         conn.close()
+
+
+def _build_indexes(conn, db_path, missing):
+    """ensure_lookup_indexes' builds, one index at a time."""
+    for name, target, replaces in missing:
+        table = target.split("(")[0]
+        rows = conn.execute(f"SELECT COALESCE(MAX(rowid), 0) FROM {table}").fetchone()[0]
+        free = shutil.disk_usage(os.path.dirname(os.path.abspath(db_path))).free
+        if free < rows * _INDEX_BUILD_BYTES_PER_ROW + _INDEX_BUILD_SPARE_BYTES:
+            logger.warning(f"Not building index {name}: only {free // (1024 * 1024)} MB free. "
+                           f"Searches and aircraft pages work without it, more slowly. "
+                           f"Trying again at the next start.")
+            continue
+        if rows > 100_000:
+            logger.warning(f"Building index {name} on {rows:,} rows, once. The web UI stays up; "
+                           f"collection pauses until it's done.")
+        started = time.time()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute(f"CREATE INDEX IF NOT EXISTS {name} ON {target}")
+            if replaces:
+                conn.execute(f"DROP INDEX IF EXISTS {replaces}")
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        # The planner needs numbers for the new index straight away.
+        conn.execute(f"PRAGMA analysis_limit = {STATS_OPTIMIZE_ANALYSIS_LIMIT}")
+        analyze_db(conn, table)
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+        logger.info(f"Index {name} built in {time.time() - started:.1f}s")
 
 
 def refresh_query_planner_stats(config: Dict[str, Any]) -> None:
@@ -1048,7 +1169,8 @@ def refresh_query_planner_stats(config: Dict[str, Any]) -> None:
         try:
             conn.execute(f"PRAGMA analysis_limit={STATS_OPTIMIZE_ANALYSIS_LIMIT}")
             t0 = time.time()
-            analyze_db(conn)
+            with _maintenance("stats"):
+                analyze_db(conn)
             logger.info(
                 "Query-planner stats refreshed (sampled ANALYZE, %.2fs)",
                 time.time() - t0,
@@ -3547,7 +3669,8 @@ def run_due_cleanup(db_path: str, retention: dict) -> None:
     global _next_cleanup_at, _last_cleanup_retention
     if time.monotonic() < _next_cleanup_at and retention == _last_cleanup_retention:
         return
-    finished = cleanup_old_data(db_path, retention)
+    with _maintenance("cleanup"):
+        finished = cleanup_old_data(db_path, retention)
     _last_cleanup_retention = dict(retention)
     _next_cleanup_at = time.monotonic() + (CLEANUP_INTERVAL_SEC if finished else CLEANUP_CATCH_UP_SEC)
 
@@ -3940,10 +4063,19 @@ def _fire_new_record_notification(record_type: str, new_value: float,
 # =============================================================================
 
 def fetch_and_store(config: Dict, watchlist_lookup: Dict):
-    """One poll cycle, then the notifications it raised (see _poll_notifications)."""
+    """One poll cycle, then the notifications it raised (see _poll_notifications).
+    v3.4.178: notes when the poll started, and a poll that raises (a database
+    or disk error while storing) for the Collector card; a poll that ends
+    normally clears it."""
+    global _last_poll_at, _save_error
+    _last_poll_at = time.monotonic()
     _poll_notifications.pending = []
     try:
         _poll_once(config, watchlist_lookup)
+        _save_error = None
+    except Exception as e:
+        _note_poll_error(e)
+        raise
     finally:
         pending, _poll_notifications.pending = _poll_notifications.pending, None
         for event, title, body, kwargs in pending:
@@ -4091,6 +4223,12 @@ def _poll_once(config: Dict, watchlist_lookup: Dict):
         _offline_notified = False
     _consecutive_failed_polls = 0
     _last_offline_reason = ""
+
+    if _track_feed(db_path, resp.text, data, len(raw_list)):
+        # v3.4.178: the same answer as the last poll (see _track_feed). Cleanup
+        # still runs, as on a quiet poll.
+        run_due_cleanup(db_path, config["retention"])
+        return
 
     if not raw_list:
         logger.debug("No aircraft from receiver")

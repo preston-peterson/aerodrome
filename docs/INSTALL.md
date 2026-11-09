@@ -1942,10 +1942,16 @@ with the wrong time until it reaches a time server. For the first 15 minutes
 after a boot, if the clock reads more than a minute earlier than the newest
 sighting, Aerodrome waits for it before collecting, for up to 10 minutes, so
 new rows don't carry the wrong time. After that it collects with the time it
-has. The web UI is up throughout.
+has. The web UI is up throughout, and the Status page's Collector card says
+it's waiting for the clock.
 
 **No aircraft showing up**
 
+- Open the Status page. The Collector card says why nothing is being saved:
+  the receiver can't be reached, it reports no aircraft, its data has stopped
+  changing (its decoder has probably stopped: Aerodrome doesn't save the same
+  data twice), saving failed (a full disk, a locked database), or database
+  maintenance is running.
 - Check the service is running: `sudo systemctl status aerodrome`
 - Verify the receiver is reachable from the server:
   `curl http://YOUR_RECEIVER_IP:8080/data/aircraft.json`

@@ -1,4 +1,4 @@
-# Version: 3.4.177
+# Version: 3.4.178
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -891,7 +891,7 @@ def _heal_install_snapshots():
     """One-shot cleanup of historical .backups/<timestamp>/ directories.
     Strips files and __pycache__ subdirectories matching the bloat patterns
     in `_should_skip_in_install_snapshot`. The snapshot folders themselves
-    stay in place — `_prune_install_backups` continues to manage their
+    stay in place — `updater.prune_backups` continues to manage their
     keep-N retention, and code rollback to that snapshot's source state
     still works for the actual code files.
 
@@ -2446,7 +2446,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     # snapshots so installs that accumulated multi-GB of embedded user
     # data reclaim it on the next service restart. The snapshot folders
     # themselves are preserved — keep-N retention stays in
-    # _prune_install_backups, this heal only touches their contents.
+    # updater.prune_backups, this heal only touches their contents.
     try:
         snap_deleted, snap_freed = _heal_install_snapshots()
         if snap_deleted:
@@ -4542,6 +4542,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             "last_poll_error": None,
             "consecutive_failed_polls": 0,
         }
+        _ch = {}
         try:
             import collector as _collector_mod
             _ch = _collector_mod.get_collector_health()
@@ -4584,6 +4585,23 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 conn.close()
             except Exception as e:
                 collector_check["error"] = str(e)
+        # v3.4.178: name why writes stopped (see _collector_state). `ok` is now
+        # "running"; the waiting states set `warn` and count as up for severity.
+        _threshold = CONFIG["receiver"]["poll_interval"] * 3
+        _state = _collector_state(_ch, collector_check["ok"], _threshold)
+        _static = _ch.get("messages_static_seconds")
+        collector_check.update({
+            "ok": _state == "running",
+            "state": _state,
+            "warn": _state in COLLECTOR_WARN_STATES,
+            "threshold_seconds": _threshold,
+            "activity": _ch.get("activity"),
+            "empty_seconds": _ch.get("empty_seconds"),
+            "receiver_hearing": None if _static is None else _static < _threshold,
+            "feed_static_seconds": _ch.get("feed_static_seconds"),
+            "save_error": _ch.get("save_error"),
+            "last_poll_seconds_ago": _ch.get("last_poll_seconds_ago"),
+        })
 
         # --- Web server check ---
         # If this endpoint responded, the server is up
@@ -4624,10 +4642,11 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             fa_check = None
 
         # --- Severity: see _health_summary ---
+        collector_up = collector_check["ok"] or collector_check["warn"]
         core_ok = all([
             receiver_check["ok"],
             db_check["ok"],
-            collector_check["ok"],
+            collector_up,
             webserver_check["ok"],
         ])
         advisory_ok = hexdb_check["ok"]
@@ -4652,10 +4671,11 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             pass
         severity, failing, health_reason = _health_summary(
             {"receiver": receiver_check["ok"], "database": db_check["ok"],
-             "collector": collector_check["ok"], "webserver": webserver_check["ok"]},
+             "collector": collector_up, "webserver": webserver_check["ok"]},
             hexdb_ok=advisory_ok, capacity_ok=capacity_ok,
             sudoers=nonlocal_state.get("last_sudoers_check"), system=system_info,
             notifications=notify_check, flightaware=fa_check,
+            collector_warn=COLLECTOR_WARN_STATES.get(collector_check["state"]),
         )
 
         # v3.0.0: GitHub update availability. The gear-menu badge driver
@@ -7953,39 +7973,6 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     # --- Config backup / restore / import / export ---
     # Safe, robust filename pattern for auto-backups: "config.yaml.bak.YYYYMMDD-HHMMSS"
     _BACKUP_NAME_RE = re.compile(r"^config\.yaml\.bak\.[A-Za-z0-9_\-]{1,64}$")
-
-    # How many .backups/<timestamp>/ install snapshots to retain after an update.
-    INSTALL_BACKUP_KEEP = 5
-
-    def _prune_install_backups():
-        """Keep only the INSTALL_BACKUP_KEEP most-recent install snapshots in
-        .backups/. Each snapshot is a folder holding the previous release's
-        files (moved there when an update is confirmed). The folder a
-        pending update's journal names is never pruned."""
-        try:
-            install_dir = _install_dir()
-            backups_root = install_dir / ".backups"
-            if not backups_root.is_dir():
-                return
-            _j = updater.pending(install_dir)
-            protected = {str(_j.get("ts"))} if _j else set()
-            # Only consider top-level directories with timestamp-like names
-            snapshots = [
-                p for p in backups_root.iterdir()
-                if p.is_dir() and re.match(r"^\d{8}-\d{6}$", p.name)
-            ]
-            # Sort newest first (lexical works because timestamps are YYYYMMDD-HHMMSS)
-            snapshots.sort(key=lambda p: p.name, reverse=True)
-            for old in snapshots[INSTALL_BACKUP_KEEP:]:
-                if old.name in protected:
-                    continue
-                try:
-                    shutil.rmtree(old)
-                    logger.info(f"Pruned old install backup: {old.name}")
-                except OSError as e:
-                    logger.warning(f"Could not delete old install backup {old.name}: {e}")
-        except Exception as e:
-            logger.warning(f"Could not prune install backups: {e}")
 
     def _do_restart():
         """Trigger a systemd restart. Returns (ok, note). See _restart_service."""
@@ -11852,9 +11839,6 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         except Exception as e:
             logger.warning(f"Could not fully clear update/: {e}")
 
-        # Prune old install snapshots so .backups/ doesn't grow unbounded
-        # (never the folder this update's journal names).
-        _prune_install_backups()
         _MAINT.park(tok, "restarting after an update", _RESTART_HOLD_SEC)
         logger.info(f"Update {cur_version} -> {new_version} switched in; restarting")
         return {
@@ -13663,11 +13647,54 @@ def _notifications_check(nt_cfg: Optional[Dict[str, Any]], stats: Optional[Dict[
     }, cache
 
 
+# v3.4.178: Collector card states that mean "waiting, nothing to fix": amber, and
+# not a core failure (a quiet sky at night used to turn the whole banner red).
+COLLECTOR_WARN_STATES = {
+    "paused": "collection paused for database maintenance",
+    "no_aircraft": "the receiver reports no aircraft",
+    "starting": "collection is starting",
+}
+
+
+def _collector_state(health: Dict[str, Any], writes_ok: bool, threshold: float) -> str:
+    """Why the collector is or isn't writing, for the Status page's Collector
+    card. `health` is collector.get_collector_health(); `writes_ok` is "a row
+    was written within `threshold` seconds" (3 poll intervals).
+
+    Maintenance that has held collection up for a while comes first, even when
+    the last write looks recent (the clock wait at boot: the newest row is
+    "in the future" then). Otherwise, with writes fresh, it's running; when
+    they aren't, the first cause that applies: the receiver keeps sending the
+    same answer (a stopped decoder), fetching fails, storing fails, the
+    receiver reports no aircraft, the collector isn't polling at all. With
+    none of those known it's "stalled"."""
+    act = health.get("activity")
+    if act and (not writes_ok or (act.get("seconds") or 0) >= threshold):
+        return "paused"
+    if writes_ok:
+        return "running"
+    if (health.get("feed_static_seconds") or 0) >= threshold:
+        return "receiver_stale"
+    if health.get("last_poll_error") and health.get("consecutive_failed_polls"):
+        return "receiver_error"
+    if health.get("save_error"):
+        return "save_error"
+    if health.get("empty_seconds") is not None:
+        return "no_aircraft"
+    last_poll = health.get("last_poll_seconds_ago")
+    if last_poll is None:
+        return "starting" if (health.get("uptime_seconds") or 0) < threshold else "not_polling"
+    if last_poll > threshold:
+        return "not_polling"
+    return "stalled"
+
+
 def _health_summary(core: Dict[str, bool], hexdb_ok: bool, capacity_ok: bool,
                     sudoers: Optional[Dict[str, Any]],
                     system: Optional[Dict[str, Any]],
                     notifications: Optional[Dict[str, Any]] = None,
-                    flightaware: Optional[Dict[str, Any]] = None) -> Tuple[str, List[str], Optional[str]]:
+                    flightaware: Optional[Dict[str, Any]] = None,
+                    collector_warn: Optional[str] = None) -> Tuple[str, List[str], Optional[str]]:
     """(severity, failing, reason) for /api/status: the one place that decides
     the colour of the health dot and gear on every page, and the Status banner.
 
@@ -13680,16 +13707,21 @@ def _health_summary(core: Dict[str, bool], hexdb_ok: bool, capacity_ok: bool,
     of that name: on and not ok is a warning too (alerts aren't arriving).
     `flightaware` (v3.4.169) likewise: a key FlightAware refused is a warning
     (routes quietly fall back to the free list); reaching the monthly limit is
-    not, because that's the limit doing its job."""
+    not, because that's the limit doing its job. `collector_warn` (v3.4.178) is
+    the reason when the collector is waiting rather than failing
+    (COLLECTOR_WARN_STATES): its core entry is then True and this is a warning."""
     notify_bad = bool(notifications and notifications.get("enabled") and not notifications.get("ok"))
     fa_bad = bool(flightaware and flightaware.get("configured") and flightaware.get("key_state") == "invalid")
     down = [name for name, ok in core.items() if not ok]
     if down:
-        failing = (down + ([] if hexdb_ok else ["hexdb_resolver"]) + ([] if capacity_ok else ["capacity"])
+        failing = (down + (["collector"] if collector_warn else [])
+                   + ([] if hexdb_ok else ["hexdb_resolver"]) + ([] if capacity_ok else ["capacity"])
                    + (["notifications"] if notify_bad else []) + (["flightaware"] if fa_bad else []))
         return "error", failing, ", ".join(down) + " offline"
 
     warnings = []
+    if collector_warn:
+        warnings.append(("collector", collector_warn))
     sudoers = sudoers or {}
     if sudoers.get("can_verify") and sudoers.get("needs_refresh"):
         warnings.append(("sudoers",

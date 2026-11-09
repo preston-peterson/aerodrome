@@ -43,6 +43,8 @@ note_served() on the first good /api/version answer, commit() 30 s later.
 commit() also moves the files earlier releases left behind (RETIRED_NAMES,
 any top-level test_*.py) into the same .backups/<ts>/: the swap only ever
 touches the names the new release contains, so nothing else removes them.
+Once the journal is gone, commit() keeps only the 5 newest snapshots in
+.backups/ (prune_backups), never the folder it just moved in.
 A restart the new version's own UI asks for after it has served commits
 first (server.py), so a planned restart is never counted as a failed start.
 
@@ -78,6 +80,7 @@ HEALTHY_AFTER_SEC = 30        # serving this long after the first good answer �
 COMMIT_AFTER_SEC = 600        # a first good answer this old at a start → commit
 SERVE_DEADLINE_SEC = 300      # no good answer within this → see main.py
 KEEP_FAILED = 2               # non-empty .update-failed-<ts>/ dirs kept
+BACKUP_KEEP = 5               # .backups/<YYYYMMDD-HHMMSS>/ install snapshots kept
 PIP_TIMEOUT_SEC = 600
 VERIFY_TIMEOUT_SEC = 180
 STAGE_HEADROOM_BYTES = 64 * 1024 * 1024
@@ -102,6 +105,9 @@ RETIRED_NAMES = frozenset({
 # A journal's ts: what server.py's strftime writes (and test names), never
 # a path ('/' and '.' excluded).
 _TS_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+# An install snapshot's folder name in .backups/: the ts form in practice.
+# Nothing else in there is a snapshot (prune_backups).
+_SNAPSHOT_RE = re.compile(r"^\d{8}-\d{6}$")
 # The guard's markers in a release's main.py (see main.py's guard block).
 _GUARD_MARKERS = ("import updater", "on_boot(")
 
@@ -929,6 +935,47 @@ def _old_to_backups(install_dir, old_name, ts):
         return False
 
 
+def prune_backups(install_dir, keep=BACKUP_KEEP, protect=()):
+    """Keep only the `keep` newest install snapshots in .backups/ (newest =
+    greatest name, which is newest because the names are YYYYMMDD-HHMMSS).
+    A snapshot is a top-level DIRECTORY there whose whole name is a
+    timestamp; anything else — .tmp/, a leftover temp or marker file, a name
+    that merely starts with a timestamp, a plain file, a symlink (never
+    followed) — is left alone, and so is every name in `protect` (the folder
+    a commit just made). Best effort: never raises, and a snapshot that can't
+    be removed stays for the next commit. Returns how many were removed."""
+    install_dir = Path(install_dir)
+    try:
+        root = install_dir / ".backups"
+        if not _is_dir(root):
+            return 0
+        protect = set(protect or ())
+        snapshots = []
+        with os.scandir(root) as entries:
+            for entry in entries:
+                if not _SNAPSHOT_RE.match(entry.name):
+                    continue
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        snapshots.append(entry.name)
+                except OSError:
+                    continue
+        removed = 0
+        for name in sorted(snapshots, reverse=True)[keep:]:
+            if name in protect:
+                continue
+            try:
+                shutil.rmtree(root / name)
+                removed += 1
+                _log(f"pruned the old install snapshot .backups/{name}")
+            except OSError as e:
+                _log(f"could not prune the old install snapshot .backups/{name}: {e}")
+        return removed
+    except Exception as e:  # noqa: BLE001 - retention must never break a commit
+        _log(f"could not prune install snapshots: {e}")
+        return 0
+
+
 def commit(install_dir, journal=None):
     """Make a pending update permanent. Idempotent. True when the journal is
     gone. False (nothing moved) for a journal that isn't committable: a
@@ -972,6 +1019,7 @@ def commit(install_dir, journal=None):
             (install_dir / PENDING).unlink()
         except FileNotFoundError:
             pass
+        prune_backups(install_dir, protect={j["ts"]})
         return True
 
 

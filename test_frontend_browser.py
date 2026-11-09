@@ -745,6 +745,90 @@ class TestStatusFlightAwareCard(BrowserCase):
         self.assertIn("FlightAware key", self.page.inner_text(".overall"))
 
 
+class TestStatusCollectorCard(BrowserCase):
+    """v3.4.178: the Collector card names why writes stopped. Amber when Aerodrome
+    is waiting (maintenance, no aircraft), red when something needs fixing."""
+
+    BASE = {"ok": False, "warn": False, "last_write_seconds_ago": 290, "records_per_sec_5m": 0.6,
+            "records_sample_count_5m": 190, "error": "No writes in 290s (threshold 45s)",
+            "last_poll_error": None, "consecutive_failed_polls": 0, "threshold_seconds": 45,
+            "activity": None, "empty_seconds": None, "receiver_hearing": None,
+            "feed_static_seconds": None, "save_error": None, "last_poll_seconds_ago": 3}
+
+    def card(self, **collector):
+        st = _status_page({"enabled": False, "ok": True})
+        st["components"]["collector"] = dict(self.BASE, **collector)
+        self.site.api["/api/status"] = st
+        self.open("/status")
+        self.advance(1000)
+        self.assertNotIn("Failed to load status", self.page.inner_text("body"))
+        self.assertEqual(self.errors, [])
+        light = self.page.get_attribute("#collectorCard .light", "class")
+        return self.text("#collectorCard").replace("\xa0", " "), light
+
+    def test_running(self):
+        text, light = self.card(ok=True, state="running", last_write_seconds_ago=4)
+        self.assertIn("Running", text)
+        self.assertIn("4 s ago", text)
+        self.assertIn("ok", light)
+        self.assertEqual(self.page.locator("#collectorCard .coll-note").count(), 0)
+
+    def test_maintenance_is_amber_and_names_the_job(self):
+        text, light = self.card(state="paused", warn=True, activity={"kind": "stats", "seconds": 247})
+        for want in ("Paused for maintenance", "4 min 50 s ago",
+                     "Refreshing the database’s statistics", "Started 4 min 7 s ago",
+                     "Collection resumes when it’s done", "every 6 hours"):
+            self.assertIn(want, text)
+        self.assertIn("warn", light)
+        text, _ = self.card(state="paused", warn=True, activity={"kind": "clock", "seconds": 64},
+                            last_write_seconds_ago=-3600)
+        self.assertIn("Waiting for the system clock to be set", text)
+        self.assertNotIn("resumes when it’s done", text)
+        self.assertIn("Last write\n—", text)
+
+    def test_no_aircraft(self):
+        text, light = self.card(state="no_aircraft", warn=True, empty_seconds=372, receiver_hearing=False)
+        for want in ("No aircraft reported", "reported no aircraft for 6 min 12 s",
+                     "isn’t hearing anything", "receiver’s own map page", "dump1090 or readsb"):
+            self.assertIn(want, text)
+        self.assertIn("warn", light)
+        text, _ = self.card(state="no_aircraft", warn=True, empty_seconds=372, receiver_hearing=None)
+        self.assertNotIn("hearing", text)
+
+    def test_stale_receiver(self):
+        text, light = self.card(state="receiver_stale", feed_static_seconds=250)
+        for want in ("Receiver data not updating", "hasn’t changed for 4 min 10 s",
+                     "doesn’t save the same data twice", "Restart the decoder"):
+            self.assertIn(want, text)
+        self.assertIn("bad", light)
+
+    def test_save_errors_say_what_to_do_and_escape_the_error(self):
+        text, light = self.card(state="save_error", save_error={
+            "kind": "disk_full", "count": 5, "seconds_ago": 3,
+            "message": "sqlite3.OperationalError: database or disk is full <b>x</b>"})
+        for want in ("Can’t save sightings", "The last 5 polls couldn’t be saved: the disk is full",
+                     "Configuration → Retention", "database or disk is full <b>x</b>"):
+            self.assertIn(want, text)
+        self.assertIn("bad", light)
+        self.assertEqual(self.page.locator("#collectorCard b").count(), 0)
+        text, _ = self.card(state="save_error", save_error={"kind": "other", "count": 1, "seconds_ago": 3,
+                                                           "message": "KeyError: 'hex'"})
+        self.assertIn("The last poll couldn’t be saved.", text)
+
+    def test_receiver_error_not_polling_and_stalled(self):
+        text, _ = self.card(state="receiver_error", consecutive_failed_polls=7,
+                            last_poll_error="ConnectionError: refused")
+        self.assertIn("The last 7 polls couldn’t read the receiver:", text)
+        self.assertIn("ConnectionError: refused", text)
+        text, _ = self.card(state="not_polling", last_poll_seconds_ago=371)
+        self.assertIn("hasn’t polled the receiver for 6 min 11 s", text)
+        text, _ = self.card(state="stalled")
+        self.assertIn("No sightings saved for 4 min 50 s. Aerodrome expects one at least every 45 s.", text)
+        text, light = self.card(state="starting", warn=True, last_write_seconds_ago=None)
+        self.assertIn("Collection starts in a moment.", text)
+        self.assertIn("warn", light)
+
+
 class TestStatusNotificationsCard(BrowserCase):
     """The Status page says whether alerts can reach the phone: off, working,
     the ntfy server not answering, or the last alert refused."""
