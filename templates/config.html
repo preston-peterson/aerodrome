@@ -1,4 +1,4 @@
-<!-- Version: 3.4.179 -->
+<!-- Version: 3.4.181 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -264,14 +264,14 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
    selectors are retained because config.html has hundreds of <input>
    elements without classes; classed migration can come later if
    needed. */
-input[type="text"], input[type="number"], select, textarea {
+input[type="text"], input[type="number"], input[type="time"], select, textarea {
     background:var(--bg1); border:1px solid var(--bdr); color:var(--t1);
     font-family:var(--mono); font-size:12px; padding:6px 10px;
     border-radius:6px; outline:none; min-width:200px;
     transition:border-color .15s, box-shadow .15s;
     box-sizing:border-box; line-height:1.2;
 }
-input[type="text"], input[type="number"], select { height:32px; }
+input[type="text"], input[type="number"], input[type="time"], select { height:32px; }
 /* Phones (v3.4.166): nothing on this page may be wider than the screen.
    Kept AFTER the input rules above so its min-width:0 wins. The
    single column may shrink below its widest dropdown option (a select's
@@ -281,7 +281,7 @@ input[type="text"], input[type="number"], select { height:32px; }
 @media (max-width:640px) {
     .form-grid { grid-template-columns:minmax(0, 1fr); }
     .form-grid > * { min-width:0; }
-    input[type="text"], input[type="number"], select, textarea { min-width:0; max-width:100%; }
+    input[type="text"], input[type="number"], input[type="time"], select, textarea { min-width:0; max-width:100%; }
     .form-label-hint { overflow-wrap:anywhere; }
 }
 @media (max-width:480px) {
@@ -1288,6 +1288,9 @@ function field({label, hint, path, type='text', options=null, min=null, max=null
         ].filter(Boolean).join(' ');
         const displayVal = (val == null) ? '' : val;
         inputHtml = `<input type="number" class="form-input${errClass}" data-path="${path}" data-nullable="${nullable}" value="${displayVal}" ${attrs} placeholder="${placeholder}" oninput="onFieldChange(this)">`;
+    } else if (type === 'time') {
+        // v3.4.180: a time input shows `placeholder` (the server's default) while unset.
+        inputHtml = `<input type="time" class="form-input${errClass}" data-path="${path}" value="${val || placeholder}" oninput="onFieldChange(this)" style="max-width:150px">`;
     } else if (type === 'checkbox') {
         const checked = val ? 'checked' : '';
         inputHtml = `<input type="checkbox" data-path="${path}" ${checked} onchange="onFieldChange(this)">`;
@@ -4924,6 +4927,7 @@ async function nfSaveNtfyConfig(trigger) {
 // UI for the `updates.github.*` config keys that were previously YAML-only:
 //   - master enable toggle
 //   - poll_interval (daily / weekly / monthly / never)
+//   - v3.4.180: auto_apply (enabled / day / time) — auto_update.py
 //   - three notification surfaces (banner, gear_badge, ntfy)
 //
 // All five keys are in LIVE_KEYS already (server.py reads CONFIG every
@@ -4977,6 +4981,49 @@ function sectionUpdates() {
 
     <div class="section">
         <div class="section-head">
+            <div class="section-title">Automatic updates</div>
+            <div class="section-sub">install new releases on a schedule</div>
+        </div>
+
+        <div style="font-size:12px;color:var(--t2);line-height:1.6;margin-bottom:16px">
+            At the time below, Aerodrome checks GitHub and installs the latest release if it's newer,
+            the same way <strong>Apply update</strong> does: it verifies the download, test-loads it, and
+            puts this version back if the new one doesn't start. Useful for a display board nobody sits at.
+            Your <code>config.yaml</code> and database are not touched.
+        </div>
+
+        <div class="form-grid">
+            ${field({
+                label:'Install updates automatically',
+                hint:'Off by default. Needs the update channel above turned on.',
+                path:'updates.github.auto_apply.enabled',
+                type:'checkbox'
+            })}
+            ${field({
+                label:'Day',
+                hint:'Every day, or one day a week.',
+                path:'updates.github.auto_apply.day',
+                type:'select',
+                options:[
+                    {value:'daily', label:'Every day'},
+                    {value:'sun', label:'Sundays'}, {value:'mon', label:'Mondays'},
+                    {value:'tue', label:'Tuesdays'}, {value:'wed', label:'Wednesdays'},
+                    {value:'thu', label:'Thursdays'}, {value:'fri', label:'Fridays'},
+                    {value:'sat', label:'Saturdays'},
+                ]
+            })}
+            ${field({
+                label:'Time',
+                hint:'Uses the time zone set on the Display tab. Display boards reload at 04:00, so the 03:00 default has them on the new version by morning.',
+                path:'updates.github.auto_apply.time',
+                type:'time',
+                placeholder:'03:00'
+            })}
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-head">
             <div class="section-title">Notification surfaces</div>
             <div class="section-sub">where you find out about new releases</div>
         </div>
@@ -5002,7 +5049,7 @@ function sectionUpdates() {
             })}
             ${field({
                 label:'Send ntfy push notification',
-                hint:'Push to your phone when a new release is discovered. Fires once per transition (not every poll). Requires this flag AND notifications.events.update_available (on the Notifications tab) AND notifications.enabled — same two-key gate every ntfy event uses. Default cooldown is 24 hours; tune via notifications.cooldown_minutes.update_available.',
+                hint:'Push to your phone when a new release is discovered, and when an automatic update installs one, fails, or is put back. Fires once per transition (not every poll). Requires this flag AND notifications.events.update_available (on the Notifications tab) AND notifications.enabled — same two-key gate every ntfy event uses. Default cooldown is 24 hours; tune via notifications.cooldown_minutes.update_available.',
                 path:'updates.github.notify.ntfy',
                 type:'checkbox'
             })}

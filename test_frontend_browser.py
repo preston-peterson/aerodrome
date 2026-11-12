@@ -1669,6 +1669,102 @@ class TestUpdatesGithubCannotReadTheTag(BrowserCase):
         self.assertIn("latest version", self.card_text("v3.4.53", False))
 
 
+
+class TestUpdatesAutomatic(BrowserCase):
+    """v3.4.180: the GitHub card's "Automatic updates" and "Last automatic" rows,
+    and the "installs itself" line only when it really will."""
+    NEXT = 1781596800          # 2026-06-16 03:00 in America/Chicago
+
+    def setUp(self):
+        super().setUp()
+        self.site.api["/api/version"] = {"version": "3.4.150"}
+        self.site.api["/api/updates/local/check"] = {"available": False, "current_version": "3.4.150"}
+        self.site.api["/api/maintenance/status"] = {
+            "busy": None, "update": None, "update_pending": None, "config": None,
+            "restore": {"pending": None, "result": None}}
+
+    def card(self, auto, available=True, width=1280):
+        self.page.set_viewport_size({"width": width, "height": 900})
+        self.site.api["/api/updates/github/check"] = {
+            "enabled": True, "poll_interval": "monthly", "running_version": "3.4.150",
+            "latest_known": "v3.4.151", "available": available, "latest_unreadable": False,
+            "last_check_ts": 1781500000, "last_check_result": "success", "last_check_error": None,
+            "last_known_latest_ts": 1781500000,
+            "release_url": "https://github.example/releases/tag/v3.4.151" if available else None,
+            "auto": auto}
+        self.open("/updates")
+        self.advance(1000)
+        last = None if self.page.is_hidden("#githubAutoLast") else self.text("#githubAutoLast")
+        return self.text("#githubAuto"), last, self.text("#githubUpdateStatus")
+
+    def on(self, **kw):
+        return dict({"enabled": True, "active": True, "day": "daily", "time": "03:00",
+                     "next_ts": self.NEXT, "skips_latest": False, "installing": None, "last": None}, **kw)
+
+    def test_off(self):
+        auto, last, status = self.card({"enabled": False, "active": False})
+        self.assertIn("Off", auto)
+        self.assertIn("turn on", auto)
+        self.assertIsNone(last)
+        self.assertNotIn("installs itself", status)
+        self.assertEqual(self.errors, [])
+
+    def test_on_with_an_update_waiting(self):
+        auto, last, status = self.card(self.on())
+        self.assertIn("On, every day at", auto)
+        self.assertIn("Jun 16", auto)
+        self.assertIsNone(last)
+        self.assertIn("installs itself", status)
+        self.assertIn("Jun 16", status)
+        self.assertEqual(self.errors, [])
+
+    def test_a_release_that_was_put_back_isnt_promised(self):
+        last = {"at": 1781500000, "result": "rolled_back", "from": "3.4.150", "to": "3.4.151", "reason": ""}
+        auto, last, status = self.card(self.on(skips_latest=True, last=last))
+        self.assertIn("didn't start", last)
+        self.assertIn("3.4.150 was put back", last)
+        self.assertNotIn("installs itself", status)
+        self.assertIn("warn", self.page.get_attribute("#githubAutoLast", "class"))
+
+    def test_installed(self):
+        last = {"at": 1781500000, "result": "installed", "from": "3.4.149", "to": "3.4.150", "reason": ""}
+        _, last, _ = self.card(self.on(last=last, next_ts=self.NEXT), available=False)
+        self.assertIn("installed 3.4.150 (it was on 3.4.149)", last)
+
+    def test_installing_now(self):
+        _, last, status = self.card(self.on(installing="3.4.151"))
+        self.assertEqual(last, "Installing 3.4.151 now…")
+        self.assertNotIn("installs itself", status)
+
+    def test_channel_off(self):
+        auto, _, _ = self.card({"enabled": True, "active": False, "day": "sun", "time": "03:00",
+                                "next_ts": None, "skips_latest": False, "installing": None, "last": None})
+        self.assertIn("update channel is turned off", auto)
+
+    def test_the_card_fits_a_phone(self):
+        self.card(self.on(), width=390)
+        self.assertLessEqual(self.page.evaluate(
+            "document.documentElement.scrollWidth - document.documentElement.clientWidth"), 0)
+
+
+class TestConfigAutomaticUpdates(_ConfigPage):
+    """Configuration → Updates → Automatic updates (v3.4.180)."""
+
+    def test_the_fields(self):
+        self.open_config(_ntfy_status("not_installed"))
+        self.tab("updates")
+        sel = 'input[data-path="updates.github.auto_apply.time"]'
+        self.assertEqual(self.page.input_value(sel), "03:00", "unset shows the default")
+        self.assertFalse(self.page.is_checked('input[data-path="updates.github.auto_apply.enabled"]'))
+        self.assertEqual(self.page.evaluate(f"getComputedStyle(document.querySelector('{sel}')).height"),
+                         "32px")
+        self.page.fill(sel, "01:30")
+        self.page.select_option('select[data-path="updates.github.auto_apply.day"]', "sun")
+        self.page.check('input[data-path="updates.github.auto_apply.enabled"]')
+        self.assertEqual(self.page.evaluate("getAt(workingConfig, 'updates.github.auto_apply')"),
+                         {"time": "01:30", "day": "sun", "enabled": True})
+        self.assertEqual(self.errors, [])
+
 _CONTRAST_JS = """(sel) => {
     const el = document.querySelector(sel);
     if (!el) return null;

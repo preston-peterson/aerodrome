@@ -1,5 +1,5 @@
 # Aerodrome
-<!-- Version: 3.4.179 -->
+<!-- Version: 3.4.181 -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -128,6 +128,7 @@ release tooling (marked `export-ignore` in `.gitattributes`).
 aerodrome/
 ├── main.py                       entrypoint — wires up collector + web + notifier
 ├── updater.py                    update guard: staged apply, swap, automatic rollback (stdlib only)
+├── auto_update.py                automatic updates: when a scheduled run is due, what the last one did
 ├── atomic_io.py                  crash-safe small-file writes (temp + fsync + rename)
 ├── config_io.py                  all-or-nothing config.yaml writes, last-good, startup recovery
 ├── restore_io.py                 full-backup restore: checked and staged, switched in at startup, rolled back if it won't load
@@ -183,6 +184,7 @@ aerodrome/
 ├── docs/                         user-facing documentation, screenshots, PDF
 ├── .github/                      issue templates, PR template, repo-setup guide
 ├── test_aerodrome_helper.py      unit tests — the system helper on a fake root (ntfy, feeder, kill points, health)
+├── test_auto_update.py           unit tests — automatic updates: schedule, results, whole runs through the apply
 ├── test_backup_restore.py        unit tests — staged restore, startup switch + rollback, kill points
 ├── test_bootstrap.py             installer tests — bootstrap.sh in a stub sandbox
 ├── test_bump_version.py          release tests — bump-version.sh gates, check, re-run, PDF
@@ -196,6 +198,7 @@ aerodrome/
 ├── test_config_write_safety.py   unit tests — all-or-nothing config writes, recovery, private files
 ├── test_designators.py           unit tests — aircraft type and operator decoders
 ├── test_destructive_endpoints.py unit tests — switch-to-real + watchlist-history deletes
+├── test_feed_owner.py            unit tests — the receiver's registration and owner: schema v20, write and read paths
 ├── test_flightaware.py           unit tests — FlightAware client: lookups, monthly limit, key state
 ├── test_flight_routes.py         unit tests — FlightAware route history: schema v19, write and read paths
 ├── test_flightaware_wiring.py    unit tests — FlightAware key masking, route endpoint, watchlist alert route

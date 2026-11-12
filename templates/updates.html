@@ -1,4 +1,4 @@
-<!-- Version: 3.4.179 -->
+<!-- Version: 3.4.181 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -91,6 +91,8 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
 .info-value { color:var(--t1); font-family:var(--mono); font-size:13px; }
 .info-value.highlight { color:var(--green-text); font-weight:600; }
 .info-value.muted { color:var(--t3); }
+.info-value.auto-last { font-family:inherit; }
+.info-value.auto-last.warn { color:var(--amber-text); }
 
 .status-msg { padding:10px 14px; border-radius:6px; font-size:13px; margin-bottom:14px; }
 .status-msg.info { background:var(--bg1); border:1px solid var(--bdr); color:var(--t2); }
@@ -130,7 +132,7 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
     font-size: 11px; color: var(--cyan); margin-top: 8px; font-family: var(--mono);
 }
 
-.actions { display:flex; gap:8px; }
+.actions { display:flex; flex-wrap:wrap; gap:8px; }
 
 .instructions {
     font-size:12px; color:var(--t3); font-family:var(--mono);
@@ -370,6 +372,11 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
             <div class="info-value" id="githubLatestVer">—</div>
             <div class="info-label">Last checked</div>
             <div class="info-value" id="githubLastChecked">—</div>
+            <!-- v3.4.180: automatic updates (Configuration → Updates). -->
+            <div class="info-label">Automatic updates</div>
+            <div class="info-value" id="githubAuto">—</div>
+            <div class="info-label" id="githubAutoLastLabel" hidden>Last automatic</div>
+            <div class="info-value auto-last" id="githubAutoLast" hidden></div>
         </div>
 
         <div class="actions" id="githubUpdateActions"></div>
@@ -1919,6 +1926,70 @@ document.addEventListener('click', e => {
 // All UI rendering happens here, server returns raw state only.
 // ──────────────────────────────────────────────────────────────────
 
+// v3.4.180: automatic updates. `a` is /api/updates/github/check's `auto`:
+// {enabled, active, day, time, next_ts, skips_latest, installing, last}.
+const _GH_AUTO_DAYS = {daily:'every day', mon:'Mondays', tue:'Tuesdays', wed:'Wednesdays',
+                       thu:'Thursdays', fri:'Fridays', sat:'Saturdays', sun:'Sundays'};
+
+function _ghAutoTime(hhmm){
+    const [h, m] = String(hhmm || '').split(':').map(Number);
+    const d = new Date();
+    d.setHours(h || 0, m || 0, 0, 0);
+    return (typeof formatTime === 'function') ? formatTime(d) : hhmm;
+}
+
+function _ghAutoNext(a){
+    const d = new Date(a.next_ts * 1000);
+    return `${d.toLocaleDateString([], {weekday:'short', month:'short', day:'numeric'})} at ${_ghAutoTime(a.time)}`;
+}
+
+function _ghAutoWillInstall(j){
+    const a = j.auto;
+    return !!(a && a.active && a.next_ts && !a.skips_latest && !a.installing);
+}
+
+function _ghAutoLastText(l){
+    const when = _ghRenderTime(l.at);
+    const why = l.reason ? ` ${l.reason}` : '';
+    switch(l.result){
+    case 'installed':    return [`${when}: installed ${l.to} (it was on ${l.from}).`, ''];
+    case 'rolled_back':  return [`${when}: ${l.to} didn't start, so ${l.from} was put back. Automatic updates skip ${l.to} and wait for the next release.`, 'warn'];
+    case 'refused':      return [`${when}: didn't install ${l.to}.${why} Automatic updates won't try ${l.to} again; use Apply update to install it by hand.`, 'warn'];
+    case 'failed':       return [`${when}: couldn't install ${l.to}.${why} It tries again at the next scheduled time.`, 'warn'];
+    case 'busy':         return [`${when}: skipped.${why} It tries again at the next scheduled time.`, 'warn'];
+    case 'check_failed': return [`${when}: couldn't check GitHub.${why} It tries again at the next scheduled time.`, 'warn'];
+    case 'skipped':      return [`${when}: skipped ${l.to}, which didn't install here before.`, ''];
+    case 'current':      return [`${when}: checked GitHub; already on the latest release.`, ''];
+    }
+    return ['', ''];
+}
+
+function _ghRenderAuto(a){
+    const el = document.getElementById('githubAuto');
+    const lastL = document.getElementById('githubAutoLastLabel');
+    const last = document.getElementById('githubAutoLast');
+    if(!el) return;
+    const change = `<a href="/config#updates" style="color:var(--cyan)">`;
+    if(!a || !a.enabled){
+        el.className = 'info-value muted';
+        el.innerHTML = `Off · ${change}turn on</a>`;
+    } else if(!a.active){
+        el.className = 'info-value muted';
+        el.innerHTML = `Off while the update channel is turned off · ${change}change</a>`;
+    } else {
+        el.className = 'info-value';
+        const next = a.next_ts ? ` · next ${escapeHtml(_ghAutoNext(a).replace(/ at .*/, ''))}` : '';
+        el.innerHTML = `On, ${escapeHtml(_GH_AUTO_DAYS[a.day] || a.day)} at ${escapeHtml(_ghAutoTime(a.time))}`
+            + `${next} · ${change}change</a>`;
+    }
+    let text = '', cls = '';
+    if(a && a.installing) text = `Installing ${a.installing} now…`;
+    else if(a && a.last) [text, cls] = _ghAutoLastText(a.last);
+    lastL.hidden = last.hidden = !text;
+    last.className = 'info-value auto-last' + (cls ? ' ' + cls : '');
+    last.textContent = text;
+}
+
 function _ghBadge(text, cls){
     const b = document.getElementById('githubUpdateBadge');
     if(!b) return;
@@ -1971,6 +2042,7 @@ async function checkGithubUpdate(force){
     document.getElementById('githubLatestVer').textContent = j.latest_known || '— (not yet checked)';
     document.getElementById('githubLastChecked').textContent =
         j.last_check_ts ? `${_ghRenderRelative(j.last_check_ts)} (${_ghRenderTime(j.last_check_ts)})` : 'never';
+    _ghRenderAuto(j.auto);
 
     const status = document.getElementById('githubUpdateStatus');
     const actions = document.getElementById('githubUpdateActions');
@@ -2037,7 +2109,8 @@ async function checkGithubUpdate(force){
             Click <strong>Apply update</strong> to download, verify the
             checksum, test-load and install. Your <code>config.yaml</code>, database,
             logs, and venv are not touched; if the new version doesn't start, this
-            one is put back automatically.
+            one is put back automatically.${_ghAutoWillInstall(j)
+                ? ` If you leave it, it installs itself ${escapeHtml(_ghAutoNext(j.auto))}.` : ''}
         </div>`;
 
         // v3.0.1: Apply button (primary). Downloads + verifies + stages +

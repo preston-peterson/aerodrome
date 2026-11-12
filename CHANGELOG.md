@@ -19,6 +19,29 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.181] — 2026-11-12
+
+**Aerodrome can now install updates by itself on a schedule, so a display board or kiosk stays current without anyone signing in to it.**
+
+Turn it on under Configuration → Updates → **Automatic updates**, then pick a day (every day, or one day a week) and a time. At that time Aerodrome checks GitHub and, when the latest release is newer, installs it the same way the **Apply update** button does: it verifies the download, test-loads it, and puts the current version back if the new one doesn't start. Your `config.yaml` and database are not touched. It's off by default.
+
+- **A display board shows the new release by morning.** The board reloads itself at 04:00, so with the default time of 03:00 a kiosk picks up the new release the same night.
+- **A release that didn't work here isn't tried again.** If a release doesn't start and the previous version is put back, or the install is refused (for example because Aerodrome's sudoers rule needs refreshing), automatic updates skip that release and wait for the next one. You can still apply it by hand from the Updates page, which shows what it needs.
+- **The Updates page says what it did.** The GitHub card shows when the next automatic update runs and what the last one did: installed, put back, skipped, or why it couldn't. While an update is waiting, the card says when it will install itself.
+- **Push notifications, if you want them.** With **Send ntfy push notification** on, your phone hears when Aerodrome installs a release, puts one back, or needs you. A message that falls in quiet hours waits until they end. Passing problems, such as GitHub being unreachable or Aerodrome busy with a backup, aren't pushed: it tries again at the next scheduled time.
+- **On a phone, the Updates page's buttons wrap** instead of running off the side of the screen, and the Configuration page's time boxes (the daily summary's too) now look like the other fields.
+
+### Operational notes
+
+New settings under `updates.github.auto_apply`: `enabled` (default `false`), `day` (`daily`, or `mon` … `sun`) and `time` (`HH:MM`, 24-hour, in the time zone set on the Display tab); see config.yaml.example. Changes apply without a restart. A run happens in the hour after the set time; if Aerodrome is off for that whole hour, it waits for the next scheduled day rather than updating in the middle of the day. Its state is kept in `.auto-update-state.json` next to the database. No database schema change. docs/INSTALL.md describes it under "Option 1 — In-app GitHub channel".
+
+### Behind the scenes
+
+- New `auto_update.py` (standard library only) holds the schedule and the rules for results; a once-a-minute scheduler in server.py runs them. The install uses the Apply button's own download, checksum, staging and apply steps, under the same maintenance lock.
+- After the restart, or a rollback, the result of an automatic install is read from the updater's own record of the last update.
+- `/api/updates/github/check` adds `auto` (see API.md). The update-available push says when automatic updates will install the release.
+- New `test_auto_update.py` runs whole scheduled runs through the real apply path; new browser tests cover the card's rows, the phone layout and the Configuration fields.
+
 ## [3.4.179] — 2026-11-09
 
 **The owner line now also reads your receiver's own aircraft database: it names the registered owner when that's someone else, and fills in the owner and tail number for aircraft hexdb.io doesn't know.**

@@ -751,6 +751,25 @@ No SSH, no downloads, no terminal.
    just seen a release announcement and don't want to wait for the next
    scheduled poll.
 
+6. **Automatic updates** (Configuration → Updates → Automatic updates,
+   off by default). Pick a day (every day, or one day a week) and a time
+   (in the time zone set on the Display tab). At that time Aerodrome checks GitHub and,
+   if the latest release is newer, installs it exactly as the Apply
+   button does. Handy for a display board or kiosk nobody sits at: the
+   board reloads itself at 04:00, so the default of 03:00 has it showing
+   the new release by morning.
+   - It runs in the hour after the set time. If Aerodrome was off for
+     that whole hour, it waits for the next scheduled day rather than
+     updating in the middle of the day.
+   - A release that didn't start (so the previous version was put back),
+     or that the apply refused (for example, the sudoers rule needs a
+     refresh), is never installed automatically again; the next newer
+     release is. Apply it by hand to see what it needs.
+   - The GitHub card shows when the next run is and what the last one
+     did. With **Send ntfy push notification** on, your phone hears when
+     it installed a release, put one back or needs you; a message that
+     falls in quiet hours waits until they end.
+
 The whole channel can be disabled at Configuration → Updates → "Update
 channel enabled" if you'd rather manage updates entirely manually.
 

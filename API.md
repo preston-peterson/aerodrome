@@ -206,7 +206,7 @@ Other 400s (`invalid`, `unreadable`, or a notification server Aerodrome doesn't 
 | GET | `/api/updates/local/check` | Check for a staged release in `update/`; also `preflight` (below). With nothing to apply, `staged` is `"none"` (`update/` is missing or holds only its own `UPDATE_README.md`/`.gitkeep`) or `"partial"` (something is there, but no `VERSION`) |
 | POST | `/api/updates/local/upload` | Upload a release zip (staged into `update/`) |
 | POST | `/api/updates/local/apply` | Apply the staged release: stage to the side, test-load, switch in, restart; rolled back automatically if it doesn't start |
-| GET | `/api/updates/github/check` | The cached GitHub release check (`?force=true` checks now) |
+| GET | `/api/updates/github/check` | The cached GitHub release check (`?force=true` checks now). `auto`: automatic updates — `enabled`, `active` (also needs the channel on), `day`, `time`, `next_ts`, `skips_latest` (the latest release was put back or refused before, so it won't be installed automatically), `installing`, and `last` (`at`, `result`: `installed` / `rolled_back` / `refused` / `failed` / `busy` / `check_failed` / `skipped` / `current`, `from`, `to`, `reason`) |
 | POST | `/api/updates/github/apply` | Download the latest GitHub release, verify its SHA256, stage it, then apply it exactly like a local apply |
 | GET | `/api/maintenance/status` | What's running and how the last update went (below) |
 | POST | `/api/maintenance/ack` | `{"kind": "update"}` — mark the last update result as seen; `{"kind": "config"}` — mark the last config recovery as seen; `{"kind": "restore"}` — mark the last restore result as seen |

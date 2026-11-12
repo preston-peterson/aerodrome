@@ -1,4 +1,4 @@
-# Version: 3.4.179
+# Version: 3.4.181
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -55,6 +55,7 @@ import threading
 
 import updater
 import atomic_io
+import auto_update
 # v3.4.148: every config.yaml write goes through config_io (all or nothing,
 # under CONFIG_LOCK).
 import config_io
@@ -3670,6 +3671,8 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             "notify_banner": bool(notify.get("banner", True)),
             "notify_gear_badge": bool(notify.get("gear_badge", True)),
             "notify_ntfy": bool(notify.get("ntfy", False)),
+            # v3.4.180: install new releases on a schedule (auto_update.py).
+            "auto": auto_update.settings(upd),
         }
 
     def _get_running_version() -> str:
@@ -3776,7 +3779,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         except Exception as e:
             logger.warning(f"_save_update_state: write failed: {e}")
 
-    def _perform_github_check() -> dict:
+    def _perform_github_check(notify: bool = True) -> dict:
         """Hit the GitHub Releases API, parse, persist, return new state.
         Acquires _update_check_lock so a manual 'Check now' button click
         racing with a scheduled tick produces exactly one HTTP call and
@@ -3787,7 +3790,10 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         tick), fires the update_available ntfy notification. Read old
         state BEFORE save, fire AFTER save — order matters so the cached
         state the notification's tap-to-open will display is already the
-        new state by the time the user opens it."""
+        new state by the time the user opens it.
+
+        v3.4.180: notify=False for the automatic update's own check, which
+        installs what it finds and says so itself."""
         with _update_check_lock:
             # v3.0.2: snapshot the previous last_known_latest so we can
             # detect the transition after the save. Snapshot happens
@@ -3849,7 +3855,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             # treat NULL prior as "first discovery is a transition too" so
             # the notification fires on the first successful check after
             # install (when there was no prior knowledge).
-            if new_tag:
+            if new_tag and notify:
                 try:
                     cfg = _updates_config()
                     running = _get_running_version()
@@ -3888,6 +3894,9 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             f"{new_tag} is available. You're on v{running}. "
             f"Open the Updates page to apply."
         )
+        if _auto_update_active():
+            body = (f"{new_tag} is available. You're on v{running}. Automatic updates "
+                    f"install it at the next scheduled time.")
         # click_route='updates' lands the tap-to-open on /updates so the
         # user can click Apply directly. Requires notifications.public_url
         # to be configured; without it, the tap defaults to the ntfy app.
@@ -3961,6 +3970,137 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             daemon=True,
         )
         _update_check_thread.start()
+
+    # ──────────────────────────────────────────────────────────────────
+    # v3.4.180: automatic updates — install the latest release on a
+    # schedule (updates.github.auto_apply). The rules and the state file
+    # are in auto_update.py; the install is the Apply button's own steps.
+    # ──────────────────────────────────────────────────────────────────
+
+    def _auto_update_path() -> Path:
+        return auto_update.state_path(CONFIG["data"]["db_file"])
+
+    def _auto_update_active() -> bool:
+        cfg = _updates_config()
+        return bool(cfg["enabled"] and cfg["auto"]["enabled"])
+
+    def _auto_update_card(cfg: dict, latest) -> dict:
+        state = auto_update.load_state(_auto_update_path())
+        return auto_update.card(state, cfg["auto"], cfg["enabled"], latest, time.time(),
+                                tzwindow.resolve_tz(CONFIG))
+
+    def _auto_update_announce(state: dict) -> bool:
+        """Send the waiting push message, outside quiet hours (it waits for them to
+        end, at most a day). Returns True when `state` changed."""
+        a = state.get("announce")
+        if not a:
+            return False
+        now = time.time()
+        wanted = _updates_config()["notify_ntfy"]
+        fresh = now - (a.get("at") or 0) <= auto_update.ANNOUNCE_MAX_AGE_SEC
+        if wanted and fresh and (_NOTIFIER is None or _NOTIFIER._in_quiet_hours(now)):
+            return False                  # wait for the notifier, or for quiet hours to end
+        a = auto_update.take_announcement(state, now)
+        if a and wanted and _NOTIFIER is not None:
+            _NOTIFIER.notify(event="update_available", title=a["title"], body=a["body"],
+                             tags=["arrow_up"], click_route="updates")
+        return True
+
+    def _auto_update_run(state: dict, run_date: str) -> None:
+        """One scheduled run: check GitHub, and install the latest release when
+        it's newer. A passing problem (GitHub unreachable, Aerodrome busy) is
+        noted on the card and tried again at the next scheduled time."""
+        path = _auto_update_path()
+        now = time.time()
+        state["last_run_date"] = run_date      # first: a crash or restart never repeats a run
+        auto_update.save_state(path, state)
+        running = _get_running_version()
+
+        st = _perform_github_check(notify=False)
+        latest = st.get("last_known_latest")
+        if st.get("last_check_result") != "success":
+            auto_update.record(state, "check_failed", now, running, "",
+                               st.get("last_check_error") or "the check failed")
+        elif not latest or not _is_newer_version(latest, running):
+            auto_update.record(state, "current", now, running, running)
+        elif auto_update.skips(state, latest):
+            auto_update.record(state, "skipped", now, running, latest)
+        else:
+            _auto_update_install(state, path, running, latest)
+            return
+        auto_update.save_state(path, state)
+
+    def _auto_update_install(state: dict, path: Path, running: str, latest: str) -> None:
+        now = time.time()
+        logger.info(f"Automatic update: installing {latest} (running {running})")
+        try:
+            with _maintenance("an automatic update", update_op=True) as tok:
+                try:
+                    zip_bytes, expected_hash = _fetch_github_release_assets(latest)
+                    _verify_and_stage_github_zip(zip_bytes, expected_hash, _install_dir())
+                except ValueError as e:
+                    logger.warning(f"Automatic update: {latest} not downloaded: {e}")
+                    auto_update.record(state, "failed", now, running, latest, str(e))
+                    auto_update.save_state(path, state)
+                    return
+                # Written before the switch-in: the restart ends this process.
+                state["pending"] = {"from": running, "to": auto_update.version(latest), "at": int(now)}
+                auto_update.save_state(path, state)
+                resp = _apply_staged_update(tok, False, False, False)
+        except _Busy as b:
+            logger.info(f"Automatic update: skipped, busy ({b})")
+            auto_update.record(state, "busy", now, running, latest, str(b))
+            auto_update.save_state(path, state)
+            return
+        if isinstance(resp, JSONResponse):
+            try:
+                body = _json_module.loads(resp.body)
+            except Exception:
+                body = {}
+            reason = body.get("message") or body.get("error") or "the update was refused"
+            logger.warning(f"Automatic update: {latest} not installed: {reason}")
+            state["pending"] = None
+            auto_update._skip(state, latest)
+            auto_update.record(state, "refused", now, running, latest, reason)
+            auto_update.save_state(path, state)
+        # Otherwise the restart is under way; the next start reconciles `pending`.
+
+    def _auto_update_tick() -> None:
+        path = _auto_update_path()
+        state = auto_update.load_state(path)
+        inst = _install_dir()
+        if auto_update.reconcile(state, updater.last_result(inst), updater.pending(inst),
+                                 _get_running_version(), time.time()):
+            auto_update.save_state(path, state)
+        cfg = _updates_config()
+        a = cfg["auto"]
+        if cfg["enabled"] and a["enabled"] and not state.get("pending"):
+            run_date = auto_update.due_run(time.time(), a["day"], a["time"],
+                                           state.get("last_run_date"), tzwindow.resolve_tz(CONFIG))
+            if run_date:
+                _auto_update_run(state, run_date)
+        if _auto_update_announce(state):
+            auto_update.save_state(path, state)
+
+    def _auto_update_scheduler():
+        """Background thread body: once a minute, finish what the last automatic
+        install started, send its message, and run when the schedule says so.
+        Always starts, so turning the setting on needs no restart."""
+        if schedulers_stop.wait(20.0):
+            return
+        logger.info("Automatic-update scheduler started")
+        while True:
+            try:
+                _auto_update_tick()
+            except Exception as e:
+                logger.warning(f"Automatic-update scheduler tick failed: {e}")
+            if schedulers_stop.wait(60.0):
+                return
+
+    if os.environ.get("AERODROME_NO_UPDATE_CHECK") != "1":
+        _threading.Thread(target=_auto_update_scheduler, name="auto-update-scheduler",
+                          daemon=True).start()
+    app.state.auto_update_tick = _auto_update_tick   # one scheduler tick, for the tests
 
     @app.post("/api/notifications/daily-summary/test")
     def post_daily_summary_test():
@@ -12195,6 +12335,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
           last_check_error      — error message if last result was error
           last_known_latest_ts  — unix ts of last successful check
           release_url           — GitHub release page URL when available
+          auto                  — v3.4.180: automatic updates (auto_update.card)
         """
         cfg = _updates_config()
 
@@ -12213,6 +12354,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         return {
             "enabled": cfg["enabled"],
             "poll_interval": cfg["poll_interval"],
+            "auto": _auto_update_card(cfg, latest),
             "running_version": running,
             "latest_known": latest,
             "latest_unreadable": bool(latest and updater.parse_version(latest) is None),

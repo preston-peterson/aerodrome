@@ -1,5 +1,5 @@
 # =============================================================================
-# Version: 3.4.179
+# Version: 3.4.181
 # Aerodrome — Example/Reference Configuration
 # =============================================================================
 # This is the canonical default config shipped with each Aerodrome release.
@@ -588,6 +588,16 @@ updates:
     poll_interval: monthly     # daily / weekly / monthly / never
                                # 'never' disables background polling but
                                # leaves the manual "Check now" button working.
+    auto_apply:                # v3.4.180: install new releases on a schedule
+      enabled: false           # Off by default. At `day`/`time` Aerodrome checks
+                               # GitHub and installs the latest release if it's
+                               # newer, as the Apply button does (verified,
+                               # test-loaded, put back if it doesn't start).
+                               # A release that was put back is never installed
+                               # automatically again. Runs in the hour after
+                               # `time`; a missed hour waits for the next day.
+      day: daily               # daily, or one day a week: mon tue wed thu fri sat sun
+      time: "03:00"            # HH:MM, 24-hour, in stats.timezone (the Display tab's time zone)
     notify:
       banner: true             # Show a banner on /updates when update available
       gear_badge: true         # Light the gear-menu amber dot

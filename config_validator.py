@@ -10,13 +10,15 @@ Usage:
         # each error: {"path": "receiver.port", "message": "Must be 1-65535"}
         return error_response(errors)
 """
-# Version: 3.4.179
+# Version: 3.4.181
 
 import re
 import socket
 import ipaddress
 from urllib.parse import urlsplit
 from typing import Any, List, Tuple
+
+import auto_update   # stdlib only: the auto-update day and time rules
 
 Errors = List[Tuple[str, str]]
 
@@ -865,6 +867,24 @@ def validate_config(cfg: Any) -> Errors:
                                 if v is not None and not isinstance(v, bool):
                                     errs.append((f"updates.github.notify.{key}",
                                                  "Must be a boolean (true or false)"))
+                    # v3.4.180: automatic updates on a schedule (auto_update.py).
+                    aa = gh.get("auto_apply")
+                    if aa is not None:
+                        if not isinstance(aa, dict):
+                            errs.append(("updates.github.auto_apply", "Must be a mapping"))
+                        else:
+                            v = aa.get("enabled")
+                            if v is not None and not isinstance(v, bool):
+                                errs.append(("updates.github.auto_apply.enabled",
+                                             "Must be a boolean (true or false)"))
+                            v = aa.get("day")
+                            if v is not None and v not in auto_update.DAYS:
+                                errs.append(("updates.github.auto_apply.day",
+                                             "Must be daily or a day of the week (mon … sun)"))
+                            v = aa.get("time")
+                            if v is not None and auto_update.parse_hhmm(v) is None:
+                                errs.append(("updates.github.auto_apply.time",
+                                             "Must be a time of day as HH:MM, 24-hour (e.g. 03:00)"))
 
     # --- cross-cutting: update push notifications require ntfy to be usable ---
     # v3.0.10: refuse `updates.github.notify.ntfy: true` when the underlying
