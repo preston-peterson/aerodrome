@@ -2899,6 +2899,112 @@ class TestStartStartsTheConfirmThread(_MainCase):
         self.assertEqual(lg.read_text(), started)
 
 
+class TestConfirmOnStop(_MainCase):
+    """v3.4.183: a clean stop from outside (systemd, an admin, Ubuntu's
+    needrestart after a library upgrade) of a new release that has already
+    answered commits the update, so it can't be counted as a failed start
+    and rolled back. Found on a test VM: needrestart restarted 3.4.182 twice
+    inside its 30 s confirm window and the guard put 3.4.181 back."""
+
+    def swapped(self, served=True, applier_pid=4242):
+        install = _fake_release(self.inst / "i", OLD)
+        staged = _fake_release(self.inst / "staged", NEW)
+        staging = updater.stage(install, staged, PRESERVE, "20261113-194833")
+        updater.swap_in(install, staging, "20261113-194833", OLD, NEW)
+        j = updater.pending(install)
+        j["applier_pid"] = applier_pid      # the old process that applied it, not this one
+        if served:
+            j["served_at"] = time.time() - 5
+        updater._write_json(install / updater.PENDING, j)
+        return install
+
+    def boot(self, install):
+        return updater.on_boot(install, ["main.py", "start"], reexec=mock.Mock(), log=lambda m: None)
+
+    def stop(self, install):
+        with self.assertLogs("adsb.main", level="INFO") as cm:
+            got = self.main._confirm_update_on_stop(install)
+        return got, "\n".join(cm.output)
+
+    def test_a_served_release_stopped_cleanly_is_committed(self):
+        install = self.swapped()
+        got, out = self.stop(install)
+        self.assertTrue(got)
+        self.assertIn("Update confirmed before this stop", out)
+        self.assertIsNone(updater.pending(install))
+        self.assertEqual((install / "VERSION").read_text().strip(), NEW)
+        self.assertEqual(self.boot(install), "none", "the next start has nothing to count")
+        self.assertEqual(updater.last_result(install)["result"], "applied")
+
+    def test_the_vm_case_two_restarts_inside_the_window_keep_the_release(self):
+        install = self.swapped(served=False)
+        for _ in range(updater.MAX_FAILED_STARTS + 1):
+            if updater.pending(install) is None:
+                break
+            self.assertEqual(self.boot(install), "counting")
+            updater.note_served(install)                    # it answers ~2 s after starting
+            self.main._confirm_update_on_stop(install)      # needrestart's SIGTERM, ~20 s later
+        self.assertEqual(self.boot(install), "none")
+        self.assertEqual((install / "VERSION").read_text().strip(), NEW)
+
+    def test_a_release_that_never_answered_is_still_counted(self):
+        install = self.swapped(served=False)
+        self.assertFalse(self.main._confirm_update_on_stop(install))
+        self.assertIsNotNone(updater.pending(install))
+        self.assertEqual(self.boot(install), "counting")
+
+    def test_the_applying_process_own_restart_never_commits(self):
+        install = self.swapped(applier_pid=os.getpid())
+        self.assertFalse(self.main._confirm_update_on_stop(install))
+        self.assertEqual(updater.pending(install)["state"], "pending_first_boot")
+
+    def test_a_crash_after_answering_still_rolls_back(self):
+        # No signal → no commit: served, then two crashes inside the window.
+        install = self.swapped()
+        j = updater.pending(install)
+        j["failed_starts"] = updater.MAX_FAILED_STARTS
+        updater._write_json(install / updater.PENDING, j)
+        self.assertEqual(self.boot(install), "rolled_back")
+        self.assertEqual((install / "VERSION").read_text().strip(), OLD)
+
+    def test_nothing_pending_is_a_no_op(self):
+        install = _fake_release(self.inst / "i", NEW)
+        self.assertFalse(self.main._confirm_update_on_stop(install))
+
+    def test_an_error_never_blocks_the_stop(self):
+        install = self.swapped()
+        with mock.patch.object(updater, "commit_if_served", side_effect=OSError(28, "No space left")), \
+                self.assertLogs("adsb.main", level="WARNING") as cm:
+            self.assertFalse(self.main._confirm_update_on_stop(install))
+        self.assertIn("Could not confirm the pending update before stopping", "\n".join(cm.output))
+
+    def test_start_registers_a_stop_handler_that_commits(self):
+        install = self.swapped()
+        cfg = {"data": {"db_file": str(self.inst / "x.db")},
+               "web": {"host": "127.0.0.1", "port": 18299},
+               "receiver": {"ip": "192.0.2.10", "port": 8080, "poll_interval": 1},
+               "retention": {"military_days": 1, "watchlist_days": 1, "all_days": 1}}
+        with mock.patch.object(self.main, "BASE_DIR", install), \
+                mock.patch.object(self.main, "_confirm_update_when_serving", lambda *a, **k: None), \
+                mock.patch.object(self.main, "run_collector", lambda *a, **k: None), \
+                mock.patch.object(self.main, "set_db_path"), \
+                mock.patch.object(self.main, "set_receiver_location"), \
+                mock.patch.object(self.main, "get_app", return_value=object()), \
+                mock.patch.object(self.main, "_preflight_bind_check", return_value=(True, "")), \
+                mock.patch.object(self.main.signal, "signal") as sig, \
+                mock.patch.object(self.main.uvicorn, "run", side_effect=_Stop), \
+                contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(_Stop):
+                self.main.start(cfg)
+            handlers = {c.args[0]: c.args[1] for c in sig.call_args_list}
+            self.assertIn(signal.SIGTERM, handlers)
+            self.assertIsNotNone(updater.pending(install), "nothing committed before the stop")
+            with self.assertRaises(SystemExit), self.assertLogs("adsb.main", level="INFO"):
+                handlers[signal.SIGTERM](signal.SIGTERM, None)
+        self.assertIsNone(updater.pending(install))
+        self.assertEqual((install / "VERSION").read_text().strip(), NEW)
+
+
 def _bzip2_bomb(declared=8, real=4 * 1024 * 1024, name="aerodrome-v3.4.199/VERSION"):
     """A zip whose bzip2 entry declares `declared` bytes but expands to `real`."""
     import struct

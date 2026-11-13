@@ -19,6 +19,22 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.183] — 2026-11-13
+
+**An update is no longer undone when the system restarts Aerodrome in the half-minute after it installs.**
+
+After an update, Aerodrome gives the new version about 30 seconds to prove it works before it keeps it; if the new version stops twice before then, Aerodrome puts the previous version back. But a stop isn't always a failure. On Ubuntu, the system's own automatic updates restart running services after they upgrade a library, and if two of those restarts landed in that half-minute, Aerodrome mistook them for a version that wouldn't start and undid a working update. An automatic update undone this way also put that release on its skip list. Now a new version that has already answered its own web page and is then stopped normally counts as working, and the update stays. A new version that crashes, or never answers, is still put back as before.
+
+### Operational notes
+
+Nothing to set and no database change. The fix is in the version being installed, so it protects updates to 3.4.183 and every later one. If an earlier update was undone this way, the Updates page says "didn't start (2 attempts)"; that release isn't the problem, and this one installs as usual — automatic updates skip only the release that was put back, not newer ones.
+
+### Behind the scenes
+
+- `main.py`'s stop handler (SIGTERM/SIGINT) now confirms a pending update when the new version has already answered (`updater.commit_if_served`), the same rule Aerodrome's own restarts (Settings, a config import, a restore) have followed since 3.4.147. The applying version's own restart never counts.
+- New tests in `test_update_apply.py` (`TestConfirmOnStop`): a clean stop after answering is confirmed, two restarts inside the window keep the release, a release that never answered or crashes is still counted and rolled back, an error never blocks the stop, and `start()` installs the handler.
+- Found and checked on a test machine: an automatic update whose confirmation overlapped Ubuntu's library upgrades; the fixed build stayed installed through two restarts inside the window.
+
 ## [3.4.182] — 2026-11-12
 
 **The Live map and the display board now show the airports around you: a faint ring and code under the aircraft, and each airport's runways when you zoom in.**

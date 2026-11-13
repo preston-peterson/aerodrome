@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Version: 3.4.182
+# Version: 3.4.183
 """
 main.py — Aerodrome ADS-B Tracker
 
@@ -562,6 +562,32 @@ def _probe_version(addr: str, host_hdr: str, port: int, timeout: float = 5.0):
         conn.close()
 
 
+def _confirm_update_on_stop(install_dir=None, logger=None) -> bool:
+    """v3.4.183: start()'s SIGTERM/SIGINT handler calls this first. A clean
+    stop from outside of a new release that has already answered its own
+    /api/version — systemd, an admin, or the system restarting services
+    after a library upgrade (Ubuntu's needrestart does this) — is not a
+    failed start. Without this, two such restarts inside the confirm window
+    rolled a working release back ("didn't start (2 attempts)") and put it
+    on the automatic updater's skip list. So the pending update is committed
+    first (updater.commit_if_served, as the in-app restarts do); the start
+    that follows records the last-good config and tightens files as any
+    start does. Still counted: a crash (no signal) and a release that never
+    answered. The applying (old) process's own restart never qualifies.
+    Never raises: a stop is never blocked on this. True when committed."""
+    log = logger or logging.getLogger("adsb.main")
+    if _updater is None:
+        return False
+    try:
+        if _updater.commit_if_served(install_dir or BASE_DIR):
+            log.info("Update confirmed before this stop (the new version had "
+                     "already answered)")
+            return True
+    except Exception as e:  # never block a stop on this
+        log.warning(f"Could not confirm the pending update before stopping: {e}")
+    return False
+
+
 def _confirm_update_when_serving(host: str, port: int, to_version: str,
                                  *, started_text=None, probe=None, sleep=time.sleep,
                                  exit_fn=os._exit, monotonic=time.monotonic, logger=None):
@@ -1062,6 +1088,7 @@ def start(config: dict):
 
     def shutdown(signum, frame):
         logger.info("Shutdown signal received...")
+        _confirm_update_on_stop(logger=logger)
         stop_event.set()
         PID_FILE.unlink(missing_ok=True)
         sys.exit(0)
