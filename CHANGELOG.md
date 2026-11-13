@@ -19,6 +19,27 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.182] — 2026-11-12
+
+**The Live map and the display board now show the airports around you: a faint ring and code under the aircraft, and each airport's runways when you zoom in.**
+
+Major and regional airports show by default. The new runway button in the map's tool column opens a small panel where you pick **Major**, **Regional** and **Small fields** (small airports with a paved runway of 3,000 ft or more); that browser remembers your pick. Configuration → Map → **Airports** sets what every screen starts with — major and regional, all three, or off — so a display board shows them without anyone touching it.
+
+- **Quiet by design.** Airports are drawn under the aircraft in the same faint style as the range-ring labels, take no clicks, and follow the map's light or dark tiles. Regional airports appear from a middle zoom and small fields only when you zoom in close; zoom in further and each airport's ring becomes its actual runways.
+- **Nothing is looked up.** The airport list comes from OurAirports, which is public domain, and ships with Aerodrome. The map gets only the airports within 400 miles of your receiver.
+- **Codes are ICAO** (KDFW, EGLL). A field without one shows its own code.
+
+### Operational notes
+
+New setting `map.airports`: `major` (default: major and regional airports), `all` (adds small fields) or `off`; see config.yaml.example. It applies without a restart. A screen's own pick, once made with the map's airport button, wins over it. Heliports, seaplane bases and grass strips aren't shown. Airports need the receiver's location (Configuration → Receiver); without it the map shows none. No database schema change.
+
+### Behind the scenes
+
+- New `static/airports.json` (11,001 airports and their runways, one per line) is built by `scripts/build_airports.py` from OurAirports' published files. `airports.py` reads it once and keeps only the airports near the receiver, so a Pi holds a few hundred, not eleven thousand.
+- New `/api/airports` (see API.md); `/api/ui-config` adds `map.airports`.
+- New shared `static/airports.js` draws the layer and its panel on both the Live map and the display board.
+- New `test_airports.py` covers the list's build, the nearby filter, the endpoint and the setting; new browser tests cover the Live map, the display board and the Configuration field.
+
 ## [3.4.181] — 2026-11-12
 
 **Aerodrome can now install updates by itself on a schedule, so a display board or kiosk stays current without anyone signing in to it.**

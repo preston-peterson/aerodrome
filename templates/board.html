@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
-<!-- Version: 3.4.181 -->
+<!-- Version: 3.4.182 -->
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Display board — Aerodrome</title>
@@ -12,6 +12,7 @@
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/leaflet/leaflet.css">
 <script src="/static/leaflet/leaflet.js"></script>
+<script src="/static/airports.js"></script>
 <style>
 /* =============================================================================
    Display board (v3.4.110, interactive v3.4.115) — kiosk page for FBO/office
@@ -144,10 +145,13 @@ body:not(.mouse) *{cursor:none!important}
 .scope-wrap .bt-zin,.scope-wrap .bt-zout{font-size:1.45rem}
 /* Activity-reveal: controls (and the weather panel) fade with the gear. */
 .scope-wrap .mapbtn,.scope-wrap .board-tools,
-.scope-wrap .wx-panel{opacity:0;pointer-events:none;transition:opacity .25s}
+.scope-wrap .wx-panel,.scope-wrap .apt-panel{opacity:0;pointer-events:none;transition:opacity .25s}
 body.mouse .scope-wrap .mapbtn,
-body.mouse .scope-wrap .board-tools,body.mouse .scope-wrap .wx-panel{
+body.mouse .scope-wrap .board-tools,body.mouse .scope-wrap .wx-panel,
+body.mouse .scope-wrap .apt-panel{
   opacity:1;pointer-events:auto}
+/* v3.4.182: the airports panel (static/airports.js) sits where the weather panel does. */
+.scope-wrap .apt-panel{left:4.6rem;bottom:4.2rem;font-size:.75rem}
 body.mouse .scope-wrap .board-tools .mapbtn{opacity:1;pointer-events:auto}
 /* ---------- tap-a-plane details panel (v3.4.117) — slide-out over the right
    edge of the scope, like the Live radar's overlay. Closes on ✕, a map tap,
@@ -454,7 +458,7 @@ let WB_DEFAULT = 'ask';   // display.wallboard_layout from /api/ui-config
 // Live radar reads — tiles theme, rings on/off, and the starting view.
 let MAPCFG = {show_range_rings: true, default_theme: 'auto',
               starting_view: 'fit_all', fixed_zoom: 9, carto_api_key: '',
-              type_shapes: true};
+              type_shapes: true, airports: 'major'};
 let SHOW_ROUTES = true;   // display.show_routes — off = no route lookups at all
 
 const $ = (id) => document.getElementById(id);
@@ -474,6 +478,7 @@ const BK = {
   trails:   'aerodrome-board-trails',     // '1' | '0'
   weather:  'aerodrome-board-weather',    // '1' | '0'
   wxOp:     'aerodrome-board-weather-opacity',
+  airports: 'aerodrome-board-airports',   // {major, regional, small} (v3.4.182)
 };
 function lsGet(k, dflt){ try { const v = localStorage.getItem(k); return v == null ? dflt : v; } catch (e) { return dflt; } }
 function lsSet(k, v){ try { localStorage.setItem(k, v); } catch (e) {} }
@@ -489,6 +494,10 @@ function legendOn(){ return lsGet(BK.legend, '1') === '1'; }
 function coverageOn(){ return lsGet(BK.coverage, '0') === '1'; }
 function trailsOn(){ return lsGet(BK.trails, '0') === '1'; }
 function weatherOn(){ return lsGet(BK.weather, '0') === '1'; }
+// v3.4.182: this screen's airport choice; Configuration → Map until it picks.
+function airportsChoice(){
+  return window.AerodromeAirports ? AerodromeAirports.choice(BK.airports, MAPCFG.airports) : {};
+}
 function wxOpacity(){
   const v = parseInt(lsGet(BK.wxOp, '55'), 10);
   return (v >= 10 && v <= 100) ? v : 55;
@@ -842,6 +851,7 @@ function _mapFor(el, opts){
        + '<line x1="8" y1="19" x2="8" y2="21"/><line x1="12" y1="19.5" x2="12" y2="21.5"/>'
        + '<line x1="16" y1="19" x2="16" y2="21"/></svg>',
          'Toggle weather radar (precipitation)', toggleWeather);
+      if (window.AerodromeAirports) mk('bt-apt', AerodromeAirports.ICON, 'Airports', toggleAirportsPanel);
       return wrap;
     }
   });
@@ -877,6 +887,16 @@ function _mapFor(el, opts){
     wx.addEventListener(ev, e => e.stopPropagation()));
   el.appendChild(wx);
   st.wxPanel = wx;
+
+  // Airport locators (v3.4.182): layer + the category panel the button opens.
+  if (window.AerodromeAirports) {
+    st.airports = AerodromeAirports.attach(map, {
+      isDark: () => boardTheme() === 'dark', choice: airportsChoice});
+    st.aptPanel = AerodromeAirports.panel(map, {
+      choice: airportsChoice,
+      onChange: c => { AerodromeAirports.save(BK.airports, c); _syncBtns(); forEachSt(s2 => s2.airports && s2.airports.redraw()); }});
+    map.on('click', () => st.aptPanel.open(false));
+  }
 
   // Tap-a-plane details panel (v3.4.117) — one per scope, filled on demand.
   const dp = document.createElement('div');
@@ -938,6 +958,12 @@ function _applyTheme(st){
     want.addTo(st.map);
     st.activeTiles = want;
   }
+  if (st.airports) st.airports.redraw();   // label/line colour follows the tiles
+}
+
+/* ---------- airports (v3.4.182, static/airports.js) ---------- */
+function toggleAirportsPanel(){
+  forEachSt(st => { if (st.aptPanel && st.map.getContainer().offsetParent) st.aptPanel.open(!st.aptPanel.isOpen()); });
 }
 function toggleTheme(){
   lsSet(BK.theme, boardTheme() === 'dark' ? 'light' : 'dark');
@@ -1336,6 +1362,7 @@ function _syncBtns(){
     const cv = q('.bt-cov');    if (cv) cv.classList.toggle('on', coverageOn());
     const tr = q('.bt-trail');  if (tr) tr.classList.toggle('on', trailsOn());
     const wx = q('.bt-wx');     if (wx) wx.classList.toggle('on', weatherOn());
+    const ap = q('.bt-apt');    if (ap && window.AerodromeAirports) ap.classList.toggle('on', AerodromeAirports.anyOn(airportsChoice()));
     const lb = q('.bt-lab');
     if (lb) {
       lb.classList.remove('lbl-full', 'lbl-cs', 'lbl-off');
@@ -1805,6 +1832,7 @@ window.addEventListener('resize', () => {
       MAPCFG.fixed_zoom = j.map.fixed_zoom || 9;
       MAPCFG.carto_api_key = String(j.map.carto_api_key || '').trim();
       MAPCFG.type_shapes = j.map.type_shapes !== false;
+      MAPCFG.airports = ['off', 'major', 'all'].includes(j.map.airports) ? j.map.airports : 'major';
     }
     if (j.display && j.display.wallboard_layout) WB_DEFAULT = j.display.wallboard_layout;
     if (j.display) SHOW_ROUTES = j.display.show_routes !== false;

@@ -1,4 +1,4 @@
-# Version: 3.4.181
+# Version: 3.4.182
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -56,6 +56,8 @@ import threading
 import updater
 import atomic_io
 import auto_update
+# v3.4.182: the maps' airport layer (OurAirports data near the receiver).
+import airports as airports_data
 # v3.4.148: every config.yaml write goes through config_io (all or nothing,
 # under CONFIG_LOCK).
 import config_io
@@ -5105,6 +5107,11 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 # v3.5.x: aircraft type silhouettes (Live + Board markers
                 # draw a per-typecode shape instead of the chevron).
                 "type_shapes": mp.get("type_shapes", True) is not False,
+                # v3.4.182: which airports the Live map and the display board
+                # start with: off / major (major + regional) / all (+ small
+                # fields). Each screen's airport button overrides it.
+                "airports": (mp.get("airports") if mp.get("airports") in ("off", "major", "all")
+                             else "major"),
                 # CARTO dark-basemap key. Leaflet fetches tiles in the
                 # browser, so the key has to travel with this payload
                 # (same LAN-trust model as the rest of /api/config).
@@ -5115,6 +5122,27 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 ),
             },
         }
+
+    # =========================================================================
+    # /api/airports — airports near the receiver for the maps' layer (v3.4.182)
+    # =========================================================================
+    # From static/airports.json (OurAirports, public domain), trimmed to the
+    # airports within airports_data.RADIUS_MI of the receiver. The browser
+    # draws them; which ones show is its own choice (Configuration → Map
+    # sets the default). Plain `def`: the first call reads the file.
+    @app.get("/api/airports")
+    def get_airports():
+        r = CONFIG.get("receiver") or {}
+        try:
+            lat, lon = float(r.get("latitude")), float(r.get("longitude"))
+        except (TypeError, ValueError):
+            return {"ok": True, "airports": [], "reason": "no_receiver_location"}
+        try:
+            found = airports_data.near(lat, lon)
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            logger.warning(f"Airport list unreadable ({airports_data.DATA.name}): {e}")
+            return {"ok": False, "airports": [], "reason": "data_unreadable"}
+        return {"ok": True, "airports": found, "radius_mi": airports_data.RADIUS_MI}
 
     # =========================================================================
     # /api/coverage — max-range coverage outline (radar overlay, v3.5.0)

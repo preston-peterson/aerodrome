@@ -1,5 +1,5 @@
 # =============================================================================
-# Version: 3.4.181
+# Version: 3.4.182
 # Aerodrome — Example/Reference Configuration
 # =============================================================================
 # This is the canonical default config shipped with each Aerodrome release.
@@ -108,6 +108,14 @@ display:
 map:
   # Show the concentric distance rings around the receiver.
   show_range_rings: true
+  # Airports on the Live map and the display board: a faint ring and code,
+  # and the runways when zoomed in (OurAirports data, shipped with Aerodrome).
+  #   "off"   — none
+  #   "major" — major and regional airports (default)
+  #   "all"   — also small fields with a paved runway of 3,000 ft or more
+  # The starting choice for every screen; each screen's airport button on the
+  # map can still change it for that browser.
+  airports: "major"
   # Ring distances, comma-separated, in your configured distance unit
   # (see receiver.distance_unit). Ignored when follow_range_rose is true.
   ring_distances: "50, 100, 150, 200, 250"

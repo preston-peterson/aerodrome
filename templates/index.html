@@ -1,4 +1,4 @@
-<!-- Version: 3.4.181 -->
+<!-- Version: 3.4.182 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -38,6 +38,7 @@
          same as the aircraft-detail position map. -->
     <link rel="stylesheet" href="/static/leaflet/leaflet.css">
     <script src="/static/leaflet/leaflet.js" defer></script>
+    <script src="/static/airports.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         
@@ -834,6 +835,18 @@
         #radarMap .map-weather-btn svg { display:block; }
         #radarMap .map-weather-btn:hover { background:var(--bg1); }
         #radarMap .map-weather-btn.on {
+            color:var(--cyan); border-color:var(--cyan); background:rgba(6,182,212,.12);
+        }
+        /* v3.4.182: airports button (static/airports.js draws the layer + panel). */
+        #radarMap .map-airports-btn {
+            background:var(--bg2); color:var(--t1);
+            border:1px solid var(--bdr); border-radius:4px;
+            width:30px; height:30px; padding:0; cursor:pointer;
+            display:flex; align-items:center; justify-content:center; line-height:1;
+        }
+        #radarMap .map-airports-btn svg { display:block; }
+        #radarMap .map-airports-btn:hover { background:var(--bg1); }
+        #radarMap .map-airports-btn.on {
             color:var(--cyan); border-color:var(--cyan); background:rgba(6,182,212,.12);
         }
         /* The floating weather panel — bottom-left, beside the tools column. */
@@ -2671,7 +2684,7 @@ let statsCfg = { enabled: true, refresh_interval: 300, timezone: '', cards: {} }
 // server handles the follow-range-rose option).
 let mapCfg = { show_range_rings: true, ring_distances: [50,100,150,200,250],
                starting_view: 'fit_all', fixed_zoom: 9, default_theme: 'auto',
-               carto_api_key: '', type_shapes: true };
+               carto_api_key: '', type_shapes: true, airports: 'major' };
 // v3.4.114: route-display toggle (Configuration → Display). Default true so
 // the overlay behaves normally before the first ui-config load; when off,
 // the radar overlay skips the route lookup entirely.
@@ -3476,6 +3489,8 @@ const _radar = {
     triedInit: false,
     fleetBuf: {},         // icao -> [[lat,lon,alt], ...]  fleet-trail points (↝)
     fleetSeg: {},         // icao -> [L.polyline, ...]      fleet-trail segments
+    airports: null,       // static/airports.js layer ({redraw})
+    airportsPanel: null,  // its category panel
 };
 
 // v3.5.0 (radar): the live map carries its OWN light/dark toggle, matching
@@ -3642,6 +3657,7 @@ function _radarApplyTheme(){
         want.addTo(_radar.map);
         _radar.activeTiles = want;
     }
+    if(_radar.airports) _radar.airports.redraw();   // label/line colour follows the tiles
     // Keep the toggle button's icon/label in sync (sun = "switch to light").
     const btn = document.querySelector('#radarMap .map-theme-btn');
     if(btn){
@@ -3766,6 +3782,9 @@ function initRadarMap(receiver){
              + '<line x1="8" y1="19" x2="8" y2="21"/><line x1="12" y1="19.5" x2="12" y2="21.5"/>'
              + '<line x1="16" y1="19" x2="16" y2="21"/></svg>',
                'Toggle weather radar (precipitation)', toggleRadarWeather);
+            if(window.AerodromeAirports)
+                mk('map-airports-btn' + (AerodromeAirports.anyOn(radarAirportsChoice()) ? ' on' : ''),
+                   AerodromeAirports.ICON, 'Airports', toggleRadarAirportsPanel);
             // 4-way dock control (interaction model B) — pick which side of the
             // Live split the map sits on. Appended LAST in this tool column so
             // it sits in the corner, with the smaller toggle buttons stacked
@@ -3799,6 +3818,7 @@ function initRadarMap(receiver){
     if(radarCoverageOn()) _radarDrawCoverage();   // restore persisted overlay
     _radarApplyLabels();                          // apply persisted labels state
     if(radarWeatherOn()) _radarWeatherStart();    // restore persisted weather loop
+    _radarAirportsInit();                         // airport locators (v3.4.182)
 
     // Click the map background (not a marker — those stopPropagation) to
     // dismiss the details overlay; Esc does the same.
@@ -4705,6 +4725,33 @@ const _radarWx = {
     layers: {}, frames: [], host: '', idx: 0, curIdx: null, sig: '',
     playing: true, animTimer: null, refreshTimer: null,
 };
+// v3.4.182: airport locators (static/airports.js). Configuration → Map's
+// map.airports is the starting choice; once this browser picks, its own
+// choice wins. The button opens the category panel; a map click closes it.
+const RADAR_AIRPORTS_KEY = 'aerodrome.radar_airports';
+function radarAirportsChoice(){
+    return window.AerodromeAirports
+        ? AerodromeAirports.choice(RADAR_AIRPORTS_KEY, mapCfg.airports) : {};
+}
+function _radarAirportsInit(){
+    if(!_radar.map || _radar.airports || !window.AerodromeAirports) return;
+    _radar.airports = AerodromeAirports.attach(_radar.map, {
+        isDark: () => _radarTheme() === 'dark', choice: radarAirportsChoice});
+    _radar.airportsPanel = AerodromeAirports.panel(_radar.map, {
+        choice: radarAirportsChoice,
+        onChange: c => { AerodromeAirports.save(RADAR_AIRPORTS_KEY, c); _radarAirportsSync(); }});
+    _radar.map.on('click', () => _radar.airportsPanel.open(false));
+}
+function _radarAirportsSync(){
+    const btn = document.querySelector('#radarMap .map-airports-btn');
+    if(btn && window.AerodromeAirports)
+        btn.classList.toggle('on', AerodromeAirports.anyOn(radarAirportsChoice()));
+    if(_radar.airports) _radar.airports.redraw();
+    if(_radar.airportsPanel && _radar.airportsPanel.isOpen()) _radar.airportsPanel.sync();
+}
+function toggleRadarAirportsPanel(){
+    if(_radar.airportsPanel) _radar.airportsPanel.open(!_radar.airportsPanel.isOpen());
+}
 function radarWeatherOn(){
     try { return localStorage.getItem(RADAR_WEATHER_KEY) === '1'; } catch(e){ return false; }
 }
@@ -7605,12 +7652,14 @@ async function loadUiConfig(){
                 default_theme: j.map.default_theme || 'auto',
                 carto_api_key: String(j.map.carto_api_key || '').trim(),
                 type_shapes: j.map.type_shapes !== false,
+                airports: ['off', 'major', 'all'].includes(j.map.airports) ? j.map.airports : 'major',
             };
             // Re-skin existing markers + redraw rings so a live config change
             // (no restart) takes effect on the next refresh without a reload.
             if(_radar.map){
                 if(_radar.receiver) _radarDrawReceiver(_radar.receiver);
                 _radarReskin();
+                _radarAirportsSync();     // map.airports may have changed
             }
             _radarRebuildDarkTiles();
         } else {

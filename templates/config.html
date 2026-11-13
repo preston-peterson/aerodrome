@@ -1,4 +1,4 @@
-<!-- Version: 3.4.181 -->
+<!-- Version: 3.4.182 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1578,6 +1578,11 @@ function sectionMap() {
         <div class="form-grid">
             ${field({label:'CARTO API key', hint:'dark basemap only · live, no restart', path:'map.carto_api_key', placeholder:'Paste the key from the CARTO email', required:false})}
             ${field({label:'Range rings', hint:'show the concentric distance rings around your receiver', path:'map.show_range_rings', type:'checkbox'})}
+            ${field({label:'Airports', hint:'nearby airports on the Live map and the display board. Each screen can still switch them with the map\'s airport button', path:'map.airports', type:'select', options:[
+                {value:'major', label:'Major and regional airports'},
+                {value:'all',   label:'Major, regional and small fields'},
+                {value:'off',   label:'Off'},
+            ]})}
             ${field({label:'Ring distances', hint:'comma-separated, in your distance unit. Ignored when "Match Stats range rose" is on.', path:'map.ring_distances', placeholder:'50, 100, 150, 200, 250'})}
             ${field({label:'Match Stats range rose', hint:'reuse the Stats range rose distance bands so the two views align (overrides Ring distances)', path:'map.follow_range_rose', type:'checkbox'})}
             ${field({label:'Starting view', hint:'how the radar frames itself the first time it opens', path:'map.starting_view', type:'select', options:[

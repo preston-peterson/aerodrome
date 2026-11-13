@@ -10,7 +10,7 @@ Usage:
         # each error: {"path": "receiver.port", "message": "Must be 1-65535"}
         return error_response(errors)
 """
-# Version: 3.4.181
+# Version: 3.4.182
 
 import re
 import socket
@@ -998,6 +998,9 @@ def validate_config(cfg: Any) -> Errors:
             dt = mp.get("default_theme")
             if dt is not None and dt not in ("auto", "light", "dark"):
                 errs.append(("map.default_theme", "Must be auto, light, or dark"))
+            ap = mp.get("airports")
+            if ap is not None and ap not in ("off", "major", "all"):
+                errs.append(("map.airports", "Must be off, major, or all"))
             ck = mp.get("carto_api_key")
             if ck is not None:
                 if not isinstance(ck, str):

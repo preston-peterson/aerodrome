@@ -1765,6 +1765,170 @@ class TestConfigAutomaticUpdates(_ConfigPage):
                          {"time": "01:30", "day": "sun", "enabled": True})
         self.assertEqual(self.errors, [])
 
+# v3.4.182: invented airports around _aircraft()'s receiver (40, -90).
+_AIRPORTS = {"ok": True, "radius_mi": 400, "airports": [
+    {"code": "ZZA1", "cat": "major", "lat": 40.02, "lon": -90.02,
+     "runways": [[40.03, -90.02, 40.01, -90.02]]},
+    {"code": "ZZB2", "cat": "regional", "lat": 40.10, "lon": -90.10, "runways": []},
+    {"code": "ZC3", "cat": "small", "lat": 40.05, "lon": -89.95,
+     "runways": [[40.052, -89.95, 40.048, -89.95]]},
+]}
+
+
+class TestLiveMapAirports(BrowserCase):
+    """The Live radar's airport layer and its panel (v3.4.182, static/airports.js)."""
+
+    def show(self, setting="major", zoom=9, stored=None):
+        self.site.api["/api/live"] = _aircraft(1)
+        self.site.api["/api/status"] = _status()
+        self.site.api["/api/airports"] = _AIRPORTS
+        self.site.api["/api/ui-config"] = {"map": {"airports": setting}}
+        if stored is not None:
+            self.page.add_init_script(
+                "localStorage.setItem('aerodrome.radar_airports', %s)" % json.dumps(json.dumps(stored)))
+        self.open("/")
+        self.advance(1000)
+        self.page.wait_for_function("typeof _radar !== 'undefined' && !!_radar.airports")
+        self.zoom(zoom)
+
+    def zoom(self, z):
+        self.page.evaluate(f"_radar.map.setView([40.03, -90.03], {z}, {{animate: false}})")
+        self.page.wait_for_timeout(100)
+
+    def labels(self):
+        return sorted(self.page.evaluate(
+            "[...document.querySelectorAll('#radarMap .apt-label')].map(e => e.textContent)"))
+
+    def shapes(self):
+        return self.page.evaluate("""(() => { const n = {lines: 0, rings: 0};
+            _radar.map.eachLayer(l => { if (!l.options || l.options.pane !== 'airports') return;
+                if (l instanceof L.CircleMarker) n.rings++; else if (l instanceof L.Polyline) n.lines++; });
+            return n; })()""")
+
+    def button_on(self):
+        return self.page.evaluate(
+            "document.querySelector('#radarMap .map-airports-btn').classList.contains('on')")
+
+    def test_major_and_regional_show_by_default(self):
+        self.show()
+        self.assertEqual(self.labels(), ["ZZA1", "ZZB2"])
+        self.assertEqual(self.shapes(), {"lines": 0, "rings": 2})
+        self.assertTrue(self.button_on())
+        self.assertEqual(self.errors, [])
+
+    def test_small_fields_appear_when_zoomed_in(self):
+        self.show(setting="all")
+        self.assertEqual(self.labels(), ["ZZA1", "ZZB2"], "small fields wait for zoom 10")
+        self.zoom(10)
+        self.assertEqual(self.labels(), ["ZC3", "ZZA1", "ZZB2"])
+
+    def test_runways_replace_the_ring_from_zoom_11(self):
+        self.show(setting="all", zoom=11)
+        self.assertIn("ZZA1", self.labels())
+        n = self.shapes()
+        self.assertEqual(n["lines"], 2, "ZZA1's and ZC3's runways")
+        self.assertEqual(n["rings"], 1, "ZZB2 has no runway ends, so it keeps its ring")
+
+    def test_the_panel_sets_this_browsers_choice(self):
+        self.show()
+        panel = "#radarMap .apt-panel"
+        self.assertFalse(self.page.is_visible(panel))
+        self.page.click("#radarMap .map-airports-btn")
+        self.assertTrue(self.page.is_visible(panel))
+        self.assertTrue(self.page.is_checked(panel + " input[data-cat=regional]"))
+        self.assertFalse(self.page.is_checked(panel + " input[data-cat=small]"))
+        self.page.uncheck(panel + " input[data-cat=regional]")
+        self.assertEqual(self.labels(), ["ZZA1"])
+        self.assertEqual(json.loads(self.page.evaluate("localStorage.getItem('aerodrome.radar_airports')")),
+                         {"major": True, "regional": False, "small": False})
+        self.page.uncheck(panel + " input[data-cat=major]")
+        self.assertEqual(self.labels(), [])
+        self.assertFalse(self.button_on())
+        self.page.evaluate("_radar.map.fire('click')")   # a map click closes it
+        self.assertFalse(self.page.is_visible(panel))
+        self.assertEqual(self.errors, [])
+
+    def test_this_browsers_choice_beats_the_setting(self):
+        self.show(setting="major", stored={"major": False, "regional": True, "small": False})
+        self.assertEqual(self.labels(), ["ZZB2"])
+
+    def test_off_draws_nothing_until_this_browser_picks(self):
+        self.show(setting="off")
+        self.assertEqual(self.labels(), [])
+        self.assertFalse(self.button_on())
+        self.page.click("#radarMap .map-airports-btn")
+        self.page.check("#radarMap .apt-panel input[data-cat=major]")
+        self.assertEqual(self.labels(), ["ZZA1"])
+        self.assertTrue(self.button_on())
+
+    def test_labels_follow_the_map_theme(self):
+        self.show()
+        dark = self.page.evaluate("_radarTheme() === 'dark'")
+        light_labels = lambda: self.page.evaluate(
+            "[...document.querySelectorAll('#radarMap .apt-label')].every(e => e.classList.contains('apt-light'))")
+        self.assertEqual(light_labels(), not dark)
+        self.page.evaluate("_radarToggleMapTheme()")
+        self.assertEqual(light_labels(), dark)
+
+    def test_no_airports_answer_leaves_the_map_alone(self):
+        self.site.api["/api/airports"] = {"ok": False, "airports": [], "reason": "data_unreadable"}
+        self.site.api["/api/live"] = _aircraft(1)
+        self.site.api["/api/status"] = _status()
+        self.open("/")
+        self.advance(1000)
+        self.page.wait_for_function("typeof _radar !== 'undefined' && !!_radar.airports")
+        self.assertEqual(self.labels(), [])
+        self.assertEqual(self.errors, [])
+
+
+class TestBoardAirports(BrowserCase):
+    """The display board's radar draws the same layer, from the same setting (v3.4.182)."""
+
+    def test_the_radar_wall_shows_major_and_regional(self):
+        self.site.api["/api/live"] = _aircraft(1)
+        self.site.api["/api/airports"] = _AIRPORTS
+        self.site.api["/api/ui-config"] = {"map": {"airports": "major"}}
+        self.open("/board?mode=radar")
+        self.advance(1000)
+        self.page.wait_for_function("Object.values(_maps).some(st => st.airports)")
+        self.page.evaluate("Object.values(_maps)[0].map.setView([40.03, -90.03], 9, {animate: false})")
+        self.page.wait_for_timeout(100)
+        labels = sorted(self.page.evaluate("[...document.querySelectorAll('.apt-label')].map(e => e.textContent)"))
+        self.assertEqual(labels, ["ZZA1", "ZZB2"])
+        self.assertTrue(self.page.evaluate("!!document.querySelector('.bt-apt.on')"))
+        self.page.mouse.move(300, 300)          # the board shows its controls on mouse activity
+        self.page.mouse.move(320, 320)
+        self.page.click(".bt-apt")
+        self.page.uncheck(".apt-panel input[data-cat=major]")
+        self.assertEqual(json.loads(self.page.evaluate("localStorage.getItem('aerodrome-board-airports')")),
+                         {"major": False, "regional": True, "small": False})
+        self.assertEqual(self.errors, [])
+
+    def test_off_on_the_board(self):
+        self.site.api["/api/live"] = _aircraft(1)
+        self.site.api["/api/airports"] = _AIRPORTS
+        self.site.api["/api/ui-config"] = {"map": {"airports": "off"}}
+        self.open("/board?mode=radar")
+        self.advance(1000)
+        self.page.wait_for_function("Object.values(_maps).some(st => st.airports)")
+        self.assertEqual(self.page.evaluate("document.querySelectorAll('.apt-label').length"), 0)
+        self.assertFalse(self.page.evaluate("!!document.querySelector('.bt-apt.on')"))
+
+
+class TestConfigAirports(_ConfigPage):
+    """Configuration → Map → Airports (v3.4.182)."""
+
+    def test_the_field_shows_the_default_when_unset(self):
+        self.open_config(_ntfy_status("not_installed"))
+        self.tab("map")
+        sel = 'select[data-path="map.airports"]'
+        self.assertEqual(self.page.input_value(sel), "major")
+        self.assertEqual(self.page.evaluate(f"[...document.querySelector('{sel}').options].map(o => o.value)"),
+                         ["major", "all", "off"])
+        self.page.select_option(sel, "off")
+        self.assertEqual(self.page.evaluate("getAt(workingConfig, 'map.airports')"), "off")
+        self.assertEqual(self.errors, [])
+
 _CONTRAST_JS = """(sel) => {
     const el = document.querySelector(sel);
     if (!el) return null;

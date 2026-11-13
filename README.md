@@ -1,5 +1,5 @@
 # Aerodrome
-<!-- Version: 3.4.181 -->
+<!-- Version: 3.4.182 -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -147,6 +147,7 @@ aerodrome/
 ├── designators.py                aircraft type and operator decoders
 ├── hexdb_resolver.py             registration lookup (hexdb.io client)
 ├── route_resolver.py             callsign → flight-route lookup (adsb.lol client)
+├── airports.py                   the airports near the receiver, for the maps' airport layer
 ├── flightaware.py                optional FlightAware AeroAPI route lookups, with a monthly limit
 ├── photo_resolver.py             aircraft photo lookup (planespotters.net client)
 ├── slow_query_log.py             query-timing instrumentation
@@ -173,6 +174,7 @@ aerodrome/
 │   ├── screenshots.py            Playwright harness for docs/*.png
 │   ├── gen_type_classes.py       rebuilds type_classes.py from a local copy of ICAO DOC 8643
 │   ├── gen_type_shapes.py        draws the map's aircraft silhouettes (static/shapes/, shapes-data.js)
+│   ├── build_airports.py         rebuilds static/airports.json from OurAirports (public domain)
 │   ├── type_dims.csv             wingspan, length and engine count per type, from the FAA's public table
 │   └── check_docs.py             advisory drift detector
 ├── tools/
@@ -184,6 +186,7 @@ aerodrome/
 ├── docs/                         user-facing documentation, screenshots, PDF
 ├── .github/                      issue templates, PR template, repo-setup guide
 ├── test_aerodrome_helper.py      unit tests — the system helper on a fake root (ntfy, feeder, kill points, health)
+├── test_airports.py              unit tests — the airport list: build, nearby airports, endpoint, setting
 ├── test_auto_update.py           unit tests — automatic updates: schedule, results, whole runs through the apply
 ├── test_backup_restore.py        unit tests — staged restore, startup switch + rollback, kill points
 ├── test_bootstrap.py             installer tests — bootstrap.sh in a stub sandbox
