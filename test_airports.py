@@ -7,6 +7,7 @@ fixtures are invented.
 import importlib.util
 import json
 import os
+import re
 import shutil
 import sqlite3
 import tempfile
@@ -223,6 +224,47 @@ class TestValidator(unittest.TestCase):
             self.assertEqual(self.errors(ok), [], ok)
         self.assertTrue(self.errors("some"))
         self.assertTrue(self.errors(True))
+
+
+class TestPagesVersionStaticUrls(unittest.TestCase):
+    """v3.4.186: every /static/ URL in every served page carries ?v=<version>, so an update can't
+    leave a browser on a cached script. airports.js was missed by the old per-file list, and after
+    v3.4.185 the Live map's airport codes didn't take clicks until a hard refresh."""
+
+    SKIP = {"/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc", "/docs/{filename}"}   # FastAPI's own, and the docs files
+
+    def test_every_static_url_is_versioned(self):
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d)
+        db = str(d / "history.db")
+        collector.init_db(db)
+        conn = sqlite3.connect(db)
+        apply_schema_migrations(conn, "test")
+        conn.close()
+        cfg = yaml.safe_load((REPO / "config.yaml.example").read_text())
+        cfg["data"]["db_file"] = db
+        cfg["watchlist"] = []
+        (d / "config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False))
+        app = server.get_app(cfg, str(d / "config.yaml"))
+        version = (REPO / "VERSION").read_text().strip()
+        seen = {}
+        for r in app.routes:
+            path = getattr(r, "path", "")
+            if path.startswith(("/api/", "/static")) or path in self.SKIP or "GET" not in (getattr(r, "methods", None) or ()):
+                continue
+            out = r.endpoint(icao="A00001") if path == "/aircraft/{icao}" else r.endpoint()
+            if getattr(out, "media_type", None) != "text/html":
+                continue
+            html = out.body.decode()
+            urls = re.findall(r'(?:src|href)="(/static/[^"]*)"', html)
+            seen[path] = urls
+            for u in urls:
+                self.assertTrue(u.endswith("?v=" + version), f"{path}: {u} has no ?v={version}")
+        self.assertIn("/static/airports.js?v=" + version, seen["/"])
+        self.assertIn("/static/airports.js?v=" + version, seen["/board"])
+        self.assertIn("/static/leaflet/leaflet.js?v=" + version, seen["/aircraft/{icao}"])
+        self.assertIn("/static/theme.css?v=" + version, seen["/notification-test-ok"])
+        self.assertGreaterEqual(len(seen), 12)
 
 
 if __name__ == "__main__":

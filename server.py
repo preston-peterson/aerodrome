@@ -1,4 +1,4 @@
-# Version: 3.4.185
+# Version: 3.4.186
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -2494,35 +2494,19 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     except Exception:
         _aerodrome_version = "dev"
 
+    # v3.4.186: every /static/ src or href gets ?v=<version>, by one rule.
+    # The rule used to be a list of five files, and static/airports.js
+    # (v3.4.182) was never added to it: after updating to v3.4.185 a browser
+    # kept its cached airports.js, so the Live map's airport codes didn't take
+    # clicks until a hard refresh. A URL that already has a query is left alone.
+    _STATIC_URL = re.compile(r'((?:src|href)=")(/static/[^"?#]+)(")')
+
+    def _version_static_urls(html: str) -> str:
+        return _STATIC_URL.sub(lambda m: f"{m.group(1)}{m.group(2)}?v={_aerodrome_version}{m.group(3)}", html)
+
     def _serve_template(filename: str) -> HTMLResponse:
         template = Path(__file__).parent / "templates" / filename
-        html = template.read_text()
-        # Append ?v=<version> to theme.css/theme.js URLs. Idempotent — if
-        # the template already has a query string we leave it alone.
-        html = html.replace(
-            'href="/static/theme.css"',
-            f'href="/static/theme.css?v={_aerodrome_version}"'
-        )
-        html = html.replace(
-            'src="/static/theme.js"',
-            f'src="/static/theme.js?v={_aerodrome_version}"'
-        )
-        html = html.replace(
-            'src="/static/health-indicator.js"',
-            f'src="/static/health-indicator.js?v={_aerodrome_version}"'
-        )
-        # v3.4.24: add-watchlist.js is the shared "Add to Watchlist" component
-        # (used by index.html and aircraft.html). Cache-bust it like the other
-        # shared static JS so a stale copy isn't served across an update.
-        html = html.replace(
-            'src="/static/add-watchlist.js"',
-            f'src="/static/add-watchlist.js?v={_aerodrome_version}"'
-        )
-        # v3.5.x: aircraft type silhouettes data (shared Live + Board).
-        html = html.replace(
-            'src="/static/shapes-data.js"',
-            f'src="/static/shapes-data.js?v={_aerodrome_version}"'
-        )
+        html = _version_static_urls(template.read_text())
         # v2.85.12: inject the configured time_format and load the shared
         # timefmt.js helper. The injection sets window._aerodromeTimeFormat
         # synchronously BEFORE timefmt.js loads, so the formatters are
@@ -12638,7 +12622,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     </script>
 </body>
 </html>"""
-        return HTMLResponse(content=html)
+        return HTMLResponse(content=_version_static_urls(html))
 
 
     @app.get("/status", response_class=HTMLResponse)

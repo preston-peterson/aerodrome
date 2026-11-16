@@ -19,6 +19,17 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.186] — 2026-11-15
+
+**Airport codes on the Live map take clicks straight after an update.**
+
+After updating to 3.4.185, a browser that had shown the Live map before could keep using its saved copy of the map's airport script for several hours. Until it fetched the new one, clicking an airport's code did nothing; a hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac) fixed it. Every page now asks for fresh copies of all of Aerodrome's scripts and styles after each update, so whatever an update adds works the first time a page loads, on every browser, display board and kiosk, with nothing to refresh by hand.
+
+### Behind the scenes
+
+- Pages add the version to every `/static/` address they load (`?v=<version>`) by one rule, instead of a list of five files that new scripts had to be added to by hand. The airport script, the map library and the page that confirms a notification tap are now covered too.
+- Tests: `test_airports.py` loads every page Aerodrome serves and checks that each of its `/static/` addresses carries the version.
+
 ## [3.4.185] — 2026-11-15
 
 **Click an airport on the Live map to see what's happening there.**
