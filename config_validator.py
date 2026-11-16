@@ -10,7 +10,7 @@ Usage:
         # each error: {"path": "receiver.port", "message": "Must be 1-65535"}
         return error_response(errors)
 """
-# Version: 3.4.183
+# Version: 3.4.184
 
 import re
 import socket
@@ -380,6 +380,10 @@ def validate_config(cfg: Any) -> Errors:
     else:
         for key in ("military_days", "watchlist_days", "all_days"):
             errs += _validate_retention_days(ret.get(key), f"retention.{key}")
+        # v3.4.184: takeoffs and landings have their own window (default 365),
+        # free to be longer than all_days — that's its point.
+        if ret.get("airport_days") is not None:
+            errs += _validate_retention_days(ret.get("airport_days"), "retention.airport_days")
 
         # v3.4.11 cross-field: military_days and watchlist_days must
         # each be <= all_days. The military_sightings and
@@ -1055,6 +1059,7 @@ LIVE_KEYS = {
     "retention.military_days",
     "retention.watchlist_days",
     "retention.all_days",
+    "retention.airport_days",
     "receiver.latitude",
     "receiver.longitude",
     "receiver.distance_unit",

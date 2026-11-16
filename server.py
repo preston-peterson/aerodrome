@@ -1,4 +1,4 @@
-# Version: 3.4.183
+# Version: 3.4.184
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -58,6 +58,7 @@ import atomic_io
 import auto_update
 # v3.4.182: the maps' airport layer (OurAirports data near the receiver).
 import airports as airports_data
+import airport_events
 # v3.4.148: every config.yaml write goes through config_io (all or nothing,
 # under CONFIG_LOCK).
 import config_io
@@ -5317,6 +5318,10 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             "unique_today", "peak_simultaneous", "average_concurrent",
             "military_today", "watchlist_hits", "first_last_contact"
         ]),
+        # v3.4.184: takeoffs and landings the receiver saw (airport_events.py)
+        ("airports",    "Airports", [
+            "airport_moves_today", "airports_30d", "airports_today"
+        ]),
         ("extremes",    "Today's extremes", [
             "furthest", "highest_altitude", "lowest_altitude",
             "fastest", "slowest", "longest_track"
@@ -5639,6 +5644,20 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                     "first": dict(first[0]) if first else None,
                     "last": dict(last[0]) if last else None,
                 }
+
+            # --- Airports (v3.4.184): takeoffs and landings the receiver saw ---
+            _apt_want = [c for c in ("airport_moves_today", "airports_30d", "airports_today")
+                         if _card_enabled(cards, c, groups)]
+            if _apt_want:
+                _current_card[0] = "airports"
+                _t_apt = time.perf_counter()
+                try:
+                    result["cards"].update(airport_events.stats_cards(
+                        conn, CONFIG, start_ts, end_ts, tzwindow.resolve_tz(CONFIG), _apt_want))
+                except Exception as e:        # never lose the rest of the page over these
+                    logger.warning(f"Stats airports cards skipped: {e}")
+                _query_timings.append({"label": "airports",
+                                       "ms": round((time.perf_counter() - _t_apt) * 1000, 1)})
 
             # --- Extremes ---
             # For distance, we need lat/lon and receiver location
@@ -12968,6 +12987,30 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         _annotate_watchlist(d)
 
         return d
+
+    # =========================================================================
+    # /api/aircraft/{icao}/airports — takeoffs and landings (v3.4.184)
+    # =========================================================================
+    # What airport_events.py found for one aircraft: per-airport totals, the
+    # newest events (touch-and-goes folded into sessions), its latest flight's
+    # events (`recent`, for the page's header and the Live map panel) and how
+    # far the fill-in from the stored sightings has got. limit=0 for the
+    # summary only; the page's "Show all" asks for up to 1000.
+    @app.get("/api/aircraft/{icao}/airports")
+    def get_aircraft_airports(icao: str, limit: int = 8):
+        key = (icao or "").upper().strip()
+        if len(key) != 6 or not all(c in "0123456789ABCDEF" for c in key):
+            raise HTTPException(status_code=400, detail="invalid ICAO hex")
+        conn = _open_db_conn(CONFIG["data"]["db_file"])
+        try:
+            return airport_events.aircraft_history(conn, CONFIG, key, limit=max(0, min(int(limit), 1000)))
+        except sqlite3.OperationalError as e:
+            if "no such table" not in str(e):
+                raise
+            return {"ok": True, "since": None, "total": 0, "airports": [], "events": [], "recent": [],
+                    "fill_in": {"state": "waiting", "pct": 0}}
+        finally:
+            conn.close()
 
     @app.get("/api/aircraft/{icao}/enrich")
     async def enrich_aircraft_registry(icao: str):

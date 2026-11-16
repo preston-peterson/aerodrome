@@ -627,6 +627,27 @@ class GatesBeforeWrites(_FixtureCase):
         self.assertEqual(rc, 0, out[-3000:])
         self.assertIn("already packaged", out)
 
+    def test_t13b_only_the_generated_airport_data_may_carry_the_name(self):
+        # v3.4.184: public airport names in static/airports.json include a few
+        # that share the maintainer's first name; that file alone is exempt.
+        t = self.tree()
+        word = "Pre" + "ston"            # built here, so this file never matches the audit itself
+        data = t / "static" / "airports.json"
+        with open(data, "a") as f:
+            f.write(f'\n"{word} Field"\n')
+        git(t, "commit", "-qam", "airport name")
+        with self.subTest("static/airports.json: exempt"):
+            rc, out = self.check(t)
+            self.assertEqual(rc, 0, out[-3000:])
+        with open(t / "README.md", "a") as f:
+            f.write(f"\n{word} Field\n")
+        git(t, "commit", "-qam", "readme name")
+        with self.subTest("any other file: blocked"):
+            rc, out = self.check(t)
+            self.assertEqual(rc, 1, out[-3000:])
+            self.assertIn("README.md", out)
+            self.assertNotIn("airports.json", out.split("PII audit")[-1])
+
     def test_t13_pii_scope_is_what_git_can_ship(self):
         t = self.tree()
         with open(t / ".gitignore", "a") as f:

@@ -1,4 +1,4 @@
-<!-- Version: 3.4.183 -->
+<!-- Version: 3.4.184 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -684,6 +684,18 @@
             letter-spacing:.05em; display:block; }
         .ro-owner .v { color:var(--t1); }
         .ro-owner .k.ro-regto { margin-top:6px; }
+        /* v3.4.184: latest takeoff / landing / touch-and-go (_radarRenderMoves) */
+        .ro-moves { font-size:12px; color:var(--t2); }
+        .ro-moves .k { color:var(--t3); text-transform:uppercase; font-size:10px;
+            letter-spacing:.05em; display:block; }
+        .ro-moves .v { display:block; color:var(--t1); }
+        .ro-moves .ro-mv1 { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .ro-moves .ro-mv1 .city { color:var(--t3); }
+        .ro-moves .ro-mv2 { display:block; color:var(--t2); font-size:11px; margin-top:1px; }
+        .ro-route .ep .ro-dep { font-size:10.5px; color:var(--t2); margin-top:2px; white-space:nowrap; }
+        .mv-up { color:var(--cyan); }
+        .mv-down { color:var(--purple); }
+        .mv-tg { color:var(--t2); }
         /* Route line (v3.4.99) — origin → dest as a subtle cyan chip, each
            airport stacked as ICAO code over city. Hidden (with the airline
            line below) when there's no scheduled route. */
@@ -1873,6 +1885,25 @@
             padding:14px 16px; display:flex; flex-direction:column; gap:4px;
             transition:border-color .15s; }
         .stat-card.wide { grid-column:1/-1; }
+        /* v3.4.184: Stats → Airports table */
+        .apt-table { width:100%; border-collapse:collapse; font-size:13px; margin-top:6px; }
+        .apt-table th { text-align:right; font-weight:500; font-size:10.5px; color:var(--t3); text-transform:uppercase;
+            letter-spacing:.05em; padding:0 8px 6px; white-space:nowrap; background:none; }
+        .apt-table th:first-child { text-align:left; padding-left:0; }
+        .apt-table td { padding:6px 8px; border-top:1px solid var(--bdr); text-align:right; font-family:var(--mono);
+            color:var(--t1); white-space:nowrap; }
+        .apt-table td:first-child { text-align:left; padding-left:0; font-family:var(--font); color:var(--t2); white-space:normal; }
+        .apt-table td:first-child .ap { font-family:var(--mono); color:var(--t1); font-weight:600; margin-right:6px; }
+        .apt-table td.num, .apt-table th.num { width:1%; padding-left:22px; }
+        .apt-table td.spark { width:132px; }
+        .apt-spark { display:flex; align-items:flex-end; gap:1px; height:18px; width:120px; margin-left:auto; }
+        .apt-spark i { flex:1; background:rgba(6,182,212,.35); border-radius:1px 1px 0 0; min-height:1px; }
+        .apt-spark i.now { background:var(--cyan); }
+        .apt-note { margin-top:10px; font-size:11.5px; color:var(--t3); }
+        @media (max-width:700px){
+            .apt-table td.spark, .apt-table th.spark, .apt-table .c-hr { display:none; }
+            .apt-table td:first-child .city { display:block; font-size:11px; color:var(--t3); }
+        }
         .stat-card.mid { grid-column:span 2; }
         @media(max-width:900px){ .stat-card.mid { grid-column:span 1; } }
         .stat-label { font-size:11px; font-family:var(--mono); color:var(--t3);
@@ -4041,6 +4072,7 @@ function radarSync(liveJ){
             // Back in range (a one-poll dropout is common): clear the note.
             if(note) note.style.display = 'none';
             _radarRenderOverlay(sel);
+            _radarRenderMoves();
             if(_radar.trailLast && sel.lat != null && sel.lon != null &&
                (_radar.trailLast[0] !== sel.lat || _radar.trailLast[1] !== sel.lon)){
                 _radarAddTrailSeg(_radar.trailLast, [sel.lat, sel.lon], sel.altitude);
@@ -4090,6 +4122,13 @@ function openRadarOverlay(icao){
     // v3.4.108: aircraft photo below the telemetry (planespotters, same lazy
     // /photo endpoint as the detail page). Fetched once on open; a stale click
     // (selection changed) is ignored via the selectedIcao guard.
+    // v3.4.184: its latest takeoff or landing, as the receiver saw it.
+    _radar.moves = null;
+    _radarRenderMoves();
+    fetch(`/api/aircraft/${encodeURIComponent(icao)}/airports?limit=0`)
+        .then(r => r.ok ? r.json() : null)
+        .then(j => { if(_radar.selectedIcao === icao && j){ _radar.moves = {icao, recent: j.recent || []}; _radarRenderMoves(); } })
+        .catch(() => {});
     _radarSetPhoto('loading');
     fetch(`/api/aircraft/${encodeURIComponent(icao)}/photo`)
         .then(r => r.ok ? r.json() : null)
@@ -4260,6 +4299,53 @@ function _radarRouteStops(info){
     return null;
 }
 
+// v3.4.184: the selected aircraft's latest takeoff, landing or touch-and-go
+// session as the receiver saw it (/api/aircraft/<icao>/airports). A takeoff
+// from the airport the route starts at goes inside the route box under that
+// airport ("took off 3 min ago · 36R"); anything else gets its own row above
+// Owner / operator. Shown while it's current: a takeoff for 12 hours, a landing
+// or touch-and-go for 30 minutes. Waits while the route is still loading, so
+// the row doesn't jump into the box a moment later.
+function _radarAgo(ts){
+    const m = Math.max(0, Math.round((Date.now() / 1000 - ts) / 60));
+    if(m < 1) return 'just now';
+    if(m < 60) return `${m} min ago`;
+    return `${Math.floor(m / 60)} h ${m % 60} min ago`;
+}
+function _radarRenderMoves(){
+    const old = document.getElementById('roMoves');
+    if(old) old.remove();
+    document.querySelectorAll('#roRoute .ro-dep').forEach(e => e.remove());
+    const mv = _radar.moves;
+    if(!mv || mv.icao !== _radar.selectedIcao || !mv.recent.length) return;
+    const route = document.getElementById('roRoute');
+    if(route && route.style.display !== 'none' && route.classList.contains('loading')) return;
+    const e = mv.recent[mv.recent.length - 1];
+    const now = Date.now() / 1000;
+    if(e.kind === 'takeoff' ? now - e.at > 12 * 3600 : now - e.until > 30 * 60) return;
+    const rwy = e.runway ? escapeHtml(e.runway) : '';
+    const origin = route && route.style.display !== 'none' ? route.querySelector('.ep:not(.dest)') : null;
+    const originAp = origin && origin.querySelector('.ap');
+    if(e.kind === 'takeoff' && originAp && originAp.textContent.trim().toUpperCase() === e.airport){
+        origin.insertAdjacentHTML('beforeend', `<span class="ro-dep"><span class="mv-up">↗</span> took off `
+            + `${_radarAgo(e.at)}${rwy ? ' · ' + rwy : ''}</span>`);
+        return;
+    }
+    const [glyph, word, cls] = {takeoff: ['↗', 'Took off', 'mv-up'], landing: ['↘', 'Landed', 'mv-down'],
+                                touch_and_go: ['↻', 'Touch and go', 'mv-tg']}[e.kind] || ['', '', ''];
+    if(!word) return;
+    const detail = [e.kind === 'touch_and_go' && e.count > 1 ? `×${e.count}` : '',
+                    rwy ? `runway ${rwy}` : '',
+                    (e.kind === 'touch_and_go' && e.count > 1 ? 'last ' : '') + _radarAgo(e.kind === 'takeoff' ? e.at : e.until)]
+        .filter(Boolean).join(' · ');
+    const owner = document.getElementById('roOwner');
+    if(!owner) return;
+    owner.insertAdjacentHTML('beforebegin', `<div class="ro-moves" id="roMoves"><span class="k">${word}</span>`
+        + `<span class="v"><span class="ro-mv1"><span class="${cls}">${glyph}</span> ${escapeHtml(e.airport)}`
+        + (e.name ? ` <span class="city">${escapeHtml(e.name)}</span>` : '') + `</span>`
+        + `<span class="ro-mv2">${detail}</span></span></div>`);
+}
+
 function _radarSetRoute(info){
     const el  = document.getElementById('roRoute');
     const air = document.getElementById('roAirline');
@@ -4305,12 +4391,14 @@ function _radarSetRoute(info){
                     + (fa ? `<span class="ro-fa" title="Contains AeroAPI data © FlightAware LLC ${new Date().getFullYear()}">FlightAware</span>` : '');
             } else hideAirline();
         }
+        _radarRenderMoves();
         return;
     }
     hideTimes();
     el.style.display = 'none';
     el.innerHTML = '';
     hideAirline();
+    _radarRenderMoves();
 }
 
 // Add one altitude-coloured trail segment (p1→p2) for the selected aircraft.
@@ -8104,6 +8192,10 @@ const CARD_BUILDERS = {
     military_today:     v => bigStat('Military aircraft today', v, null, 'military_today'),
     watchlist_hits:     v => bigStat('Watchlist hits today', v, null, 'watchlist_hits'),
     first_last_contact: v => firstLastCard(v),
+    // Airports (v3.4.184): takeoffs and landings the receiver saw
+    airport_moves_today: v => airportMovesCard(v),
+    airports_30d:        v => airports30dCard(v),
+    airports_today:      v => airportsTodayCard(v),
     // Extremes
     furthest:         v => furthestCard(v),
     // Formatters use Number.isFinite to guard against NaN / non-numeric values
@@ -8153,6 +8245,7 @@ const CARD_BUILDERS = {
 // Short hint text shown to the right of each section header
 const SECTION_HINTS = {
     today:       'counts of activity since midnight',
+    airports:    'takeoffs and landings today',
     extremes:    "today's superlatives",
     composition: 'what kinds of aircraft are flying',
     patterns:    'hour-by-hour activity',
@@ -10008,6 +10101,54 @@ function topAircraftCard(items, label='Top 5 frequent aircraft', allCardId='all_
         <div class="stat-label">${label}</div>
         <ul class="stat-list">${lis}</ul>
     </div>`;
+}
+
+// --- Airports cards (v3.4.184): takeoffs and landings the receiver saw ---
+// While the history is still being filled in from the stored sightings, the
+// cards say so (the numbers grow as it goes).
+function _fillInNote(v){
+    const f = v && v.fill_in;
+    return f && f.state === 'running' ? `filling in… ${Number(f.pct) || 0}%` : '';
+}
+function airportMovesCard(v){
+    v = v || {};
+    const n = Number(v.airports) || 0;
+    return bigStat('Takeoffs and landings today', Number(v.total) || 0,
+                   _fillInNote(v) || `at ${n} airport${n === 1 ? '' : 's'}`);
+}
+function airports30dCard(items){
+    if(!items || !items.length){
+        return `<div class="stat-card">
+            <div class="stat-label">Busiest, last 30 days</div>
+            <div class="stat-empty">none seen yet</div>
+        </div>`;
+    }
+    return listCard('Busiest, last 30 days', items, r => r.name ? `${r.code} — ${r.name}` : r.code,
+                    r => `${Number(r.per_day) || 0}/day`);
+}
+function airportsTodayCard(v){
+    v = v || {};
+    const rows = (v.rows || []).map(r => {
+        const hours = Array.isArray(r.hours) ? r.hours : [];
+        const max = Math.max(1, ...hours);
+        const bars = hours.map((n, i) => i > v.now_hour ? '<i style="height:0"></i>'
+            : `<i class="${i === v.now_hour ? 'now' : ''}" style="height:${Math.max(6, (Number(n) || 0) / max * 100)}%"></i>`).join('');
+        return `<tr><td><span class="ap">${escHtml(r.code)}</span><span class="city">${escHtml(r.name || '')}</span></td>`
+            + `<td class="num">${Number(r.landed) || 0}</td><td class="num">${Number(r.took_off) || 0}</td>`
+            + `<td class="num c-hr">${Number(r.last_hour) || 0}</td>`
+            + `<td class="spark"><div class="apt-spark">${bars}</div></td></tr>`;
+    }).join('');
+    const note = _fillInNote(v);
+    const body = rows
+        ? `<table class="apt-table"><thead><tr><th>Airport</th><th class="num">Landed</th><th class="num">Took off</th>`
+          + `<th class="num c-hr">Last hour</th><th class="spark">By hour</th></tr></thead><tbody>${rows}</tbody></table>`
+        : `<div class="stat-empty">none seen yet today</div>`;
+    return `<div class="stat-card wide"><div class="stat-label">Airports today</div>${body}`
+        + (note ? `<div class="apt-note">Still filling in from your stored history (${Number(v.fill_in.pct) || 0}%): `
+                  + `the numbers grow as it goes.</div>` : '')
+        + `<div class="apt-note">Counted from what your receiver saw low near each `
+        + `airport; a touch and go counts as a landing and a takeoff. An airport your antenna can't see low traffic at `
+        + `shows few or none: that's coverage, not a quiet airport.</div></div>`;
 }
 
 function listCard(label, items, nameFn, countFn, cardId, drillValueFn, allCardId){

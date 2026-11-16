@@ -1929,6 +1929,142 @@ class TestConfigAirports(_ConfigPage):
         self.assertEqual(self.page.evaluate("getAt(workingConfig, 'map.airports')"), "off")
         self.assertEqual(self.errors, [])
 
+def _apt(kind, code, at, runway="", count=1, until=None, name="Example Major", cs="DEMO1"):
+    return {"kind": kind, "airport": code, "name": name, "runway": runway, "at": at,
+            "until": until or at, "count": count, "callsign": cs}
+
+
+class TestTakeoffsAndLandings(BrowserCase):
+    """v3.4.184: the takeoffs and landings the receiver saw, on the aircraft page
+    (header lines and section), in the Live map panel (inside the route box when
+    the route starts where it took off, else its own row) and on Stats."""
+
+    APTS = "/api/aircraft/A00001/airports"
+    NOW = None
+
+    def setUp(self):
+        super().setUp()
+        from datetime import datetime
+        self.now = int(datetime.fromisoformat(self.START).timestamp())
+        self.site.api["/api/live"] = _aircraft(1)
+        self.site.api["/api/status"] = _status()
+        self.site.api["/api/aircraft/A00001/photo"] = {"found": False}
+        self.site.api["/api/aircraft/A00001/enrich"] = {"owner": "", "registration": ""}
+
+    def history(self, events, recent, fill="done", total=None):
+        return {"ok": True, "since": self.now - 30 * 86400, "total": len(events) if total is None else total,
+                "airports": [{"code": "ZZA1", "name": "Example Major", "landings": 3, "takeoffs": 2, "touch_and_go": 4}],
+                "events": events, "recent": recent, "fill_in": {"state": fill, "pct": 100 if fill == "done" else 40}}
+
+    def aircraft_page(self, answer):
+        self.site.api["/api/aircraft/A00001"] = {
+            "icao": "A00001", "first_seen_at": self.now - 86400, "last_seen_at": self.now - 60, "sighting_count": 40,
+            "recent_sightings": [], "callsigns": ["DEMO1"], "last_callsign": "DEMO1", "ranges": {"days_active": 2},
+            "hour_of_day": [1] * 24, "day_of_week": [1] * 7}
+        self.site.api["/api/all/drill"] = {"ok": True, "total_count": 0, "sightings": []}
+        self.site.api["/api/aircraft/A00001/positions"] = {"ok": True, "window": "24h", "count": 0, "truncated": False,
+                                                          "receiver": {"lat": 40, "lon": -90, "distance_unit": "mi"},
+                                                          "positions": []}
+        self.site.api[self.APTS] = answer
+        self.open("/aircraft/A00001")
+        self.advance(1000)
+
+    def test_the_header_and_section_show_the_latest_flight_and_the_history(self):
+        events = [_apt("landing", "ZZA1", self.now - 600, "18"),
+                  _apt("takeoff", "ZZN1", self.now - 3600, name="Example Field"),
+                  _apt("touch_and_go", "ZZN1", self.now - 7200, "16", count=4, until=self.now - 5400, name="Example Field")]
+        self.aircraft_page(self.history(events, [events[1], events[0]], total=9))
+        labels = self.page.evaluate("[...document.querySelectorAll('#aptLines .owner-label')].map(e => e.textContent)")
+        self.assertEqual(labels, ["Took off", "Landed"])
+        self.assertIn("ZZA1 Example Major · runway 18 · today", self.page.inner_text("#aptLines").replace("\n", " "))
+        rows = self.page.evaluate("[...document.querySelectorAll('#aptSection .row-card')].map(e => e.innerText)")
+        self.assertEqual(len(rows), 3)
+        self.assertIn("Touch and go ×4", rows[2])
+        self.assertIn("4 touch and go", self.text("#aptSection .apt-sum"))
+        self.assertEqual(self.page.evaluate("document.getElementById('aptSection').compareDocumentPosition("
+                                            "document.querySelector('.hour-section')) & 4"), 4, "above Activity by hour")
+        self.page.click("#aptShowAll")
+        self.advance(500)
+        self.assertIn((self.APTS, {"limit": ["1000"]}), self.site.calls)
+        self.assertEqual(self.errors, [])
+
+    def test_nothing_found_hides_the_section_unless_it_is_still_filling_in(self):
+        self.aircraft_page(self.history([], []))
+        self.assertTrue(self.page.evaluate("document.getElementById('aptSection').hidden"))
+        self.assertEqual(self.page.inner_text("#aptLines"), "")
+        self.aircraft_page(self.history([], [], fill="running"))
+        self.assertFalse(self.page.evaluate("document.getElementById('aptSection').hidden"))
+        self.assertIn("Still filling in from your stored history (40%).", self.text("#aptSection"))
+
+    def panel(self, route, recent):
+        self.site.api["/api/callsign/DEMO1/route"] = route
+        self.site.api[self.APTS] = self.history(recent, recent)
+        self.open("/")
+        self.advance(1000)
+        self.page.evaluate("openRadarOverlay('A00001')")
+        self.advance(600, step=200)
+
+    ROUTE = {"found": True, "origin_icao": "ZZA1", "origin_name": "Example", "dest_icao": "ZZB2", "dest_name": "Elsewhere"}
+
+    def test_a_takeoff_from_the_routes_first_airport_goes_inside_the_route_box(self):
+        self.panel(self.ROUTE, [_apt("takeoff", "ZZA1", self.now - 180, "36")])
+        self.assertEqual(self.text("#roRoute .ro-dep"), "↗ took off 3 min ago · 36")
+        self.assertIsNone(self.page.query_selector("#roMoves"))
+        self.assertEqual(self.errors, [])
+
+    def test_otherwise_it_gets_its_own_row(self):
+        self.panel({"found": False}, [_apt("takeoff", "ZZA1", self.now - 180, "36")])
+        self.assertEqual(self.text("#roMoves").split("\n"), ["TOOK OFF", "↗ ZZA1 Example Major", "runway 36 · 3 min ago"])
+        self.assertIsNone(self.page.query_selector("#roRoute .ro-dep"))
+
+    def test_a_touch_and_go_session_shows_while_current_and_an_old_landing_doesnt(self):
+        self.panel({"found": False}, [_apt("touch_and_go", "ZZA1", self.now - 1500, "18", count=3, until=self.now - 120)])
+        self.assertEqual(self.text("#roMoves").split("\n")[-1], "×3 · runway 18 · last 2 min ago")
+        self.panel({"found": False}, [_apt("landing", "ZZA1", self.now - 3600, "18")])
+        self.assertIsNone(self.page.query_selector("#roMoves"))
+
+    def test_the_stats_page_has_an_airports_section(self):
+        hours = [0] * 24
+        hours[10], hours[11] = 4, 7
+        self.site.api["/api/stats"] = {
+            "enabled": True, "timezone": "UTC",
+            "groups": [{"id": "airports", "label": "Airports",
+                        "cards": ["airport_moves_today", "airports_30d", "airports_today"]}],
+            "cards": {"airport_moves_today": {"total": 11, "airports": 2, "fill_in": {"state": "running", "pct": 40}},
+                      "airports_30d": [{"code": "ZZA1", "name": "Example Major", "per_day": 7}],
+                      "airports_today": {"now_hour": 11, "fill_in": {"state": "done", "pct": 100}, "rows": [
+                          {"code": "ZZA1", "name": "Example Major", "landed": 6, "took_off": 5, "last_hour": 2,
+                           "hours": hours}]}}}
+        self.open("/")
+        self.page.evaluate("go('stats')")
+        self.page.wait_for_selector(".apt-table")
+        text = self.text("#statsSections")
+        self.assertIn("filling in… 40%", text)
+        self.assertIn("ZZA1 — Example Major", text)
+        self.assertIn("7/day", text)
+        self.assertEqual(self.page.evaluate("[...document.querySelectorAll('.apt-table tbody td')].slice(0, 4)"
+                                            ".map(e => e.innerText)"), ["ZZA1Example Major", "6", "5", "2"])
+        self.assertEqual(self.page.evaluate("document.querySelectorAll('.apt-spark i').length"), 24)
+        self.assertEqual(self.errors, [])
+
+
+class TestConfigTakeoffsAndLandings(_ConfigPage):
+    """Configuration: the retention line and the Stats section (v3.4.184)."""
+
+    def test_the_retention_line_and_the_stats_group_are_there(self):
+        self.open_config(_ntfy_status("not_installed"))
+        self.tab("retention")
+        sel = 'input[data-path="retention.airport_days"]'
+        self.page.fill(sel, "400")
+        self.page.dispatch_event(sel, "input")
+        self.page.dispatch_event(sel, "change")
+        self.assertEqual(int(self.page.evaluate("getAt(workingConfig, 'retention.airport_days')")), 400)
+        self.tab("stats")
+        self.assertIsNotNone(self.page.query_selector('input[data-path="stats.groups.airports"]'))
+        self.assertIn("Busiest airports, last 30 days", self.page.inner_text("body"))
+        self.assertEqual(self.errors, [])
+
+
 _CONTRAST_JS = """(sel) => {
     const el = document.querySelector(sel);
     if (!el) return null;

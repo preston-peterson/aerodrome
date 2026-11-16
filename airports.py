@@ -3,7 +3,8 @@
 static/airports.json is a trimmed copy of OurAirports' data (public domain),
 rebuilt by scripts/build_airports.py: major (large), regional (medium) and
 small fields with a paved runway of 3,000 ft or more, each with its code,
-position and runway end points.
+position, runways (end points and names), field elevation and name. The
+takeoff and landing detector (airport_events.py) reads the same list.
 
 The maps never load the whole list. near() reads it once per receiver
 position, keeps the airports within RADIUS_MI (wider than any receiver's
@@ -27,13 +28,18 @@ _cache = {"key": None, "airports": None}
 def _within(rows, lat, lon, radius_mi):
     dlat = radius_mi / 69.0
     out = []
-    for code, cat, alat, alon, runways in rows:
+    for row in rows:
+        code, cat, alat, alon, runways = row[:5]
         if cat not in CATEGORIES or abs(alat - lat) > dlat:
             continue
         d = haversine(lat, lon, alat, alon, unit="mi")
         if d <= radius_mi:
+            # Since 3.4.184 a row also carries the field elevation (ft) and the
+            # airport's name, and each runway its two ends' names (13L, 31R).
             out.append((d, {"code": code, "cat": CATEGORIES[cat], "lat": alat, "lon": alon,
-                            "runways": runways}))
+                            "runways": runways,
+                            "elev": row[5] if len(row) > 5 else None,
+                            "name": row[6] if len(row) > 6 else ""}))
     out.sort(key=lambda t: t[0])
     return [a for _, a in out]
 

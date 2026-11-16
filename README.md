@@ -1,5 +1,5 @@
 # Aerodrome
-<!-- Version: 3.4.183 -->
+<!-- Version: 3.4.184 -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -148,6 +148,7 @@ aerodrome/
 ├── hexdb_resolver.py             registration lookup (hexdb.io client)
 ├── route_resolver.py             callsign → flight-route lookup (adsb.lol client)
 ├── airports.py                   the airports near the receiver, for the maps' airport layer
+├── airport_events.py             the takeoffs and landings the receiver sees, live and filled in from history
 ├── flightaware.py                optional FlightAware AeroAPI route lookups, with a monthly limit
 ├── photo_resolver.py             aircraft photo lookup (planespotters.net client)
 ├── slow_query_log.py             query-timing instrumentation
@@ -186,6 +187,7 @@ aerodrome/
 ├── docs/                         user-facing documentation, screenshots, PDF
 ├── .github/                      issue templates, PR template, repo-setup guide
 ├── test_aerodrome_helper.py      unit tests — the system helper on a fake root (ntfy, feeder, kill points, health)
+├── test_airport_events.py        unit tests — takeoffs and landings: detector, fill-in, retention, endpoints
 ├── test_airports.py              unit tests — the airport list: build, nearby airports, endpoint, setting
 ├── test_auto_update.py           unit tests — automatic updates: schedule, results, whole runs through the apply
 ├── test_backup_restore.py        unit tests — staged restore, startup switch + rollback, kill points

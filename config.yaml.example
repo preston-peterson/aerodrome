@@ -1,5 +1,5 @@
 # =============================================================================
-# Version: 3.4.183
+# Version: 3.4.184
 # Aerodrome — Example/Reference Configuration
 # =============================================================================
 # This is the canonical default config shipped with each Aerodrome release.
@@ -199,6 +199,10 @@ retention:
   military_days: 30
   watchlist_days: 30
   all_days: 30
+  # Takeoffs and landings the receiver saw (aircraft page, Live map panel,
+  # Stats → Airports). One small row each, so they're kept longer than the
+  # sightings they were found in: a year by default.
+  airport_days: 365
 
 # --- Database ---
 data:
@@ -495,6 +499,7 @@ stats:
   # preferences are preserved, so re-enabling the category restores them.
   groups:
     today: true                # "Today" volume counters (unique, peak, avg, mil, watchlist, first/last)
+    airports: true             # Takeoffs and landings your receiver saw (today, busiest airports)
     extremes: true             # Today's superlatives (furthest, fastest, highest, lowest, etc.)
     composition: true          # What kinds of aircraft flew today (types, operators, branches, categories)
     patterns: true             # Hour-by-hour activity chart
@@ -504,8 +509,8 @@ stats:
 
   # Order in which the sections appear on the Stats page. Drag-and-drop in
   # the Configuration page to rearrange. If empty or missing, the default
-  # canonical order is used: today, extremes, composition, patterns, history,
-  # records, coverage. Unknown group IDs are ignored; groups not
+  # canonical order is used: today, airports, extremes, composition, patterns,
+  # history, records, coverage. Unknown group IDs are ignored; groups not
   # listed here are appended in canonical order at the end.
   groups_order: []
 
@@ -538,6 +543,11 @@ stats:
     military_today: true       # Military aircraft count today
     watchlist_hits: true       # Watchlist aircraft seen today
     first_last_contact: true   # First and last ADS-B contact of the day
+
+    # Airports — takeoffs and landings your receiver saw
+    airport_moves_today: true  # Takeoffs and landings today, and at how many airports
+    airports_30d: true         # Busiest airports over the last 30 days (a day)
+    airports_today: true       # Table: each airport's landings, takeoffs, last hour and hours today
 
     # Extremes — today's "superlatives"
     furthest: true             # Furthest aircraft reported

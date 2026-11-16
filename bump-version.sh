@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.4.183
+# Version: 3.4.184
 # =============================================================================
 # bump-version.sh — Bump Aerodrome version + auto-update CHANGELOG.md
 # =============================================================================
@@ -796,8 +796,11 @@ echo ""
 #
 # Expected hits: LICENSE (MIT copyright holder) and templates/about.html
 # (the /about page's copyright line, added v3.4.18). These are the project's
-# two approved attribution surfaces — every OSS project has them. A third
-# hit is always a real leak.
+# two approved attribution surfaces — every OSS project has them. One more
+# file is exempt (decided 2026-11-15, v3.4.184): static/airports.json, the
+# generated OurAirports data, whose public airport names include a few that
+# share the maintainer's first name (an airport named after a person, a
+# town's field). Any other hit is a real leak.
 #
 # Like the static name-resolution check, the audit has no --skip-pii flag
 # (per decision 5.17). If you really need to bypass it for an emergency,
@@ -882,7 +885,8 @@ def candidate_paths():
 
 # Approved attribution surfaces. Names appearing in these files are not
 # leaks — they're the project's deliberate copyright/license attribution.
-NAME_ALLOWLIST_FILES = {'./LICENSE', './templates/about.html'}
+NAME_ALLOWLIST_FILES = {'./LICENSE', './templates/about.html',
+                        './static/airports.json'}   # generated public airport names (see above)
 
 name_hits = []
 ip_hits = []

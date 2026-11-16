@@ -70,9 +70,19 @@ class TestBuild(unittest.TestCase):
 
     def test_runways_are_open_ones_with_both_ends_rounded(self):
         rows = {r[0]: r for r in _rows()}
-        self.assertEqual(rows["ZZA1"][4], [[40.01235, -90.0, 39.98765, -90.0]],
-                         "the closed runway is dropped; 5 decimals")
+        self.assertEqual(rows["ZZA1"][4], [[40.01235, -90.0, 39.98765, -90.0, "18", "36"]],
+                         "the closed runway is dropped; 5 decimals; both ends' names")
         self.assertEqual(rows["ZZA1"][2:4], [40.0, -90.0])
+
+    def test_rows_carry_field_elevation_and_name(self):
+        rows = {r[0]: r for r in _rows()}
+        self.assertEqual(rows["ZZA1"][5:], [600, "Example Major"])
+        self.assertEqual(rows["ZC3"][5:], [650, "Example Paved Field"])
+
+    def test_a_trailing_airport_is_dropped_from_the_name(self):
+        self.assertEqual(build_airports._name("Example  Regional Airport"), "Example Regional")
+        self.assertEqual(build_airports._name("Airport"), "Airport")
+        self.assertEqual(build_airports._name("Example Airport Road Field"), "Example Airport Road Field")
 
     def test_output_is_one_airport_per_line_and_reads_back(self):
         tmp = Path(tempfile.mkdtemp())
@@ -95,12 +105,16 @@ class TestShippedFile(unittest.TestCase):
         rows = data["airports"]
         self.assertEqual(data["count"], len(rows))
         self.assertGreater(len(rows), 5000)
-        for code, cat, lat, lon, rw in rows:
+        for code, cat, lat, lon, rw, elev, name in rows:
             self.assertRegex(code, r"^[A-Z0-9]{2,7}$")
             self.assertIn(cat, "lms")
             self.assertTrue(-90 <= lat <= 90 and -180 <= lon <= 180, code)
+            self.assertTrue(elev is None or isinstance(elev, int), code)
+            self.assertIsInstance(name, str, code)
             for r in rw:
-                self.assertEqual(len(r), 4, code)
+                self.assertEqual(len(r), 6, code)
+                self.assertTrue(all(isinstance(v, (int, float)) for v in r[:4]), code)
+                self.assertTrue(all(isinstance(v, str) for v in r[4:]), code)
         self.assertEqual(len({(r[0], r[2], r[3]) for r in rows}), len(rows), "no duplicate rows")
 
 
@@ -120,7 +134,8 @@ class TestNear(unittest.TestCase):
         self.assertEqual([a["code"] for a in found], ["ZZA1", "ZC3"], "ZZB2 is ~43 mi away")
         self.assertEqual(found[0]["cat"], "major")
         self.assertEqual(found[1]["cat"], "small")
-        self.assertEqual(found[0]["runways"], [[40.01235, -90.0, 39.98765, -90.0]])
+        self.assertEqual(found[0]["runways"], [[40.01235, -90.0, 39.98765, -90.0, "18", "36"]])
+        self.assertEqual((found[0]["elev"], found[0]["name"]), (600, "Example Major"))
         self.assertEqual([a["code"] for a in airports.near(40.0, -90.0, radius_mi=60, path=self.path)],
                          ["ZZA1", "ZC3", "ZZB2"])
 

@@ -64,7 +64,7 @@ The throughline has been "build the tool you want to use yourself, not the produ
 The main tracker interface has five tabs across the top.
 
 :::feature
-Live: what's in the sky right now — a sortable list beside a live radar map, refreshing every few seconds. The list shows ICAO, callsign, type, altitude, speed and distance, with military aircraft highlighted and watchlist entries tagged. The map plots each contact as a chevron coloured by altitude, rotated to its heading and sized by aircraft class (helicopters get their own rotor marker), with red military and amber watchlist rings, receiver range rings, an optional max-range coverage outline, per-aircraft trails, a weather-radar overlay, and the nearby airports (their code, and their runways when zoomed in). Click a plane — on the map or in the list — for an in-place panel with its registered owner, live telemetry, a photo of the airframe, and a link to full details; the map itself can be docked to any side of the split.
+Live: what's in the sky right now — a sortable list beside a live radar map, refreshing every few seconds. The list shows ICAO, callsign, type, altitude, speed and distance, with military aircraft highlighted and watchlist entries tagged. The map plots each contact as a chevron coloured by altitude, rotated to its heading and sized by aircraft class (helicopters get their own rotor marker), with red military and amber watchlist rings, receiver range rings, an optional max-range coverage outline, per-aircraft trails, a weather-radar overlay, and the nearby airports (their code, and their runways when zoomed in). Click a plane — on the map or in the list — for an in-place panel with its registered owner, when it took off from a nearby airport, live telemetry, a photo of the airframe, and a link to full details; the map itself can be docked to any side of the split.
 :::
 
 :::feature
@@ -76,7 +76,7 @@ Military: auto-detected military flights based on hex-range rules. Shows every m
 :::
 
 :::feature
-Stats: the rich analytics tab. Today's counts, all-time records, aircraft-type breakdown, hourly activity histogram, "first time seen" list, 7-day unique-aircraft chart, watchlist frequency, and receiver coverage rose showing which compass directions your antenna pulls best.
+Stats: the rich analytics tab. Today's counts, the takeoffs and landings your receiver saw at each nearby airport, all-time records, aircraft-type breakdown, hourly activity histogram, "first time seen" list, 7-day unique-aircraft chart, watchlist frequency, and receiver coverage rose showing which compass directions your antenna pulls best.
 :::
 
 :::feature

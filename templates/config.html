@@ -1,4 +1,4 @@
-<!-- Version: 3.4.183 -->
+<!-- Version: 3.4.184 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1633,6 +1633,7 @@ function sectionRetention() {
             ${field({label:'Military history', hint:'days to keep military sightings', path:'retention.military_days', type:'number', min:1, max:3650})}
             ${field({label:'Watchlist history', hint:'days to keep watchlist sightings', path:'retention.watchlist_days', type:'number', min:1, max:3650})}
             ${field({label:'All history', hint:'days to keep every sighting', path:'retention.all_days', type:'number', min:1, max:3650})}
+            ${field({label:'Takeoffs and landings', hint:'days to keep the takeoffs and landings your receiver saw', path:'retention.airport_days', type:'number', min:1, max:3650})}
         </div>
         <!-- v2.50.30: live capacity preview. Populated after this tab
              renders by populateRetentionPreview(); updates as the user
@@ -2336,6 +2337,16 @@ function sectionStats() {
             ]
         },
         {
+            id: 'airports',
+            title: 'Airports',
+            hint: 'takeoffs and landings your receiver saw',
+            cards: [
+                ['airport_moves_today', 'Takeoffs and landings today'],
+                ['airports_30d',        'Busiest airports, last 30 days'],
+                ['airports_today',      'Airports today (table)'],
+            ]
+        },
+        {
             id: 'extremes',
             title: "Today's extremes",
             hint: "superlatives — furthest, fastest, highest, lowest",
@@ -2622,7 +2633,7 @@ function onRangeRoseBucketsChange(el){
 function currentGroupOrder(){
     // CARD_GROUPS isn't accessible outside sectionStats, so hardcode the
     // canonical id list here. Keep this in sync with sectionStats.
-    const canonical = ['today', 'extremes', 'composition', 'patterns',
+    const canonical = ['today', 'airports', 'extremes', 'composition', 'patterns',
                        'history', 'records', 'coverage'];
     const saved = Array.isArray(workingConfig.stats?.groups_order) ? workingConfig.stats.groups_order : [];
     const canonicalSet = new Set(canonical);

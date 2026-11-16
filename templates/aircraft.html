@@ -1,4 +1,4 @@
-<!-- Version: 3.4.183 -->
+<!-- Version: 3.4.184 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -181,6 +181,40 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
 /* v3.4.99: route line (origin → dest by callsign). Inline on this wide page —
    ICAO code bright, city muted alongside, cyan arrow, airline trailing. Hidden
    until/unless a scheduled route resolves. */
+/* v3.4.184: takeoffs and landings — header lines (same label column as Owner /
+   Route) and the section above Activity by hour. */
+.apt-up { color: var(--cyan); }
+.apt-down { color: var(--purple); }
+.apt-tg { color: var(--t2); }
+.apt-line .apt-val .ap { color: var(--t1); }
+.apt-line .apt-val .city, .apt-line .apt-val .dim { color: var(--t3); }
+.apt-line .apt-val .gl { margin-right: 6px; }
+.apt-section { margin: 0 0 24px; }
+.apt-head { display: flex; align-items: baseline; gap: 10px; margin: 0 0 12px; flex-wrap: wrap; }
+.apt-head .section-title { margin: 0; }
+.apt-hint { font-size: 12px; color: var(--t3); }
+.apt-sum { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
+.apt-sum-item { background: var(--bg1); border: 1px solid var(--bdr); border-radius: 6px; padding: 8px 12px;
+    font-family: var(--mono); font-size: 12px; color: var(--t2); min-width: 0; }
+.apt-sum-item .ap { color: var(--t1); font-size: 15px; font-weight: 600; margin-right: 6px; }
+.apt-sum-item .city { color: var(--t3); }
+.apt-sum-item .n { display: block; margin-top: 3px; }
+.apt-sum-item .n b { color: var(--t1); font-weight: 500; }
+.apt-grid { display: grid; grid-template-columns: 15em 11em minmax(0, 1fr) 5.5em 6em; column-gap: 12px; align-items: baseline; }
+.apt-rows .row-grid-header.apt-grid { padding: 0 12px 4px; }
+.apt-rows .row-card.apt-grid { font-size: 12.5px; color: var(--t2); padding: 8px 12px; margin-bottom: 4px; }
+.apt-rows .row-card .ap { color: var(--t1); margin-right: 6px; }
+.apt-rows .row-card .city { color: var(--t3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.apt-rows .row-card .apcell { display: flex; min-width: 0; }
+.apt-foot { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 8px; font-size: 12px; color: var(--t3); }
+.apt-foot a { color: var(--cyan); text-decoration: none; }
+@media (max-width: 700px) {
+    .apt-grid { grid-template-columns: minmax(0, 1fr) auto; row-gap: 3px; }
+    .apt-rows .row-grid-header.apt-grid { display: none; }
+    .apt-rows .row-card .c-when, .apt-rows .row-card .apcell { grid-column: 1; }
+    .apt-rows .row-card .c-ev, .apt-rows .row-card .c-rwy { grid-column: 2; text-align: right; }
+    .apt-rows .row-card .c-cs { display: none; }
+}
 .route-line .route-val .ap { color:var(--t1); }
 .route-line .route-val .city { color:var(--t3); }
 .route-line .route-val .arr { color:var(--cyan); margin:0 5px; }
@@ -947,6 +981,7 @@ function renderDetail(d) {
         <div class="owner-line route-line" id="routeLine" style="display:none">
             <span class="owner-label">Route</span><span class="route-val"></span>
         </div>
+        <div id="aptLines"></div>
 
         <div class="subtitle">
             First seen ${fmtRelativeTime(d.first_seen_at)} · Last seen ${fmtRelativeTime(d.last_seen_at)}
@@ -1006,12 +1041,104 @@ function renderDetail(d) {
     // unreliable). The icao rides along so a live aircraft's position can
     // drive the multi-leg current-leg inference.
     maybeEnrichRoute(callsign, d.icao);
+    // v3.4.184: the takeoffs and landings the receiver saw this aircraft make.
+    loadAirportHistory(d.icao, 8);
 
     // v3.5.0 (radar C): show a "● Live — see on the radar →" chip in the hero
     // when this aircraft is being received right now, linking to the Live-tab
     // map focused on it. Polls /api/live so it appears/disappears as the
     // aircraft comes and goes while the page is open.
     maybeShowLiveChip(d.icao);
+}
+
+// v3.4.184: takeoffs and landings (/api/aircraft/<icao>/airports). The header
+// gets its latest flight's takeoff and/or landing under Route; the section
+// lists per-airport totals and the newest events, back-to-back touch-and-goes
+// folded into one row. Hidden when there's nothing, unless the history is
+// still being filled in from the stored sightings.
+const APT_KINDS = {takeoff: ['↗', 'Took off', 'apt-up'], landing: ['↘', 'Landed', 'apt-down'],
+                   touch_and_go: ['↻', 'Touch and go', 'apt-tg']};
+function _aptClock(ts) {
+    const d = new Date(ts * 1000);
+    return window.formatTime ? window.formatTime(d) : d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+}
+function _aptDay(ts) {
+    const d = new Date(ts * 1000), now = new Date(), y = new Date(now);
+    y.setDate(now.getDate() - 1);
+    if (d.toDateString() === now.toDateString()) return 'today';
+    if (d.toDateString() === y.toDateString()) return 'yesterday';
+    return d.toLocaleDateString(undefined, d.getFullYear() === now.getFullYear()
+        ? {month: 'short', day: 'numeric'} : {month: 'short', day: 'numeric', year: 'numeric'});
+}
+function _aptWhen(e) {
+    const t = `${_aptDay(e.at)} ${_aptClock(e.at)}`;
+    return e.count > 1 && e.until > e.at ? `${t}–${_aptClock(e.until)}` : t;
+}
+function _aptWord(e) {
+    const k = APT_KINDS[e.kind] || ['', e.kind, ''];
+    return k[1] + (e.kind === 'touch_and_go' && e.count > 1 ? ` ×${e.count}` : '');
+}
+function renderAirportLines(recent) {
+    const slot = document.getElementById('aptLines');
+    if (!slot) return;
+    slot.innerHTML = (recent || []).map(e => {
+        const [glyph, , cls] = APT_KINDS[e.kind] || ['', '', ''];
+        return `<div class="owner-line apt-line"><span class="owner-label">${escapeHtml(_aptWord(e))}</span>`
+            + `<span class="apt-val"><span class="gl ${cls}">${glyph}</span><span class="ap">${escapeHtml(e.airport)}</span>`
+            + (e.name ? ` <span class="city">${escapeHtml(e.name)}</span>` : '')
+            + (e.runway ? ` <span class="dim">·</span> runway ${escapeHtml(e.runway)}` : '')
+            + ` <span class="dim">·</span> ${escapeHtml(_aptWhen(e))}</span></div>`;
+    }).join('');
+}
+function renderAirportSection(icao, j) {
+    const box = document.getElementById('aptSection');
+    if (!box) return;
+    const fill = j.fill_in || {};
+    const filling = fill.state === 'running';
+    const fillNote = filling ? `Still filling in from your stored history (${Number(fill.pct) || 0}%).` : '';
+    if (!(j.events || []).length) {
+        box.hidden = !filling;
+        box.innerHTML = filling ? `<div class="apt-head"><div class="section-title">Takeoffs and landings</div></div>`
+            + `<div class="apt-foot"><span>${escapeHtml(fillNote)}</span></div>` : '';
+        return;
+    }
+    const sinceD = j.since ? new Date(j.since * 1000) : null;
+    const since = sinceD ? ` since ${sinceD.toLocaleDateString(undefined, sinceD.getFullYear() === new Date().getFullYear()
+        ? {month: 'short', day: 'numeric'} : {month: 'short', day: 'numeric', year: 'numeric'})}` : '';
+    const sum = (j.airports || []).map(a => `<div class="apt-sum-item"><span class="ap">${escapeHtml(a.code)}</span>`
+        + (a.name ? `<span class="city">${escapeHtml(a.name)}</span>` : '')
+        + `<span class="n"><b>${a.landings}</b> landed · <b>${a.takeoffs}</b> took off`
+        + (a.touch_and_go ? ` · <b>${a.touch_and_go}</b> touch and go` : '') + `</span></div>`).join('');
+    const rows = j.events.map(e => {
+        const [glyph, , cls] = APT_KINDS[e.kind] || ['', '', ''];
+        return `<div class="row-card apt-grid"><span class="c-when">${escapeHtml(_aptWhen(e))}</span>`
+            + `<span class="c-ev"><span class="${cls}">${glyph}</span> ${escapeHtml(_aptWord(e))}</span>`
+            + `<span class="apcell"><span class="ap">${escapeHtml(e.airport)}</span><span class="city">${escapeHtml(e.name || '')}</span></span>`
+            + `<span class="c-rwy">${e.runway ? 'rwy ' + escapeHtml(e.runway) : ''}</span>`
+            + `<span class="c-cs">${escapeHtml(e.callsign || '')}</span></div>`;
+    }).join('');
+    const more = j.total > j.events.length
+        ? `<a href="#" id="aptShowAll">Show all ${j.total} →</a>` : '';
+    box.hidden = false;
+    box.innerHTML = `<div class="apt-head"><div class="section-title">Takeoffs and landings</div>`
+        + `<span class="apt-hint">seen by your receiver${escapeHtml(since)}</span></div>`
+        + `<div class="apt-sum">${sum}</div>`
+        + `<div class="apt-rows"><div class="row-grid-header apt-grid"><span>When</span><span></span><span>Airport</span>`
+        + `<span>Runway</span><span>Callsign</span></div>${rows}</div>`
+        + `<div class="apt-foot"><span>${fillNote ? escapeHtml(fillNote) + ' ' : ''}Only takeoffs and landings your antenna `
+        + `can see low near the airport are counted.</span>${more}</div>`;
+    const all = document.getElementById('aptShowAll');
+    if (all) all.addEventListener('click', ev => { ev.preventDefault(); loadAirportHistory(icao, 1000); });
+}
+function loadAirportHistory(icao, limit) {
+    fetch(`/api/aircraft/${encodeURIComponent(icao)}/airports?limit=${limit}`)
+        .then(r => r.ok ? r.json() : null)
+        .then(j => {
+            if (!j) return;
+            renderAirportLines(j.recent);
+            renderAirportSection(icao, j);
+        })
+        .catch(() => { /* best-effort; the section stays hidden */ });
 }
 
 let _liveChipTimer = null;
@@ -1253,6 +1380,7 @@ function renderFullMode(d) {
     }
 
     html += `
+        <div class="apt-section" id="aptSection" hidden></div>
         <div class="hour-section">
             ${renderHourHistogram(d.hour_of_day || [])}
         </div>
@@ -1307,6 +1435,7 @@ function renderSparseMode(d) {
             </div>
         </div>
 
+        <div class="apt-section" id="aptSection" hidden></div>
         ${renderRecentSightings(d, /*expanded=*/true)}
     `;
     return html;

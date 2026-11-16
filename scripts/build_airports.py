@@ -10,8 +10,14 @@ OurAirports (https://ourairports.com) publishes its data into the public domain
 
 Heliports, seaplane bases, closed airports, grass strips and airports with only
 a made-up OurAirports ident (US-1234, X-ABCD) are left out. Each airport keeps
-its code (ICAO when it has one, else its GPS/local code), position and open
-runways' end points. Names are not kept: the map shows codes only.
+its code (ICAO when it has one, else its GPS/local code), position, open runways
+(both ends' positions and names, e.g. 13L/31R), field elevation in feet and name
+(without a trailing " Airport"). The map draws codes and runway lines; the
+takeoff and landing detector (airport_events.py) uses the elevation and runways,
+and the pages that list takeoffs and landings show the names.
+
+Row: [code, category, lat, lon, runways, elevation_ft or null, name]
+Runway: [end1_lat, end1_lon, end2_lat, end2_lon, end1_name, end2_name]
 
 Usage:
     python3 scripts/build_airports.py                 # download both CSVs
@@ -53,6 +59,11 @@ def _num(v):
         return None
 
 
+def _name(v):
+    name = " ".join((v or "").split())
+    return name[:-len(" Airport")] if name.endswith(" Airport") and len(name) > len(" Airport") else name
+
+
 def build(airports_csv, runways_csv):
     runways = {}
     paved = set()
@@ -66,7 +77,8 @@ def build(airports_csv, runways_csv):
         ends = [_num(r.get(k)) for k in ("le_latitude_deg", "le_longitude_deg",
                                          "he_latitude_deg", "he_longitude_deg")]
         if all(v is not None for v in ends):
-            runways.setdefault(ident, []).append([round(v, 5) for v in ends])
+            names = [(r.get(k) or "").strip().upper()[:4] for k in ("le_ident", "he_ident")]
+            runways.setdefault(ident, []).append([round(v, 5) for v in ends] + names)
     rows = []
     for r in csv.DictReader(io.StringIO(airports_csv)):
         cat = CATEGORY.get(r.get("type"))
@@ -77,7 +89,9 @@ def build(airports_csv, runways_csv):
         code = (r.get("icao_code") or r.get("gps_code") or r.get("local_code") or ident).strip().upper()
         if lat is None or lon is None or not code or MADE_UP.search(code):
             continue
-        rows.append([code, cat, round(lat, 5), round(lon, 5), sorted(runways.get(ident, []))])
+        elev = _num(r.get("elevation_ft"))
+        rows.append([code, cat, round(lat, 5), round(lon, 5), sorted(runways.get(ident, [])),
+                     None if elev is None else int(round(elev)), _name(r.get("name"))])
     rows.sort(key=lambda a: (a[0], a[1], a[2], a[3]))
     return rows
 

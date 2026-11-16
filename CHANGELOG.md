@@ -19,6 +19,33 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.184] — 2026-11-15
+
+**Aerodrome now keeps a history of the takeoffs and landings your receiver sees.**
+
+When an aircraft is first seen low near an airport, lined up with a runway and climbing away, Aerodrome records a takeoff. When one comes down to a runway and then disappears or reports itself on the ground, it records a landing. A dip to a runway in the middle of a flight is a touch and go. You'll find them in three places:
+
+- **The aircraft page:** under Route, its latest flight ("Took off … runway 13L · today 16:47", and "Landed" too when your receiver saw both ends). A new Takeoffs and landings section shows how often it took off and landed at each airport, then its newest takeoffs and landings with the time, runway and callsign. Practice circuits fold into one row ("Touch and go ×6").
+- **The Live map panel:** when the aircraft took off from an airport your receiver can see, the panel says so. It goes inside the route box when the route starts there ("took off 3 min ago · 36R"), or on its own row when there's no route, as for most light aircraft.
+- **Stats → Airports:** a new section with today's takeoffs and landings, the busiest airports over the last 30 days, and a table of each airport's landings, takeoffs, last hour and hours of the day.
+
+Only what your antenna sees low near an airport can count, so the history is best for the airports close to your receiver; an airport below your horizon shows few or none. The runway is named when Aerodrome can tell it: where parallel runways are too close together to tell apart from one position a minute, it gives the number they share (13 for 13L and 13R). A low pass or a go-around also counts as a touch and go.
+
+### Operational notes
+
+- After the update, Aerodrome works through the sightings you already have, in the background, a second and a half at a time, so the history starts with everything you've stored rather than empty. Until it's done the new sections say "filling in" with a percentage. On a Raspberry Pi with a month of busy-sky sightings this can take a few hours; collection and the Live map carry on as normal meanwhile.
+- Takeoffs and landings are kept for a year by default, longer than the sightings they come from: Configuration → Retention → Takeoffs and landings. Each is one small row.
+- The new Stats section can be turned off or moved like the others (Configuration → Stats).
+- It needs your receiver's location (Configuration → Receiver), the same one the map's airport layer uses.
+- The database gets a new table (schema v21) on first start; there's nothing to do.
+
+### Behind the scenes
+
+- New `airport_events.py`: the detector (runway alignment, a glide-path check, and climbs and descents over about five minutes of positions), the hook the collector calls once per poll, the background fill-in (it reads the stored sightings in the order they were saved, remembers how far it got, carries on after a restart, and skips anything already recorded), and the reads for the pages. The thresholds were measured on 208 days of a real receiver's stored sightings before this was built: of the aircraft seen landing at an airport and next seen taking off, 99.5 % took off from the same one.
+- `static/airports.json` now also carries each airport's name, field elevation and runway end names (`scripts/build_airports.py`); `/api/airports` passes them along.
+- New `GET /api/aircraft/{icao}/airports`; Stats cards `airport_moves_today`, `airports_30d` and `airports_today` in a new `airports` group; `retention.airport_days` (default 365).
+- Tests: `test_airport_events.py` (the detector on invented tracks, storage, a real collector poll, the fill-in and carrying it on after a restart, schema v21 fresh and on upgrade, retention, the endpoint and the Stats cards) and browser tests for the aircraft page, the map panel, Stats and Configuration.
+
 ## [3.4.183] — 2026-11-13
 
 **An update is no longer undone when the system restarts Aerodrome in the half-minute after it installs.**

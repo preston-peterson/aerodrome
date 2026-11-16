@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Version: 3.4.183
+# Version: 3.4.184
 """
 main.py — Aerodrome ADS-B Tracker
 
@@ -46,6 +46,7 @@ from collector import (init_db, build_watchlist_lookup, fetch_and_store,
                        refresh_query_planner_stats, ensure_lookup_indexes,
                        wait_for_plausible_clock)
 from server import get_app, prepare_backup_tmp, tighten_existing_private_files
+import airport_events
 
 BASE_DIR = Path(__file__).parent
 CONFIG_PATH = BASE_DIR / "config.yaml"
@@ -456,6 +457,11 @@ def run_collector(config: dict, stop_event: threading.Event):
             # stats from a fresh install go stale and mis-plan queries months
             # later (the cause of the ~5s Stats top_aircraft query).
             refresh_query_planner_stats(config)
+            # v3.4.184: fill in the takeoff/landing history from the sightings
+            # already stored, a short slice per loop until it's done. Reads in
+            # the order they were saved; never raises.
+            airport_events.backfill_step(config["data"]["db_file"], config,
+                                         open_conn=lambda p: _open_db_conn(p, timeout=30))
         except Exception as e:
             logger.error(f"Collector error: {e}", exc_info=True)
         stop_event.wait(interval)

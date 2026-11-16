@@ -86,7 +86,8 @@ class TestMigration(_PollCase):
     def test_an_upgrade_from_v19_adds_it_and_keeps_rows(self):
         conn = sqlite3.connect(self.db)
         conn.execute("ALTER TABLE seen_aircraft DROP COLUMN feed_owner")
-        conn.execute("DELETE FROM schema_version WHERE version = 20")
+        conn.execute("DROP TABLE IF EXISTS airport_events")          # v21 (3.4.184) came later
+        conn.execute("DELETE FROM schema_version WHERE version >= 20")
         conn.execute("INSERT INTO seen_aircraft (icao, first_seen_at, registered_owner) "
                      "VALUES ('A00001', 1, 'Example Air')")
         conn.commit()
@@ -94,8 +95,8 @@ class TestMigration(_PollCase):
         result = apply_schema_migrations(conn, "test")
         conn.close()
         self.assertTrue(result["ok"], result.get("error"))
-        self.assertEqual((result["starting_version"], result["ending_version"]), (19, 20))
-        self.assertEqual(len(result["applied"]), 1)
+        self.assertEqual((result["starting_version"], result["ending_version"]), (19, CURRENT_SCHEMA_VERSION))
+        self.assertEqual(len(result["applied"]), CURRENT_SCHEMA_VERSION - 19)
         self.assertEqual(self.q("SELECT icao, registered_owner, feed_owner FROM seen_aircraft"),
                          [("A00001", "Example Air", None)])
 

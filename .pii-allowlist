@@ -8,3 +8,6 @@ templates/about.html
 # Historical release prose with documentation-subnet examples; still gated by
 # bump-version.sh's tuned PII audit (docs subnets + 10.254.254.254 allowlisted)
 CHANGELOG.md
+# Generated OurAirports data (public domain): some public airport names share
+# the maintainer's first name. Exempted 2026-11-15 (v3.4.184); see bump-version.sh.
+static/airports.json

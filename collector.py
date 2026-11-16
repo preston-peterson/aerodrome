@@ -1,4 +1,4 @@
-# Version: 3.4.183
+# Version: 3.4.184
 """
 collector.py — ADS-B data fetcher and classifier.
 
@@ -29,6 +29,7 @@ from distance import haversine as _dist_haversine
 from type_classes import PISTON_TYPES, TURBOPROP_TYPES
 # v3.4.138: the shared hex→tail resolver queue. Imports nothing from this
 # module at load time (its worker imports collector lazily), so no cycle.
+import airport_events
 import hexdb_resolver
 # v3.4.150: the feeder's port is moved by Aerodrome's system helper.
 import privhelper
@@ -3625,12 +3626,15 @@ def cleanup_old_data(db_path: str, retention: dict) -> bool:
     watch_cutoff = now - (retention["watchlist_days"] * 86400)
     all_cutoff = now - (retention["all_days"] * 86400)
     events_cutoff = now - (HEXDB_EVENTS_RETENTION_DAYS * 86400)
+    # v3.4.184: takeoffs and landings keep their own, longer window (default a year).
+    airport_cutoff = now - (int(retention.get("airport_days") or 365) * 86400)
     # Small tables first, so a long catch-up on all_sightings can't starve them.
     # The rollups go by their indexed bucket, once the whole bucket is past the
     # cutoff. aircraft_track_daily was never pruned: only today's rows are read, for
     # the Stats longest-track card, and each aircraft's best is kept on seen_aircraft.
     jobs = (
         ("hexdb_events", "ts", events_cutoff),
+        ("airport_events", "at", airport_cutoff),
         ("concurrent_minute", "minute_bucket", all_cutoff),
         ("military_hourly", "hour_bucket", mil_cutoff - 3599),
         ("watchlist_hourly", "hour_bucket", watch_cutoff - 3599),
@@ -3656,7 +3660,8 @@ def cleanup_old_data(db_path: str, retention: dict) -> bool:
             f"Cleanup: removed {n('military_sightings', 0)} military "
             f"({n('military_hourly', 0)} rollup), {n('watchlist_sightings', 0)} watchlist "
             f"({n('watchlist_hourly', 0)} rollup), {n('all_sightings', 0)} all, "
-            f"{n('hexdb_events', 0)} hexdb-events, {n('concurrent_minute', 0)} concurrent-minute, "
+            f"{n('hexdb_events', 0)} hexdb-events, {n('airport_events', 0)} takeoff/landing, "
+            f"{n('concurrent_minute', 0)} concurrent-minute, "
             f"{n('aircraft_track_daily', 0)} track-day old entries"
             + ("" if finished else "; more next round")
         )
@@ -4269,6 +4274,7 @@ def _poll_once(config: Dict, watchlist_lookup: Dict):
     all_count = 0
     mil_count = 0
     watch_count = 0
+    stored_points = []      # (icao, callsign, lat, lon, altitude) → takeoff/landing detection
 
     # v3.4.138: before normalize() reads it, fill the hexdb type-code cache
     # for aircraft the feed gives no type code (stock readsb, dump1090-fa).
@@ -4284,6 +4290,7 @@ def _poll_once(config: Dict, watchlist_lookup: Dict):
             continue
         raw = _sanitize_feed_record(raw)
         counts = (all_count, mil_count, watch_count)
+        point = None
         conn.execute("SAVEPOINT poll_aircraft")
         try:
             ac = normalize(raw)
@@ -4298,6 +4305,8 @@ def _poll_once(config: Dict, watchlist_lookup: Dict):
             """, (ac["hex"], ac["callsign"], ac["speed"], ac["lat"], ac["lon"],
                   ac["altitude"], ac["aircraft_type"], ac["type_desc"], now, ac["squawk"]))
             all_count += 1
+            point = (ac["hex"], ac["callsign"], ac["lat"], ac["lon"], ac["altitude"])
+            stored_points.append(point)
 
             # v2.50.0: also upsert into the hourly rollup. Per-aircraft-per-hour
             # row that aggregates count + first/last + extremes + last-state
@@ -4759,6 +4768,8 @@ def _poll_once(config: Dict, watchlist_lookup: Dict):
         except Exception as e:
             conn.execute("ROLLBACK TO poll_aircraft")
             all_count, mil_count, watch_count = counts
+            if point is not None and stored_points and stored_points[-1] is point:
+                stored_points.pop()
             _log_skipped_record(raw, e)
         finally:
             conn.execute("RELEASE poll_aircraft")
@@ -4822,6 +4833,10 @@ def _poll_once(config: Dict, watchlist_lookup: Dict):
     # All inside the surrounding transaction so a crash leaves dirty
     # rows still flagged for retry on the next cycle.
     _flush_dirty_to_fts(conn)
+
+    # v3.4.184: the takeoffs, landings and touch-and-goes this poll completes
+    # (airport_events.py). Same transaction; never raises.
+    airport_events.on_poll(conn, config, stored_points, now)
 
     conn.commit()
     conn.close()

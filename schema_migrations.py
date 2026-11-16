@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 # Current schema version. Bump whenever a new migration is added.
 # v2.51.0 introduces schema version 1 (the search-feature schema).
 # Any DB without a schema_version table is implicitly at version 0.
-CURRENT_SCHEMA_VERSION = 20
+CURRENT_SCHEMA_VERSION = 21
 
 
 # A migration is a (target_version, description, callable) tuple.
@@ -1705,6 +1705,35 @@ def _migration_v20_feed_owner(conn: sqlite3.Connection) -> None:
         logger.info("Migration v20: seen_aircraft.feed_owner already exists (re-run no-op)")
 
 
+
+def _migration_v21_airport_events(conn: sqlite3.Connection) -> None:
+    """v3.4.184: add `airport_events` — the takeoffs, landings and touch-and-goes
+    the receiver saw (airport_events.py detects them from the stored positions,
+    live and by filling in from the sightings already stored).
+
+    One small row per event: the aircraft, its callsign then, the kind, the
+    airport's code, the runway when it could be told (e.g. 13L, 13, or '') and
+    when. A busy receiver beside a major airport records a few thousand a day,
+    so it has its own retention (retention.airport_days, default a year) rather
+    than the sightings'. Indexed by aircraft (the aircraft page) and by time
+    (Stats, retention). Idempotent: CREATE ... IF NOT EXISTS.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS airport_events (
+            id        INTEGER PRIMARY KEY,
+            icao      TEXT NOT NULL,
+            callsign  TEXT,
+            kind      TEXT NOT NULL,
+            airport   TEXT NOT NULL,
+            runway    TEXT,
+            at        INTEGER NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_airport_events_icao ON airport_events(icao, at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_airport_events_at ON airport_events(at)")
+    logger.info("Migration v21: ensured airport_events table exists")
+
+
 MIGRATIONS: List[Migration] = [
     (1, "search schema: denormalized columns, indexes, FTS5 + triggers, backfill",
      _migration_v1_search_schema),
@@ -1746,6 +1775,8 @@ MIGRATIONS: List[Migration] = [
      _migration_v19_flight_routes),
     (20, "feed_owner column: the registered owner from the receiver's aircraft database (readsb ownOp) (v3.4.179)",
      _migration_v20_feed_owner),
+    (21, "airport_events table: takeoffs, landings and touch-and-goes the receiver saw (v3.4.184)",
+     _migration_v21_airport_events),
 ]
 
 
