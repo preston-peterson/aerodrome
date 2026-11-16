@@ -64,7 +64,7 @@ The throughline has been "build the tool you want to use yourself, not the produ
 The main tracker interface has five tabs across the top.
 
 :::feature
-Live: what's in the sky right now — a sortable list beside a live radar map, refreshing every few seconds. The list shows ICAO, callsign, type, altitude, speed and distance, with military aircraft highlighted and watchlist entries tagged. The map plots each contact as a chevron coloured by altitude, rotated to its heading and sized by aircraft class (helicopters get their own rotor marker), with red military and amber watchlist rings, receiver range rings, an optional max-range coverage outline, per-aircraft trails, a weather-radar overlay, and the nearby airports (their code, and their runways when zoomed in; click a code for that airport's takeoffs and landings today). Click a plane — on the map or in the list — for an in-place panel with its registered owner, when it took off from a nearby airport, live telemetry, a photo of the airframe, and a link to full details; the map itself can be docked to any side of the split.
+Live: what's in the sky right now — a sortable list beside a live radar map, refreshing every few seconds. The list shows ICAO, callsign, type, altitude, speed and distance, with military aircraft highlighted and watchlist entries tagged. The map plots each contact as a chevron coloured by altitude, rotated to its heading and sized by aircraft class (helicopters get their own rotor marker), with red military and amber watchlist rings, receiver range rings, an optional max-range coverage outline, per-aircraft trails, a weather-radar overlay, and the nearby airports (their code, and their runways when zoomed in; click a code for that airport's takeoffs and landings today, and its full page: a year of takeoffs and landings a day, its busiest hours, runway use and who visits). Click a plane — on the map or in the list — for an in-place panel with its registered owner, when it took off from a nearby airport, live telemetry, a photo of the airframe, and a link to full details; the map itself can be docked to any side of the split.
 :::
 
 :::feature
@@ -80,7 +80,7 @@ Stats: the rich analytics tab. Today's counts, the takeoffs and landings your re
 :::
 
 :::feature
-Search: full-text search across every aircraft your receiver has ever seen, going back as far as your retention window allows. Type a callsign, ICAO, type, country, operator, or relative-date token like `today`, `hour:14`, `distance:50-100`, `military`, `watchlist`. Sortable columns, date-range presets, page-size control, CSV export, and shareable hash URLs. Stats drill-panels deep-link here with the right filters and sort already applied.
+Search: full-text search across every aircraft your receiver has ever seen, going back as far as your retention window allows. Type a callsign, ICAO, type, country, operator, or relative-date token like `today`, `hour:14`, `distance:50-100`, `military`, `watchlist` — or a nearby airport's code (`KDFW` or `DFW`) for a link to its page. Sortable columns, date-range presets, page-size control, CSV export, and shareable hash URLs. Stats drill-panels deep-link here with the right filters and sort already applied.
 :::
 
 :::image screenshot-stats.png max_h=8.5

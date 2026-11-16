@@ -19,6 +19,36 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.187] — 2026-11-15
+
+**Every airport near you now has its own page.**
+
+Click "Full details →" in an airport's panel on the Live map, search for its code, or click an airport's code on an aircraft's page or on Stats, and Aerodrome opens that airport's page:
+
+- **Today:** how many aircraft landed and took off, the touch-and-goes, the last hour, and the runways in use.
+- **Takeoffs and landings a day** over the last 30 days, 90 days or year, as far back as your history goes, with landings and takeoffs stacked and weekends shaded lighter. The page remembers which range you picked.
+- **Activity by hour and by day of week** over the last 30 days.
+- **Runway use** over the last 30 days: each runway's share of the landings and of the takeoffs, and how often the airport flows each way ("North flow (landing 35C and 36R, taking off 36L and 35L) 54%").
+- **Visitors** over the last 30 days: the busiest aircraft types and airlines, the mix of airline, general aviation, helicopter and military traffic, how many different aircraft came and how many came for the first time, the most frequent aircraft, military visitors, and the aircraft that came for the first time today. A card with nothing to show is left out, so a small field's page stays short.
+- **The latest takeoffs and landings,** with Show more to page back through them. Click one to open that aircraft.
+
+Today and the latest list refresh every minute while the page is open. The page works on a phone.
+
+Search now offers an airport when a word of your search is the code of one near you: type `KDFW` or `DFW` and a link to its page appears above the aircraft it finds.
+
+Also fixed: on the aircraft page, the column headings of the takeoffs and landings list now line up with their columns.
+
+### Operational notes
+
+- The page uses the takeoffs and landings Aerodrome has recorded since 3.4.184. Only what your antenna can see low near an airport is counted, so an airport it can't see down to shows little or nothing.
+- The airport list that ships with Aerodrome now carries each airport's three-letter code and city.
+
+### Behind the scenes
+
+- New `GET /airport/{code}`, `GET /api/airports/{code}` (everything the page shows) and `GET /api/airports/{code}/moves?before=` (older takeoffs and landings). `/api/search` adds `airports`, and `/api/airports` rows add `iata` and `city`. See API.md.
+- Days and hours are counted in Aerodrome's timezone, and stay right across a clock change.
+- Tests: `test_airport_events.py` (the page's data, local days across a clock change, runway use, visitors, new today, paging, the endpoints, Search's airport match), `test_airports.py` (the airport list's new fields) and browser tests for the page, its ranges, Show more, the minute refresh, an empty and an unknown airport, a phone, Search, the links from the Live map panel, the aircraft page and Stats, and column headings lining up with their columns.
+
 ## [3.4.186] — 2026-11-15
 
 **Airport codes on the Live map take clicks straight after an update.**

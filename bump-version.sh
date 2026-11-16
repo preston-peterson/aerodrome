@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.4.186
+# Version: 3.4.187
 # =============================================================================
 # bump-version.sh — Bump Aerodrome version + auto-update CHANGELOG.md
 # =============================================================================
@@ -1136,6 +1136,7 @@ FILES=(
     "templates/diagnostics-slow-queries.html"
     "templates/performance.html"
     "templates/aircraft.html"
+    "templates/airport.html"
     "templates/board.html"
     "templates/about.html"
     "templates/switch-to-real.html"

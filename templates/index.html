@@ -1,4 +1,4 @@
-<!-- Version: 3.4.186 -->
+<!-- Version: 3.4.187 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -686,7 +686,8 @@
         .ro-owner .k.ro-regto { margin-top:6px; }
         /* v3.4.185: airport panel — the overlay in airport mode (openAirportOverlay). */
         .radar-overlay:not(.apt-mode) .ro-airport { display:none; }
-        .radar-overlay.apt-mode > :not(.ro-head):not(.ro-airport) { display:none !important; }
+        /* v3.4.186: "Full details →" stays, pointing at the airport page. */
+        .radar-overlay.apt-mode > :not(.ro-head):not(.ro-airport):not(.ro-full) { display:none !important; }
         .ro-badge.apt { background:var(--bg2); color:var(--t2); border:1px solid var(--bdr); }
         .ro-airport { display:flex; flex-direction:column; gap:10px; }
         .ro-airport .ap-sub { font-size:12px; color:var(--t2); margin-top:-4px; line-height:1.45; }
@@ -1414,6 +1415,15 @@
             margin: 0 0 12px; min-height: 18px;
         }
         .search-meta .ms { color: var(--t3); margin-left: 8px; }
+        /* v3.4.186: an airport the query names, above the aircraft. */
+        .search-airport { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin: 0 0 10px;
+            padding: 10px 14px; background: var(--bg1); border: 1px solid var(--bdr); border-radius: 6px;
+            text-decoration: none; color: var(--t2); font-size: 13px; }
+        .search-airport:hover { border-color: var(--cyan); }
+        .search-airport .sa-k { font-size: 10.5px; color: var(--t3); text-transform: uppercase; letter-spacing: .05em; }
+        .search-airport .sa-code { font-family: var(--mono); color: var(--t1); font-weight: 600; }
+        .search-airport .sa-name { flex: 1 1 12em; min-width: 0; }
+        .search-airport .sa-go { color: var(--cyan); font-size: 12.5px; }
 
         /* v2.51.0 Phase 4: filter chips. Sit between the search input
            and the meta line; visible only when a query has been parsed
@@ -1925,7 +1935,8 @@
         .apt-table td { padding:6px 8px; border-top:1px solid var(--bdr); text-align:right; font-family:var(--mono);
             color:var(--t1); white-space:nowrap; }
         .apt-table td:first-child { text-align:left; padding-left:0; font-family:var(--font); color:var(--t2); white-space:normal; }
-        .apt-table td:first-child .ap { font-family:var(--mono); color:var(--t1); font-weight:600; margin-right:6px; }
+        .apt-table td:first-child .ap { font-family:var(--mono); color:var(--t1); font-weight:600; margin-right:6px; text-decoration:none; }
+        .apt-table td:first-child a.ap:hover { color:var(--cyan); text-decoration:underline; }
         .apt-table td.num, .apt-table th.num { width:1%; padding-left:22px; }
         .apt-table td.spark { width:132px; }
         .apt-spark { display:flex; align-items:flex-end; gap:1px; height:18px; width:120px; margin-left:auto; }
@@ -4231,6 +4242,8 @@ function openAirportOverlay(code){
     if(badge) badge.style.display = 'none';
     const box = document.getElementById('roAirport');
     if(box) box.innerHTML = '<div class="ap-none">Loading…</div>';
+    const full = document.getElementById('roFull');
+    if(full) full.href = `/airport/${encodeURIComponent(code)}`;
     if(_radar.airports) _radar.airports.redraw();
     _radarLoadAirport(code);
     if(!wasOpen) _radarShiftForPanel(true);
@@ -5960,6 +5973,7 @@ function clearSearch(){
     _searchState.timeRange = null;
     _searchState.timeLabel = null;
     _searchState.timeTokens = [];
+    _searchState.airports = [];
     // Hide results + load-more + chips, show empty state
     const emptyEl = document.getElementById('searchEmpty');
     const resultsEl = document.getElementById('searchResults');
@@ -6105,6 +6119,7 @@ async function _fetchSearchPage(){
             _searchState.timeRange = j.time_range || null;
             _searchState.timeLabel = j.time_label || null;
             _searchState.timeTokens = j.time_tokens || [];
+            _searchState.airports = j.airports || [];
         } else {
             _searchState.rows = _searchState.rows.concat(j.rows || []);
         }
@@ -6116,6 +6131,15 @@ async function _fetchSearchPage(){
     } finally {
         if (ctl === _searchRequest) _searchRequest = null;
     }
+}
+
+// v3.4.186: airports near the receiver named by the query (KDFW or DFW), above
+// the aircraft, each linking to its page.
+function _searchAirportsHtml(){
+    return (_searchState.airports || []).map(a => `<a class="search-airport" href="/airport/${encodeURIComponent(a.code)}">`
+        + `<span class="sa-k">Airport</span><span class="sa-code">${escapeHtml(a.code)}${a.iata ? ' · ' + escapeHtml(a.iata) : ''}</span>`
+        + `<span class="sa-name">${escapeHtml([a.name, a.city].filter(Boolean).join(', '))}</span>`
+        + `<span class="sa-go">Takeoffs and landings →</span></a>`).join('');
 }
 
 function loadMoreSearch(){
@@ -6135,7 +6159,7 @@ function _renderSearchResults(json){
     const ms = (json && json.execution_ms != null) ? json.execution_ms : null;
     if (metaEl){
         if (rows.length === 0){
-            metaEl.innerHTML = `No matches for <code style="font-family:var(--mono);color:var(--t1)">${escapeHtml(_searchState.query)}</code>`
+            metaEl.innerHTML = `No ${(_searchState.airports || []).length ? 'aircraft match' : 'matches for'} <code style="font-family:var(--mono);color:var(--t1)">${escapeHtml(_searchState.query)}</code>`
                 + (ms != null ? `<span class="ms">${ms} ms</span>` : '');
         } else {
             metaEl.innerHTML = `${rows.length} of ${total} ${total===1?'match':'matches'} for <code style="font-family:var(--mono);color:var(--t1)">${escapeHtml(_searchState.query)}</code>`
@@ -6169,7 +6193,7 @@ function _renderSearchResults(json){
                 <span class="h-track"></span>
                 <span class="h-wl"></span>
             </div>` : '';
-        resultsEl.innerHTML = headerHtml + rows.map(r => _renderSearchCard(r)).join('');
+        resultsEl.innerHTML = _searchAirportsHtml() + headerHtml + rows.map(r => _renderSearchCard(r)).join('');
         // After the header renders, paint the active-column arrow if a
         // sort is currently in effect.
         _searchPaintSortArrow();
@@ -10283,8 +10307,11 @@ function airports30dCard(v){
             <div class="stat-empty">none seen yet</div>
         </div>`;
     }
-    return listCard('Busiest, last 30 days', items, r => r.name ? `${r.code} — ${r.name}` : r.code,
-                    r => `${Number(r.per_day) || 0}/day`);
+    // v3.4.186: each code links to the airport's page.
+    const lis = items.slice(0, 5).map(r => `<li><span class="name"><a class="icao-link" href="/airport/${encodeURIComponent(r.code)}" `
+        + `style="text-decoration:none">${escHtml(r.code)}</a>${r.name ? ' — ' + escHtml(r.name) : ''}</span>`
+        + `<span class="count">${Number(r.per_day) || 0}/day</span></li>`).join('');
+    return `<div class="stat-card"><div class="stat-label">Busiest, last 30 days</div><ul class="stat-list">${lis}</ul></div>`;
 }
 function airportsTodayCard(v){
     v = v || {};
@@ -10293,7 +10320,7 @@ function airportsTodayCard(v){
         const max = Math.max(1, ...hours);
         const bars = hours.map((n, i) => i > v.now_hour ? '<i style="height:0"></i>'
             : `<i class="${i === v.now_hour ? 'now' : ''}" style="height:${Math.max(6, (Number(n) || 0) / max * 100)}%"></i>`).join('');
-        return `<tr><td><span class="ap">${escHtml(r.code)}</span><span class="city">${escHtml(r.name || '')}</span></td>`
+        return `<tr><td><a class="ap" href="/airport/${encodeURIComponent(r.code)}">${escHtml(r.code)}</a><span class="city">${escHtml(r.name || '')}</span></td>`
             + `<td class="num">${Number(r.landed) || 0}</td><td class="num">${Number(r.took_off) || 0}</td>`
             + `<td class="num c-hr">${Number(r.last_hour) || 0}</td>`
             + `<td class="spark"><div class="apt-spark">${bars}</div></td></tr>`;

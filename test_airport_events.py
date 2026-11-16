@@ -31,7 +31,7 @@ LAT, LON = 40.0, -90.0
 # ZZN1: no runway data, 30 NM west.
 AIRPORTS = [
     {"code": "ZZA1", "cat": "major", "lat": LAT, "lon": LON, "elev": 600, "name": "Example Major",
-     "runways": [[40.0123, -90.0, 39.9877, -90.0, "18", "36"]]},
+     "iata": "ZZA", "city": "Exampleville", "runways": [[40.0123, -90.0, 39.9877, -90.0, "18", "36"]]},
     {"code": "ZZP1", "cat": "regional", "lat": LAT, "lon": -89.35, "elev": 600, "name": "Example Parallels",
      "runways": [[40.01, -89.36, 39.99, -89.34, "13L", "31R"],
                  [40.01 - 0.0025, -89.36 - 0.0025, 39.99 - 0.0025, -89.34 - 0.0025, "13R", "31L"]]},
@@ -511,6 +511,183 @@ class TestAirportSummary(_Db):
             ep(code="no/pe")
         self.assertEqual(cm.exception.status_code, 400)
         self.assertEqual(ep(code="zza1")["code"], "ZZA1")
+
+
+
+class TestAirportPage(_Db):
+    """v3.4.186: the airport page (GET /api/airports/{code}, /moves, /airport/{code}) and Search's airport match."""
+
+    NOW = T0 + 50000
+    D = 86400
+
+    def setUp(self):
+        super().setUp()
+        import designators
+        self.al_code, self.al_name = sorted(designators.AIRLINES.items())[0]
+        self.utc = __import__("datetime").timezone.utc
+        self.day = self.NOW - self.NOW % self.D                       # today's midnight, UTC
+        N, D, al = self.NOW, self.D, self.al_code
+        ev = [("A00001", "landing", "ZZA1", "18", N - 40 * D, "EXA1"),         # history starts here, 40 days ago
+              ("A00002", "takeoff", "ZZA1", "36", N - 5 * D, al + "12"),       # an airline
+              ("A00003", "touch_and_go", "ZZA1", "18", N - 2 * D, "DEMO3"),    # one circuit session…
+              ("A00003", "touch_and_go", "ZZA1", "18", N - 2 * D + 400, "DEMO3"),
+              ("A00005", "landing", "ZZA1", "36", N - 3 * D, "MIL21"),         # military
+              ("A00001", "landing", "ZZA1", "18", N - 1200, "EXA1"),           # today, been here before
+              ("A00006", "landing", "ZZA1", "18", N - 600, "EXA6"),            # today, first time here
+              ("A00001", "landing", "ZZN1", "", N - 300, "EXA1")]              # another airport
+        conn = sqlite3.connect(self.db)
+        AE.record(conn, [{"icao": i, "kind": k, "airport": a, "runway": r, "at": at, "callsign": cs}
+                         for i, k, a, r, at, cs in ev])
+        conn.executemany("INSERT INTO seen_aircraft (icao, first_seen_at, aircraft_type, category, registration) "
+                         "VALUES (?, 1, ?, ?, ?)",
+                         [("A00001", "B738", "commercial", ""), ("A00002", "B738", "commercial", ""),
+                          ("A00003", "C172", "general_aviation", "N0DEMO"), ("A00005", "C130", "military", ""),
+                          ("A00006", "E75L", "commercial", "")])
+        conn.execute("INSERT INTO watchlist_hourly (icao, hour_bucket, watchlist_label, sighting_count, first_seen_at, "
+                     "last_seen_at) VALUES ('A00005', ?, 'Example', 1, ?, ?)",
+                     (self.NOW - 3 * D - (self.NOW - 3 * D) % 3600, self.NOW - 3 * D, self.NOW - 3 * D))
+        conn.commit()
+        conn.close()
+
+    def page(self, code="ZZA1", tz=None):
+        conn = sqlite3.connect(self.db)
+        try:
+            return AE.airport_page(conn, self.cfg, code, self.NOW, self.day, tz or self.utc)
+        finally:
+            conn.close()
+
+    def test_the_header_adds_iata_city_runway_names_and_since(self):
+        j = self.page()
+        self.assertEqual((j["code"], j["iata"], j["city"], j["runway_names"]), ("ZZA1", "ZZA", "Exampleville", ["18/36"]))
+        self.assertEqual((j["since"], j["history_start"]), (self.NOW - 40 * self.D, self.NOW - 40 * self.D))
+        self.assertEqual(j["today"], {"landed": 2, "took_off": 0, "touch_and_go": 0, "last_hour": 2})
+        self.assertIsNone(self.page("ZZZZ"))
+
+    def test_a_day_chart_from_the_first_day_of_history(self):
+        s = self.page()["series"]
+        from datetime import datetime
+        self.assertEqual(s["start"], datetime.fromtimestamp(self.NOW - 40 * self.D, self.utc).date().isoformat())
+        self.assertEqual(len(s["landed"]), 41)
+        self.assertEqual((s["landed"][0], s["took_off"][0]), (1, 0))
+        self.assertEqual((s["landed"][-1], s["took_off"][-1]), (2, 0))                 # today
+        self.assertEqual((s["landed"][-3], s["took_off"][-3]), (2, 2))                 # a touch and go is both
+        self.assertEqual((s["landed"][-6], s["took_off"][-6]), (0, 1))
+        self.assertEqual(sum(s["landed"]) + sum(s["took_off"]), 1 + 1 + 4 + 1 + 2)
+
+    def test_local_days_follow_the_clock_change(self):
+        from datetime import datetime, timedelta
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("America/Chicago")
+        conn = sqlite3.connect(self.db)
+        conn.execute("DELETE FROM airport_events")
+        ats = [self.NOW - h * 3600 - 1800 for h in range(0, 24 * 45, 7)]   # every 7 hours across the DST change
+        AE.record(conn, [{"icao": "A0%04X" % i, "kind": "landing", "airport": "ZZA1", "runway": "18", "at": at,
+                          "callsign": ""} for i, at in enumerate(ats)])
+        conn.commit()
+        conn.close()
+        day = int(datetime.fromtimestamp(self.NOW, tz).replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+        conn = sqlite3.connect(self.db)
+        try:
+            j = AE.airport_page(conn, self.cfg, "ZZA1", self.NOW, day, tz)
+        finally:
+            conn.close()
+        start = datetime.fromisoformat(j["series"]["start"]).date()
+        want = [0] * len(j["series"]["landed"])
+        hours = [0] * 24
+        for at in ats:
+            lt = datetime.fromtimestamp(at, tz)
+            want[(lt.date() - start).days] += 1
+            if lt.date() >= datetime.fromtimestamp(self.NOW, tz).date() - timedelta(days=29):
+                hours[lt.hour] += 1
+        self.assertEqual(j["series"]["landed"], want)
+        self.assertEqual(j["hours"], hours)
+
+    def test_runway_use_and_flows_over_30_days(self):
+        u = self.page()["runway_use"]
+        self.assertEqual(u["landing"], [["18", 80], ["36", 20]])
+        self.assertEqual(u["taking_off"], [["18", 67], ["36", 33]])
+        self.assertEqual([(f["flow"], f["share"]) for f in u["flows"]], [("south", 75), ("north", 25)])
+        self.assertEqual(u["flows"][0]["landing"], ["18"])
+        self.assertEqual(u["with_runway"], 100)
+
+    def test_visitors_over_30_days(self):
+        m = self.page()["month"]
+        self.assertEqual(m["types"][0], {"type": "C172", "name": m["types"][0]["name"], "n": 4})
+        self.assertEqual([t["type"] for t in m["types"]], ["C172", "B738", "C130", "E75L"])
+        self.assertEqual(m["operators"], [{"name": self.al_name, "n": 1}])
+        self.assertEqual((m["aircraft"], m["first_seen"], m["watchlist"]), (5, 4, 1))
+        self.assertEqual(m["mix"], {"commercial": 3, "general_aviation": 1, "military": 1})
+        self.assertEqual([(a["icao"], a["n"]) for a in m["frequent"]],
+                         [("A00003", 4), ("A00001", 1), ("A00002", 1), ("A00005", 1), ("A00006", 1)])
+        self.assertEqual(m["frequent"][0]["who"], "N0DEMO")                     # no airline: the tail number
+        self.assertEqual(m["frequent"][2]["who"], self.al_name)
+        self.assertEqual(m["military"], [{"icao": "A00005", "type": "C130", "callsign": "MIL21", "n": 1}])
+
+    def test_new_here_today_only_once_there_is_history_before_today(self):
+        nt = self.page()["new_today"]
+        self.assertEqual(nt, {"n": 1, "rows": [{"icao": "A00006", "type": "E75L", "callsign": "EXA6",
+                                                 "at": self.NOW - 600}]})
+        conn = sqlite3.connect(self.db)
+        conn.execute("DELETE FROM airport_events WHERE at < ?", (self.day,))
+        conn.commit()
+        conn.close()
+        j = self.page()
+        self.assertEqual(j["new_today"], {"n": 0, "rows": []})
+        self.assertIsNone(j["month"]["first_seen"])        # nothing older than 30 days to compare with
+
+    def test_latest_moves_fold_sessions_and_page_back(self):
+        moves = self.page()["moves"]
+        self.assertEqual([(m["icao"], m["kind"], m["count"]) for m in moves["items"]],
+                         [("A00006", "landing", 1), ("A00001", "landing", 1), ("A00003", "touch_and_go", 2),
+                          ("A00005", "landing", 1), ("A00002", "takeoff", 1), ("A00001", "landing", 1)])
+        self.assertIsNone(moves["next"])
+        self.assertEqual((moves["items"][4]["type"], moves["items"][4]["operator"]), ("B738", self.al_name))
+        conn = sqlite3.connect(self.db)
+        try:
+            first = AE.airport_moves(conn, self.cfg, "ZZA1", limit=2)
+            second = AE.airport_moves(conn, self.cfg, "ZZA1", before=first["next"], limit=2)
+        finally:
+            conn.close()
+        self.assertEqual([m["icao"] for m in first["items"]], ["A00006", "A00001"])
+        self.assertEqual(first["next"], self.NOW - 1200)
+        self.assertEqual([m["icao"] for m in second["items"]], ["A00003"])        # its two circuits, folded
+
+    def test_an_airport_with_nothing_yet(self):
+        j = self.page("ZZP1")
+        self.assertIsNone(j["since"])
+        self.assertEqual(j["moves"], {"items": [], "next": None})
+        self.assertEqual(j["month"]["aircraft"], 0)
+        self.assertEqual(sum(j["series"]["landed"]), 0)
+
+    def test_search_finds_an_airport_by_its_code_or_iata(self):
+        self.assertEqual([a["code"] for a in AE.search_airports(self.cfg, "zza")], ["ZZA1"])
+        self.assertEqual(AE.search_airports(self.cfg, "B738 ZZA1,")[0],
+                         {"code": "ZZA1", "iata": "ZZA", "name": "Example Major", "city": "Exampleville", "cat": "major"})
+        self.assertEqual(AE.search_airports(self.cfg, "ZZ Canada"), [])
+        self.assertEqual(AE.search_airports({}, "ZZA1"), [])                      # no receiver position
+
+    def test_the_endpoints_and_the_page(self):
+        cfg_path = self.dir / "config.yaml"
+        cfg_path.write_text(yaml.safe_dump(self.cfg, sort_keys=False))
+        app = server.get_app(self.cfg, str(cfg_path))
+        ep = lambda path: next(r.endpoint for r in app.routes if getattr(r, "path", "") == path)
+        for path in ("/api/airports/{code}", "/api/airports/{code}/moves"):
+            with self.assertRaises(server.HTTPException) as cm:
+                ep(path)(code="ZZZZ")
+            self.assertEqual(cm.exception.status_code, 404)
+            with self.assertRaises(server.HTTPException) as cm:
+                ep(path)(code="no/pe")
+            self.assertEqual(cm.exception.status_code, 400)
+        self.assertEqual(ep("/api/airports/{code}")(code="zza1")["iata"], "ZZA")
+        moves = ep("/api/airports/{code}/moves")(code="ZZA1", before=self.NOW - 1000, limit=2)
+        self.assertTrue(moves["ok"])
+        self.assertEqual([m["icao"] for m in moves["items"]], ["A00001", "A00003"])
+        html = ep("/airport/{code}")(code="ZZA1").body.decode()
+        self.assertIn("<title>Airport — Aerodrome</title>", html)
+        found = ep("/api/search")(q="ZZA", limit=5, offset=0, order="", dir="", from_ts=0, to_ts=0, preset="")
+        self.assertEqual([a["code"] for a in found["airports"]], ["ZZA1"])
+        later = ep("/api/search")(q="ZZA", limit=5, offset=5, order="", dir="", from_ts=0, to_ts=0, preset="")
+        self.assertEqual(later["airports"], [])
 
 
 if __name__ == "__main__":

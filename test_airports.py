@@ -75,10 +75,21 @@ class TestBuild(unittest.TestCase):
                          "the closed runway is dropped; 5 decimals; both ends' names")
         self.assertEqual(rows["ZZA1"][2:4], [40.0, -90.0])
 
-    def test_rows_carry_field_elevation_and_name(self):
+    def test_rows_carry_field_elevation_name_iata_and_city(self):
         rows = {r[0]: r for r in _rows()}
-        self.assertEqual(rows["ZZA1"][5:], [600, "Example Major"])
-        self.assertEqual(rows["ZC3"][5:], [650, "Example Paved Field"])
+        self.assertEqual(rows["ZZA1"][5:], [600, "Example Major", "ZZA", "Exampleton"])
+        self.assertEqual(rows["ZZB2"][5:], [700, "Example Regional", "ZZB", "Sampleville"])
+        self.assertEqual(rows["ZC3"][5:], [650, "Example Paved Field", "", "Demo"], "no IATA code: empty")
+
+    def test_near_passes_iata_and_city_on(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        build_airports.write(_rows(), tmp / "airports.json", built="2026-01-01")
+        airports._cache.update(key=None, airports=None)
+        self.addCleanup(airports._cache.update, key=None, airports=None)
+        a = {x["code"]: x for x in airports.near(40.0, -90.0, path=tmp / "airports.json")}
+        self.assertEqual((a["ZZA1"]["iata"], a["ZZA1"]["city"]), ("ZZA", "Exampleton"))
+        self.assertEqual(a["ZC3"]["iata"], "")
 
     def test_a_trailing_airport_is_dropped_from_the_name(self):
         self.assertEqual(build_airports._name("Example  Regional Airport"), "Example Regional")
@@ -106,8 +117,10 @@ class TestShippedFile(unittest.TestCase):
         rows = data["airports"]
         self.assertEqual(data["count"], len(rows))
         self.assertGreater(len(rows), 5000)
-        for code, cat, lat, lon, rw, elev, name in rows:
+        for code, cat, lat, lon, rw, elev, name, iata, city in rows:
             self.assertRegex(code, r"^[A-Z0-9]{2,7}$")
+            self.assertRegex(iata, r"^([A-Z0-9]{3})?$", code)
+            self.assertIsInstance(city, str, code)
             self.assertIn(cat, "lms")
             self.assertTrue(-90 <= lat <= 90 and -180 <= lon <= 180, code)
             self.assertTrue(elev is None or isinstance(elev, int), code)
@@ -252,7 +265,8 @@ class TestPagesVersionStaticUrls(unittest.TestCase):
             path = getattr(r, "path", "")
             if path.startswith(("/api/", "/static")) or path in self.SKIP or "GET" not in (getattr(r, "methods", None) or ()):
                 continue
-            out = r.endpoint(icao="A00001") if path == "/aircraft/{icao}" else r.endpoint()
+            args = {"/aircraft/{icao}": {"icao": "A00001"}, "/airport/{code}": {"code": "ZZA1"}}.get(path, {})
+            out = r.endpoint(**args)
             if getattr(out, "media_type", None) != "text/html":
                 continue
             html = out.body.decode()
@@ -264,6 +278,7 @@ class TestPagesVersionStaticUrls(unittest.TestCase):
         self.assertIn("/static/airports.js?v=" + version, seen["/board"])
         self.assertIn("/static/leaflet/leaflet.js?v=" + version, seen["/aircraft/{icao}"])
         self.assertIn("/static/theme.css?v=" + version, seen["/notification-test-ok"])
+        self.assertIn("/static/theme.js?v=" + version, seen["/airport/{code}"])
         self.assertGreaterEqual(len(seen), 12)
 
 

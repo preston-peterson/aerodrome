@@ -1,0 +1,568 @@
+<!-- Version: 3.4.187 -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <!-- theme:inline-fouc-start -->
+    <script>
+(function(){
+    try {
+        var saved = localStorage.getItem('aerodrome-theme') || 'auto';
+        var applied = saved;
+        if (saved === 'auto') {
+            applied = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+        }
+        document.documentElement.setAttribute('data-theme', applied);
+    } catch (e) { }
+})();
+</script>
+    <!-- theme:inline-fouc-end -->
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Airport — Aerodrome</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="/static/theme.css">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-height:100vh; }
+
+/* The page frame: the same header, breadcrumb bar and layout as the aircraft page. */
+.hdr { background:var(--bg1); border-bottom:1px solid var(--bdr); padding:12px 24px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; }
+.hdr-left { display:flex; align-items:center; gap:8px; }
+.hdr h1 { font-size:18px; font-weight:600; letter-spacing:-0.02em; }
+.hdr h1 span { color:var(--cyan); }
+.dot { width:8px; height:8px; border-radius:50%; background:var(--green); animation:pulse 2s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+.hdr-right { display:flex; align-items:center; gap:14px; }
+.hdr-meta { font-size:11px; color:var(--t2); font-family:var(--mono); }
+.brand-mark { vertical-align:middle; margin-right:6px; }
+.home-link { color:inherit; text-decoration:none; display:inline-flex; align-items:center; }
+.home-link:hover h1 { opacity:0.85; }
+.settings-wrap { position:relative; }
+.settings-menu { position:absolute; top:calc(100% + 6px); right:0; background:var(--bg2); border:1px solid var(--bdr); border-radius:8px; min-width:180px; display:none; z-index:100; overflow:hidden; }
+.settings-menu.open { display:block; }
+.wrap { max-width:1280px; margin:0 auto; padding:24px; }
+.crumbs-bar { background:var(--bg1); border-bottom:1px solid var(--bdr); position:sticky; top:var(--aerodrome-header-height, 58px); z-index:49; }
+.crumbs-bar-inner { max-width:1280px; margin:0 auto; padding:8px 24px; font-size:12px; color:var(--t3); }
+.crumbs-bar-inner a { color:var(--cyan); text-decoration:none; }
+.crumbs-bar-inner a:hover { text-decoration:underline; }
+.loading-state, .error-state { text-align:center; padding:60px 24px; color:var(--t3); }
+.error-state .err-title { font-size:16px; color:var(--t1); margin-bottom:8px; }
+.error-state .err-detail { font-size:13px; max-width:480px; margin:0 auto; line-height:1.6; }
+.error-state a { color:var(--cyan); text-decoration:none; }
+
+/* Header */
+.title-row { display:flex; align-items:baseline; gap:12px; margin-bottom:6px; flex-wrap:wrap; }
+.title-row h1 { font-family:var(--mono); font-size:28px; font-weight:600; letter-spacing:-0.01em; }
+.title-row .pill { font-family:var(--mono); font-size:12px; padding:3px 8px; border-radius:6px; border:1px solid var(--bdr); color:var(--t2); }
+.title-row .meta-text { color:var(--t2); font-size:14px; }
+.title-row .sep { color:var(--t3); font-size:14px; }
+.apg-sub { color:var(--t3); font-size:13px; margin:0 0 22px; font-family:var(--mono); line-height:1.55; }
+
+/* Sections */
+.section-title { font-size:13px; color:var(--t2); font-weight:600; text-transform:uppercase; letter-spacing:0.04em; margin:0 0 12px; }
+.section-title .hint { font-weight:400; text-transform:none; letter-spacing:0; color:var(--t3); font-size:12px; margin-left:6px; }
+.metrics-grid { display:grid; grid-template-columns:repeat(5, 1fr); gap:8px; margin-bottom:24px; }
+.metric-card { background:var(--bg1); border:1px solid var(--bdr); border-radius:6px; padding:12px; min-width:0; }
+.metric-card .lbl { font-size:11px; color:var(--t3); text-transform:uppercase; letter-spacing:0.04em; margin-bottom:2px; }
+.metric-card .val { font-size:22px; font-weight:500; font-family:var(--mono); color:var(--t1); }
+.metric-card .val.small { font-size:14px; padding-top:5px; line-height:1.5; }
+.mv-up { color:var(--cyan); }
+.mv-down { color:var(--purple); }
+.mv-tg { color:var(--t2); }
+
+/* Takeoffs and landings a day */
+.apg-tabs { display:inline-flex; border:1px solid var(--bdr); border-radius:6px; overflow:hidden; margin-left:10px; vertical-align:middle; }
+.apg-tabs button { font:500 11px var(--mono); color:var(--t3); padding:3px 9px; background:none; border:0; cursor:pointer; }
+.apg-tabs button.on { background:rgba(6,182,212,.15); color:var(--cyan); }
+.apg-trend { display:flex; align-items:flex-end; gap:2px; height:110px; margin-bottom:4px; }
+.apg-trend .d { flex:1; display:flex; flex-direction:column-reverse; min-width:0; height:100%; }
+.apg-trend .d i { display:block; }
+.apg-trend .d i.arr { background:rgba(167,139,250,.55); }
+.apg-trend .d i.dep { background:rgba(6,182,212,.55); }
+.apg-trend .d.we i.arr { background:rgba(167,139,250,.35); }
+.apg-trend .d.we i.dep { background:rgba(6,182,212,.35); }
+.apg-axis { display:flex; justify-content:space-between; font:10px var(--mono); color:var(--t3); margin-bottom:6px; }
+.apg-legend { font-size:11px; color:var(--t3); display:flex; gap:14px; flex-wrap:wrap; margin-bottom:24px; }
+.apg-legend .k::before { content:''; display:inline-block; width:8px; height:8px; border-radius:2px; margin-right:5px; background:var(--c); }
+
+/* By hour and by weekday (the aircraft page's charts) */
+.apg-two { display:grid; grid-template-columns:1fr 1fr; gap:24px; margin-bottom:24px; }
+.histogram { display:flex; align-items:end; gap:2px; height:90px; margin-bottom:4px; }
+.histogram .bar { flex:1; background:rgba(6,182,212,0.2); border-radius:2px 2px 0 0; min-height:2px; }
+.histogram .bar.peak { background:var(--cyan); }
+.histogram .bar.empty { background:var(--bdr); opacity:0.5; }
+.hour-axis { display:flex; justify-content:space-between; font-size:10px; color:var(--t3); font-family:var(--mono); }
+.dow-grid { display:grid; grid-template-columns:repeat(7, 1fr); gap:4px; }
+.dow-grid .bar { height:36px; background:rgba(6,182,212,0.2); border-radius:3px; }
+.dow-grid .bar.active { background:var(--cyan); }
+.dow-grid .bar.empty { background:var(--bdr); opacity:0.4; }
+.dow-axis { display:grid; grid-template-columns:repeat(7, 1fr); gap:4px; font-size:10px; color:var(--t3); font-family:var(--mono); margin-top:4px; }
+.dow-axis span { text-align:center; }
+
+/* Runway use */
+.apg-rw { display:grid; grid-template-columns:3.4em 1fr 3em; gap:8px; align-items:center; font:12px var(--mono); color:var(--t2); padding:2px 0; }
+.apg-rw .bar { height:8px; border-radius:2px; background:rgba(6,182,212,.45); }
+.apg-rw .bar.land { background:rgba(167,139,250,.5); }
+.apg-rw .n { text-align:right; }
+.apg-rwk { font-size:10px; color:var(--t3); text-transform:uppercase; letter-spacing:.05em; margin:0 0 3px; }
+.apg-rwk + .apg-rw, .apg-rw + .apg-rwk { margin-top:0; }
+.apg-rw + .apg-rwk { padding-top:8px; }
+.apg-flowtxt { font-size:13px; color:var(--t2); line-height:1.6; }
+.apg-flowtxt b { color:var(--t1); font-weight:600; }
+.apg-flowtxt .dim { color:var(--t3); font-size:12px; display:block; margin-top:6px; }
+
+/* Visitors */
+.apg-note { font-size:12px; color:var(--t3); margin:-6px 0 12px; }
+.apg-cards { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:12px; margin-bottom:24px; }
+.apg-card { background:var(--bg1); border:1px solid var(--bdr); border-radius:6px; padding:12px 14px; min-width:0; }
+.apg-card .lbl { font-size:11px; color:var(--t3); text-transform:uppercase; letter-spacing:.04em; margin-bottom:8px; }
+.apg-list { list-style:none; margin:0; padding:0; font-size:12.5px; }
+.apg-list li { display:flex; justify-content:space-between; gap:10px; padding:3px 0; color:var(--t2); }
+.apg-list li .n { font-family:var(--mono); color:var(--t1); flex:0 0 auto; }
+.apg-list li .nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+.apg-list li .nm b { color:var(--t1); font-weight:500; font-family:var(--mono); margin-right:6px; }
+.apg-list a { color:inherit; text-decoration:none; }
+.apg-list a:hover b { color:var(--cyan); }
+.ap-mix { display:flex; height:6px; border-radius:3px; overflow:hidden; margin:2px 0 5px; background:var(--bg2); }
+.ap-mix i { display:block; height:100%; }
+.ap-mixkey { font-size:10.5px; color:var(--t3); display:flex; flex-wrap:wrap; gap:4px 10px; margin-bottom:6px; }
+.ap-mixkey span::before { content:''; display:inline-block; width:7px; height:7px; border-radius:2px; margin-right:4px; background:var(--c); }
+
+/* Latest takeoffs and landings */
+.row-grid-header { font-size:10px; color:var(--t3); text-transform:uppercase; letter-spacing:.06em; font-family:var(--font); font-weight:500; user-select:none; }
+.row-card { background:var(--bg2); border:1px solid var(--bdr); border-radius:6px; padding:8px 12px; margin-bottom:4px;
+    transition:border-color .15s, background .15s; font-family:var(--mono); font-size:12.5px; color:var(--t2); text-decoration:none; }
+.row-card:hover { border-color:var(--cyan); background:var(--bg1); }
+/* Column widths in rem, so the smaller header text lines up with the rows. */
+.apg-grid { display:grid; grid-template-columns:8.6rem 8.6rem 5.4rem 4rem minmax(0, 1fr) 4.6rem; column-gap:12px; align-items:baseline; }
+.row-grid-header.apg-grid { padding:0 13px 4px; }
+.apg-moves .c-ev { white-space:nowrap; }
+.apg-moves .cs { color:var(--t1); }
+.apg-moves .op { color:var(--t3); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.apg-moves .rw { text-align:right; }
+.apg-foot { display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-top:8px; font-size:12px; color:var(--t3); }
+.apg-foot a { color:var(--cyan); text-decoration:none; }
+
+@media (max-width:900px) {
+    .metrics-grid { grid-template-columns:repeat(2, 1fr); }
+    .apg-cards { grid-template-columns:repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width:700px) {
+    .wrap { padding:16px; }
+    .apg-two, .apg-cards { grid-template-columns:minmax(0, 1fr); }
+    .apg-grid { grid-template-columns:minmax(0, 1fr) auto; row-gap:2px; }
+    .row-grid-header.apg-grid { display:none; }
+    .apg-moves .row-card .c-when, .apg-moves .row-card .cs { grid-column:1; }
+    .apg-moves .row-card .c-ev, .apg-moves .row-card .rw { grid-column:2; text-align:right; }
+    .apg-moves .row-card .ty, .apg-moves .row-card .op { display:none; }
+}
+</style>
+</head>
+<body>
+
+<div class="hdr">
+    <div class="hdr-left">
+        <div class="dot" title="System status"></div>
+        <a href="/" class="home-link"><svg class="brand-mark" width="32" height="32" viewBox="0 0 64 64" aria-hidden="true">
+                <circle cx="32" cy="32" r="28" fill="none" stroke="#06b6d4" stroke-width="3" opacity="0.3"/>
+                <circle cx="32" cy="32" r="20" fill="none" stroke="#06b6d4" stroke-width="3" opacity="0.55"/>
+                <circle cx="32" cy="32" r="12" fill="none" stroke="#06b6d4" stroke-width="3" opacity="0.8"/>
+                <circle cx="32" cy="32" r="4" fill="#06b6d4"/>
+                <line x1="32" y1="32" x2="52" y2="12" stroke="#06b6d4" stroke-width="3" stroke-linecap="round"/>
+            </svg><h1><span>Aerodrome</span></h1></a>
+    </div>
+    <div class="hdr-right">
+        <span class="hdr-meta">v<span id="appVersion">—</span> &middot; Updated <span id="ts">—</span></span>
+        <div class="settings-wrap">
+            <button class="settings-btn" onclick="toggleMenu(event)" aria-label="Settings" title="Settings">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            </button>
+            <div class="settings-menu" id="settingsMenu">
+                <a href="/status" class="menu-item">Status</a>
+                <a href="/diagnostics" class="menu-item">Diagnostics</a>
+                <a href="/logs" class="menu-item">Logs</a>
+                <a href="/documentation" class="menu-item">Documentation</a>
+                <a href="/about" class="menu-item">About</a>
+                <a href="/config" class="menu-item">Configuration</a>
+                <a href="/updates" class="menu-item">Check for updates</a>
+                <div class="gear-menu-separator"></div>
+                <div class="theme-row">
+                    <div class="theme-label">Theme</div>
+                    <div class="theme-seg" role="group" aria-label="Theme preference">
+                        <button type="button" data-theme-choice="auto"  onclick="aerodromeSetTheme('auto')">Auto</button>
+                        <button type="button" data-theme-choice="dark"  onclick="aerodromeSetTheme('dark')">Dark</button>
+                        <button type="button" data-theme-choice="light" onclick="aerodromeSetTheme('light')">Light</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="crumbs-bar">
+    <div class="crumbs-bar-inner" id="crumbsBar">
+        <a href="/#search">Search</a> &nbsp;›&nbsp; Airports
+    </div>
+</div>
+
+<div class="wrap" id="mainContent">
+    <div class="loading-state">Loading the airport…</div>
+</div>
+
+<script src="/static/theme.js"></script>
+<script>
+// v3.4.186: the airport page. Reads its code from /airport/<code>, loads
+// /api/airports/<code> and draws: the header, Today, takeoffs and landings a
+// day, by hour and weekday, runway use, visitors and the latest takeoffs and
+// landings ("Show more" pages through /api/airports/<code>/moves). Today and
+// the latest list refresh every minute.
+
+function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+const fmtN = n => Number(n || 0).toLocaleString();
+
+const APT_KINDS = {takeoff: ['↗', 'Took off', 'mv-up'], landing: ['↘', 'Landed', 'mv-down'],
+                   touch_and_go: ['↻', 'Touch and go', 'mv-tg']};
+const APT_CATS = {major: 'Major', regional: 'Regional', small: 'Small field'};
+const AP_MIX = {commercial: ['Commercial', '#06b6d4'], general_aviation: ['GA', '#22c55e'],
+                helicopter: ['Helicopter', '#f59e0b'], military: ['Military', '#ef4444'], unknown: ['Other', '#64748b']};
+const RANGE_KEY = 'aerodrome.airport_range';
+const RANGES = [[30, '30 d'], [90, '90 d'], [365, '1 y']];
+
+const _apg = {code: '', data: null, range: 90, extra: false, next: null, timer: null};
+
+function _clock(ts) {
+    const d = new Date(ts * 1000);
+    return window.formatTime ? window.formatTime(d) : d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+}
+function _dayWord(ts) {
+    const d = new Date(ts * 1000), now = new Date(), y = new Date(now);
+    y.setDate(now.getDate() - 1);
+    if (d.toDateString() === now.toDateString()) return 'today';
+    if (d.toDateString() === y.toDateString()) return 'yesterday';
+    return _date(d);
+}
+function _date(d) {
+    return d.toLocaleDateString(undefined, d.getFullYear() === new Date().getFullYear()
+        ? {month: 'short', day: 'numeric'} : {month: 'short', day: 'numeric', year: 'numeric'});
+}
+function _when(e) {
+    const t = `${_dayWord(e.at)} ${_clock(e.at)}`;
+    return e.count > 1 && e.until > e.at ? `${t}–${_clock(e.until)}` : t;
+}
+function _word(e) {
+    const k = APT_KINDS[e.kind] || ['', e.kind, ''];
+    return k[1] + (e.kind === 'touch_and_go' && e.count > 1 ? ` ×${e.count}` : '');
+}
+function _and(list) {
+    list = (list || []).map(escapeHtml);
+    return list.length > 1 ? list.slice(0, -1).join(', ') + ' and ' + list[list.length - 1] : (list[0] || '');
+}
+
+function codeFromUrl() {
+    const parts = window.location.pathname.split('/').filter(Boolean);
+    return decodeURIComponent(parts[parts.length - 1] || '').toUpperCase();
+}
+
+function renderError(title, detail) {
+    document.getElementById('mainContent').innerHTML = `<div class="error-state"><div class="err-title">${escapeHtml(title)}</div>`
+        + `<div class="err-detail">${detail}</div></div>`;
+}
+
+async function loadAirport() {
+    const code = codeFromUrl();
+    _apg.code = code;
+    document.title = `${code || 'Airport'} — Aerodrome`;
+    if (!/^[A-Z0-9]{2,7}$/.test(code)) {
+        renderError('Not an airport code', 'The address must end with an airport code, like /airport/KDFW.');
+        return;
+    }
+    try {
+        const r = await fetch(`/api/airports/${encodeURIComponent(code)}`);
+        if (r.status === 404) {
+            renderError(`${code} isn't an airport near your receiver`,
+                `Aerodrome keeps takeoffs and landings for the airports around your receiver. `
+                + `<a href="/#radar">Open the Live map</a> to see which ones those are, or <a href="/#search">search</a> for another code.`);
+            return;
+        }
+        if (!r.ok) {
+            renderError('Could not load the airport', `HTTP ${r.status}`);
+            return;
+        }
+        _apg.data = await r.json();
+        renderPage(_apg.data);
+        const ts = document.getElementById('ts');
+        if (ts) ts.textContent = window.formatDateTime ? formatDateTime(new Date()) : new Date().toLocaleString();
+        if (!_apg.timer) _apg.timer = setInterval(refresh, 60000);
+    } catch (e) {
+        renderError('Could not load the airport', escapeHtml(e.message || String(e)));
+    }
+}
+
+// Every minute: Today (from the Live map panel's light summary) and, unless more
+// pages are open, the latest list. The charts and visitors stay as loaded.
+async function refresh() {
+    if (document.hidden) return;
+    const code = encodeURIComponent(_apg.code);
+    try {
+        const r = await fetch(`/api/airports/${code}/summary`);
+        if (!r.ok) return;
+        const j = await r.json();
+        const today = document.getElementById('apgToday');
+        if (today) today.innerHTML = renderToday(j);
+        if (!_apg.extra) {
+            const m = await fetch(`/api/airports/${code}/moves`);
+            if (m.ok && !_apg.extra) renderMoves(await m.json(), false);
+        }
+        const ts = document.getElementById('ts');
+        if (ts) ts.textContent = window.formatDateTime ? formatDateTime(new Date()) : new Date().toLocaleString();
+    } catch (e) { /* the next tick tries again */ }
+}
+
+function renderPage(j) {
+    const crumbs = document.getElementById('crumbsBar');
+    if (crumbs) crumbs.innerHTML = `<a href="/#search">Search</a> &nbsp;›&nbsp; Airports &nbsp;›&nbsp; ${escapeHtml(j.code)}`;
+    try { _apg.range = Number(localStorage.getItem(RANGE_KEY)) || 90; } catch (e) { _apg.range = 90; }
+    if (!RANGES.some(r => r[0] === _apg.range)) _apg.range = 90;
+    const fill = j.fill_in || {};
+    const filling = fill.state === 'running'
+        ? `<div class="apg-note">Still filling in from your stored history (${Number(fill.pct) || 0}%).</div>` : '';
+    const nothing = !j.since
+        ? `<div class="apg-note">Your receiver hasn't seen a takeoff or landing here yet. Only what your antenna `
+          + `sees low near the airport is counted, so a field it can't see down to may stay empty.</div>` : '';
+    document.getElementById('mainContent').innerHTML = renderHero(j) + filling + nothing
+        + `<div class="section-title">Today</div><div class="metrics-grid" id="apgToday">${renderToday(j)}</div>`
+        + (j.since ? renderTrendSection() + renderHourDay(j) + renderRunways(j) + renderVisitors(j) : '')
+        + `<div id="apgMovesBox"></div>`;
+    if (j.since) {
+        renderTrend();
+        document.querySelectorAll('#apgTabs button').forEach(b => b.addEventListener('click', () => {
+            _apg.range = Number(b.dataset.days);
+            try { localStorage.setItem(RANGE_KEY, String(_apg.range)); } catch (e) { /* kept for this visit only */ }
+            renderTrend();
+        }));
+    }
+    renderMoves(j.moves, false);
+}
+
+function renderHero(j) {
+    const dist = j.distance != null ? ` · ${fmtN(j.distance)} ${escapeHtml(j.distance_unit)} ${escapeHtml(j.direction || '')} of your receiver` : '';
+    const rw = (j.runway_names || []).length
+        ? `${j.runway_names.length} ${j.runway_names.length === 1 ? 'runway' : 'runways'} (${escapeHtml(j.runway_names.join(', '))})`
+        : `${j.runways} ${j.runways === 1 ? 'runway' : 'runways'}`;
+    const elev = j.elev != null ? `${fmtN(j.elev)} ft · ` : '';
+    const seen = j.since ? `Seen by your receiver since ${escapeHtml(_date(new Date(j.since * 1000)))}`
+        + (j.per_day ? ` · about ${fmtN(j.per_day)} takeoffs and landings a day` : '') : '';
+    return `<div class="title-row"><h1>${escapeHtml(j.code)}</h1>`
+        + (j.iata ? `<span class="pill">${escapeHtml(j.iata)}</span>` : '')
+        + `<span class="pill">${escapeHtml(APT_CATS[j.cat] || j.cat)}</span>`
+        + (j.name ? `<span class="meta-text">${escapeHtml(j.name)}</span>` : '')
+        + (j.city ? `<span class="sep">·</span><span class="meta-text">${escapeHtml(j.city)}</span>` : '')
+        + `</div><div class="apg-sub">${elev}${rw}${dist}${seen ? '<br>' + seen : ''}</div>`;
+}
+
+function renderToday(j) {
+    const t = j.today || {}, u = j.in_use || {};
+    const lane = (list, glyph, cls) => list && list.length ? `${escapeHtml(list.join(' '))} <span class="${cls}">${glyph}</span>` : '';
+    const inUse = [lane(u.landing, '↘', 'mv-down'), lane(u.taking_off, '↗', 'mv-up')].filter(Boolean).join(' · ') || '—';
+    const card = (lbl, val, cls) => `<div class="metric-card"><div class="lbl">${lbl}</div><div class="val${cls ? ' ' + cls : ''}">${val}</div></div>`;
+    return card('Landed', fmtN(t.landed)) + card('Took off', fmtN(t.took_off)) + card('Touch and go', fmtN(t.touch_and_go))
+        + card('Last hour', fmtN(t.last_hour)) + card('Runways in use', inUse, 'small');
+}
+
+function renderTrendSection() {
+    const tabs = RANGES.map(([d, l]) => `<button type="button" data-days="${d}">${l}</button>`).join('');
+    return `<div class="section-title">Takeoffs and landings a day <span class="apg-tabs" id="apgTabs">${tabs}</span></div>`
+        + `<div class="apg-trend" id="apgTrend"></div><div class="apg-axis" id="apgAxis"></div>`
+        + `<div class="apg-legend" id="apgLegend"></div>`;
+}
+
+function renderTrend() {
+    const s = (_apg.data || {}).series;
+    if (!s) return;
+    document.querySelectorAll('#apgTabs button').forEach(b => b.classList.toggle('on', Number(b.dataset.days) === _apg.range));
+    const n = s.landed.length, from = Math.max(0, n - _apg.range);
+    const [y, m, d] = s.start.split('-').map(Number);
+    const days = [];
+    for (let i = from; i < n; i++) {
+        const day = new Date(y, m - 1, d + i);
+        days.push({day, l: s.landed[i], t: s.took_off[i], we: day.getDay() === 0 || day.getDay() === 6});
+    }
+    const max = Math.max(1, ...days.map(x => x.l + x.t));
+    document.getElementById('apgTrend').innerHTML = days.map(x => {
+        const tot = x.l + x.t;
+        const tip = `${_date(x.day)}: ${fmtN(x.l)} landed, ${fmtN(x.t)} took off`;
+        return `<div class="d${x.we ? ' we' : ''}" title="${escapeHtml(tip)}"><i class="arr" style="height:${x.l / max * 100}%"></i>`
+            + `<i class="dep" style="height:${x.t / max * 100}%"></i></div>`;
+    }).join('');
+    const mid = days[Math.floor(days.length / 2)];
+    document.getElementById('apgAxis').innerHTML = days.length > 2
+        ? `<span>${escapeHtml(_date(days[0].day))}</span><span>${escapeHtml(_date(mid.day))}</span><span>today</span>`
+        : '<span>today</span>';
+    const avg = list => list.length ? list.reduce((a, x) => a + x.l + x.t, 0) / list.length : 0;
+    const full = days.slice(0, -1);              // today isn't over yet
+    const we = avg(full.filter(x => x.we)), wd = avg(full.filter(x => !x.we));
+    const note = full.length >= 14 && wd > 0 && we < wd * 0.8 ? 'weekends lighter'
+        : full.length >= 14 && we > 0 && wd < we * 0.8 ? 'weekends busier' : '';
+    const short = n < _apg.range ? `history starts ${_date(days[0].day)}` : '';
+    document.getElementById('apgLegend').innerHTML = `<span class="k" style="--c:rgba(167,139,250,.7)">landed</span>`
+        + `<span class="k" style="--c:rgba(6,182,212,.7)">took off</span>`
+        + [note, short].filter(Boolean).map(t => `<span>${escapeHtml(t)}</span>`).join('');
+}
+
+function renderHourHistogram(hours, days) {
+    if (!hours || hours.length !== 24) return '';
+    const max = Math.max(...hours, 1);
+    let bars = '';
+    for (let i = 0; i < 24; i++) {
+        const v = hours[i];
+        const pct = v === 0 ? 4 : Math.max(8, v / max * 100);
+        const tip = `${String(i).padStart(2, '0')}:00 — about ${(v / Math.max(1, days)).toFixed(1)} a day`;
+        bars += `<div class="bar${v >= max * 0.7 && v > 0 ? ' peak' : ''}${v === 0 ? ' empty' : ''}" style="height:${pct}%" title="${tip}"></div>`;
+    }
+    return `<div class="section-title">Activity by hour<span class="hint">last 30 days</span></div>`
+        + `<div class="histogram">${bars}</div><div class="hour-axis"><span>00</span><span>06</span><span>12</span><span>18</span><span>23</span></div>`;
+}
+
+function renderDayOfWeek(days) {
+    if (!days || days.length !== 7) return '';
+    const max = Math.max(...days, 1);
+    const names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    const bars = days.map((v, i) => `<div class="bar${v >= max * 0.5 && v > 0 ? ' active' : ''}${v === 0 ? ' empty' : ''}" `
+        + `style="opacity:${v === 0 ? 1 : Math.max(0.5, v / max)}" title="${names[i]} — about ${v} a day"></div>`).join('');
+    return `<div class="section-title">By day of week<span class="hint">last 30 days</span></div>`
+        + `<div class="dow-grid">${bars}</div><div class="dow-axis">${names.map(n => `<span>${n}</span>`).join('')}</div>`;
+}
+
+function renderHourDay(j) {
+    return `<div class="apg-two"><div>${renderHourHistogram(j.hours, j.month_days)}</div><div>${renderDayOfWeek(j.weekdays)}</div></div>`;
+}
+
+function renderRunways(j) {
+    const u = j.runway_use || {};
+    const land = u.landing || [], dep = u.taking_off || [];
+    if (!land.length && !dep.length) return '';
+    const max = Math.max(1, ...land.map(r => r[1]), ...dep.map(r => r[1]));
+    const row = (r, cls) => `<div class="apg-rw"><span>${escapeHtml(r[0])}</span><div class="bar${cls}" style="width:${r[1] / max * 100}%"></div>`
+        + `<span class="n">${r[1]}%</span></div>`;
+    const flows = (u.flows || []).slice(0, 2).map(f => {
+        const parts = [];
+        if (f.landing.length) parts.push(`landing ${_and(f.landing)}`);
+        if (f.taking_off.length) parts.push(`taking off ${_and(f.taking_off)}`);
+        const name = f.flow.charAt(0).toUpperCase() + f.flow.slice(1);
+        return `<b>${escapeHtml(name)} flow</b>${parts.length ? ` (${parts.join(', ')})` : ''} ${f.share}%`;
+    });
+    const rest = 100 - (u.flows || []).slice(0, 2).reduce((a, f) => a + f.share, 0);
+    const text = flows.length
+        ? flows.join(', ') + ' of the takeoffs and landings with a known runway.'
+          + (rest >= 1 && (u.flows || []).length > 2 ? ` Other directions: ${rest}%.` : '')
+        : '';
+    const known = u.with_runway < 100 ? ` The runway was known for ${u.with_runway}% of them.` : '';
+    return `<div class="section-title">Runway use<span class="hint">last 30 days</span></div>`
+        + `<div class="apg-two"><div>${land.length ? '<div class="apg-rwk">Landings</div>' + land.map(r => row(r, ' land')).join('') : ''}`
+        + `${dep.length ? '<div class="apg-rwk">Takeoffs</div>' + dep.map(r => row(r, '')).join('') : ''}</div>`
+        + `<div class="apg-flowtxt">${text}<span class="dim">Each runway's share of the landings and of the takeoffs.${known}</span></div></div>`;
+}
+
+function _card(label, body) {
+    return body ? `<div class="apg-card"><div class="lbl">${label}</div>${body}</div>` : '';
+}
+function _list(rows) {
+    return rows.length ? `<ul class="apg-list">${rows.join('')}</ul>` : '';
+}
+function _li(name, n, icao) {
+    const inner = `<span class="nm">${name}</span><span class="n">${n}</span>`;
+    return icao ? `<li><a href="/aircraft/${encodeURIComponent(icao)}" style="display:contents">${inner}</a></li>` : `<li>${inner}</li>`;
+}
+
+function renderVisitors(j) {
+    const m = j.month || {};
+    const types = _list((m.types || []).map(t => _li(`<b>${escapeHtml(t.type)}</b>${escapeHtml(t.name)}`, fmtN(t.n))));
+    const ops = _list((m.operators || []).map(o => _li(escapeHtml(o.name), fmtN(o.n))));
+    const mix = Object.entries(m.mix || {}).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]);
+    const total = mix.reduce((a, [, n]) => a + n, 0);
+    let who = '';
+    if (m.aircraft) {
+        const parts = mix.map(([c, n]) => [AP_MIX[c] || AP_MIX.unknown, Math.round(100 * n / total)]);
+        who = `<div class="ap-mix">${parts.map(([[, col], p]) => `<i style="width:${p}%;background:${col}"></i>`).join('')}</div>`
+            + `<div class="ap-mixkey">${parts.map(([[lbl, col], p]) => `<span style="--c:${col}">${escapeHtml(lbl)} ${p}%</span>`).join('')}</div>`
+            + _list([_li('Different aircraft', fmtN(m.aircraft)),
+                     m.first_seen != null ? _li('First seen here', fmtN(m.first_seen)) : '',
+                     m.watchlist ? _li('Watchlist aircraft', fmtN(m.watchlist)) : ''].filter(Boolean));
+    }
+    const freq = _list((m.frequent || []).map(a => _li(`<b>${escapeHtml(a.icao)}</b>${escapeHtml([a.type, a.who].filter(Boolean).join(' · '))}`,
+                                                      fmtN(a.n), a.icao)));
+    const mil = _list((m.military || []).map(a => _li(`<b>${escapeHtml(a.icao)}</b>${escapeHtml([a.type, a.callsign].filter(Boolean).join(' · '))}`,
+                                                     fmtN(a.n), a.icao)));
+    const nt = j.new_today || {};
+    const fresh = _list((nt.rows || []).map(a => _li(`<b>${escapeHtml(a.icao)}</b>${escapeHtml([a.type, a.callsign].filter(Boolean).join(' · '))}`,
+                                                    escapeHtml(_clock(a.at)), a.icao)));
+    const cards = _card('Aircraft types', types) + _card('Operators', ops) + _card('Who visits', who)
+        + _card('Most frequent aircraft', freq) + _card('Military visitors', mil)
+        + _card(nt.n > (nt.rows || []).length ? `New here today · ${fmtN(nt.n)}` : 'New here today', fresh);
+    if (!cards) return '';
+    return `<div class="section-title">Visitors<span class="hint">last 30 days</span></div>`
+        + `<div class="apg-note">Numbers are takeoffs and landings; Who visits counts aircraft.</div>`
+        + `<div class="apg-cards">${cards}</div>`;
+}
+
+function _moveRow(e) {
+    const [glyph, , cls] = APT_KINDS[e.kind] || ['', '', ''];
+    return `<a class="row-card apg-grid" href="/aircraft/${encodeURIComponent(e.icao)}"><span class="c-when">${escapeHtml(_when(e))}</span>`
+        + `<span class="c-ev"><span class="${cls}">${glyph}</span> ${escapeHtml(_word(e))}</span>`
+        + `<span class="cs">${escapeHtml(e.callsign || e.icao)}</span><span class="ty">${escapeHtml(e.type || '')}</span>`
+        + `<span class="op">${escapeHtml(e.operator || '')}</span><span class="rw">${e.runway ? 'rwy ' + escapeHtml(e.runway) : ''}</span></a>`;
+}
+
+function renderMoves(moves, append) {
+    const box = document.getElementById('apgMovesBox');
+    if (!box) return;
+    const items = (moves && moves.items) || [];
+    _apg.next = moves ? moves.next : null;
+    if (!append) {
+        if (!items.length) { box.innerHTML = ''; return; }
+        box.innerHTML = `<div class="section-title">Latest takeoffs and landings</div>`
+            + `<div class="apg-moves"><div class="row-grid-header apg-grid"><span>When</span><span></span><span>Callsign</span>`
+            + `<span>Type</span><span>Operator</span><span class="rw">Runway</span></div><div id="apgMoveRows"></div></div>`
+            + `<div class="apg-foot"><span>Only what your antenna sees low near the airport is counted.</span><a href="#" id="apgMore" hidden>Show more →</a></div>`;
+        document.getElementById('apgMore').addEventListener('click', ev => { ev.preventDefault(); loadMore(); });
+    }
+    document.getElementById('apgMoveRows').insertAdjacentHTML('beforeend', items.map(_moveRow).join(''));
+    document.getElementById('apgMore').hidden = !_apg.next;
+}
+
+async function loadMore() {
+    if (!_apg.next) return;
+    const more = document.getElementById('apgMore');
+    more.hidden = true;
+    try {
+        const r = await fetch(`/api/airports/${encodeURIComponent(_apg.code)}/moves?before=${_apg.next}`);
+        if (!r.ok) { more.hidden = false; return; }
+        _apg.extra = true;
+        renderMoves(await r.json(), true);
+    } catch (e) { more.hidden = false; }
+}
+
+function toggleMenu(e) {
+    e.stopPropagation();
+    document.getElementById('settingsMenu').classList.toggle('open');
+}
+document.addEventListener('click', () => {
+    const menu = document.getElementById('settingsMenu');
+    if (menu) menu.classList.remove('open');
+});
+fetch('/api/status').then(r => r.json()).then(j => {
+    if (j && j.version) document.getElementById('appVersion').textContent = j.version;
+}).catch(() => {});
+
+loadAirport();
+</script>
+
+</body>
+</html>

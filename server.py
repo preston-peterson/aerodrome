@@ -1,4 +1,4 @@
-# Version: 3.4.186
+# Version: 3.4.187
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -2977,6 +2977,13 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     # No UI shipping in this release (Phase 3). Users exercise these
     # endpoints via curl until the Search tab arrives.
 
+    def _search_airports(q):
+        try:
+            return airport_events.search_airports(CONFIG, q)
+        except (OSError, ValueError, KeyError, TypeError) as e:     # the airport list itself
+            logger.warning(f"Search airports skipped: {e}")
+            return []
+
     @app.get("/api/search")
     def get_search(q: str = "", limit: int = 50, offset: int = 0,
                           order: str = "", dir: str = "",
@@ -3124,6 +3131,9 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             "rows": result["rows"],
             "execution_ms": result["execution_ms"],
             "error": result.get("error"),
+            # v3.4.186: airports near the receiver named by a word of the query
+            # (KDFW or DFW), shown above the aircraft with a link to their page.
+            "airports": _search_airports(q) if offset == 0 else [],
         }
 
     @app.get("/api/search/aircraft/{icao}")
@@ -5157,6 +5167,49 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         if j is None:
             raise HTTPException(status_code=404, detail="not an airport near the receiver")
         return j
+
+    # =========================================================================
+    # /api/airports/{code} and /api/airports/{code}/moves — the airport page (v3.4.186)
+    # =========================================================================
+    # Everything /airport/{code} shows (airport_events.airport_page), and older
+    # pages of its takeoffs and landings for "Show more" (?before=<at>).
+    def _airport_read(code, fn):
+        key = (code or "").upper().strip()
+        if not re.fullmatch(r"[A-Z0-9]{2,7}", key):
+            raise HTTPException(status_code=400, detail="invalid airport code")
+        try:
+            index = airport_events.index_for(CONFIG)
+        except (OSError, ValueError, KeyError, TypeError) as e:     # the airport list itself
+            logger.warning(f"Airport page: {e}")
+            index = None
+        if index is None or key not in index.by_code:
+            raise HTTPException(status_code=404, detail="not an airport near the receiver")
+        conn = _open_db_conn(CONFIG["data"]["db_file"])
+        try:
+            j = fn(conn, key)
+        except sqlite3.OperationalError as e:
+            if "no such" not in str(e):
+                raise
+            j = None
+        except (OSError, ValueError, KeyError, TypeError) as e:     # the airport list itself
+            logger.warning(f"Airport page: {e}")
+            j = None
+        finally:
+            conn.close()
+        if j is None:
+            raise HTTPException(status_code=404, detail="not an airport near the receiver")
+        return j
+
+    @app.get("/api/airports/{code}")
+    def get_airport_page(code: str):
+        start_ts, now_ts = _day_bounds_ts()
+        return _airport_read(code, lambda conn, key: airport_events.airport_page(
+            conn, CONFIG, key, now_ts, start_ts, tzwindow.resolve_tz(CONFIG)))
+
+    @app.get("/api/airports/{code}/moves")
+    def get_airport_moves(code: str, before: int = 0, limit: int = airport_events.PAGE_MOVES):
+        return _airport_read(code, lambda conn, key: dict(ok=True, **airport_events.airport_moves(
+            conn, CONFIG, key, before=before or None, limit=limit)))
 
     # =========================================================================
     # /api/coverage — max-range coverage outline (radar overlay, v3.5.0)
@@ -12933,6 +12986,12 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     # 301-redirect to the uppercase variant — the DB stores them
     # uppercase and we want a single canonical URL per aircraft to
     # avoid bookmark fragmentation and weird cache behavior.
+    @app.get("/airport/{code}", response_class=HTMLResponse)
+    def airport_page(code: str):
+        """The airport page (v3.4.186). The page reads its code from the URL and
+        loads /api/airports/{code}; an unknown code shows its own message there."""
+        return _serve_template("airport.html")
+
     @app.get("/aircraft/{icao}", response_class=HTMLResponse)
     def aircraft_detail_page(icao: str):
         # Validate format first — 6 hex chars, no exceptions

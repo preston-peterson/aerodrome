@@ -1,4 +1,4 @@
-<!-- Version: 3.4.186 -->
+<!-- Version: 3.4.187 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -200,14 +200,18 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
 .apt-sum-item .city { color: var(--t3); }
 .apt-sum-item .n { display: block; margin-top: 3px; }
 .apt-sum-item .n b { color: var(--t1); font-weight: 500; }
-.apt-grid { display: grid; grid-template-columns: 15em 11em minmax(0, 1fr) 5.5em 6em; column-gap: 12px; align-items: baseline; }
-.apt-rows .row-grid-header.apt-grid { padding: 0 12px 4px; }
+/* v3.4.186: widths in rem (the rows' old 15em/11em/5.5em/6em at 12.5px), so the headings,
+   in smaller text, line up with their columns. */
+.apt-grid { display: grid; grid-template-columns: 11.7rem 8.6rem minmax(0, 1fr) 4.3rem 4.7rem; column-gap: 12px; align-items: baseline; }
+.apt-rows .row-grid-header.apt-grid { padding: 0 13px 4px; }
 .apt-rows .row-card.apt-grid { font-size: 12.5px; color: var(--t2); padding: 8px 12px; margin-bottom: 4px; }
 .apt-rows .row-card .ap { color: var(--t1); margin-right: 6px; }
 .apt-rows .row-card .city { color: var(--t3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .apt-rows .row-card .apcell { display: flex; min-width: 0; }
 .apt-foot { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 8px; font-size: 12px; color: var(--t3); }
 .apt-foot a { color: var(--cyan); text-decoration: none; }
+a.ap { text-decoration: none; }
+a.ap:hover { color: var(--cyan); text-decoration: underline; }
 @media (max-width: 700px) {
     .apt-grid { grid-template-columns: minmax(0, 1fr) auto; row-gap: 3px; }
     .apt-rows .row-grid-header.apt-grid { display: none; }
@@ -1074,6 +1078,10 @@ function _aptWhen(e) {
     const t = `${_aptDay(e.at)} ${_aptClock(e.at)}`;
     return e.count > 1 && e.until > e.at ? `${t}–${_aptClock(e.until)}` : t;
 }
+// v3.4.186: an airport's code links to its page.
+function _aptLink(code) {
+    return `<a class="ap" href="/airport/${encodeURIComponent(code)}">${escapeHtml(code)}</a>`;
+}
 function _aptWord(e) {
     const k = APT_KINDS[e.kind] || ['', e.kind, ''];
     return k[1] + (e.kind === 'touch_and_go' && e.count > 1 ? ` ×${e.count}` : '');
@@ -1084,7 +1092,7 @@ function renderAirportLines(recent) {
     slot.innerHTML = (recent || []).map(e => {
         const [glyph, , cls] = APT_KINDS[e.kind] || ['', '', ''];
         return `<div class="owner-line apt-line"><span class="owner-label">${escapeHtml(_aptWord(e))}</span>`
-            + `<span class="apt-val"><span class="gl ${cls}">${glyph}</span><span class="ap">${escapeHtml(e.airport)}</span>`
+            + `<span class="apt-val"><span class="gl ${cls}">${glyph}</span>${_aptLink(e.airport)}`
             + (e.name ? ` <span class="city">${escapeHtml(e.name)}</span>` : '')
             + (e.runway ? ` <span class="dim">·</span> runway ${escapeHtml(e.runway)}` : '')
             + ` <span class="dim">·</span> ${escapeHtml(_aptWhen(e))}</span></div>`;
@@ -1105,7 +1113,7 @@ function renderAirportSection(icao, j) {
     const sinceD = j.since ? new Date(j.since * 1000) : null;
     const since = sinceD ? ` since ${sinceD.toLocaleDateString(undefined, sinceD.getFullYear() === new Date().getFullYear()
         ? {month: 'short', day: 'numeric'} : {month: 'short', day: 'numeric', year: 'numeric'})}` : '';
-    const sum = (j.airports || []).map(a => `<div class="apt-sum-item"><span class="ap">${escapeHtml(a.code)}</span>`
+    const sum = (j.airports || []).map(a => `<div class="apt-sum-item">${_aptLink(a.code)}`
         + (a.name ? `<span class="city">${escapeHtml(a.name)}</span>` : '')
         + `<span class="n"><b>${a.landings}</b> landed · <b>${a.takeoffs}</b> took off`
         + (a.touch_and_go ? ` · <b>${a.touch_and_go}</b> touch and go` : '') + `</span></div>`).join('');
@@ -1113,7 +1121,7 @@ function renderAirportSection(icao, j) {
         const [glyph, , cls] = APT_KINDS[e.kind] || ['', '', ''];
         return `<div class="row-card apt-grid"><span class="c-when">${escapeHtml(_aptWhen(e))}</span>`
             + `<span class="c-ev"><span class="${cls}">${glyph}</span> ${escapeHtml(_aptWord(e))}</span>`
-            + `<span class="apcell"><span class="ap">${escapeHtml(e.airport)}</span><span class="city">${escapeHtml(e.name || '')}</span></span>`
+            + `<span class="apcell">${_aptLink(e.airport)}<span class="city">${escapeHtml(e.name || '')}</span></span>`
             + `<span class="c-rwy">${e.runway ? 'rwy ' + escapeHtml(e.runway) : ''}</span>`
             + `<span class="c-cs">${escapeHtml(e.callsign || '')}</span></div>`;
     }).join('');

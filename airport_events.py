@@ -32,6 +32,7 @@ import time
 from collections import defaultdict, deque
 
 import airports as airports_data
+import designators
 
 logger = logging.getLogger("adsb.airport_events")
 
@@ -119,6 +120,9 @@ class AirportIndex:
                     pts += [(rw[0], rw[1]), (rw[2], rw[3])]
             entry = {"code": a["code"], "cat": a.get("cat") or "small", "lat": a["lat"], "lon": a["lon"],
                      "elev": float(a.get("elev") or 0), "elev_ft": a.get("elev"), "name": a.get("name") or "",
+                     "iata": a.get("iata") or "", "city": a.get("city") or "",
+                     "runway_names": ["/".join(n for n in rw[4:6] if n) for rw in a.get("runways") or []
+                                      if len(rw) >= 6 and (rw[4] or rw[5])],
                      "runways": rws, "pts": pts}
             self.by_code[a["code"]] = entry
             self._cells[(math.floor(a["lat"] * 2), math.floor(a["lon"] * 2))].append(entry)
@@ -741,3 +745,217 @@ def airport_summary(conn, config, code, now, day_start):
 def _type_of(conn, icao):
     row = conn.execute("SELECT aircraft_type FROM seen_aircraft WHERE icao = ?", (icao,)).fetchone()
     return (row[0] or "") if row else ""
+
+
+# ---------------------------------------------------------------------------
+# The airport page (v3.4.186): /airport/{code}
+# ---------------------------------------------------------------------------
+
+PAGE_DAYS = 365      # the "takeoffs and landings a day" chart goes back up to a year
+MONTH_DAYS = 30      # by hour, by weekday, runway use and visitors
+PAGE_MOVES = 25      # latest takeoffs and landings per page
+
+
+def _aircraft_info(conn, icaos):
+    """{icao: (type, category, registration)} from seen_aircraft, in chunks."""
+    out = {}
+    icaos = sorted(set(icaos))
+    for i in range(0, len(icaos), 500):
+        chunk = icaos[i:i + 500]
+        q = ",".join("?" * len(chunk))
+        for icao, typ, cat, reg in conn.execute(
+                f"SELECT icao, aircraft_type, category, registration FROM seen_aircraft WHERE icao IN ({q})", chunk):
+            out[icao] = (typ or "", cat or "unknown", reg or "")
+    return out
+
+
+def _airline(callsign):
+    code = designators.operator_from_callsign(callsign or "")
+    return (designators.airline_name(code) or "") if code else ""
+
+
+def _with_aircraft(conn, items):
+    info = _aircraft_info(conn, [it["icao"] for it in items])
+    for it in items:
+        it["type"] = info.get(it["icao"], ("", "", ""))[0]
+        it["operator"] = _airline(it["callsign"])
+    return items
+
+
+def search_airports(config, q):
+    """Airports near the receiver whose code or IATA code is a word of a Search query
+    (KDFW or DFW), so Search can offer their pages above the aircraft it finds."""
+    words = {w.strip(".,;:()\"'").upper() for w in (q or "").split()}
+    words = {w for w in words if 3 <= len(w) <= 4 and w.isalnum()}
+    index = index_for(config) if words else None
+    if not index:
+        return []
+    found = [a for a in index.by_code.values() if a["code"] in words or (a["iata"] and a["iata"] in words)]
+    return [{"code": a["code"], "iata": a["iata"], "name": a["name"], "city": a["city"], "cat": a["cat"]}
+            for a in sorted(found, key=lambda a: a["code"])][:5]
+
+
+def airport_moves(conn, config, code, before=None, limit=PAGE_MOVES):
+    """One airport's takeoffs and landings, newest first, touch-and-go sessions folded:
+    {"items", "next"}; `next` is the `before` for the page after, or None at the end."""
+    limit = max(1, min(int(limit), 200))
+    rows = conn.execute("SELECT kind, airport, runway, at, callsign, icao FROM airport_events "
+                        "WHERE airport = ? AND at < ? ORDER BY at DESC LIMIT ?",
+                        (code, int(before) if before else 2 ** 62, limit)).fetchall()
+    items = _with_aircraft(conn, _group(rows))
+    return {"items": items, "next": rows[-1][3] if len(rows) == limit else None}
+
+
+def _local_buckets(conn, code, start, end, tz):
+    """{(local day, hour): [landed, took off]} for one airport, start..end. SQLite groups
+    by local hour, one query per stretch of the same UTC offset (a clock change splits it)."""
+    from datetime import date, timedelta
+    import tzwindow
+    epoch = date(1970, 1, 1)
+    out = defaultdict(lambda: [0, 0])
+    for s0, s1, off in tzwindow.offset_segments(start, end, tz):
+        for kind, lh, n in conn.execute(
+                "SELECT kind, (at + ?) / 3600 AS lh, COUNT(*) FROM airport_events "
+                "WHERE airport = ? AND at >= ? AND at < ? GROUP BY kind, lh", (off, code, s0, s1)):
+            landed, took = _moves(kind)
+            b = out[(epoch + timedelta(days=lh // 24), lh % 24)]
+            b[0] += landed * n
+            b[1] += took * n
+    return out
+
+
+def _runway_use(conn, code, since):
+    land, dep = defaultdict(int), defaultdict(int)
+    flows = defaultdict(lambda: [0, defaultdict(int), defaultdict(int)])
+    total = 0
+    for kind, runway, n in conn.execute("SELECT kind, runway, COUNT(*) FROM airport_events WHERE airport = ? "
+                                        "AND at >= ? GROUP BY kind, runway", (code, since)):
+        landed, took = _moves(kind)
+        total += (landed + took) * n
+        if not runway:
+            continue
+        if landed:
+            land[runway] += landed * n
+        if took:
+            dep[runway] += took * n
+        f = flows[_flow(runway)]
+        f[0] += (landed + took) * n
+        if landed:
+            f[1][runway] += landed * n
+        if took:
+            f[2][runway] += took * n
+    pct = lambda d: [[r, round(100 * n / max(1, sum(d.values())))] for r, n in
+                     sorted(d.items(), key=lambda kv: (-kv[1], kv[0]))]
+    top2 = lambda d: [r for r, _ in sorted(d.items(), key=lambda kv: (-kv[1], kv[0]))[:2]]
+    named = sum(f[0] for f in flows.values())
+    out_flows = [{"flow": fl, "share": round(100 * f[0] / named), "landing": top2(f[1]), "taking_off": top2(f[2])}
+                 for fl, f in sorted(flows.items(), key=lambda kv: -kv[1][0]) if fl and named]
+    return {"landing": pct(land), "taking_off": pct(dep), "flows": out_flows,
+            "with_runway": round(100 * named / total) if total else 0}
+
+
+def airport_page(conn, config, code, now, day_start, tz=None):
+    """Everything the airport page shows: the panel's summary plus the airport's IATA
+    code and city, a year of takeoffs and landings a day, by hour and weekday and
+    runway use over 30 days, 30 days of visitors, today's new visitors and the first
+    page of the latest takeoffs and landings. None for an airport not near the receiver."""
+    from datetime import date, timedelta
+    import tzwindow
+    j = airport_summary(conn, config, code, now, day_start)
+    if j is None:
+        return None
+    a = index_for(config).by_code[code]
+    j.update(iata=a["iata"], city=a["city"], runway_names=a["runway_names"])
+    today = tzwindow.local_dt(now, tz).date()
+    first_here = {icao: at for icao, at in conn.execute(
+        "SELECT icao, MIN(at) FROM airport_events WHERE airport = ? GROUP BY icao", (code,))}
+    j["since"] = min(first_here.values()) if first_here else None
+    history = conn.execute("SELECT MIN(at) FROM airport_events").fetchone()[0]
+    j["history_start"] = history
+
+    # Takeoffs and landings a day (up to a year, from the first day there's history),
+    # and by hour and weekday over the last 30 days.
+    first_day = max(today - timedelta(days=PAGE_DAYS - 1),
+                    tzwindow.local_dt(history, tz).date() if history else today)
+    buckets = _local_buckets(conn, code, tzwindow.day_bounds(first_day, tz)[0], now + 1, tz)
+    ndays = (today - first_day).days + 1
+    landed, took = [0] * ndays, [0] * ndays
+    month_first = max(first_day, today - timedelta(days=MONTH_DAYS - 1))
+    hours, weekdays = [0] * 24, [0] * 7
+    for (day, hour), (l, t) in buckets.items():
+        i = (day - first_day).days
+        if 0 <= i < ndays:
+            landed[i] += l
+            took[i] += t
+        if day >= month_first:
+            hours[hour] += l + t
+            weekdays[day.weekday()] += l + t
+    wd_count = [0] * 7
+    d = month_first
+    while d <= today:
+        wd_count[d.weekday()] += 1
+        d += timedelta(days=1)
+    j["series"] = {"start": first_day.isoformat(), "landed": landed, "took_off": took}
+    j["month_days"] = (today - month_first).days + 1
+    j["hours"] = hours
+    j["weekdays"] = [round(n / c, 1) if c else 0 for n, c in zip(weekdays, wd_count)]
+
+    since = now - MONTH_DAYS * 86400
+    j["runway_use"] = _runway_use(conn, code, since)
+
+    # Visitors over the last 30 days: takeoffs and landings by type, operator and
+    # aircraft; who the aircraft are; and which of them came here for the first time.
+    rows = conn.execute("SELECT kind, icao, callsign, at FROM airport_events WHERE airport = ? AND at >= ? "
+                        "ORDER BY at", (code, since)).fetchall()
+    info = _aircraft_info(conn, [r[1] for r in rows])
+    by_type, by_op, by_icao, last_cs = defaultdict(int), defaultdict(int), defaultdict(int), {}
+    for kind, icao, callsign, at in rows:
+        n = sum(_moves(kind))
+        typ = info.get(icao, ("", "", ""))[0]
+        if typ:
+            by_type[typ] += n
+        op = _airline(callsign)
+        if op:
+            by_op[op] += n
+        by_icao[icao] += n
+        if callsign:
+            last_cs[icao] = callsign
+    cats = defaultdict(int)
+    for icao in by_icao:
+        cats[info.get(icao, ("", "unknown", ""))[1]] += 1
+    top = lambda d, k=5: sorted(d.items(), key=lambda kv: (-kv[1], kv[0]))[:k]
+    who = lambda icao: (_airline(last_cs.get(icao)) or info.get(icao, ("", "", ""))[2] or last_cs.get(icao, ""))
+    watch = 0
+    icaos = sorted(by_icao)
+    for i in range(0, len(icaos), 500):
+        chunk = icaos[i:i + 500]
+        q = ",".join("?" * len(chunk))
+        try:
+            watch += conn.execute(f"SELECT COUNT(DISTINCT icao) FROM watchlist_hourly WHERE hour_bucket >= ? "
+                                  f"AND icao IN ({q})", [since - since % 3600, *chunk]).fetchone()[0]
+        except sqlite3.OperationalError:
+            break
+    older = history is not None and history < since
+    j["month"] = {
+        "types": [{"type": t, "name": designators.aircraft_type_name(t) or "", "n": n} for t, n in top(by_type)],
+        "operators": [{"name": o, "n": n} for o, n in top(by_op)],
+        "mix": dict(cats), "aircraft": len(by_icao), "watchlist": watch,
+        "first_seen": sum(1 for icao in by_icao if first_here.get(icao, 0) >= since) if older else None,
+        "frequent": [{"icao": i, "type": info.get(i, ("", "", ""))[0], "who": who(i), "n": n} for i, n in top(by_icao)],
+        "military": [{"icao": i, "type": info.get(i, ("", "", ""))[0], "callsign": last_cs.get(i, ""), "n": n}
+                     for i, n in top({i: n for i, n in by_icao.items() if info.get(i, ("", "", ""))[1] == "military"})],
+    }
+
+    # New here today: aircraft whose first takeoff or landing here was today, once
+    # there's history from before today to tell.
+    new = []
+    if history is not None and history < day_start:
+        new = sorted((at, icao) for icao, at in first_here.items() if at >= day_start)
+        ninfo = _aircraft_info(conn, [i for _, i in new])
+        cs = dict(conn.execute("SELECT icao, callsign FROM airport_events WHERE airport = ? AND at >= ? "
+                               "AND callsign != '' ORDER BY at", (code, day_start)).fetchall())
+        new = [{"icao": i, "type": ninfo.get(i, ("", "", ""))[0], "callsign": cs.get(i) or "", "at": at}
+               for at, i in new]
+    j["new_today"] = {"n": len(new), "rows": new[-5:][::-1]}
+    j["moves"] = airport_moves(conn, config, code)
+    return j

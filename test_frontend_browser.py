@@ -115,8 +115,8 @@ class Site:
                 self.held.append(route)
             else:
                 self._fulfill(route, answer)
-        elif path in PAGES or path.startswith("/aircraft/"):
-            name = PAGES.get(path, "aircraft.html")
+        elif path in PAGES or path.startswith(("/aircraft/", "/airport/")):
+            name = PAGES.get(path) or ("airport.html" if path.startswith("/airport/") else "aircraft.html")
             # The server adds the time helpers to every page it sends.
             html = (ROOT / "templates" / name).read_text().replace(
                 "</head>", '<script src="/static/timefmt.js"></script></head>', 1)
@@ -1922,6 +1922,8 @@ class TestAirportPanel(TestLiveMapAirports):
         self.assertIn("×3 · 18", self.page.inner_text("#roAirport .ap-moves .m:nth-child(2)"))
         self.assertFalse(self.page.is_visible("#roTelemetry"), "the aircraft rows are hidden")
         self.assertTrue(self.page.evaluate("document.querySelector('#radarMap .apt-label.apt-selected').textContent === 'ZZA1'"))
+        self.assertTrue(self.page.is_visible("#roFull"))                                     # v3.4.186
+        self.assertEqual(self.page.get_attribute("#roFull", "href"), "/airport/ZZA1")
         self.assertEqual(self.errors, [])
 
     def test_a_latest_row_opens_that_aircraft_and_closing_leaves_airport_mode(self):
@@ -2005,6 +2007,15 @@ class TestConfigAirports(_ConfigPage):
         self.assertEqual(self.page.evaluate("getAt(workingConfig, 'map.airports')"), "off")
         self.assertEqual(self.errors, [])
 
+def _misaligned(page, header, row):
+    """Column headings that don't start where their column's text does (v3.4.186)."""
+    return page.evaluate("""([h, r]) => {
+        const xs = s => [...document.querySelectorAll(s)].map(e => Math.round(e.getBoundingClientRect().left));
+        const hx = xs(h), rx = xs(r);
+        return hx.map((x, i) => [i, x, rx[i]]).filter(([i, x, y]) => Math.abs(x - y) > 2);
+    }""", [header + " > span", row + " > span"])
+
+
 def _apt(kind, code, at, runway="", count=1, until=None, name="Example Major", cs="DEMO1"):
     return {"kind": kind, "airport": code, "name": name, "runway": runway, "at": at,
             "until": until or at, "count": count, "callsign": cs}
@@ -2059,6 +2070,10 @@ class TestTakeoffsAndLandings(BrowserCase):
         self.assertIn("4 touch and go", self.text("#aptSection .apt-sum"))
         self.assertEqual(self.page.evaluate("document.getElementById('aptSection').compareDocumentPosition("
                                             "document.querySelector('.hour-section')) & 4"), 4, "above Activity by hour")
+        self.assertEqual(_misaligned(self.page, "#aptSection .row-grid-header", "#aptSection .row-card"), [])
+        self.assertEqual(self.page.evaluate("[...document.querySelectorAll('#aptSection a.ap')].map(a => a.getAttribute('href'))"),
+                         ["/airport/ZZA1", "/airport/ZZA1", "/airport/ZZN1", "/airport/ZZN1"])   # v3.4.186
+        self.assertEqual(self.page.evaluate("document.querySelector('#aptLines a.ap').getAttribute('href')"), "/airport/ZZN1")
         self.page.click("#aptShowAll")
         self.advance(500)
         self.assertIn((self.APTS, {"limit": ["1000"]}), self.site.calls)
@@ -2121,6 +2136,8 @@ class TestTakeoffsAndLandings(BrowserCase):
         self.assertEqual(self.page.evaluate("[...document.querySelectorAll('.apt-table tbody td')].slice(0, 4)"
                                             ".map(e => e.innerText)"), ["ZZA1Example Major", "6", "5", "2"])
         self.assertEqual(self.page.evaluate("document.querySelectorAll('.apt-spark i').length"), 24)
+        self.assertEqual(self.page.evaluate("[...document.querySelectorAll('#statsSections a[href^=\"/airport/\"]')]"
+                                            ".map(a => a.getAttribute('href'))"), ["/airport/ZZA1", "/airport/ZZA1"])
         self.assertEqual(self.errors, [])
 
     def test_the_busiest_card_says_filling_in_instead_of_zero_a_day(self):
@@ -2135,6 +2152,151 @@ class TestTakeoffsAndLandings(BrowserCase):
         text = self.text("#statsSections")
         self.assertIn("filling in… 34%", text)
         self.assertNotIn("0/day", text)
+        self.assertEqual(self.errors, [])
+
+
+class TestAirportPage(BrowserCase):
+    """v3.4.186: /airport/<code> — the header, Today, the day chart and its ranges, by hour and
+    weekday, runway use, the visitor cards (empty ones left out), the latest list with Show more,
+    an unknown code, a phone, and Search offering the airport."""
+
+    def setUp(self):
+        super().setUp()
+        from datetime import datetime, timedelta
+        self.now = int(datetime.fromisoformat(self.START).timestamp())
+        self.site.api["/api/status"] = _status()
+        self.site.api["/api/live"] = _aircraft(1)
+        n = 120
+        self.first = (datetime.fromisoformat(self.START).date() - timedelta(days=n - 1)).isoformat()
+        self.data = {
+            "ok": True, "code": "ZZA1", "iata": "ZZA", "name": "Example Major", "city": "Exampleville", "cat": "major",
+            "elev": 600, "runways": 2, "runway_names": ["18/36", "09/27"], "distance": 2, "distance_unit": "mi",
+            "direction": "SW", "since": self.now - (n - 1) * 86400, "history_start": self.now - (n - 1) * 86400,
+            "per_day": 31, "fill_in": {"state": "done", "pct": 100},
+            "today": {"landed": 12, "took_off": 11, "touch_and_go": 2, "last_hour": 4},
+            "in_use": {"landing": ["18"], "taking_off": ["18"], "flow": "south"},
+            "series": {"start": self.first, "took_off": [9] * n,      # weekends lighter
+                       "landed": [4 if (datetime.fromisoformat(self.first) + timedelta(days=i)).weekday() >= 5 else 12
+                                  for i in range(n)]},
+            "month_days": 30, "hours": [0] * 6 + [20] * 16 + [0, 0], "weekdays": [30, 31, 29, 30, 32, 18, 17],
+            "runway_use": {"landing": [["18", 70], ["36", 30]], "taking_off": [["18", 68], ["36", 32]],
+                           "flows": [{"flow": "south", "share": 69, "landing": ["18"], "taking_off": ["18"]},
+                                     {"flow": "north", "share": 31, "landing": ["36"], "taking_off": ["36"]}],
+                           "with_runway": 96},
+            "month": {"types": [{"type": "B738", "name": "Boeing 737-800", "n": 410}],
+                      "operators": [{"name": "Example Air", "n": 520}],
+                      "mix": {"commercial": 80, "general_aviation": 20}, "aircraft": 100, "first_seen": 12, "watchlist": 2,
+                      "frequent": [{"icao": "A00001", "type": "B738", "who": "Example Air", "n": 61}],
+                      "military": []},
+            "new_today": {"n": 7, "rows": [{"icao": "A00009", "type": "C172", "callsign": "DEMO9", "at": self.now - 900}]},
+            "moves": {"items": [{"kind": "landing", "airport": "ZZA1", "runway": "18", "at": self.now - 120, "until": self.now - 120,
+                                 "count": 1, "callsign": "DEMO1", "icao": "A00001", "type": "B738", "operator": "Example Air"},
+                                {"kind": "touch_and_go", "airport": "ZZA1", "runway": "18", "at": self.now - 1800,
+                                 "until": self.now - 600, "count": 3, "callsign": "DEMO9", "icao": "A00009", "type": "C172",
+                                 "operator": ""}],
+                      "next": self.now - 1800},
+        }
+        self.site.api["/api/airports/ZZA1"] = self.data
+        self.site.api["/api/airports/ZZA1/moves"] = {"ok": True, "next": None, "items": [
+            {"kind": "takeoff", "airport": "ZZA1", "runway": "36", "at": self.now - 7200, "until": self.now - 7200,
+             "count": 1, "callsign": "DEMO2", "icao": "A00002", "type": "E75L", "operator": "Example Air"}]}
+
+    def test_the_page_shows_every_section(self):
+        self.open("/airport/ZZA1")
+        self.advance(500)
+        main = self.text("#mainContent").replace("\n", " ")
+        for part in ("ZZA1", "ZZA", "Major", "Example Major", "Exampleville",
+                     "600 ft · 2 runways (18/36, 09/27) · 2 mi SW of your receiver",
+                     "about 31 takeoffs and landings a day", "TAKEOFFS AND LANDINGS A DAY", "ACTIVITY BY HOUR",
+                     "BY DAY OF WEEK", "RUNWAY USE", "South flow (landing 18, taking off 18) 69%",
+                     "The runway was known for 96% of them.", "Boeing 737-800", "Example Air", "First seen here",
+                     "NEW HERE TODAY · 7", "LATEST TAKEOFFS AND LANDINGS", "Touch and go ×3"):
+            self.assertIn(part, main)
+        self.assertEqual(self.page.title(), "ZZA1 — Aerodrome")
+        self.assertEqual(self.page.evaluate("[...document.querySelectorAll('#apgToday .val')].map(e => e.innerText)"),
+                         ["12", "11", "2", "4", "18 ↘ · 18 ↗"])
+        labels = self.page.evaluate("[...document.querySelectorAll('.apg-card .lbl')].map(e => e.innerText)")
+        self.assertNotIn("MILITARY VISITORS", labels, "an empty card is left out")
+        self.assertEqual(len(labels), 5)
+        self.assertEqual(self.page.evaluate("[...document.querySelectorAll('.apg-moves a.row-card')].map(a => a.getAttribute('href'))"),
+                         ["/aircraft/A00001", "/aircraft/A00009"])
+        self.assertEqual(_misaligned(self.page, ".apg-moves .row-grid-header", ".apg-moves a.row-card"), [])
+        self.assertEqual(self.errors, [])
+
+    def test_the_day_chart_ranges_and_show_more(self):
+        self.open("/airport/ZZA1")
+        self.advance(500)
+        bars = lambda: self.page.evaluate("document.querySelectorAll('#apgTrend .d').length")
+        self.assertEqual(bars(), 90)                                            # the default range
+        self.page.click("#apgTabs button[data-days='30']")
+        self.assertEqual(bars(), 30)
+        self.page.click("#apgTabs button[data-days='365']")
+        self.assertEqual(bars(), 120)                                           # all the history there is
+        self.assertIn("history starts", self.text("#apgLegend"))
+        self.assertIn("weekends lighter", self.text("#apgLegend"))
+        self.assertEqual(self.page.evaluate("localStorage.getItem('aerodrome.airport_range')"), "365")
+        self.page.click("#apgMore")
+        self.advance(500)
+        self.assertIn(("/api/airports/ZZA1/moves", {"before": [str(self.now - 1800)]}), self.site.calls)
+        self.page.wait_for_function("document.querySelectorAll('.apg-moves a.row-card').length === 3")
+        self.assertIn("DEMO2", self.text(".apg-moves"))
+        self.assertTrue(self.page.evaluate("document.getElementById('apgMore').hidden"))
+        self.assertEqual(self.errors, [])
+
+    def test_an_airport_with_nothing_yet_and_an_unknown_code(self):
+        empty = dict(self.data, since=None, moves={"items": [], "next": None},
+                     today={"landed": 0, "took_off": 0, "touch_and_go": 0, "last_hour": 0}, in_use={"landing": [], "taking_off": [], "flow": ""})
+        self.site.api["/api/airports/ZZA1"] = empty
+        self.open("/airport/ZZA1")
+        self.advance(500)
+        main = self.text("#mainContent")
+        self.assertIn("hasn't seen a takeoff or landing here yet", main)
+        self.assertNotIn("RUNWAY USE", main)
+        self.assertIsNone(self.page.query_selector("#apgTrend"))
+        self.site.api["/api/airports/ZZZZ"] = (404, "not near")
+        self.open("/airport/ZZZZ")
+        self.advance(500)
+        self.assertIn("ZZZZ isn't an airport near your receiver", self.text("#mainContent"))
+        self.assertEqual(self.errors, [])
+
+    def test_today_and_the_latest_list_refresh_every_minute_from_the_light_calls(self):
+        self.open("/airport/ZZA1")
+        self.advance(500)
+        self.site.api["/api/airports/ZZA1/summary"] = dict(self.data, today={"landed": 13, "took_off": 11, "touch_and_go": 2,
+                                                                              "last_hour": 5})
+        self.site.api["/api/airports/ZZA1/moves"] = {"ok": True, "next": None, "items": [
+            {"kind": "takeoff", "airport": "ZZA1", "runway": "18", "at": self.now + 30, "until": self.now + 30, "count": 1,
+             "callsign": "DEMO7", "icao": "A00007", "type": "C172", "operator": ""}]}
+        pages = self.site.count("/api/airports/ZZA1")
+        self.advance(61000, step=5000)
+        self.page.wait_for_function("document.querySelector('#apgToday .val').innerText === '13'")
+        self.page.wait_for_function("document.querySelector('.apg-moves').innerText.includes('DEMO7')")
+        self.assertEqual(self.site.count("/api/airports/ZZA1"), pages, "the full page isn't fetched again")
+        self.assertGreaterEqual(self.site.count("/api/airports/ZZA1/summary"), 1)
+        self.assertEqual(self.errors, [])
+
+    def test_it_fits_a_phone(self):
+        self.page.set_viewport_size({"width": 390, "height": 844})
+        self.open("/airport/ZZA1")
+        self.advance(500)
+        self.assertLessEqual(self.page.evaluate("document.documentElement.scrollWidth"), 390)
+        self.assertFalse(self.page.is_visible(".apg-moves .row-card .op"))
+        self.assertEqual(self.errors, [])
+
+    def test_search_offers_the_airport(self):
+        self.site.api["/api/search"] = {"ok": True, "query": "ZZA", "parsed_filters": [], "free_text": ["ZZA"],
+                                        "time_range": None, "total_count": 0, "rows": [], "execution_ms": 1,
+                                        "airports": [{"code": "ZZA1", "iata": "ZZA", "name": "Example Major",
+                                                      "city": "Exampleville", "cat": "major"}]}
+        self.open("/")
+        self.page.evaluate("go('search')")
+        self.page.fill("#searchInput", "ZZA")
+        self.page.evaluate("runSearch()")
+        self.advance(500)
+        self.assertEqual(self.page.get_attribute("#searchResults a.search-airport", "href"), "/airport/ZZA1")
+        self.assertIn("ZZA1 · ZZA", self.text("#searchResults"))
+        self.assertIn("Example Major, Exampleville", self.text("#searchResults"))
+        self.assertIn("No aircraft match", self.text("#searchMeta"))
         self.assertEqual(self.errors, [])
 
 

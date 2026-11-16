@@ -11,12 +11,13 @@ OurAirports (https://ourairports.com) publishes its data into the public domain
 Heliports, seaplane bases, closed airports, grass strips and airports with only
 a made-up OurAirports ident (US-1234, X-ABCD) are left out. Each airport keeps
 its code (ICAO when it has one, else its GPS/local code), position, open runways
-(both ends' positions and names, e.g. 13L/31R), field elevation in feet and name
-(without a trailing " Airport"). The map draws codes and runway lines; the
-takeoff and landing detector (airport_events.py) uses the elevation and runways,
-and the pages that list takeoffs and landings show the names.
+(both ends' positions and names, e.g. 13L/31R), field elevation in feet, name
+(without a trailing " Airport"), IATA code (DFW; "" when it has none) and city.
+The map draws codes and runway lines; the takeoff and landing detector
+(airport_events.py) uses the elevation and runways; the pages that list takeoffs
+and landings show the names; the airport page and Search use the IATA code and city.
 
-Row: [code, category, lat, lon, runways, elevation_ft or null, name]
+Row: [code, category, lat, lon, runways, elevation_ft or null, name, iata, city]
 Runway: [end1_lat, end1_lon, end2_lat, end2_lon, end1_name, end2_name]
 
 Usage:
@@ -90,8 +91,10 @@ def build(airports_csv, runways_csv):
         if lat is None or lon is None or not code or MADE_UP.search(code):
             continue
         elev = _num(r.get("elevation_ft"))
+        iata = (r.get("iata_code") or "").strip().upper()
         rows.append([code, cat, round(lat, 5), round(lon, 5), sorted(runways.get(ident, [])),
-                     None if elev is None else int(round(elev)), _name(r.get("name"))])
+                     None if elev is None else int(round(elev)), _name(r.get("name")),
+                     iata if re.fullmatch(r"[A-Z0-9]{3}", iata) else "", " ".join((r.get("municipality") or "").split())])
     rows.sort(key=lambda a: (a[0], a[1], a[2], a[3]))
     return rows
 
