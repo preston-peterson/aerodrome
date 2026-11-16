@@ -7,8 +7,11 @@
 
    Look: a faint ring and code under the aircraft, like the range-ring labels;
    each category appears from its own zoom, and from RUNWAY_ZOOM the ring
-   becomes the airport's real runways. No interaction: the pane takes no
-   pointer events. */
+   becomes the airport's real runways. The pane takes no pointer events, so
+   it never steals a click from an aircraft. Since 3.4.185 a page can pass
+   opts.onSelect(code): then only the code labels take clicks (the Live map
+   opens its airport panel; aircraft stay on top where they overlap), and
+   opts.selected() names the code drawn highlighted. The board passes neither. */
 (function(){
   'use strict';
   var CATS = [
@@ -31,6 +34,11 @@
     + '.apt-label.apt-small{font-size:9px;color:rgba(226,232,240,.42)}'
     + '.apt-label.apt-light{color:rgba(30,41,59,.62);text-shadow:0 0 2px rgba(255,255,255,.95)}'
     + '.apt-label.apt-light.apt-major{color:rgba(30,41,59,.72)}'
+    + '.apt-label.apt-click{pointer-events:auto;cursor:pointer}'
+    + '.apt-label.apt-click:hover{color:#22d3ee}'
+    + '.apt-label.apt-light.apt-click:hover{color:#0e7490}'
+    + '.apt-label.apt-selected{color:#06b6d4;font-weight:700;text-shadow:0 0 6px rgba(6,182,212,.55),0 0 2px rgba(0,0,0,.85)}'
+    + '.apt-label.apt-light.apt-selected{color:#0e7490;text-shadow:0 0 2px rgba(255,255,255,.95)}'
     + '.apt-panel{position:absolute;left:48px;bottom:10px;z-index:1000;width:196px;padding:9px 11px;'
     +   'background:var(--bg1,#111827);border:1px solid var(--bdr,#2a3a54);border-radius:8px;'
     +   'box-shadow:0 8px 30px rgba(0,0,0,.35);font-size:11px;color:var(--t2,#94a3b8);cursor:default}'
@@ -92,6 +100,18 @@
       pane.style.zIndex = 350;            // under the aircraft (overlays 400, markers 600)
       pane.style.pointerEvents = 'none';
     }
+    // Clickable codes sit above the overlay pane, where a canvas renderer
+    // (trails, rings) would otherwise take every click, and still under the
+    // aircraft (markers 600). Rings and runways stay below in 'airports'.
+    var labelPane = 'airports';
+    if(typeof opts.onSelect === 'function'){
+      labelPane = 'airportLabels';
+      if(!map.getPane(labelPane)){
+        var lp = map.createPane(labelPane);
+        lp.style.zIndex = 450;
+        lp.style.pointerEvents = 'none';
+      }
+    }
     var layer = L.layerGroup().addTo(map);
     var list = null;
     function draw(){
@@ -99,6 +119,8 @@
       var c = opts.choice();
       if(!list || !list.length || !anyOn(c)) return;
       var z = map.getZoom(), bounds = map.getBounds().pad(0.25), dark = !!opts.isDark();
+      var click = typeof opts.onSelect === 'function';
+      var sel = opts.selected ? opts.selected() : null;
       var color = dark ? '#cbd5e1' : '#334155';
       list.forEach(function(a){
         var cat = BY_KEY[a.cat];
@@ -118,9 +140,12 @@
           L.circleMarker(at, {pane: 'airports', radius: cat.r, weight: 1.2, color: color,
             opacity: dark ? 0.5 : 0.6, fill: false, interactive: false}).addTo(layer);
         }
-        L.marker(at, {pane: 'airports', interactive: false, keyboard: false,
-          icon: L.divIcon({className: 'apt-label apt-' + a.cat + (dark ? '' : ' apt-light'),
+        var m = L.marker(at, {pane: labelPane, interactive: click, keyboard: false, bubblingMouseEvents: false,
+          title: click && a.name ? a.code + ' — ' + a.name : '',
+          icon: L.divIcon({className: 'apt-label apt-' + a.cat + (dark ? '' : ' apt-light')
+                             + (click ? ' apt-click' : '') + (sel === a.code ? ' apt-selected' : ''),
                            html: esc(a.code), iconSize: null, iconAnchor: anchor})}).addTo(layer);
+        if(click) m.on('click', function(){ opts.onSelect(a.code); });
       });
     }
     load().then(function(l){ list = l; draw(); });

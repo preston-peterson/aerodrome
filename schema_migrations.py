@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 # Current schema version. Bump whenever a new migration is added.
 # v2.51.0 introduces schema version 1 (the search-feature schema).
 # Any DB without a schema_version table is implicitly at version 0.
-CURRENT_SCHEMA_VERSION = 21
+CURRENT_SCHEMA_VERSION = 22
 
 
 # A migration is a (target_version, description, callable) tuple.
@@ -1734,6 +1734,17 @@ def _migration_v21_airport_events(conn: sqlite3.Connection) -> None:
     logger.info("Migration v21: ensured airport_events table exists")
 
 
+
+def _migration_v22_airport_events_by_airport(conn: sqlite3.Connection) -> None:
+    """v3.4.185: index airport_events by airport and time, for the Live map's
+    airport panel (an airport's latest takeoffs and landings, its last 30 days)
+    and the airport page after it. Without it a quiet airport's "latest" would
+    scan a year of every airport's events. Idempotent: CREATE INDEX IF NOT EXISTS.
+    """
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_airport_events_airport ON airport_events(airport, at)")
+    logger.info("Migration v22: ensured idx_airport_events_airport exists")
+
+
 MIGRATIONS: List[Migration] = [
     (1, "search schema: denormalized columns, indexes, FTS5 + triggers, backfill",
      _migration_v1_search_schema),
@@ -1777,6 +1788,8 @@ MIGRATIONS: List[Migration] = [
      _migration_v20_feed_owner),
     (21, "airport_events table: takeoffs, landings and touch-and-goes the receiver saw (v3.4.184)",
      _migration_v21_airport_events),
+    (22, "airport_events index by airport, for the Live map's airport panel (v3.4.185)",
+     _migration_v22_airport_events_by_airport),
 ]
 
 

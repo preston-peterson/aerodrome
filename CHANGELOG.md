@@ -19,6 +19,34 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.185] — 2026-11-15
+
+**Click an airport on the Live map to see what's happening there.**
+
+The airport codes on the Live map are now clickable. Click one and the same side panel planes use opens for the airport (a sheet from the bottom on a phone):
+
+- **Today:** how many aircraft landed and took off there since midnight, how many of those were touch-and-goes, and the last hour.
+- **Runways in use:** which runways aircraft landed on and took off from in the last hour, and which way the airport is flowing ("Landing 35C, 36R · taking off 36L, 35L, north flow").
+- **Latest:** its last six takeoffs and landings with the time, callsign, type and runway. Click one to open that aircraft, on the map if it's still in view or on its own page if not.
+- **Today's visitors:** the most common aircraft types, the mix of airline, general aviation, helicopter and military traffic, and how many were military or on your watchlist.
+- How many takeoffs and landings your receiver sees there on a typical day.
+
+The panel stays up to date while it's open. Aircraft still come first: where a plane sits on top of an airport's code, clicking picks the plane. The display board's airport codes aren't clickable.
+
+Also fixed: while Aerodrome was still filling in its takeoff and landing history after the 3.4.184 update, Stats → Airports → "Busiest, last 30 days" showed 0 a day for every airport. It now says it's filling in, like the other two cards, until the history is complete.
+
+### Operational notes
+
+- It uses the takeoffs and landings Aerodrome has been recording since 3.4.184, so an airport your receiver can't see low traffic at has little or nothing to show.
+- The database gets a new index (schema v22) on first start, for looking up one airport's takeoffs and landings quickly; there's nothing to do.
+
+### Behind the scenes
+
+- New `GET /api/airports/{code}/summary` (`airport_events.airport_summary`). Touch-and-go sessions are now folded per aircraft, so two aircraft practising at the same field stay separate in an airport's list.
+- `static/airports.js`: a page can make the codes clickable (`onSelect`, `selected`). The clickable codes are drawn in their own layer above the map's canvas (trails, range rings), which would otherwise take the click, and still under the aircraft.
+- The Stats `airports_30d` card data is now `{rows, fill_in}`; the page still reads the older list.
+- Tests: `test_airport_events.py` (the airport summary, the endpoint, the new index) and browser tests for clicking a code, opening an aircraft from the list, an airport with nothing yet, the board's codes staying unclickable and the 30-day card while filling in.
+
 ## [3.4.184] — 2026-11-15
 
 **Aerodrome now keeps a history of the takeoffs and landings your receiver sees.**

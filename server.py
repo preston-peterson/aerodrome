@@ -1,4 +1,4 @@
-# Version: 3.4.184
+# Version: 3.4.185
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -5144,6 +5144,35 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             logger.warning(f"Airport list unreadable ({airports_data.DATA.name}): {e}")
             return {"ok": False, "airports": [], "reason": "data_unreadable"}
         return {"ok": True, "airports": found, "radius_mi": airports_data.RADIUS_MI}
+
+    # =========================================================================
+    # /api/airports/{code}/summary — the Live map's airport panel (v3.4.185)
+    # =========================================================================
+    # One airport near the receiver, from the takeoffs and landings it saw
+    # (airport_events.airport_summary): today's counts, the runways in use over
+    # the last hour, the latest takeoffs and landings, today's visitors and a
+    # typical day. 404 for a code that isn't an airport near the receiver.
+    @app.get("/api/airports/{code}/summary")
+    def get_airport_summary(code: str):
+        key = (code or "").upper().strip()
+        if not re.fullmatch(r"[A-Z0-9]{2,7}", key):
+            raise HTTPException(status_code=400, detail="invalid airport code")
+        start_ts, now_ts = _day_bounds_ts()
+        conn = _open_db_conn(CONFIG["data"]["db_file"])
+        try:
+            j = airport_events.airport_summary(conn, CONFIG, key, now_ts, start_ts)
+        except sqlite3.OperationalError as e:
+            if "no such" not in str(e):
+                raise
+            j = None
+        except (OSError, ValueError, KeyError, TypeError) as e:     # the airport list itself
+            logger.warning(f"Airport panel: {e}")
+            j = None
+        finally:
+            conn.close()
+        if j is None:
+            raise HTTPException(status_code=404, detail="not an airport near the receiver")
+        return j
 
     # =========================================================================
     # /api/coverage — max-range coverage outline (radar overlay, v3.5.0)

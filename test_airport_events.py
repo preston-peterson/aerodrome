@@ -213,7 +213,7 @@ class TestSchema(_Db):
         cols = {r[1] for r in self.q("PRAGMA table_info(airport_events)")}
         self.assertEqual(cols, {"id", "icao", "callsign", "kind", "airport", "runway", "at"})
         idx = {r[0] for r in self.q("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='airport_events'")}
-        self.assertEqual(idx, {"idx_airport_events_icao", "idx_airport_events_at"})
+        self.assertEqual(idx, {"idx_airport_events_icao", "idx_airport_events_at", "idx_airport_events_airport"})
         self.assertEqual(self.q("SELECT MAX(version) FROM schema_version")[0][0], CURRENT_SCHEMA_VERSION)
 
     def test_an_upgrade_from_v20_adds_it(self):
@@ -427,7 +427,8 @@ class TestReadPaths(_Db):
         rows = {r["code"]: (r["landed"], r["took_off"]) for r in cards["airports_today"]["rows"]}
         self.assertEqual(rows, {"ZZN1": (4, 4), "ZZA1": (2, 1)})
         self.assertEqual(sum(sum(r["hours"]) for r in cards["airports_today"]["rows"]), 11)
-        self.assertEqual([c["code"] for c in cards["airports_30d"]], ["ZZN1", "ZZA1"])
+        self.assertEqual([c["code"] for c in cards["airports_30d"]["rows"]], ["ZZN1", "ZZA1"])
+        self.assertEqual(cards["airports_30d"]["fill_in"]["state"], "waiting")
 
     def test_the_stats_page_has_an_airports_section(self):
         with mock.patch.object(server.tzwindow, "today_bounds", return_value=(T0 - 100, T0 + 7000)), \
@@ -436,6 +437,80 @@ class TestReadPaths(_Db):
         ids = [g["id"] for g in j["groups"]]
         self.assertEqual(ids[:2], ["today", "airports"])
         self.assertEqual(j["cards"]["airport_moves_today"]["total"], 11)
+
+
+
+class TestAirportSummary(_Db):
+    """v3.4.185: the Live map's airport panel (GET /api/airports/{code}/summary)."""
+
+    NOW = T0 + 50000
+    DAY = T0 + 40000
+
+    def setUp(self):
+        super().setUp()
+        conn = sqlite3.connect(self.db)
+        ev = [("A00001", "landing", "ZZA1", "18", self.NOW - 600, "EXA1"),
+              ("A00002", "takeoff", "ZZA1", "36", self.NOW - 1200, "EXA2"),
+              ("A00003", "touch_and_go", "ZZA1", "18", self.NOW - 1500, "DEMO3"),
+              ("A00004", "touch_and_go", "ZZA1", "18", self.NOW - 1700, "DEMO4"),     # another aircraft, between
+              ("A00003", "touch_and_go", "ZZA1", "18", self.NOW - 1900, "DEMO3"),
+              ("A00005", "landing", "ZZA1", "36", self.NOW - 7200, "EXA5"),           # earlier today
+              ("A00006", "landing", "ZZA1", "18", self.DAY - 3600, "EXA6"),           # yesterday
+              ("A00001", "landing", "ZZN1", "", self.NOW - 300, "EXA1")]              # another airport
+        AE.record(conn, [{"icao": i, "kind": k, "airport": a, "runway": r, "at": at, "callsign": cs}
+                         for i, k, a, r, at, cs in ev])
+        conn.executemany("INSERT INTO seen_aircraft (icao, first_seen_at, aircraft_type, category) VALUES (?, 1, ?, ?)",
+                         [("A00001", "B738", "commercial"), ("A00002", "B738", "commercial"),
+                          ("A00003", "C172", "general_aviation"), ("A00004", "C172", "general_aviation"),
+                          ("A00005", "C130", "military")])
+        conn.execute("INSERT INTO watchlist_hourly (icao, hour_bucket, watchlist_label, sighting_count, first_seen_at, "
+                     "last_seen_at) VALUES ('A00002', ?, 'Example', 1, ?, ?)",
+                     (self.NOW - self.NOW % 3600, self.NOW - 60, self.NOW - 60))
+        conn.commit()
+        conn.close()
+
+    def summary(self, code="ZZA1"):
+        conn = sqlite3.connect(self.db)
+        try:
+            return AE.airport_summary(conn, self.cfg, code, self.NOW, self.DAY)
+        finally:
+            conn.close()
+
+    def test_todays_counts_runways_in_use_and_the_airport(self):
+        j = self.summary()
+        self.assertEqual((j["code"], j["name"], j["cat"], j["elev"], j["runways"]), ("ZZA1", "Example Major", "major", 600, 1))
+        self.assertEqual((j["distance"], j["direction"]), (0, "N"))
+        # landings 2 + touch-and-goes 3; takeoffs 1 + touch-and-goes 3; last hour: the landing, takeoff, 3 T&Gs
+        self.assertEqual(j["today"], {"landed": 5, "took_off": 4, "touch_and_go": 3, "last_hour": 8})
+        self.assertEqual(j["in_use"], {"landing": ["18"], "taking_off": ["18", "36"], "flow": "south"})
+
+    def test_latest_folds_each_aircrafts_circuits_but_not_two_aircraft_together(self):
+        latest = self.summary()["latest"]
+        self.assertEqual([(m["icao"], m["kind"], m["count"]) for m in latest],
+                         [("A00001", "landing", 1), ("A00002", "takeoff", 1), ("A00003", "touch_and_go", 1),
+                          ("A00004", "touch_and_go", 1), ("A00003", "touch_and_go", 1), ("A00005", "landing", 1)])
+        self.assertEqual(latest[0]["type"], "B738")
+
+    def test_todays_visitors(self):
+        v = self.summary()["visitors"]
+        self.assertEqual(v["aircraft"], 5)
+        self.assertEqual(v["types"], [{"type": "B738", "n": 2}, {"type": "C172", "n": 2}, {"type": "C130", "n": 1}])
+        self.assertEqual(v["mix"], {"commercial": 2, "general_aviation": 2, "military": 1})
+        self.assertEqual((v["military"], v["watchlist"]), (1, 1))
+
+    def test_a_code_not_near_the_receiver_is_none_and_the_endpoint_says_404(self):
+        self.assertIsNone(self.summary("ZZZZ"))
+        cfg_path = self.dir / "config.yaml"
+        cfg_path.write_text(yaml.safe_dump(self.cfg, sort_keys=False))
+        app = server.get_app(self.cfg, str(cfg_path))
+        ep = next(r.endpoint for r in app.routes if getattr(r, "path", "") == "/api/airports/{code}/summary")
+        with self.assertRaises(server.HTTPException) as cm:
+            ep(code="ZZZZ")
+        self.assertEqual(cm.exception.status_code, 404)
+        with self.assertRaises(server.HTTPException) as cm:
+            ep(code="no/pe")
+        self.assertEqual(cm.exception.status_code, 400)
+        self.assertEqual(ep(code="zza1")["code"], "ZZA1")
 
 
 if __name__ == "__main__":

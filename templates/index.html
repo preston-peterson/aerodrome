@@ -1,4 +1,4 @@
-<!-- Version: 3.4.184 -->
+<!-- Version: 3.4.185 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -684,6 +684,38 @@
             letter-spacing:.05em; display:block; }
         .ro-owner .v { color:var(--t1); }
         .ro-owner .k.ro-regto { margin-top:6px; }
+        /* v3.4.185: airport panel — the overlay in airport mode (openAirportOverlay). */
+        .radar-overlay:not(.apt-mode) .ro-airport { display:none; }
+        .radar-overlay.apt-mode > :not(.ro-head):not(.ro-airport) { display:none !important; }
+        .ro-badge.apt { background:var(--bg2); color:var(--t2); border:1px solid var(--bdr); }
+        .ro-airport { display:flex; flex-direction:column; gap:10px; }
+        .ro-airport .ap-sub { font-size:12px; color:var(--t2); margin-top:-4px; line-height:1.45; }
+        .ro-airport .ap-sub .dim { color:var(--t3); }
+        .ro-airport .ap-k { display:block; font-size:10px; color:var(--t3); text-transform:uppercase;
+            letter-spacing:.05em; margin-bottom:3px; }
+        .ro-airport .ap-today { display:grid; grid-template-columns:repeat(4, 1fr); gap:6px; }
+        .ro-airport .ap-today .c { background:var(--bg2); border:1px solid var(--bdr); border-radius:6px; padding:6px 7px; min-width:0; }
+        .ro-airport .ap-today .c .k { display:block; font-size:10.5px; color:var(--t3); white-space:nowrap; }
+        .ro-airport .ap-today .c .v { display:block; font-size:15px; font-weight:600; color:var(--t1); margin-top:1px; }
+        .ro-airport .ap-flow { font-size:12px; color:var(--t2); line-height:1.5; }
+        .ro-airport .ap-flow b { color:var(--t1); font-weight:600; }
+        .ro-airport .ap-flow .dim { color:var(--t3); }
+        .ro-airport .ap-moves { display:flex; flex-direction:column; gap:2px; }
+        .ro-airport .ap-moves .m { display:grid; grid-template-columns:4.3em 1em 4.8em 3.4em 1fr; gap:6px; align-items:baseline;
+            font-family:var(--mono); font-size:11.5px; color:var(--t2); padding:3px 4px; border-radius:4px; cursor:pointer;
+            border:0; background:none; text-align:left; width:100%; }
+        .ro-airport .ap-moves .m:hover { background:var(--bg2); }
+        .ro-airport .ap-moves .m .cs { color:var(--t1); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .ro-airport .ap-moves .m .rw { text-align:right; color:var(--t3); white-space:nowrap; }
+        .ro-airport .ap-visit { font-size:12px; color:var(--t2); line-height:1.55; }
+        .ro-airport .ap-visit .t { color:var(--t1); }
+        .ro-airport .ap-mix { display:flex; height:6px; border-radius:3px; overflow:hidden; margin:5px 0 3px; background:var(--bg2); }
+        .ro-airport .ap-mix i { display:block; height:100%; }
+        .ro-airport .ap-mixkey { font-size:10.5px; color:var(--t3); display:flex; flex-wrap:wrap; gap:4px 10px; }
+        .ro-airport .ap-mixkey span::before { content:''; display:inline-block; width:7px; height:7px; border-radius:2px;
+            margin-right:4px; background:var(--c); }
+        .ro-airport .ap-none { font-size:12px; color:var(--t3); }
+        .ro-airport .ap-cover { font-size:10.5px; color:var(--t3); font-style:italic; }
         /* v3.4.184: latest takeoff / landing / touch-and-go (_radarRenderMoves) */
         .ro-moves { font-size:12px; color:var(--t2); }
         .ro-moves .k { color:var(--t3); text-transform:uppercase; font-size:10px;
@@ -2367,6 +2399,9 @@
                     <button type="button" class="ro-close" onclick="closeRadarOverlay()" aria-label="Close details">✕</button>
                 </div>
                 <div class="ro-sub" id="roSub"></div>
+                <!-- v3.4.185: an airport's panel (openAirportOverlay); shown instead of
+                     the aircraft rows while the overlay is in airport mode. -->
+                <div class="ro-airport" id="roAirport"></div>
                 <div class="ro-route" id="roRoute" style="display:none"></div>
                 <div class="ro-times" id="roTimes" style="display:none"></div>
                 <div class="ro-airline" id="roAirline" style="display:none"></div>
@@ -4063,6 +4098,10 @@ function radarSync(liveJ){
         }
     }
 
+    // v3.4.185: an open airport panel re-reads its numbers every 30 s.
+    if(_radar.selectedAirport && Date.now() - (_radar.airportFetchedAt || 0) > 30000)
+        _radarLoadAirport(_radar.selectedAirport);
+
     // Keep an open details overlay live: refresh its telemetry from the
     // fresh data, and extend the selected aircraft's trail with the new fix.
     if(_radar.selectedIcao){
@@ -4105,6 +4144,7 @@ function openRadarOverlay(icao){
     const ac = (D.live || []).find(a => a.icao === icao);
     if(!ac) return;
     const wasOpen = _radar.panelOpen;
+    _radarLeaveAirport();
     _radar.selectedIcao = icao;
     _radarReskin();
     const note = document.getElementById('roNote');
@@ -4167,8 +4207,117 @@ function openRadarOverlay(icao){
     if(!wasOpen) _radarShiftForPanel(true);
 }
 
+// v3.4.185: click an airport's code on the map → its panel, in the same
+// overlay planes use (airport mode hides the aircraft rows). From
+// /api/airports/<code>/summary: today's counts, the runways in use over the
+// last hour, its latest takeoffs and landings (a row opens that aircraft),
+// today's visitors and a typical day. Re-read every 30 s while open.
+const AP_CATS = {commercial: ['Commercial', '#06b6d4'], general_aviation: ['GA', '#22c55e'],
+                 helicopter: ['Helicopter', '#f59e0b'], military: ['Military', '#ef4444'], unknown: ['Other', '#64748b']};
+function openAirportOverlay(code){
+    if(!code) return;
+    const wasOpen = _radar.panelOpen;
+    _radar.selectedIcao = null;
+    _radarClearTrail();
+    _radarReskin();
+    _radar.selectedAirport = code;
+    const ov = document.getElementById('radarOverlay');
+    if(!ov) return;
+    ov.classList.add('apt-mode', 'open');
+    ov.setAttribute('aria-hidden', 'false');
+    _radar.panelOpen = true;
+    document.getElementById('roCallsign').textContent = code;
+    const badge = document.getElementById('roBadge');
+    if(badge) badge.style.display = 'none';
+    const box = document.getElementById('roAirport');
+    if(box) box.innerHTML = '<div class="ap-none">Loading…</div>';
+    if(_radar.airports) _radar.airports.redraw();
+    _radarLoadAirport(code);
+    if(!wasOpen) _radarShiftForPanel(true);
+}
+function _radarLeaveAirport(){
+    if(!_radar.selectedAirport) return;
+    _radar.selectedAirport = null;
+    _radar.airportFetchedAt = 0;
+    const ov = document.getElementById('radarOverlay');
+    if(ov) ov.classList.remove('apt-mode');
+    if(_radar.airports) _radar.airports.redraw();
+}
+function _radarLoadAirport(code){
+    _radar.airportFetchedAt = Date.now();
+    fetch(`/api/airports/${encodeURIComponent(code)}/summary`)
+        .then(r => r.ok ? r.json() : null)
+        .then(j => { if(_radar.selectedAirport === code) _radarRenderAirport(j); })
+        .catch(() => { if(_radar.selectedAirport === code) _radarRenderAirport(null); });
+}
+function _radarOpenFromAirport(icao){
+    if((D.live || []).some(a => a.icao === icao)) openRadarOverlay(icao);
+    else window.location.href = `/aircraft/${encodeURIComponent(icao)}`;
+}
+function _radarRenderAirport(j){
+    const box = document.getElementById('roAirport');
+    if(!box) return;
+    if(!j || !j.ok){
+        box.innerHTML = '<div class="ap-none">Couldn’t load this airport.</div>';
+        return;
+    }
+    const badge = document.getElementById('roBadge');
+    if(badge && j.cat){ badge.style.display = ''; badge.className = 'ro-badge apt'; badge.textContent = String(j.cat).toUpperCase(); }
+    const t = j.today || {}, use = j.in_use || {}, vis = j.visitors || {};
+    const where = [j.distance != null && j.direction ? `${j.distance} ${escapeHtml(j.distance_unit || 'mi')} ${escapeHtml(j.direction)} of your receiver` : '',
+                   j.runways ? `${j.runways} runway${j.runways === 1 ? '' : 's'}` : ''].filter(Boolean).join(' · ');
+    const head = `<div class="ap-sub">${escapeHtml(j.name || '')}${j.elev != null ? ' · ' + j.elev + ' ft' : ''}`
+        + (where ? `<br><span class="dim">${where}</span>` : '') + `</div>`;
+    const cell = (k, v) => `<div class="c"><span class="k">${k}</span><span class="v">${Number(v) || 0}</span></div>`;
+    const today = `<div><span class="ap-k">Today</span><div class="ap-today">${cell('Landed', t.landed)}${cell('Took off', t.took_off)}`
+        + `${cell('T&amp;G', t.touch_and_go)}${cell('Last hour', t.last_hour)}</div></div>`;
+    const landRw = (use.landing || []).map(escapeHtml), depRw = (use.taking_off || []).map(escapeHtml);
+    let flow;
+    if(!landRw.length && !depRw.length) flow = '<span class="dim">No takeoffs or landings in the last hour</span>';
+    else {
+        flow = landRw.join(',') === depRw.join(',') ? `Landing and taking off <b>${landRw.join(', ')}</b>`
+            : [landRw.length ? `Landing <b>${landRw.join(', ')}</b>` : '', depRw.length ? `taking off <b>${depRw.join(', ')}</b>` : '']
+                  .filter(Boolean).join(' · ');
+        flow = flow.charAt(0).toUpperCase() + flow.slice(1)
+            + `<br><span class="dim">${use.flow ? escapeHtml(use.flow) + ' flow, ' : ''}last hour</span>`;
+    }
+    const glyph = {takeoff: ['↗', 'mv-up', 'took off'], landing: ['↘', 'mv-down', 'landed'], touch_and_go: ['↻', 'mv-tg', 'touch and go']};
+    const moves = (j.latest || []).map(m => {
+        const [g, cls, word] = glyph[m.kind] || ['', '', ''];
+        return `<button type="button" class="m" data-icao="${escapeHtml(m.icao || '')}" title="${escapeHtml((m.callsign || m.icao || '') + ' ' + word)}">`
+            + `<span>${escapeHtml(formatTime(m.kind === 'touch_and_go' ? m.until : m.at))}</span><span class="${cls}">${g}</span>`
+            + `<span class="cs">${escapeHtml(m.callsign || m.icao || '')}</span><span>${escapeHtml(m.type || '')}</span>`
+            + `<span class="rw">${m.count > 1 ? '×' + m.count + (m.runway ? ' · ' : '') : ''}${escapeHtml(m.runway || '')}</span></button>`;
+    }).join('');
+    const total = Object.values(vis.mix || {}).reduce((a, b) => a + (Number(b) || 0), 0);
+    const mixRows = Object.entries(vis.mix || {}).filter(([, n]) => n > 0)
+        .map(([c, n]) => [AP_CATS[c] || AP_CATS.unknown, Math.round(100 * n / total)])
+        .sort((a, b) => b[1] - a[1]);
+    const extra = [vis.military ? `${vis.military} military` : '', vis.watchlist ? `${vis.watchlist} watchlist aircraft` : '']
+        .filter(Boolean).join(' · ');
+    const visitors = vis.aircraft
+        ? `${(vis.types || []).map(x => `<span class="t">${escapeHtml(x.type)}</span> ${Number(x.n) || 0}`).join(' · ')}`
+          + `<div class="ap-mix">${mixRows.map(([c, p]) => `<i style="width:${p}%;background:${c[1]}"></i>`).join('')}</div>`
+          + `<div class="ap-mixkey">${mixRows.map(([c, p]) => `<span style="--c:${c[1]}">${c[0]} ${p}%</span>`).join('')}</div>`
+          + (extra ? `<div style="margin-top:4px">${extra} today</div>` : '')
+        : '<span class="ap-none">None yet today</span>';
+    const fill = j.fill_in || {};
+    const cover = fill.state === 'running'
+        ? `Still filling in from your stored history (${Number(fill.pct) || 0}%).`
+        : (j.per_day > 0 ? `Your receiver sees about ${Number(j.per_day)} takeoffs and landings a day here.`
+                         : 'Your receiver hasn’t seen takeoffs or landings here yet: low traffic may be out of its view.');
+    box.innerHTML = head + today
+        + `<div><span class="ap-k">Runways in use</span><div class="ap-flow">${flow}</div></div>`
+        + `<div><span class="ap-k">Latest</span>${moves ? `<div class="ap-moves">${moves}</div>` : '<div class="ap-none">None seen yet</div>'}</div>`
+        + `<div><span class="ap-k">Today’s visitors</span><div class="ap-visit">${visitors}</div></div>`
+        + `<div class="ap-cover">${escapeHtml(cover)}</div>`;
+    box.querySelectorAll('.ap-moves .m[data-icao]').forEach(b =>
+        b.addEventListener('click', () => { if(b.dataset.icao) _radarOpenFromAirport(b.dataset.icao); }));
+}
+
 function closeRadarOverlay(){
     _radar.selectedIcao = null;
+    _radarLeaveAirport();
     const ov = document.getElementById('radarOverlay');
     if(ov){ ov.classList.remove('open'); ov.setAttribute('aria-hidden', 'true'); }
     if(_radar.panelOpen){ _radarShiftForPanel(false); _radar.panelOpen = false; }
@@ -4824,7 +4973,8 @@ function radarAirportsChoice(){
 function _radarAirportsInit(){
     if(!_radar.map || _radar.airports || !window.AerodromeAirports) return;
     _radar.airports = AerodromeAirports.attach(_radar.map, {
-        isDark: () => _radarTheme() === 'dark', choice: radarAirportsChoice});
+        isDark: () => _radarTheme() === 'dark', choice: radarAirportsChoice,
+        onSelect: code => openAirportOverlay(code), selected: () => _radar.selectedAirport});
     _radar.airportsPanel = AerodromeAirports.panel(_radar.map, {
         choice: radarAirportsChoice,
         onChange: c => { AerodromeAirports.save(RADAR_AIRPORTS_KEY, c); _radarAirportsSync(); }});
@@ -10116,7 +10266,17 @@ function airportMovesCard(v){
     return bigStat('Takeoffs and landings today', Number(v.total) || 0,
                    _fillInNote(v) || `at ${n} airport${n === 1 ? '' : 's'}`);
 }
-function airports30dCard(items){
+function airports30dCard(v){
+    // v3.4.185: {rows, fill_in}; while the history fills in (oldest first) the
+    // last 30 days aren't there yet, so say that instead of averaging them.
+    const items = Array.isArray(v) ? v : ((v && v.rows) || []);
+    const fillNote = _fillInNote(v);
+    if(fillNote){
+        return `<div class="stat-card">
+            <div class="stat-label">Busiest, last 30 days</div>
+            <div class="stat-empty">${escHtml(fillNote)}</div>
+        </div>`;
+    }
     if(!items || !items.length){
         return `<div class="stat-card">
             <div class="stat-label">Busiest, last 30 days</div>

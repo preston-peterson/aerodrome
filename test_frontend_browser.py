@@ -1881,6 +1881,80 @@ class TestLiveMapAirports(BrowserCase):
         self.assertEqual(self.errors, [])
 
 
+class TestAirportPanel(TestLiveMapAirports):
+    """v3.4.185: click an airport's code on the Live map → its panel, in the overlay planes use."""
+
+    def summary(self):
+        from datetime import datetime
+        now = int(datetime.fromisoformat(self.START).timestamp())
+        return {"ok": True, "code": "ZZA1", "name": "Example Major", "cat": "major", "elev": 600, "runways": 1,
+                "distance": 2, "distance_unit": "mi", "direction": "SW",
+                "today": {"landed": 12, "took_off": 11, "touch_and_go": 2, "last_hour": 4},
+                "in_use": {"landing": ["18"], "taking_off": ["18"], "flow": "south"},
+                "latest": [{"kind": "landing", "airport": "ZZA1", "runway": "18", "at": now - 120, "until": now - 120,
+                            "count": 1, "callsign": "DEMO1", "icao": "A00001", "type": "B738"},
+                           {"kind": "touch_and_go", "airport": "ZZA1", "runway": "18", "at": now - 1800, "until": now - 600,
+                            "count": 3, "callsign": "DEMO9", "icao": "A00009", "type": "C172"}],
+                "visitors": {"aircraft": 9, "types": [{"type": "B738", "n": 4}, {"type": "C172", "n": 2}],
+                             "mix": {"commercial": 6, "general_aviation": 3}, "military": 0, "watchlist": 1},
+                "per_day": 31, "fill_in": {"state": "done", "pct": 100}}
+
+    def open_panel(self):
+        self.site.api["/api/airports/ZZA1/summary"] = self.summary()
+        self.show(zoom=13)
+        self.page.click("#radarMap .apt-label >> text=ZZA1")
+        self.advance(600, step=200)
+
+    def test_clicking_a_code_opens_its_panel(self):
+        self.open_panel()
+        ov = "document.getElementById('radarOverlay').classList"
+        self.assertTrue(self.page.evaluate(f"{ov}.contains('open') && {ov}.contains('apt-mode')"))
+        self.assertEqual(self.text("#roCallsign"), "ZZA1")
+        self.assertEqual(self.text("#roBadge"), "MAJOR")
+        text = self.text("#roAirport")
+        for part in ("Example Major · 600 ft", "2 mi SW of your receiver · 1 runway", "Landing and taking off 18",
+                     "south flow, last hour", "1 watchlist aircraft today",
+                     "Your receiver sees about 31 takeoffs and landings a day here."):
+            self.assertIn(part, text.replace("\n", " "))
+        self.assertEqual(self.page.evaluate("[...document.querySelectorAll('#roAirport .ap-today .v')].map(e => e.textContent)"),
+                         ["12", "11", "2", "4"])
+        self.assertEqual(len(self.page.query_selector_all("#roAirport .ap-moves .m")), 2)
+        self.assertIn("×3 · 18", self.page.inner_text("#roAirport .ap-moves .m:nth-child(2)"))
+        self.assertFalse(self.page.is_visible("#roTelemetry"), "the aircraft rows are hidden")
+        self.assertTrue(self.page.evaluate("document.querySelector('#radarMap .apt-label.apt-selected').textContent === 'ZZA1'"))
+        self.assertEqual(self.errors, [])
+
+    def test_a_latest_row_opens_that_aircraft_and_closing_leaves_airport_mode(self):
+        self.open_panel()
+        self.page.click("#roAirport .ap-moves .m[data-icao=A00001]")
+        self.advance(300)
+        self.assertEqual(self.text("#roCallsign"), "DEMO1")
+        self.assertFalse(self.page.evaluate("document.getElementById('radarOverlay').classList.contains('apt-mode')"))
+        self.assertTrue(self.page.is_visible("#roTelemetry"))
+        self.assertIsNone(self.page.query_selector("#radarMap .apt-label.apt-selected"))
+        self.page.click("#radarMap .apt-label >> text=ZZA1")
+        self.advance(300)
+        self.page.evaluate("closeRadarOverlay()")
+        self.assertFalse(self.page.evaluate("document.getElementById('radarOverlay').classList.contains('open')"))
+        self.assertFalse(self.page.evaluate("document.getElementById('radarOverlay').classList.contains('apt-mode')"))
+        self.assertEqual(self.errors, [])
+
+    def test_an_airport_with_nothing_yet(self):
+        j = self.summary()
+        j.update(today={"landed": 0, "took_off": 0, "touch_and_go": 0, "last_hour": 0},
+                 in_use={"landing": [], "taking_off": [], "flow": ""}, latest=[],
+                 visitors={"aircraft": 0, "types": [], "mix": {}, "military": 0, "watchlist": 0}, per_day=0)
+        self.site.api["/api/airports/ZZA1/summary"] = j
+        self.show(zoom=13)
+        self.page.click("#radarMap .apt-label >> text=ZZA1")
+        self.advance(600, step=200)
+        text = self.text("#roAirport")
+        for part in ("No takeoffs or landings in the last hour", "None seen yet", "None yet today",
+                     "hasn’t seen takeoffs or landings here yet"):
+            self.assertIn(part, text)
+        self.assertEqual(self.errors, [])
+
+
 class TestBoardAirports(BrowserCase):
     """The display board's radar draws the same layer, from the same setting (v3.4.182)."""
 
@@ -1895,6 +1969,8 @@ class TestBoardAirports(BrowserCase):
         self.page.wait_for_timeout(100)
         labels = sorted(self.page.evaluate("[...document.querySelectorAll('.apt-label')].map(e => e.textContent)"))
         self.assertEqual(labels, ["ZZA1", "ZZB2"])
+        self.assertEqual(self.page.evaluate("document.querySelectorAll('.apt-label.apt-click').length"), 0,
+                         "the board's codes take no clicks (v3.4.185: only the Live map's do)")
         self.assertTrue(self.page.evaluate("!!document.querySelector('.bt-apt.on')"))
         self.page.mouse.move(300, 300)          # the board shows its controls on mouse activity
         self.page.mouse.move(320, 320)
@@ -2045,6 +2121,20 @@ class TestTakeoffsAndLandings(BrowserCase):
         self.assertEqual(self.page.evaluate("[...document.querySelectorAll('.apt-table tbody td')].slice(0, 4)"
                                             ".map(e => e.innerText)"), ["ZZA1Example Major", "6", "5", "2"])
         self.assertEqual(self.page.evaluate("document.querySelectorAll('.apt-spark i').length"), 24)
+        self.assertEqual(self.errors, [])
+
+    def test_the_busiest_card_says_filling_in_instead_of_zero_a_day(self):
+        self.site.api["/api/stats"] = {
+            "enabled": True, "timezone": "UTC",
+            "groups": [{"id": "airports", "label": "Airports", "cards": ["airports_30d"]}],
+            "cards": {"airports_30d": {"rows": [{"code": "ZZA1", "name": "Example Major", "per_day": 0}],
+                                       "fill_in": {"state": "running", "pct": 34}}}}
+        self.open("/")
+        self.page.evaluate("go('stats')")
+        self.page.wait_for_selector(".stat-card")
+        text = self.text("#statsSections")
+        self.assertIn("filling in… 34%", text)
+        self.assertNotIn("0/day", text)
         self.assertEqual(self.errors, [])
 
 

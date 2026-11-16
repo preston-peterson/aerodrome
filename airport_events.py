@@ -118,7 +118,8 @@ class AirportIndex:
                 if len(rw) >= 4:
                     pts += [(rw[0], rw[1]), (rw[2], rw[3])]
             entry = {"code": a["code"], "cat": a.get("cat") or "small", "lat": a["lat"], "lon": a["lon"],
-                     "elev": float(a.get("elev") or 0), "name": a.get("name") or "", "runways": rws, "pts": pts}
+                     "elev": float(a.get("elev") or 0), "elev_ft": a.get("elev"), "name": a.get("name") or "",
+                     "runways": rws, "pts": pts}
             self.by_code[a["code"]] = entry
             self._cells[(math.floor(a["lat"] * 2), math.floor(a["lon"] * 2))].append(entry)
 
@@ -554,20 +555,26 @@ def _names(config):
 
 
 def _group(rows):
-    """Newest-first rows → display items, back-to-back touch-and-goes at one airport
-    folded into one session: {"kind", "airport", "runway", "at", "until", "count", "callsign"}."""
+    """Newest-first rows (kind, airport, runway, at, callsign[, icao]) → display items,
+    one aircraft's back-to-back touch-and-goes at one airport folded into one session:
+    {"kind", "airport", "runway", "at", "until", "count", "callsign"[, "icao"]}."""
     items = []
-    for kind, airport, runway, at, callsign in rows:
+    for row in rows:
+        kind, airport, runway, at, callsign = row[:5]
+        icao = row[5] if len(row) > 5 else None
         last = items[-1] if items else None
         if (kind == "touch_and_go" and last and last["kind"] == "touch_and_go"
-                and last["airport"] == airport and last["at"] - at <= SESSION_GAP):
+                and last["airport"] == airport and last.get("icao") == icao and last["at"] - at <= SESSION_GAP):
             last["count"] += 1
             last["at"] = at                       # the session's first, `until` its last
             if runway and not last["runway"]:
                 last["runway"] = runway
             continue
-        items.append({"kind": kind, "airport": airport, "runway": runway or "", "at": at, "until": at,
-                      "count": 1, "callsign": callsign or ""})
+        item = {"kind": kind, "airport": airport, "runway": runway or "", "at": at, "until": at,
+                "count": 1, "callsign": callsign or ""}
+        if icao is not None:
+            item["icao"] = icao
+        items.append(item)
     return items
 
 
@@ -636,5 +643,101 @@ def stats_cards(conn, config, start_ts, end_ts, tz, want):
         for kind, airport in conn.execute("SELECT kind, airport FROM airport_events WHERE at >= ?", (since,)):
             totals[airport] += sum(_moves(kind))
         top = sorted(totals.items(), key=lambda kv: (-kv[1], kv[0]))[:5]
-        out["airports_30d"] = [{"code": c, "name": names.get(c, ""), "per_day": round(n / days)} for c, n in top]
+        # v3.4.185: with the fill-in status, so the card says "filling in" instead
+        # of averaging a month it hasn't reached yet (it goes oldest first).
+        out["airports_30d"] = {"rows": [{"code": c, "name": names.get(c, ""), "per_day": round(n / days)}
+                                        for c, n in top], "fill_in": fill}
     return out
+
+
+_COMPASS = ("north", "northeast", "east", "southeast", "south", "southwest", "west", "northwest")
+_COMPASS_SHORT = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+
+
+def _flow(runway):
+    """The direction traffic is moving for a runway name: 35C → north, 13 → southeast."""
+    d = _digits(runway or "")
+    if not d:
+        return ""
+    return _COMPASS[int(((int(d) * 10) % 360 + 22.5) // 45) % 8]
+
+
+def airport_summary(conn, config, code, now, day_start):
+    """The Live map's airport panel: the airport, today's counts, the runways in use
+    over the last hour, its latest takeoffs and landings, today's visitors and how
+    many it sees on a typical day. None for an airport not near the receiver."""
+    from distance import haversine
+    index = index_for(config)
+    a = index.by_code.get(code) if index else None
+    if a is None:
+        return None
+    unit = (((config or {}).get("receiver") or {}).get("distance_unit") or "mi").lower()
+    rx = _receiver(config)
+    dist = direction = None
+    if rx:
+        dist = haversine(rx[0], rx[1], a["lat"], a["lon"], unit=unit if unit in ("mi", "km", "nm") else "mi")
+        x, y = _xy(rx[0], rx[1], a["lat"], a["lon"])
+        direction = _COMPASS_SHORT[int((math.degrees(math.atan2(x, y)) % 360 + 22.5) // 45) % 8]
+    today = conn.execute("SELECT kind, icao, runway, at FROM airport_events WHERE airport = ? AND at >= ? AND at <= ?",
+                         (code, day_start, now)).fetchall()
+    counts = {"landed": 0, "took_off": 0, "touch_and_go": 0, "last_hour": 0}
+    land_rw, dep_rw = defaultdict(int), defaultdict(int)
+    for kind, _icao, runway, at in today:
+        landed, took = _moves(kind)
+        counts["landed"] += landed
+        counts["took_off"] += took
+        counts["touch_and_go"] += kind == "touch_and_go"
+        if at > now - 3600:
+            counts["last_hour"] += landed + took
+            if runway and landed:
+                land_rw[runway] += 1
+            if runway and took:
+                dep_rw[runway] += 1
+    top = lambda d: [r for r, _ in sorted(d.items(), key=lambda kv: (-kv[1], kv[0]))[:3]]
+    lead = top(land_rw)[:1] or top(dep_rw)[:1]
+    rows = conn.execute("SELECT kind, airport, runway, at, callsign, icao FROM airport_events "
+                        "WHERE airport = ? ORDER BY at DESC LIMIT 60", (code,)).fetchall()
+    latest = _group(rows)[:6]
+    icaos = sorted({r[1] for r in today})
+    types, cats = defaultdict(int), defaultdict(int)
+    kinds = {}
+    for i in range(0, len(icaos), 500):
+        chunk = icaos[i:i + 500]
+        q = ",".join("?" * len(chunk))
+        for icao, typ, cat in conn.execute(f"SELECT icao, aircraft_type, category FROM seen_aircraft WHERE icao IN ({q})", chunk):
+            kinds[icao] = (typ or "", cat or "unknown")
+    for icao in icaos:
+        typ, cat = kinds.get(icao, ("", "unknown"))
+        if typ:
+            types[typ] += 1
+        cats[cat] += 1
+    for it in latest:
+        it["type"] = kinds.get(it["icao"], ("", ""))[0] or _type_of(conn, it["icao"])
+    watch = 0
+    if icaos:
+        q = ",".join("?" * len(icaos))
+        try:
+            watch = conn.execute(f"SELECT COUNT(DISTINCT icao) FROM watchlist_hourly WHERE hour_bucket >= ? "
+                                 f"AND icao IN ({q})", [day_start - day_start % 3600, *icaos]).fetchone()[0]
+        except sqlite3.OperationalError:
+            watch = 0
+    first = conn.execute("SELECT MIN(at) FROM airport_events").fetchone()[0]
+    days = max(1.0, min(30.0, (now - (first or now)) / 86400.0))
+    month = conn.execute("SELECT kind FROM airport_events WHERE airport = ? AND at >= ?", (code, now - 30 * 86400)).fetchall()
+    per_day = round(sum(sum(_moves(k)) for (k,) in month) / days)
+    return {"ok": True, "code": a["code"], "name": a["name"], "cat": a["cat"],
+            "elev": None if a["elev_ft"] is None else int(a["elev_ft"]), "runways": len(a["runways"]),
+            "distance": None if dist is None else round(dist), "distance_unit": unit, "direction": direction,
+            "today": counts,
+            "in_use": {"landing": top(land_rw), "taking_off": top(dep_rw), "flow": _flow(lead[0]) if lead else ""},
+            "latest": latest,
+            "visitors": {"aircraft": len(icaos),
+                         "types": [{"type": t, "n": n} for t, n in sorted(types.items(), key=lambda kv: (-kv[1], kv[0]))[:4]],
+                         "mix": {c: n for c, n in cats.items()},
+                         "military": cats.get("military", 0), "watchlist": watch},
+            "per_day": per_day, "fill_in": backfill_status(conn)}
+
+
+def _type_of(conn, icao):
+    row = conn.execute("SELECT aircraft_type FROM seen_aircraft WHERE icao = ?", (icao,)).fetchone()
+    return (row[0] or "") if row else ""
