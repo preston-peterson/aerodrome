@@ -13,8 +13,9 @@ to change anything and, if so, what.
 
 ## Quickstart: run the diagnostic
 
-Go to **⚙ gear menu → Performance**. The page runs a read-only
-diagnostic against your actual database and reports:
+Go to **⚙ gear menu → Diagnostics → Performance**, then press **Run
+diagnostic**. It runs a read-only diagnostic against your actual database
+and reports:
 
 - Database size and per-table row counts
 - Oldest and newest sightings in each table (retention span)
@@ -22,6 +23,13 @@ diagnostic against your actual database and reports:
 - `EXPLAIN QUERY PLAN` for each, so index usage is visible
 - Sequential disk read throughput (how fast your storage is)
 - SQLite pragmas and system context
+
+Table sizes are not measured in a normal run: measuring them reads the whole
+database and can slow other pages for a few minutes afterwards. Press
+**Measure table sizes** when you want them. The **Re-analyze DB** button
+runs SQLite's `ANALYZE` to refresh the query planner's statistics (it can take
+30-60 seconds on a large database); it is the one thing on this page that
+writes to the database.
 
 If something is wrong, hints appear at the top. There's a "Copy
 diagnostic report" button that produces a plaintext block suitable for
@@ -69,13 +77,17 @@ any meaningful way for Aerodrome's workload.
 
 ## Retention settings (the biggest lever)
 
-`config.yaml` has three retention keys, one per data table:
+`config.yaml` has four retention keys, one per data table. The values below
+are examples, not defaults; the shipped defaults are in `config.yaml.example`
+(30 days for `all_days`, `military_days` and `watchlist_days`, 365 for
+`airport_days`):
 
 ```yaml
 retention:
   watchlist_days: 365   # Watchlist tab — usually sparse
   military_days: 180    # Military tab — moderate volume
   all_days: 30          # All-sightings table — everything, highest volume
+  airport_days: 365     # Takeoff and landing history (airport_events), small
 ```
 
 `all_days` is the one that controls the `all_sightings` table, which is
@@ -128,17 +140,25 @@ see 5 MB/s, the card is probably wearing out.
 
 ## Query performance reference
 
-The Performance page reports timings on representative queries. For
-context, here's what to expect:
+The Performance page times a set of representative queries, each shown under
+its own label (for example `unique_aircraft_count_rollup`,
+`military_count_rollup`, `watchlist_count_rollup`, `seen_aircraft_total`,
+`search_match_bm25`, `aircraft_detail_pk_lookup` and
+`aircraft_detail_sightings_page`) with its query plan. The page colours a
+timing under 100 ms as fine, 100 ms to 1 s as slow and over 1 s as bad, and
+adds a hint at the top for any query over 2 seconds. Other hints appear for a
+database over 5 GB, a table over 10 million rows, and disk read throughput
+under 15 MB/s.
 
-| Query                    | Good      | Tolerable  | Too slow   |
-| ------------------------ | --------- | ---------- | ---------- |
-| Live aircraft (last 5m)  | < 10 ms   | < 100 ms   | > 500 ms   |
-| Search count             | < 100 ms  | < 500 ms   | > 2,000 ms |
-| Search first page        | < 200 ms  | < 1,000 ms | > 5,000 ms |
-| Military count           | < 50 ms   | < 500 ms   | > 2,000 ms |
+The numbers below are rough guides for the kinds of query involved, not
+limits the page enforces:
 
-If the first-page query is in the "too slow" bucket on your hardware,
+| Kind of query                         | Good      | Tolerable  | Too slow   |
+| ------------------------------------- | --------- | ---------- | ---------- |
+| Military and watchlist counts         | < 50 ms   | < 500 ms   | > 2,000 ms |
+| Search (`search_match_bm25`)          | < 200 ms  | < 1,000 ms | > 5,000 ms |
+
+If a search query is in the "too slow" bucket on your hardware,
 that's the biggest user-visible contributor to "the UI feels sluggish."
 A combination of shorter retention and faster storage usually fixes it.
 

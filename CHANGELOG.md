@@ -19,6 +19,29 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.188] — 2026-11-16
+
+**Aerodrome no longer loads its fonts from Google, and the documentation is up to date again.**
+
+Every page used to ask Google Fonts for its two typefaces, so each browser that opened Aerodrome contacted Google. The fonts (Outfit and JetBrains Mono, both under the SIL Open Font License) now ship with Aerodrome and load from your own server; pages look the same. The About, Documentation and Logs pages, which never loaded them, now use them too.
+
+The documentation was checked against the code, and everything that had fallen behind is fixed:
+
+- **What Aerodrome looks up on the internet.** The README said Aerodrome "talks to exactly the services you tell it to". It does look a few things up by default — owner and registration on hexdb.io, routes on adsb.lol, photos on planespotters.net, a monthly check for new releases on GitHub, and the map tiles your browser loads — so the README now lists them, what they carry, and which ones you can turn off. Still no telemetry, tracking or analytics.
+- **Opening Aerodrome by a name.** The install guide now explains which host names always work and how to add a Tailscale, public or reverse-proxy name under Configuration → Web server → Allowed hostnames — without it, those names get a "not on the allowed list" page.
+- **Settings and notifications.** The install guide covers the settings it had missed (the map, airports, FlightAware, display and web settings, and how long takeoffs and landings are kept), the watchlist alert's real default and its `live` option, the daily summary (it ships), the emergency-squawk, update and disk-capacity notifications, and that the disk-capacity alerts are on by default.
+- **Where things are.** The Performance page is under gear menu → Diagnostics; Aerodrome listens on port 8000 on every network interface by default; the security notes now name the right port.
+- **Search.** The search guide adds the category words (`commercial`, `ga`, `heli`, `unknown`), airport codes, the date presets and sorting, and fixes an example tail number that Search didn't recognise. The in-app search help adds the category words and airport codes too.
+- **For people working on the code.** The API reference lists every endpoint, and the architecture, development, performance, scripts and demo-feeder notes describe the code as it is now. Counts that kept going out of date (endpoints, tables, pages, line counts) are gone.
+
+Also fixed: Search's **Rows** menu offered 1000, but a page never holds more than 500 rows, so 1000 quietly showed 500. The menu now offers 100, 200 and 500, and a saved 1000 becomes 500.
+
+### Behind the scenes
+
+- `static/fonts/`: the two variable fonts (Latin and Latin Extended, about 100 KB in all), their licences, and `fonts.css`, which every page links. Other scripts fall back to the system font, as before.
+- `scripts/screenshots.py` inlines `fonts.css` with the font files on disk, so documentation screenshots keep the same fonts.
+- Tests: every page Aerodrome serves loads the bundled fonts and none mentions Google; the font files and licences ship; a browser test checks the pages draw with the bundled fonts and make no request to Google; the Search Rows menu and a saved 1000.
+
 ## [3.4.187] — 2026-11-15
 
 **Every airport near you now has its own page.**

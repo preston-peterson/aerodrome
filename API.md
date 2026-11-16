@@ -1,6 +1,6 @@
 # HTTP API reference
 
-A reference for the ~60 HTTP endpoints Aerodrome exposes. All paths are relative to the server URL (default `http://localhost:8000`).
+A reference for the HTTP endpoints Aerodrome exposes. All paths are relative to the server URL (default `http://localhost:8000`).
 
 **This document is a map, not a spec.** It describes what the endpoints do, what they return, and when you'd use them. For exact request/response shapes, `server.py` is the source of truth — each handler is short enough to read. Line numbers in tables are approximate; use your editor's symbol search for the current location.
 
@@ -13,7 +13,7 @@ A reference for the ~60 HTTP endpoints Aerodrome exposes. All paths are relative
 
 ## Page routes
 
-Plain HTML responses served by Jinja templates. The frontend-heavy logic lives in these templates; the Python handlers just render them with whatever context the template needs.
+Plain HTML pages. Each handler reads its file from `templates/` as text, adds a version query (`?v=<version>`) to the `/static/...` URLs so a browser fetches fresh copies after an update, and injects the configured time format. There is no template engine; the frontend logic lives in the templates.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -28,6 +28,11 @@ Plain HTML responses served by Jinja templates. The frontend-heavy logic lives i
 | GET | `/performance` | Performance diagnostic page |
 | GET | `/diagnostics` | Subsystem diagnostics index |
 | GET | `/diagnostics/watchlist-alerts` | Watchlist alert behavior diagnostic |
+| GET | `/diagnostics/slow-queries` | Slow-query log page |
+| GET | `/aircraft/{icao}` | One aircraft's detail page, from `/api/aircraft/{icao}` |
+| GET | `/setup/switch-to-real` | Demo-mode wizard for switching to a real receiver |
+| GET | `/notification-test-ok` | Confirmation page reached by tapping a test notification |
+| GET | `/favicon.ico`, `/favicon.svg`, `/apple-touch-icon.png` | Site icons |
 
 ## Aircraft data
 
@@ -35,7 +40,7 @@ Core endpoints the dashboard's tabs consume. All return a list of aircraft objec
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/live` | Aircraft currently transmitting (seen within the last minute) |
+| GET | `/api/live` | Aircraft the receiver is reporting right now. Fetched from the receiver's `aircraft.json` on each call, not read from the database. `{aircraft: [...], count, last_updated, receiver: {lat, lon, distance_unit}}`; each aircraft carries military and watchlist flags. When the receiver can't be reached the reply has an empty list and an `error` string |
 | GET | `/api/watchlist` | Historical + current watchlist hits |
 | GET | `/api/military` | Historical + current military hits |
 | GET | `/api/search` | Full-text search across every aircraft (`?q=...&from_ts=...&to_ts=...&preset=today&limit=...&offset=...`; `preset=today` starts from midnight in Aerodrome's timezone). The response adds `time_label` (the date window in words) and `time_tokens` (the date tokens as typed); with a window active, each row adds `window_sightings`. Since 3.4.186 it adds `airports: [{code, iata, name, city, cat}]`: airports near the receiver whose code or IATA code is a word of the query (first page only) |
@@ -47,6 +52,14 @@ Core endpoints the dashboard's tabs consume. All return a list of aircraft objec
 | GET | `/api/airports/{code}` | Everything the airport page shows (3.4.186): the `/summary` fields plus `iata, city, runway_names, since` (its first takeoff or landing), `history_start`, `series: {start: YYYY-MM-DD, landed: [n…], took_off: [n…]}` (a day each, up to a year, from the first day of history to today, local days), `month_days, hours: [24]` (totals) and `weekdays: [7]` (Mon–Sun, a day on average) over the last 30 days, `runway_use: {landing: [[runway, pct]…], taking_off: [[runway, pct]…], flows: [{flow, share, landing: [runway…], taking_off: [runway…]}], with_runway}`, `month: {types: [{type, name, n}], operators: [{name, n}], mix: {category: n}, aircraft, first_seen, watchlist, frequent: [{icao, type, who, n}], military: [{icao, type, callsign, n}]}` (counts are takeoffs and landings; `mix`, `aircraft`, `first_seen` and `watchlist` count aircraft; `first_seen` is null until there's history from before the 30 days), `new_today: {n, rows: [{icao, type, callsign, at}]}` and `moves` (the first page of `/moves`). 404 / 400 as `/summary` |
 | GET | `/api/airports/{code}/moves?before=<at>&limit=25` | One airport's takeoffs and landings, newest first, before `at` (3.4.186): `{ok, items: [{kind, airport, runway, at, until, count, callsign, icao, type, operator}], next}`; an aircraft's back-to-back touch-and-goes are one item with a `count`. `next` is the `before` for the next page, null at the end. `limit` 1–200. 404 / 400 as `/summary` |
 | GET | `/api/aircraft/{icao}/airports?limit=8` | The takeoffs, landings and touch-and-goes the receiver saw one aircraft make (3.4.184): `{ok, since, total, airports: [{code, name, landings, takeoffs, touch_and_go}], events: [{kind: takeoff\|landing\|touch_and_go, airport, name, runway, at, until, count, callsign}], recent: [...], fill_in: {state: waiting\|running\|done, pct}}`. Newest first; back-to-back touch-and-goes at one airport are one event with a `count` (`at` the first, `until` the last). `recent` is its latest flight (a takeoff, a landing, or a takeoff then a landing). `limit` 0–1000. A bad hex → 400 |
+| GET | `/api/aircraft/{icao}` | Detail data for the aircraft page (ICAO must be 6 hex characters) |
+| GET | `/api/aircraft/{icao}/enrich` | Registered owner and manufacturer for one airframe |
+| GET | `/api/aircraft/{icao}/photo` | A photo of one airframe, when one is found |
+| GET | `/api/aircraft/{icao}/positions` | Position stream for the aircraft page's map |
+| GET | `/api/live/trails` | Recent ground track for every aircraft seen in the window |
+| GET | `/api/coverage` | Receiver coverage data for the map |
+| GET | `/api/search/aircraft/{icao}` | One aircraft's record in the form Search lists it |
+| GET | `/api/search/suggestions` | Example queries built from this install's own data |
 
 `/api/search` is the canonical "browse every aircraft" endpoint — replaces the old `/api/all` (which was removed in v2.67.0 alongside the All tab). It accepts a parsed query string (`q=`) plus optional filters and pagination. See `search.py` for the parser grammar (callsigns, ICAO, types, countries, operators, dates, `today`, `hour:N`, `distance:LO-HI`, `military`, `watchlist`).
 
@@ -87,6 +100,9 @@ The `?icaos=` query string is comma-separated. The response is `{hex: registrati
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/status` | Comprehensive health check — collector, web server, database, receiver, hexdb resolver, notifications, FlightAware (`components.flightaware`, only when a key is set: this month's lookups and budget, the last lookup, FlightAware's usage figure as last fetched; built without calling FlightAware), system info. A FlightAware key FlightAware refused is a warning (`failing` includes `flightaware`) |
+| GET | `/api/version` | The running version; a light call, also what a just-updated Aerodrome answers to confirm the update |
+| GET | `/api/ready` | Readiness probe |
+| GET | `/api/capacity` | The Status page's Capacity numbers without the receiver and hexdb probes (used by the Retention preview) |
 | GET | `/api/sudoers/status` | Check if /etc/sudoers.d/aerodrome matches the expected version; every reply carries `recovery_command`, the permissions-refresh command to run on the server. From rules version 6, `live_version` counts only as far as the system helper the rules name (`rules_version`, `helper_version`); with no rules file at all, `can_verify` and `managed` are false and nothing needs doing (also where Aerodrome's account can't look inside `/etc/sudoers.d`, as on Fedora/RHEL, sudo won't show it a rules file and there is no system helper); with one Aerodrome can't read, it asks the helper itself |
 
 `/api/status` is used both by the Status page and by external health-check tooling. The response shape is documented in the comment block above the handler. It's the most stable endpoint in the API — deliberately kept backward-compatible.
@@ -102,11 +118,13 @@ The `?icaos=` query string is comma-separated. The response is `{hex: registrati
 | GET | `/api/ui-config` | UI-only subset of config (track link provider, distance unit, map prefs including `map.carto_api_key` and `map.airports` — `off`, `major` (default) or `all`, the airport layer's starting choice, etc.) |
 | GET | `/api/flightaware/status` | The FlightAware key's state (`key_last4` only, never the key), this month's lookups against `monthly_limit` (`count`; `key_count` is those made with the current key, `null` until known; `earlier_keys` lists this month's earlier keys as `{last4, count}`), whether lookups are paused, and FlightAware's own usage figure for this key (`usage`: `lookups` billed, without the free usage checks, and `total_cost`), with the same for every key on the account in `usage.account`. Free calls, cached 10 minutes, can lag an hour |
 | POST | `/api/flightaware/test` | Check the saved FlightAware key with FlightAware's free usage call: `{ok, state: ok\|invalid\|error\|no_key, message}` |
+| GET | `/api/config/db-tuning` | What the SQLite tuning auto-detect resolved to on this machine |
 | GET | `/api/config/backups` | List automatic config backups (made on every save) |
 | GET | `/api/config/backup/{name}` | Fetch a specific backup as YAML text |
 | GET | `/api/config/export` | Current config as a downloadable YAML file |
 | POST | `/api/config/restore/{name}` | Restore from a backup |
 | POST | `/api/config/import` | Import an uploaded YAML config |
+| POST | `/api/setup/switch-to-real` | Switch a demo install to a real receiver (used by the wizard page) |
 
 The config validator (`config_validator.py`) runs on every `PUT /api/config`, `POST /api/config/import` and `POST /api/config/restore/{name}`. A malformed payload returns `400` with a list of validation errors (`errors: [{path, message}]`); the existing config isn't touched. Three settings are also checked against **this machine**, only when they change: `web.host` must be one of its addresses (`0.0.0.0` and `::` always are), `web.port` must be free to listen on (not used by another program, not a port the service account may not use; the port the running server already listens on is not re-checked), and the folder of `data.db_file` must exist and be writable — otherwise `400 {ok: false, error, message, errors}` with an `errors` entry for `web.host` / `web.port` / `data.db_file`.
 
@@ -118,9 +136,13 @@ Full disaster-recovery bundles — config + database + notification history. Use
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/backup/export` | Download a zip containing config.yaml + aircraft-history.db + notification data |
+| GET | `/api/backup/export` | Download a zip containing config.yaml + aircraft_history.db + notification data |
 | GET | `/api/backup/preview` | Inspect an uploaded backup without applying it |
 | POST | `/api/backup/import` | Restore an uploaded backup (checked and staged; switched in at the restart) |
+| POST | `/api/backup/create-server-side` | Start a backup stored on the server in `.backups/` |
+| GET | `/api/backup/create-server-side/progress` | Progress of the running server-side backup |
+| GET | `/api/backup/list-server-side` | List the server-side backups |
+| DELETE | `/api/backup/server-side/{filename}` | Delete one server-side backup and its `.sha256` |
 | POST | `/api/backup/restore-from-path` | Restore a backup already on the server, in `.backups/` (`{"path": ..., "keep_current_config": false}`) |
 | POST | `/api/backup/staged-restore/cancel` | Cancel a restore that waits for its restart |
 | GET | `/api/backup/pre-restore` | The copies kept before each restore, paired by date |
@@ -157,7 +179,16 @@ Backups are taken live — the SQLite database is copied via SQLite's online bac
 | GET | `/api/perf/diagnostics` | Run a live benchmark: db size, row counts, pragmas, index coverage, query timings, disk-read throughput, auto-generated hints. Per-table sizes only with `?sizes=true` (measuring reads every page of the database); `table_sizes` says when sizes were last measured (`measured_at`, `took_ms`, `fresh`), and a normal run reuses them |
 | POST | `/api/perf/analyze` | Run `ANALYZE` on the SQLite database to refresh query planner stats |
 
-`/api/perf/diagnostics` is the most expensive endpoint in the API — it runs six representative queries in sequence and can take several seconds on a large database. Intended for manual invocation from the Performance page, not for polling.
+`/api/perf/diagnostics` is the most expensive endpoint in the API — it runs a set of representative queries in sequence and can take several seconds on a large database. Intended for manual invocation from the Performance page, not for polling.
+
+## Slow-query diagnostics
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/diagnostics/slow-queries/recent` | The most recent slow queries, from an in-memory ring |
+| POST | `/api/diagnostics/slow-queries/clear` | Empty that ring |
+| GET | `/api/diagnostics/slow-queries/explain` | Run `EXPLAIN QUERY PLAN` on a known query shape |
+| GET | `/api/diagnostics/connection-tuning-audit` | Static report of which endpoints use the tuned connection |
 
 ## Notifications
 
@@ -277,7 +308,7 @@ Two refusals keep their older bodies, with no `code` and nothing recorded: `409 
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/static/*` | Shared assets — currently `theme.css` and `theme.js`. Mounted via FastAPI StaticFiles. |
+| GET | `/static/*` | Shared scripts, styles, icons, fonts and data files (theme, time formatting, airports, map shapes). Mounted via FastAPI StaticFiles. |
 
 ---
 

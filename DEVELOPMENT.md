@@ -69,11 +69,11 @@ python3 main.py start
 
 `main.py` is the entrypoint for both dev and production. It:
 
-1. Loads `config.yaml` from the current directory
+1. Loads `config.yaml` from the install folder (the folder `main.py` is in)
 2. Spawns a collector thread (polling your receiver)
 3. Starts uvicorn serving FastAPI
 
-**Stopping:** `Ctrl+C` in the terminal, OR `python3 main.py stop` from another terminal (it uses a PID file under the data dir).
+**Stopping:** `Ctrl+C` in the terminal, OR `python3 main.py stop` from another terminal (it uses the `.tracker.pid` file in the install folder).
 
 **Status:** `python3 main.py status` shows whether the process is running and what config file it loaded.
 
@@ -82,8 +82,9 @@ python3 main.py start
 ### When to restart
 
 - **Changed a `.py` file?** Restart required. No auto-reload is wired up. (You can run under `uvicorn --reload` manually if you want it — see below.)
-- **Changed a template or `static/*` file?** No restart needed. Reload the browser page.
-- **Changed `config.yaml`?** Most config keys are re-read per-poll or per-request. A handful (server host/port, log level) are read once at startup and need a restart. Log output will say `Config reloaded` when a hot-reload path fires successfully.
+- **Changed a template?** No restart needed. Reload the browser page.
+- **Changed a `static/*` file?** No restart needed, but the page links to it with a version query (`?v=<version>`) and the browser keeps its cached copy until that changes, so hard-refresh (Ctrl+Shift+R) or bump the version.
+- **Changed `config.yaml`?** Most config keys are re-read per-poll or per-request. A handful (server host/port, log level) are read once at startup and need a restart. 
 
 ### uvicorn auto-reload
 
@@ -145,10 +146,10 @@ See `ARCHITECTURE.md` for the mental model. Short version:
 - `collector.py` — data plane. Polling, normalization, storage, notifications.
 - `server.py` — control plane. FastAPI endpoints, template rendering.
 - `main.py` — wires the two together. CLI entrypoint.
-- `templates/*.html` — the 9 admin pages.
+- `templates/*.html` — the pages.
 - `static/theme.css`, `static/theme.js` — shared theme system.
 
-`server.py` is a big file (~6,300 lines). Jump to a specific endpoint with your editor's symbol search; every route is declared with `@app.get("/api/...")` or `@app.post(...)` and the decorator line is usually within 30 lines of the handler body.
+`server.py` is a big file. Jump to a specific endpoint with your editor's symbol search; every route is declared with `@app.get("/api/...")` or `@app.post(...)` and the decorator line is usually within 30 lines of the handler body.
 
 ## Testing your changes
 
@@ -224,7 +225,7 @@ ssh user@server 'sudo journalctl -u aerodrome -f'
 
 **Download the Performance diagnostic report:**
 
-The Status → Diagnostics → Performance page has a "Copy Diagnostic Report" button. The resulting text includes query timings, EXPLAIN QUERY PLAN output, index coverage, and disk-read throughput — the kind of thing you want in a reproduction case for a slow-query bug.
+The Performance page (gear menu → Diagnostics → Performance) has a "Copy diagnostic report" button. The resulting text includes query timings, EXPLAIN QUERY PLAN output, index coverage, and disk-read throughput — the kind of thing you want in a reproduction case for a slow-query bug.
 
 ## Versioning + releases
 
@@ -242,17 +243,24 @@ Before anything is written, the release gates run: a syntax check of every Pytho
 
 The JavaScript gate needs **node 18 or newer** on `PATH`. Ubuntu 22.04's `apt install nodejs` is v12, which is too old — install a current Node from NodeSource or nvm there. On a contributor machine that can't have node, `--skip-js-parse` skips that one gate; never use it for a published release.
 
+The other release steps:
+
+- `bash bump-version.sh set X.Y.Z "summary" -y --type=added|changed|fixed|removed` sets an exact version instead of bumping.
+- `bash bump-version.sh check` re-runs every required gate and writes nothing.
+- `bash scripts/package-release.sh` builds `../aerodrome-packages/aerodrome-vX.Y.Z.zip` and its `.sha256` (it runs `check` first and verifies the zip it wrote).
+- `bash scripts/publish-release.sh X.Y.Z --target <sha> --check-only` checks a release for publishing without touching the network; without `--check-only` it publishes the GitHub Release.
+
 Don't edit `VERSION` by hand — the version-string sync across 20+ files is tedious and easy to get wrong.
 
 ## A note on the "big template" pattern
 
-`templates/index.html` is 5,400+ lines. This is intentional:
+`templates/index.html` is very large. This is intentional:
 
 - It gets served as one request and parses in the browser once. No module-loader round-trips, no bundle-splitting complexity.
 - The JS is plain enough that "find in file" is a viable navigation tool.
 - All the state lives in a handful of top-level `let` declarations near the top of the script block.
 
-If you're used to React/Vue, this will feel wrong. Resist the urge to split it up. The cost of adding a framework or bundler would dwarf the savings on a codebase this size, and the current structure has shipped 150+ releases without becoming unmanageable.
+If you're used to React/Vue, this will feel wrong. Resist the urge to split it up. The cost of adding a framework or bundler would dwarf the savings on a codebase this size, and the current structure has shipped well over a hundred releases without becoming unmanageable.
 
 ## Where to ask
 

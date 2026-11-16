@@ -19,7 +19,7 @@ Aerodrome is a **single-process Python application** with a background polling t
                              │        ▼         │ HTTP  │             │
                              │ ┌──────────────┐ │       └─────────────┘
                              │ │  SQLite      │ │
-                             │ │  aircraft-   │ │
+                             │ │  aircraft_   │ │
                              │ │  history.db  │ │
                              │ └──────┬───────┘ │
                              │        │         │
@@ -34,29 +34,44 @@ The collector thread polls your local ADS-B receiver every N seconds (default 60
 
 ## The modules
 
-| File | Role | Size |
-|---|---|---|
-| `main.py` | CLI entrypoint, process lifecycle, collector thread driver | ~630 lines |
-| `collector.py` | Poll/normalize/store/notify pipeline, SQLite schema | ~2,750 lines |
-| `server.py` | FastAPI routes, API handlers, template rendering | ~9,500 lines |
-| `notifier.py` | Notification formatting, rate limiting, ntfy delivery | ~840 lines |
-| `config_validator.py` | Runtime config schema validation | ~900 lines |
-| `schema_migrations.py` | Versioned schema migrations (rollup, concurrent-minute, daily-track, update-state) | ~1,380 lines |
-| `designators.py` | ICAO aircraft type + airline lookup tables | ~400 lines |
-| `ntfy_installer.py` | Self-hosted ntfy server: status (read without sudo), install/upgrade/configure/uninstall through the system helper; validates its `server.yml` (the shared block) | ~1,000 lines |
-| `privhelper.py` | The only module that builds a `sudo` command line: the system helper (`run_helper`), the restart and the rules read (`run_sudo`); errors told apart by the reply's shape (stdlib only) | ~120 lines |
-| `scripts/aerodrome-helper` | The root-owned system helper (installed to `/usr/local/libexec/aerodrome/`): a fixed set of checked actions on the local ntfy server and the demo feeder; one JSON line out (stdlib only, Python 3.10 floor) | ~900 lines |
-| `updater.py` | In-app update: staged apply, test-load, switch-in, and the boot-time guard that rolls a release back (stdlib only; imports no app module) | ~1,100 lines |
-| `atomic_io.py` | Crash-safe small-file writes: temp file + fsync + rename + directory fsync, disk-full detection, private (0600/0700) files and folders (stdlib only) | ~150 lines |
-| `config_io.py` | The one way `config.yaml` is written (all or nothing, under one lock), the last config that worked, and startup recovery of an unreadable `config.yaml` | ~620 lines |
-| `restore_io.py` | Full-backup restore: check and stage it (server), switch it in at the next start before any database connection, roll it back from the pre-restore copies if it doesn't load (main) | ~1,650 lines |
-| `templates/*.html` | 11 admin pages — vanilla HTML/CSS/JS, no framework | ~13,500 lines |
-| `static/theme.css`, `static/theme.js` | Shared theme system across all templates | ~660 lines |
+| File | Role |
+|---|---|
+| `main.py` | CLI entrypoint, process lifecycle, collector thread driver |
+| `collector.py` | Poll/normalize/store/notify pipeline, SQLite schema |
+| `server.py` | FastAPI routes, API handlers, serving the page templates |
+| `notifier.py` | Notification formatting, rate limiting, ntfy delivery |
+| `config_validator.py` | Runtime config schema validation |
+| `schema_migrations.py` | Versioned schema migrations |
+| `designators.py` | ICAO aircraft type + airline lookup tables |
+| `airport_events.py` | Takeoff, landing and touch-and-go detection from the positions the collector stores, plus the one-time backfill from stored sightings |
+| `airports.py` | Airports near the receiver for the map layer and the takeoff/landing detector, read from `static/airports.json` |
+| `auto_update.py` | Rules and state for automatic updates: when a scheduled run is due and what happened to the last one |
+| `capacity.py` | Disk-capacity metrics and the capacity-alert state machine |
+| `categorize.py` | Aircraft category classification, applied at write time and in backfills |
+| `countries.py` | ICAO 24-bit address to country lookup |
+| `distance.py` | Great-circle distance and bearing helpers |
+| `flightaware.py` | FlightAware AeroAPI client for callsign route lookups, with a monthly call limit and caches |
+| `hexdb_resolver.py` | The hexdb.io tail-resolve queue and worker, shared by `server.py` and the collector |
+| `photo_resolver.py` | Aircraft photo lookup, cached in `photo_cache` |
+| `route_resolver.py` | Callsign to flight-route lookup against adsb.lol's standing data, cached in `route_cache` |
+| `search.py` | Search backend: query parser and SQL builder |
+| `slow_query_log.py` | In-memory ring of slow queries for the diagnostics page |
+| `type_classes.py` | Engine class of each ICAO type designator (generated from ICAO DOC 8643) |
+| `tzwindow.py` | The one place for timezone and local day/hour/month windows |
+| `ntfy_installer.py` | Self-hosted ntfy server: status (read without sudo), install/upgrade/configure/uninstall through the system helper; validates its `server.yml` (the shared block) |
+| `privhelper.py` | The only module that builds a `sudo` command line: the system helper (`run_helper`), the restart and the rules read (`run_sudo`); errors told apart by the reply's shape (stdlib only) |
+| `scripts/aerodrome-helper` | The root-owned system helper (installed to `/usr/local/libexec/aerodrome/`): a fixed set of checked actions on the local ntfy server and the demo feeder; one JSON line out (stdlib only, Python 3.10 floor) |
+| `updater.py` | In-app update: staged apply, test-load, switch-in, and the boot-time guard that rolls a release back (stdlib only; imports no app module) |
+| `atomic_io.py` | Crash-safe small-file writes: temp file + fsync + rename + directory fsync, disk-full detection, private (0600/0700) files and folders (stdlib only) |
+| `config_io.py` | The one way `config.yaml` is written (all or nothing, under one lock), the last config that worked, and startup recovery of an unreadable `config.yaml` |
+| `restore_io.py` | Full-backup restore: check and stage it (server), switch it in at the next start before any database connection, roll it back from the pre-restore copies if it doesn't load (main) |
+| `templates/*.html` | The pages — vanilla HTML/CSS/JS, no framework |
+| `static/theme.css`, `static/theme.js` | Shared theme system across all templates |
 
 The split is deliberate:
 
 - **collector.py** handles everything data-plane: talking to the receiver, normalizing the response, detecting military aircraft, matching watchlist entries, writing rows, pruning old rows, enqueueing unknown ICAOs for tail resolution, and firing notification events. It has no HTTP handlers and no knowledge of the web UI.
-- **server.py** handles everything control-plane: read-only API calls that turn SQLite rows into JSON, plus write API calls for config edits and updates. It also owns three small background schedulers — the tail-resolve worker, the daily-summary scheduler, and the GitHub update-check scheduler — all of which are server-side concerns (HTTP egress to external APIs, scheduled notification dispatch) rather than collector concerns. It reaches into `collector` for shared utility functions (haversine math, military detection logic).
+- **server.py** handles everything control-plane: read-only API calls that turn SQLite rows into JSON, plus write API calls for config edits and updates. It also owns the daily-summary, GitHub update-check and automatic-update schedulers and starts the tail-resolve worker (which lives in `hexdb_resolver.py`) — all of which are server-side concerns (HTTP egress to external APIs, scheduled notification dispatch) rather than collector concerns. It reaches into `collector` for shared utility functions (haversine math, military detection logic).
 - **main.py** is the only place where both sides are wired together. It spins up the collector thread in `run_collector()`, lets `server.py` start its own scheduler threads at import time, and hands the FastAPI app to uvicorn in `start()`.
 
 The consequence is that each module can be read in isolation. You don't need to understand the web layer to understand how data gets collected, and vice versa.
@@ -156,7 +171,7 @@ A restore and an update never meet at the same start: a restore is refused while
 
 ## The threading model
 
-Four long-running background threads, each with a single responsibility:
+Several long-running background threads, each with a single responsibility:
 
 **1. The collector** (started by `main.py`, lives in `collector.py`):
 
@@ -166,24 +181,29 @@ Four long-running background threads, each with a single responsibility:
 4. Detects military + watchlist matches
 5. Writes rows to the three sightings tables
 6. Updates "first seen today" counters
-7. Fires notification events where applicable
-8. Sleeps for the remaining interval
+7. Detects takeoffs and landings from the stored positions (`airport_events.on_poll`, in the same transaction)
+8. Fires notification events where applicable
+9. Sleeps for the remaining interval
 
-**2. Tail-resolve worker** (started in `server.py`): pulls ICAOs off an in-process queue and resolves them against the hexdb.io API at ~2 req/sec, populating the `hexdb_cache` table. It also looks up watchlist tail numbers (US N-numbers are worked out locally and need no lookup), retrying failures without a restart. Rate-limited deliberately — the API is free and has no published limit, but respect is cheaper than apology.
+**2. Tail-resolve worker** (code in `hexdb_resolver.py`, started by `server.py`; the collector enqueues into it too): pulls ICAOs off an in-process queue and resolves them against the hexdb.io API at ~2 req/sec, populating the `hexdb_cache` table. It also looks up watchlist tail numbers (US N-numbers are worked out locally and need no lookup), retrying failures without a restart. Rate-limited deliberately — the API is free and has no published limit, but respect is cheaper than apology.
 
 **3. Daily summary scheduler** (started in `server.py`): wakes once per day at the configured local-time hour, builds the daily summary, and fires the `daily_summary` ntfy event. Configurable via `notifications.events.daily_summary` and `notifications.daily_summary_hour`.
 
 **4. Update check scheduler** (v3.0.0; started in `server.py`): wakes on the configured cadence (daily/weekly/monthly/never per `updates.github.poll_interval`), queries the GitHub Releases API for the latest tag, writes the discovery result to the `update_state` table, and fires the `update_available` ntfy event on transitions. Page loads of `/updates` read cached state from `update_state` and never hit GitHub directly.
 
-All four threads are daemons (process exit doesn't wait for them). The FastAPI server runs in the foreground on uvicorn. Its endpoints are mostly `async def` but do blocking SQLite reads inside — FastAPI's thread pool handles this. The trade-off is fine for a personal-scale project: SQLite read latency on a warm page cache is sub-millisecond, and the WAL mode means reads never block writes.
+**5. Automatic-update scheduler** (v3.4.180; started in `server.py`, rules and state in `auto_update.py`): at the configured day and time (`updates.github.auto_apply`) it checks GitHub and, when the latest release is newer, installs it through the same steps as the Updates page's Apply button. A release that was put back or refused is never installed automatically again.
+
+A short-lived update-confirm thread (started by `main.py`, see the startup sequence) runs only while an update is pending.
+
+The scheduler and worker threads are daemons (process exit doesn't wait for them). The FastAPI server runs in the foreground on uvicorn. Its endpoints are mostly `async def` but do blocking SQLite reads inside — FastAPI's thread pool handles this. The trade-off is fine for a personal-scale project: SQLite read latency on a warm page cache is sub-millisecond, and the WAL mode means reads never block writes.
 
 On demo-mode installs (v3.1.0), a *separate process* — `aerodrome-synthetic-feeder.service` — runs alongside `aerodrome.service`. It binds to `127.0.0.1:8080` and serves a synthetic `/data/aircraft.json`. From the collector's perspective there's no difference between this and a real ADS-B receiver; the data-plane stays oblivious to demo mode. See *Demo mode* below.
 
-Shared state between threads is SQLite and **nothing else** (with one small exception: the tail-resolve worker has an in-memory queue of pending ICAOs that the collector enqueues into). There is no in-process queue for the dashboard, no global dict of "current aircraft," no shared memory. Every API call hits the database.
+Shared state between threads is SQLite and **nothing else** (with one small exception: the tail-resolve worker has an in-memory queue of pending ICAOs that the collector enqueues into). There is no in-process queue for the dashboard, no global dict of "current aircraft," no shared memory. API calls read the database, with one exception: `/api/live` asks the receiver directly on every call.
 
 ## The data model
 
-Thirteen SQLite tables, defined across `collector.py::init_db()` and the versioned migrations in `schema_migrations.py`:
+The SQLite tables are defined across `collector.py::init_db()` and the versioned migrations in `schema_migrations.py`:
 
 **Core sightings tables:**
 - **`all_sightings`** — every aircraft ever seen, one row per (ICAO, minute) tuple. The primary time-series table.
@@ -196,12 +216,19 @@ Thirteen SQLite tables, defined across `collector.py::init_db()` and the version
 **Aggregations and analytics:**
 - **`sightings_hourly`** — pre-computed hourly rollup of `all_sightings`, populated incrementally by the collector. Most Stats-tab queries hit this instead of the raw sightings table.
 - **`aircraft_track_daily`** — per-(ICAO, day) track summaries: durations, sighting counts, best-record markers. Powers the aircraft detail page's daily sighting cards.
+- **`military_hourly`**, **`watchlist_hourly`** — the same hourly rollup for the military and watchlist tables.
 - **`concurrent_minute`** — per-minute aircraft counts for concurrency analysis (busiest minute / hour stats).
+
+**Takeoffs and landings:**
+- **`airport_events`** — takeoffs, landings and touch-and-goes the receiver saw, written by `airport_events.py` (schema migrations v21 and v22). Kept under its own retention key, `retention.airport_days` (default 365), not `all_days`.
 
 **Notifications and external data:**
 - **`stats_records`** — all-time records (farthest sighting, fastest, highest, etc). One row per record type.
 - **`hexdb_cache`** — cached aircraft metadata from hexdb.io lookups (tail, registration, type details).
 - **`hexdb_events`** — log of hexdb resolver events (resolved, negative-cached, errored) used for health monitoring.
+- **`route_cache`** — callsign route lookups from adsb.lol, with negative entries (schema migration v12).
+- **`flight_routes`** — one row per flight FlightAware confirmed, so the aircraft page can show the route it flew (v19).
+- **`photo_cache`** — aircraft photo lookups, with negative entries (v13).
 - **`update_state`** — single-row table tracking the GitHub-based update channel's discovery state (latest tag seen, last poll, last apply result). Added v3.0.0.
 
 **Framework / migration:**
@@ -210,7 +237,7 @@ Thirteen SQLite tables, defined across `collector.py::init_db()` and the version
 
 Indexes are built in `init_db()` (which runs `CREATE INDEX IF NOT EXISTS` on every start) and the relevant migration files. The workhorse is `idx_all_seen_icao` on `all_sightings(seen_at, icao)`: Stats card and drill reads of a time window — usually today's slice — seek it and can serve `COUNT(DISTINCT icao)` / `GROUP BY icao` from the index alone. Without `sqlite_stat4`, SQLite guesses that a one-sided `seen_at >= ?` keeps about a quarter of the table, and for a `GROUP BY icao` it may walk all of `idx_all_icao` instead — seconds to minutes on a busy install. Reads of that shape therefore pin the index with `INDEXED BY idx_all_seen_icao` (v2.42.7 for the card faces, v3.4.143 for the drill panels); `test_stats_drills.py` checks the drills' plans under several planner-statistics profiles.
 
-**Retention** is configurable per table (`retention.all_days`, `.military_days`, `.watchlist_days` in config.yaml) and is enforced by `cleanup_old_data()` which the collector calls on each poll. There is no background garbage collector; old rows are deleted inline with the next write.
+**Retention** is configurable per table (`retention.all_days`, `.military_days`, `.watchlist_days` and `.airport_days` in config.yaml) and is enforced by `cleanup_old_data()` which the collector calls on each poll. There is no background garbage collector; old rows are deleted inline with the next write.
 
 **WAL mode** is enabled at startup. This matters because otherwise reads and writes would serialize and the dashboard would stutter during high-traffic polls.
 
@@ -230,7 +257,7 @@ Features that don't fit one of these shapes usually indicate a missing abstracti
 Listing these is as useful as listing what is:
 
 - **No database ORM.** All queries are raw SQL with `sqlite3.Row` for cursor access. The schema is small enough that an ORM adds more syntax than it saves.
-- **No frontend framework.** Vanilla JS, no React/Vue/Svelte/etc. Each admin template is ~4,000 lines of hand-written HTML + CSS + JS that stands on its own.
+- **No frontend framework.** Vanilla JS, no React/Vue/Svelte/etc. Each page template is hand-written HTML + CSS + JS that stands on its own.
 - **No build step for frontend.** Templates are served as-is. No bundler, no transpiler, no minifier. The cost is that you'll see some repetition between templates; the savings is that you can edit a page and reload the browser.
 - **No comprehensive integration test suite.** Targeted stdlib-`unittest` files at the repo root (`test_*.py`, run with `python3 -m unittest` from the repo root) cover high-leverage logic — aircraft categorization, type/operator decoding, the schema migration framework and individual migrations, startup config preflight, the search query grammar, session-aware track stitching, collector poll robustness, Stats queries, web hardening and so on — plus subprocess suites that run the release scripts (`bump-version.sh`, `package-release.sh`, `publish-release.sh`), the installer-consistency gate, and the installers themselves (`install.sh`, `scripts/bootstrap.sh`, `uninstall.sh`, `scripts/recover-sudoers.sh` — under stub `sudo`/`systemctl`/package managers and a fake root) against throwaway copies of the working tree (`AERODROME_SKIP_SLOW_TESTS=1` skips those for fast iteration). End-to-end coverage of the web UI is still manual + the `bump-version.sh` release gates + `scripts/check_docs.py` drift detection. Full integration coverage is on the roadmap.
 - **No authentication.** Aerodrome is designed to run on your home LAN. If you expose it to the internet, put it behind Tailscale or Cloudflare Tunnel — don't add a login page to a personal tracker.
@@ -298,6 +325,6 @@ Three places in the code that have caught even the author off-guard and will cat
 ## Further reading
 
 - `DEVELOPMENT.md` — how to run this locally for dev work.
-- `API.md` — reference for the ~60 HTTP endpoints.
+- `API.md` — reference for the HTTP endpoints.
 - `CONTRIBUTING.md` — documentation rules, PR workflow, versioning conventions.
 - `docs/PERFORMANCE.md` — what the Performance diagnostic page measures and how to act on its output.

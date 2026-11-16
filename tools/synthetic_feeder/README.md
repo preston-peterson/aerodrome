@@ -65,6 +65,8 @@ within one poll cycle.
 ### Useful flags
 
 ```
+--host ADDR             Bind address (default 0.0.0.0 — reachable from the LAN;
+                        use 127.0.0.1 to keep the feed on this machine)
 --port N                Bind port (default 8080)
 --visible N             Aircraft simultaneously visible (default 100)
 --home-lat F            Receiver latitude (default 40.0)
@@ -122,10 +124,14 @@ python3 -m tools.synthetic_feeder.backfill --db /tmp/scenario_a.db
 ```
 --db PATH               Target DB path (default ./aircraft_history_synthetic.db)
 --force                 Overwrite existing DB (default: refuse)
---match-loaded         Use the loaded-install preset (12.6M / 18d / 26k)
---rows N                Total sighting rows (default 1,000,000)
---days N                Time window length in days, ending now (default 7)
---aircraft N            Unique aircraft to populate (default 2,000)
+--match-loaded          Use the loaded-install preset (12.6M / 18d / 26k)
+--rows N                Total sighting rows (default 1,000,000; ignored with --match-loaded)
+--days N                Time window length in days, ending now (default 7; ignored with --match-loaded)
+--aircraft N            Unique aircraft to populate (default 2,000; ignored with --match-loaded)
+--scale-factor F        Multiplier on the row count, for stress tests beyond the
+                        requested scale (default 1.0; applies to --match-loaded and --rows)
+--cache-size-mb N       SQLite page cache during the backfill (default 64, sized for a
+                        small VM; raise to 256-512 on a machine with more RAM)
 --home-lat F            Receiver latitude for spawned aircraft positions
 --home-lon F            Receiver longitude for spawned aircraft positions
 --military-fraction F   Fraction in military hex range (default 0.05)
@@ -140,20 +146,28 @@ python3 -m tools.synthetic_feeder.backfill --db /tmp/scenario_a.db
    automatically apply.
 2. Drops user indexes on `all_sightings` for fast bulk insert.
 3. Generates an aircraft pool with stable identity per aircraft.
-4. Streams sightings in 50,000-row batches with Zipf-weighted
-   selection (heavy fliers dominate, matching real receiver data).
+4. Generates sightings as passes (see below) and streams them in
+   50,000-row batches.
 5. Recreates indexes after the bulk load.
 6. Populates `sightings_hourly` from `all_sightings` via SQL
    aggregation (single GROUP BY — much faster than per-row UPSERT).
-7. Runs `ANALYZE` so the query planner has accurate stats.
+7. Seeds `seen_aircraft` from `all_sightings` and runs the schema
+   migrations, which backfill its columns and set up the search index
+   (`init_db()` ran before any sightings existed, so this has to happen
+   after the load).
+8. Runs `ANALYZE` so the query planner has accurate stats.
 
 ### Sighting distribution
 
-Aircraft are weighted with a Zipf-ish distribution (`weight ∝ 1/(i+1)^0.7`).
-Result: the heaviest aircraft accumulates roughly 50× the sightings of
-median, ~500× the sightings of lightest. This matches the
-heavy-tail pattern visible in real installs — local-area heavy fliers
-dominate the table, occasional transients appear once or twice.
+Sightings come in passes, like a real receiver: an aircraft is visible
+for a few minutes (about 3 on average), producing one sighting per poll,
+then is absent for hours or days. Start times favour daytime. Every
+aircraft first gets one pass, so none are missing; the remaining row
+budget goes to extra passes weighted with a Zipf-ish distribution
+(exponent 0.4, `weight ∝ 1/(i+1)^0.4`). Result: the heaviest aircraft
+accumulates roughly 30× the average. This matches the heavy-tail pattern
+visible in real installs — local-area heavy fliers dominate the table,
+occasional transients appear once or twice.
 
 ### Performance characteristics
 
@@ -209,6 +223,10 @@ independently.
   third-party deps.
 - `backfill.py` — Mode B bulk loader. Imports `collector.init_db` for
   schema; everything else is local.
+- `seed_watchlist.py` — Demo-mode helper (used by `install.sh --demo`). Fills
+  an empty `watchlist: []` in a config file with the first 8 aircraft of the
+  feeder's seeded fleet, so the watchlist has regulars that will actually
+  appear. Usage: `python3 -m tools.synthetic_feeder.seed_watchlist <path to config.yaml>`.
 - `menu.py` — Interactive wrapper around both modes. Convenience for
   ad-hoc test sessions; not used for automation.
 - `__init__.py` — package marker.
@@ -225,6 +243,10 @@ independently.
   bounds — it's not actually doing flight planning. Aircraft don't
   follow great-circle routes between airports because there are no
   airports.
+- Mode B writes no takeoff or landing events: it loads sightings only, so
+  the airport pages and Search's airport links have nothing to show on a
+  synthetic database. Mode A's aircraft follow a random walk with no
+  runways, so don't expect meaningful takeoff or landing events from the feed.
 - Mode B assumes the Aerodrome version installed is the one whose
   schema you want. If you upgrade Aerodrome and want the synthetic
   DB to match, regenerate it.

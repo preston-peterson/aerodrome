@@ -1,4 +1,4 @@
-<!-- Version: 3.4.187 -->
+<!-- Version: 3.4.188 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -29,7 +29,6 @@
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="icon" type="image/x-icon" href="/favicon.ico">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
     <!-- v2.47.0: theme system extracted to /static/theme.css + theme.js.
          Palette variables and the gear-menu widget styles both live there. -->
     <link rel="stylesheet" href="/static/theme.css">
@@ -39,7 +38,7 @@
     <link rel="stylesheet" href="/static/leaflet/leaflet.css">
     <script src="/static/leaflet/leaflet.js" defer></script>
     <script src="/static/airports.js"></script>
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/fonts/fonts.css">
     <style>
         
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -2579,7 +2578,6 @@
                 <option value="100" selected>100</option>
                 <option value="200">200</option>
                 <option value="500">500</option>
-                <option value="1000">1000</option>
             </select>
         </label>
         <!-- v2.83.0: mobile-only Sort dropdown. Hidden at >700px (desktop
@@ -5690,8 +5688,10 @@ function _searchPresetWindow(presetId){
         const raw = localStorage.getItem(_SEARCH_PAGESIZE_STORAGE_KEY);
         if (raw){
             const n = parseInt(raw, 10);
+            // v3.4.188: 1000 is no longer offered (the server sends at most
+            // 500 a page); a stored 1000 becomes 500, which is what it got.
             if (Number.isFinite(n) && [100, 200, 500, 1000].includes(n)){
-                _searchState.pageSize = n;
+                _searchState.pageSize = Math.min(n, 500);
             }
         }
     } catch (e) { /* ignore */ }
@@ -7241,6 +7241,14 @@ function _renderSearchHelp(){
             <span class="help-examples"><code>A12345</code><code>C05044</code></span>
         </div>
         <div class="help-row">
+            <span class="help-label">Category</span>
+            <span class="help-examples"><code>commercial</code><code>ga</code><code>heli</code><code>unknown</code> <span style="color:var(--t3);font-family:var(--font);">— several together match any of them</span></span>
+        </div>
+        <div class="help-row">
+            <span class="help-label">Airport</span>
+            <span class="help-examples"><code>KDFW</code><code>DFW</code> <span style="color:var(--t3);font-family:var(--font);">— a nearby airport's code also shows a link to its page</span></span>
+        </div>
+        <div class="help-row">
             <span class="help-label">Military</span>
             <span class="help-examples"><code>mil</code><code>military</code> <span style="color:var(--t3);font-family:var(--font);">— matches military aircraft</span></span>
         </div>
@@ -7278,7 +7286,7 @@ function _renderSearchHelp(){
         </div>
         <div class="help-row">
             <span class="help-label">Combine</span>
-            <span class="help-examples"><code>B738 Canada 2026-04</code> <span style="color:var(--t3);font-family:var(--font);">— space-separated, all conditions AND together</span></span>
+            <span class="help-examples"><code>B738 Canada 2026-04</code> <span style="color:var(--t3);font-family:var(--font);">— space-separated, all conditions AND together (category words: any of them)</span></span>
         </div>
         <div class="help-footer">
             Date format set in Configuration → Display.

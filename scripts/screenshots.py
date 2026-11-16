@@ -1193,6 +1193,15 @@ async def _render(browser, template_file: str, outfile: Path, *,
             tag_new  = f'<script>\n{body}\n</script>'
         html = html.replace(tag_orig, tag_new)
 
+    # v3.4.188: the fonts ship in static/fonts/ (no more Google Fonts); inline
+    # fonts.css with its url()s pointing at the font files on disk.
+    fonts_css = static_dir / 'fonts' / 'fonts.css'
+    if fonts_css.exists():
+        body = fonts_css.read_text()
+        for woff in sorted((static_dir / 'fonts').glob('*.woff2')):
+            body = body.replace(f'url({woff.name})', f"url('{woff.resolve().as_uri()}')")
+        html = html.replace('<link rel="stylesheet" href="/static/fonts/fonts.css">', f'<style>\n{body}\n</style>')
+
     # v3.4.33: also inline Leaflet for templates that use the position-history
     # map (currently just aircraft.html). The map block is the focal point of
     # the aircraft-details screenshot and Leaflet has to actually load for

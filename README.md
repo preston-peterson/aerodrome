@@ -1,5 +1,5 @@
 # Aerodrome
-<!-- Version: 3.4.187 -->
+<!-- Version: 3.4.188 -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -22,8 +22,9 @@ your receiver has ever seen, a rich Stats tab, and optional push
 notifications to your phone.
 
 It's open-source under MIT, runs on anything from a Raspberry Pi to a
-spare x86 box, stays entirely on your LAN unless you choose otherwise,
-and has no cloud dependencies beyond an optional registration-lookup API.
+spare x86 box, and keeps your data on your own machine. It needs no
+account anywhere; the few things it looks up on the internet are listed
+under [What Aerodrome doesn't have, and what it looks up](#what-aerodrome-doesnt-have-and-what-it-looks-up).
 
 ## What it isn't
 
@@ -43,10 +44,15 @@ yourself, not the product you'd pitch."
 
 ![Live tab](docs/screenshot-live.png)
 
-**Live.** What's in the sky right now, refreshed every few seconds.
-ICAO, callsign, type, altitude, speed, distance. Military aircraft are
-highlighted; watchlist entries are tagged. Click any aircraft for an
-expanded detail view with a tracking link to an external map.
+**Live.** What's in the sky right now, refreshed every few seconds: a
+list (ICAO, callsign, type, altitude, speed, distance, with military
+aircraft highlighted and watchlist entries tagged) beside a live radar
+map that draws each aircraft by its type and altitude, with trails, range
+rings, optional weather radar and the airports around you. Click a plane
+for a panel with its owner, route, where it took off, live telemetry and a
+photo. Click an airport's code for its takeoffs and landings today, and
+from there its own page: a year of takeoffs and landings, its busiest
+hours, runway use and who visits.
 
 ![Watchlist tab](docs/screenshot-watchlist.png)
 
@@ -60,7 +66,8 @@ callsign prefixes (RCH, NAVY, ARMY...), and special-aircraft lists.
 Special categories (AWACS, refueling, VIP transport, etc.) get their own
 labels where applicable.
 
-**Stats.** Today's counts, all-time records, aircraft-type breakdown,
+**Stats.** Today's counts, the takeoffs and landings your receiver saw at
+each nearby airport, all-time records, aircraft-type breakdown,
 hourly activity histogram, "first time seen" list, 7-day unique-aircraft
 chart, watchlist frequency, and a polar coverage rose showing which
 compass directions your antenna pulls best. Most cards drill down — click
@@ -72,7 +79,8 @@ any extreme value or list row to see the specific aircraft behind it.
 ever seen, going back as far as your retention window allows. Type a
 callsign, ICAO, type, country, or operator. Use parser tokens like
 `today`, `last:7d`, `hour:14`, `distance:50-100`, `military`,
-`watchlist`, `commercial`, `helicopter`. Sortable columns, date-range
+`watchlist`, `commercial`, `helicopter`, or a nearby airport's code
+(`KDFW` or `DFW`) for a link to its page. Sortable columns, date-range
 presets, page-size control, CSV export, and shareable hash URLs.
 
 ## The display board
@@ -111,10 +119,13 @@ TV on a Raspberry Pi is all the hardware it needs.
 Three moving parts in one Python process:
 
 - **Collector** — polls your receiver every 60 seconds, classifies each
-  aircraft, enriches with registration lookup via hexdb.io, appends rows
-  to SQLite (WAL mode, so reads and writes don't contend).
-- **Web server** — FastAPI + Uvicorn, serves the dashboard and ~80 JSON
-  API endpoints. Single-process, bound by default to your LAN IP.
+  aircraft, looks up its owner, registration and type (hexdb.io, and your
+  receiver's own aircraft database), notes takeoffs and landings at nearby
+  airports, and appends rows to SQLite (WAL mode, so reads and writes
+  don't contend).
+- **Web server** — FastAPI + Uvicorn, serves the dashboard and its JSON
+  API, and looks up routes and photos when they're shown. Listens on every
+  network interface, port 8000, by default (`web.host`, `web.port`).
 - **Notifier** — optional. Push notifications via [ntfy](https://ntfy.sh)
   (self-hosted or the public relay) with cooldowns and rate limits so a
   busy hour doesn't spam your phone.
@@ -133,7 +144,7 @@ aerodrome/
 ├── config_io.py                  all-or-nothing config.yaml writes, last-good, startup recovery
 ├── restore_io.py                 full-backup restore: checked and staged, switched in at startup, rolled back if it won't load
 ├── collector.py                  ADS-B polling, classification, hexdb enrichment, SQLite writes
-├── server.py                     FastAPI app — dashboard routes + ~80 JSON endpoints
+├── server.py                     FastAPI app — dashboard pages + the JSON API
 ├── notifier.py                   ntfy push notifications with cooldowns
 ├── search.py                     Search-tab query language and ranking
 ├── tzwindow.py                   local days, hours and clock changes, in one place
@@ -162,7 +173,7 @@ aerodrome/
 ├── bump-version.sh               release tooling — version + CHANGELOG + PDF rebuild
 ├── VERSION                       single line, the canonical version string
 ├── templates/                    HTML pages served by server.py
-├── static/                       CSS, JS, fonts, theme assets
+├── static/                       CSS, JS, the bundled fonts, map library, aircraft shapes, airport list
 ├── scripts/
 │   ├── bootstrap.sh              curl-installable one-line setup (see Install)
 │   ├── aerodrome-helper          root-owned system helper (install.sh installs it to /usr/local/libexec/aerodrome/)
@@ -177,6 +188,9 @@ aerodrome/
 │   ├── gen_type_shapes.py        draws the map's aircraft silhouettes (static/shapes/, shapes-data.js)
 │   ├── build_airports.py         rebuilds static/airports.json from OurAirports (public domain)
 │   ├── type_dims.csv             wingspan, length and engine count per type, from the FAA's public table
+│   ├── shape_coverage.py         release gate — which aircraft types have a silhouette
+│   ├── admin_audit.py            Playwright check of the admin pages' header strip
+│   ├── tech_debt_audit.py        advisory tech-debt report
 │   └── check_docs.py             advisory drift detector
 ├── tools/
 │   └── synthetic_feeder/         demo-mode synthetic ADS-B feeder (v3.1.0)
@@ -185,7 +199,7 @@ aerodrome/
 │       ├── seed_watchlist.py     install-time demo-watchlist seeder
 │       └── backfill.py           generate historical sightings for testing
 ├── docs/                         user-facing documentation, screenshots, PDF
-├── .github/                      issue templates, PR template, repo-setup guide
+├── .github/                      issue templates, PR template
 ├── test_aerodrome_helper.py      unit tests — the system helper on a fake root (ntfy, feeder, kill points, health)
 ├── test_airport_events.py        unit tests — takeoffs and landings: detector, fill-in, retention, endpoints
 ├── test_airports.py              unit tests — the airport list: build, nearby airports, endpoint, setting
@@ -197,10 +211,12 @@ aerodrome/
 ├── test_check_installers.py      release tests — installer-consistency gate
 ├── test_check_release_zip.py     release tests — zip checker, package + publish scripts
 ├── test_collector_recovery.py    unit tests — demo feeder port recovery through the helper
+├── test_collector_state.py       unit tests — the Status page's Collector card: why writes stopped
 ├── test_collector_upkeep.py      tests — retention batches, lookup indexes, notification timing
 ├── test_config_page_b4b.py       unit tests — Settings-page recovery notice, save and upload refusals (static)
 ├── test_config_page_b4c.py       unit tests — Backup & restore page: problem list, restore notices, Cancel, Put this back (static)
 ├── test_config_write_safety.py   unit tests — all-or-nothing config writes, recovery, private files
+├── test_cyan_fill_text.py        unit tests — text on a cyan fill stays readable
 ├── test_designators.py           unit tests — aircraft type and operator decoders
 ├── test_destructive_endpoints.py unit tests — switch-to-real + watchlist-history deletes
 ├── test_feed_owner.py            unit tests — the receiver's registration and owner: schema v20, write and read paths
@@ -210,11 +226,13 @@ aerodrome/
 ├── test_frontend_browser.py      tests — real pages in Chromium with scripted answers: hangs, failures, late replies
 ├── test_icao_hex.py              unit tests — ICAO hex ingest validation
 ├── test_install_sh.py            installer tests — install.sh + recover-sudoers.sh under stub sudo
+├── test_main_status.py           unit tests — `main.py status`, the terminal summary
 ├── test_maintenance_locks.py     unit tests — one maintenance operation at a time, backups leave nothing behind
 ├── test_map_carto_key.py         unit tests — map.carto_api_key validation
 ├── test_migration_v7.py          unit tests — schema migration v7
 ├── test_ntfy_installer_helper.py unit tests — every ntfy entry point goes through the helper
 ├── test_ntfy_yaml.py             unit tests — notification-server settings (validation, server.yml, restore, Notifications tab, message cache)
+├── test_perf_table_sizes.py      unit tests — Performance page table sizes are measured on request
 ├── test_photo_resolver.py        unit tests — photo enrichment cache logic
 ├── test_poll_robustness.py       unit tests — collector poll resilience to bad records
 ├── test_preflight.py             unit tests — startup config validation
@@ -237,9 +255,11 @@ aerodrome/
 ├── test_status_and_lookups.py    unit tests — health summary, no-owner and offline lookups, clock after boot
 ├── test_sudoers_boundary.py      unit tests — what the v6 rules grant (sudo's matching) and deny
 ├── test_sudoers_gate_contract.py unit tests — Updates-page sudoers gate + refresh commands
+├── test_text_shades.py           unit tests — red, amber and green text shades
 ├── test_type_code.py             unit tests — aircraft type code (feed vs hexdb fallback)
 ├── test_uninstall.py             installer tests — uninstall.sh removal rules
 ├── test_update_apply.py          unit tests — staged update apply, boot guard, rollback, kill points
+├── test_update_retire.py         unit tests — files earlier releases left behind are retired on update
 ├── test_updates_modal_commands.py unit tests — Updates-page refresh command (static)
 ├── test_updates_page_b4a.py      unit tests — Updates-page update states and wording (static)
 ├── test_web_hardening.py         unit tests — Host allowlist + input sanitising
@@ -359,12 +379,24 @@ auto-generated hints. Measurement first; no guessing.
 Fuller guidance and concrete examples in
 **[docs/INSTALL.md](docs/INSTALL.md)**.
 
-## Some things Aerodrome does not have
+## What Aerodrome doesn't have, and what it looks up
 
 No cloud account. No user tracking. No telemetry. No ads. No subscription.
 No analytics SDK. No "premium features." No agreement to sign. It runs
-on your hardware, serves your data, and talks to exactly the services
-you tell it to.
+on your hardware and keeps your data there.
+
+It does look a few things up on the internet. By default it asks
+hexdb.io for an aircraft's owner and registration, adsb.lol for its
+route, and planespotters.net for a photo; those requests carry the
+aircraft's ICAO code or callsign, never your location or anything about
+you. It checks GitHub once a month for a new release, and installs one
+only when you click Apply or turn on automatic updates. Your browser
+loads the map tiles from OpenStreetMap or CARTO. The fonts and the map
+library ship with Aerodrome. Weather radar (RainViewer), FlightAware
+routes and push notifications stay off until you set them up.
+
+Route lookups can be turned off with `display.show_routes`, and the
+update check with `updates.github.enabled`.
 
 ## Project status
 
@@ -394,8 +426,9 @@ What that means in practice:
 - **[CHANGELOG.md](CHANGELOG.md)** — every release, with explanatory
   notes on what changed and why.
 - **In-app docs** — once installed, the gear menu's Documentation page
-  renders all of these inline so you can read them on a phone without
-  leaving the dashboard.
+  shows this README, the operations manual, the changelog, the search
+  guide and the performance notes inline, so you can read them on a
+  phone without leaving the dashboard.
 
 ## License
 
@@ -409,15 +442,25 @@ Built on top of the work of many others:
   [dump1090](https://github.com/flightaware/dump1090) /
   [tar1090](https://github.com/wiedehopf/tar1090) — the ADS-B receivers
   whose JSON output Aerodrome consumes.
-- [hexdb.io](https://hexdb.io) — the registration lookup service.
+- [hexdb.io](https://hexdb.io) — owner, registration and type lookups.
+- [adsb.lol](https://www.adsb.lol) — flight routes, from its open route data.
+- [planespotters.net](https://www.planespotters.net) — aircraft photos,
+  credited to each photographer where they're shown.
+- [OurAirports](https://ourairports.com) — the airport list (public domain).
+- [RainViewer](https://www.rainviewer.com) — the optional weather-radar overlay.
+- [FlightAware AeroAPI](https://www.flightaware.com/aeroapi/) — optional
+  route lookups with your own key.
 - [ntfy](https://ntfy.sh) by Philipp C. Heckel — the push notification
   service.
 - [FastAPI](https://fastapi.tiangolo.com) /
   [Uvicorn](https://www.uvicorn.org) /
   [SQLite](https://www.sqlite.org) — the runtime.
-- [Leaflet](https://leafletjs.com) — the JavaScript map library that
-  renders the aircraft detail page's position map. Bundled with
-  Aerodrome (no CDN dependency at runtime).
+- [Leaflet](https://leafletjs.com) — the JavaScript map library behind
+  the Live radar, the display board and the aircraft page's position map.
+  Bundled with Aerodrome (no CDN dependency at runtime).
+- [Outfit](https://github.com/Outfitio/Outfit-Fonts) and
+  [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) — the
+  fonts, under the SIL Open Font License, bundled with Aerodrome.
 - [OpenStreetMap](https://www.openstreetmap.org) contributors — the
   light-theme base map tiles and the underlying map data. Used under
   the [Open Database License](https://www.openstreetmap.org/copyright).

@@ -71,9 +71,9 @@ Known limits of this boundary:
 
 A few practices worth following on any Aerodrome deployment:
 
-- Run Aerodrome on a LAN-only or VPN-only network. Don't expose port 8080 to the public internet.
+- Run Aerodrome on a LAN-only or VPN-only network. Don't expose Aerodrome's port (8000 by default) to the public internet.
 - Keep the host system patched. Debian, Ubuntu, and Raspberry Pi OS all receive regular security updates.
-- Use the in-app update mechanism (gear menu → Check for Updates) rather than manual file edits or `git pull`, so the install layout, sudoers integration, and systemd unit stay consistent.
+- Use the in-app update mechanism (gear menu → Check for updates) rather than manual file edits or `git pull`, so the install layout, sudoers integration, and systemd unit stay consistent.
 - Review the live `config.yaml` after updates. The config-merge-on-startup logic preserves your values across upgrades, but newly-added keys land with sensible defaults that you may want to review.
 
 Thanks for helping keep Aerodrome secure.

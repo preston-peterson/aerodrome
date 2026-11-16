@@ -1,4 +1,4 @@
-# Version: 3.4.187
+# Version: 3.4.188
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -12591,7 +12591,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Tap-to-open working — Aerodrome</title>
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/fonts/fonts.css">
     <link rel="stylesheet" href="/static/theme.css">
     <style>
     body {

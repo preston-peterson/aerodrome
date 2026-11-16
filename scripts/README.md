@@ -60,6 +60,7 @@ that must never ship. Stdlib only; reads both in memory, extracts nothing.
 ```bash
 python3 scripts/check_release_zip.py ZIP X.Y.Z REF [--repo DIR] [--label TEXT] [--no-hint]
 python3 scripts/check_release_zip.py --deny-paths [X.Y.Z]  < paths
+python3 scripts/check_release_zip.py --import-check ZIP X.Y.Z
 ```
 
 `REF` is any tree-ish: a commit (the release commit), or a tree id (a
@@ -93,6 +94,14 @@ Exit `1` when there are any. `package-release.sh` runs it on the tracked
 files before zipping; `publish-release.sh` on the `--target` tree and on the
 downloaded zip. With `X.Y.Z`, a file an older release is known to have
 carried (`docs/tech-debt-audit.md` before v3.4.109) is a note, not a hit.
+
+`--import-check` extracts the zip to a temporary directory and test-imports the
+packaged tree in a fresh `python3 -I`: every module that `main.py`, `server.py`
+and `collector.py` import at load time must be in the zip, and those three must
+import from it (third-party packages are stubbed). Exit `0` = imports, `1` = a
+module is missing or fails to import, `2` = usage or unreadable zip.
+`package-release.sh` runs it on every build and in `--verify`, so a module that
+isn't in git can't ship silently.
 
 ## `check_installers.py`
 
@@ -178,6 +187,86 @@ with indented details; exit `0` = clean, `1` = findings, `2` = usage error (a
 `ROOT` that isn't a directory). A `ROOT` with no shell scripts at all is a
 finding, never a silent pass. `test_check_installers.py` imports its
 functions.
+
+## `build_airports.py`
+
+Rebuilds `static/airports.json` (the airports the maps, the takeoff and landing
+detector and the airport pages use) from the public-domain OurAirports data.
+Output is deterministic, one airport per line.
+
+```bash
+python3 scripts/build_airports.py                  # downloads airports.csv and runways.csv
+python3 scripts/build_airports.py --airports airports.csv --runways runways.csv
+```
+
+Other flags: `--out PATH` (default `static/airports.json`) and `--built DATE`
+(the date to record; default today). An existing CSV path is used as given;
+one that is absent is downloaded.
+
+## `gen_type_classes.py`
+
+Regenerates `type_classes.py` from `scripts/doc8643.csv` (ICAO DOC 8643). The
+CSV is a local cache that isn't shipped, so the generated table is committed.
+
+```bash
+python3 scripts/gen_type_classes.py          # rewrite type_classes.py
+python3 scripts/gen_type_classes.py --check  # exit 1 if it would change
+```
+
+## `gen_type_shapes.py`
+
+Generates Aerodrome's own parametric aircraft silhouettes, one SVG per ICAO
+type code in `static/shapes/`, plus the `static/shapes-data.js` data file.
+Dimensions come from `scripts/type_dims.csv`; per-type rows live in the
+script's `SOURCES` table. Re-running regenerates every file, so tune shapes by
+editing the rows and presets, never the output.
+
+```bash
+python3 scripts/gen_type_shapes.py [--out static/shapes] [--js FILE] [--report] [--jobs N] [CODE ...]
+```
+
+With codes, only those types are built. `--report` prints a report.
+
+## `shape_coverage.py`
+
+Audit of which aircraft designators a transponder can emit that Aerodrome has
+no silhouette for (they fall back to the generic chevron; helicopters are
+excluded). `bump-version.sh` runs it as a gate: exit `0` = report printed (an
+unavailable DOC 8643 source is not a failure), `2` = the shipped
+`static/shapes-data.js` is unreadable or has no shapes.
+
+```bash
+python3 scripts/shape_coverage.py                 # human report
+python3 scripts/shape_coverage.py --json          # machine-readable
+python3 scripts/shape_coverage.py --cache-only    # read doc8643.csv; never fetch or write
+python3 scripts/shape_coverage.py --update-cache  # refresh doc8643.csv
+python3 scripts/shape_coverage.py --no-doc        # skip DOC 8643 entirely (offline)
+```
+
+## `admin_audit.py`
+
+Header-consistency check for the admin pages. Renders each admin page with the
+same Playwright and mock-data setup as `screenshots.py`, crops each to its
+header and stacks them into one strip, so drift between pages is visible at a
+glance. Run it before shipping a change to an admin-page template or the shared
+header.
+
+```bash
+pip install -r requirements-dev.txt
+playwright install chromium
+python3 scripts/admin_audit.py
+```
+
+Output goes to `screenshots/admin-audit/` (`admin-audit-strip.png` and
+`admin-audit-grid.html`).
+
+## Data files
+
+`doc8643.csv` (ICAO DOC 8643 type designators, a local cache used by
+`gen_type_classes.py` and `shape_coverage.py`), `type_dims.csv` (FAA wingspan,
+length and engine data used by `gen_type_shapes.py`) and
+`reviewed-doc-images.sha256` (hashes of the doc screenshots a human has
+reviewed) are inputs to the tools above, not scripts.
 
 ## `aerodrome-helper`
 

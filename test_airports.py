@@ -239,6 +239,22 @@ class TestValidator(unittest.TestCase):
         self.assertTrue(self.errors(True))
 
 
+class TestBundledFonts(unittest.TestCase):
+    """v3.4.188: Outfit and JetBrains Mono ship in static/fonts/ with their licences."""
+
+    def test_every_font_fonts_css_names_is_there_with_its_licence(self):
+        d = REPO / "static" / "fonts"
+        css = (d / "fonts.css").read_text()
+        files = re.findall(r"url\(([^)]+\.woff2)\)", css)
+        self.assertEqual(len(set(files)), 4)
+        for f in set(files):
+            self.assertGreater((d / f).stat().st_size, 5000, f)
+            self.assertEqual((d / f).read_bytes()[:4], b"wOF2", f)
+        self.assertEqual(sorted(re.findall(r"font-family: '([^']+)'", css)), ["JetBrains Mono"] * 2 + ["Outfit"] * 2)
+        for lic in ("OFL-Outfit.txt", "OFL-JetBrainsMono.txt"):
+            self.assertIn("SIL Open Font License", (d / lic).read_text())
+
+
 class TestPagesVersionStaticUrls(unittest.TestCase):
     """v3.4.186: every /static/ URL in every served page carries ?v=<version>, so an update can't
     leave a browser on a cached script. airports.js was missed by the old per-file list, and after
@@ -272,6 +288,10 @@ class TestPagesVersionStaticUrls(unittest.TestCase):
             html = out.body.decode()
             urls = re.findall(r'(?:src|href)="(/static/[^"]*)"', html)
             seen[path] = urls
+            # v3.4.188: the fonts ship with Aerodrome; no page asks Google for them.
+            self.assertNotIn("fonts.googleapis.com", html, path)
+            self.assertNotIn("fonts.gstatic.com", html, path)
+            self.assertIn("/static/fonts/fonts.css?v=" + version, urls, f"{path} doesn't load the fonts")
             for u in urls:
                 self.assertTrue(u.endswith("?v=" + version), f"{path}: {u} has no ?v={version}")
         self.assertIn("/static/airports.js?v=" + version, seen["/"])

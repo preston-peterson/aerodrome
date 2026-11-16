@@ -2300,6 +2300,44 @@ class TestAirportPage(BrowserCase):
         self.assertEqual(self.errors, [])
 
 
+class TestSearchRows(BrowserCase):
+    """v3.4.188: Search's Rows menu offers what the server sends (at most 500 a page), and a
+    stored 1000 from before becomes 500."""
+
+    def test_rows_menu_and_a_stored_1000(self):
+        self.site.api["/api/live"] = _aircraft(1)
+        self.site.api["/api/status"] = _status()
+        self.page.add_init_script("localStorage.setItem('aerodrome_search_pagesize_v1', '1000')")
+        self.open("/")
+        self.page.evaluate("go('search')")
+        self.assertEqual(self.page.evaluate("[...document.querySelectorAll('#searchPageSize option')].map(o => o.value)"),
+                         ["100", "200", "500"])
+        self.assertEqual(self.page.evaluate("_searchState.pageSize"), 500)
+        self.assertEqual(self.page.input_value("#searchPageSize"), "500")
+        self.assertEqual(self.errors, [])
+
+
+class TestBundledFonts(BrowserCase):
+    """v3.4.188: the pages draw with the fonts that ship in static/fonts/, and none asks Google."""
+
+    def test_pages_load_the_bundled_fonts(self):
+        self.site.api["/api/live"] = _aircraft(1)
+        self.site.api["/api/status"] = _status()
+        asked = []
+        self.page.on("request", lambda r: asked.append(r.url))
+        for path in ("/", "/board?mode=board", "/status"):
+            with self.subTest(page=path):
+                self.open(path)
+                self.advance(1000)
+                self.page.evaluate("document.fonts.ready")
+                loaded = self.page.evaluate("[...document.fonts].filter(f => f.status === 'loaded').map(f => f.family)")
+                self.assertIn("Outfit", loaded)
+                self.assertIn("JetBrains Mono", loaded)
+        self.assertEqual([u for u in asked if "fonts.g" in u], [])
+        self.assertTrue(any(u.endswith(".woff2") and "/static/fonts/" in u for u in asked))
+        self.assertEqual(self.errors, [])
+
+
 class TestConfigTakeoffsAndLandings(_ConfigPage):
     """Configuration: the retention line and the Stats section (v3.4.184)."""
 

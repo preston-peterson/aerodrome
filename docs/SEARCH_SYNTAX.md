@@ -2,7 +2,8 @@
 
 The Search tab supports a free-form text query that the parser interprets
 into one or more filters plus optional free-text matching. Multiple
-filters AND together (an aircraft must match all of them).
+filters AND together (an aircraft must match all of them), with one
+exception: several Category words OR together.
 
 ## Field types
 
@@ -52,7 +53,11 @@ Aircraft registration code:
 - `N12345` — US tail
 - `G-XYZA` — UK tail
 - `D-ABCD` — German tail
-- `JA001A` — Japanese tail
+- `JA-001A` — Japanese tail
+
+Only US-style N-numbers (`N12345`) and tails with a dash after one or two
+letters get a Tail chip. A tail written without a dash, like `JA001A`, is
+searched as free text instead.
 
 ### ICAO hex
 Six-character hex aircraft address:
@@ -79,6 +84,21 @@ tokens to narrow further:
 If your install hasn't configured any military prefixes or special
 aircraft, this filter returns no results — the system can't classify
 aircraft as military without rules to apply.
+
+### Category
+Match aircraft by broad category:
+
+- `commercial`
+- `general_aviation` or `ga`
+- `helicopter` or `heli`
+- `unknown`
+
+Unlike other tokens, several category words together match **any** of
+them: `commercial heli` returns commercial aircraft and helicopters. They
+combine with other tokens as usual:
+
+- `ga Canada` — Canadian general-aviation aircraft
+- `heli today` — helicopters seen today
 
 ### Watchlist
 Match aircraft on your configured watchlist:
@@ -220,6 +240,12 @@ Bounds must be non-negative numbers.
 Aircraft with no last-known position (rare but possible) are excluded
 from distance-filtered results.
 
+### Airports
+Type the code of an airport near your receiver — `KDFW` or `DFW` — and
+Search shows a link to that airport's page above the aircraft list. The
+word is still searched like any other, so the aircraft results are the same
+as without the link.
+
 ## Combining tokens
 
 All tokens space-separated; conditions AND together:
@@ -286,7 +312,14 @@ input shows examples matching the current setting.
 - **Track ↗** — opens the aircraft in your configured external tracker
   (set via `receiver.track_link_provider`)
 - **Export ▾** — CSV export of current page or all matches up to 5,000
-  rows
+  rows. The columns are fixed: ICAO, registration, callsign, type, type
+  description, operator, country, sighting count, last position, and first
+  and last seen (UTC), plus `sightings_in_range` when a date is active.
+- **Date presets** — after your first search, a **Today / Last 7 days /
+  Last 30 days / Custom range** bar appears. A preset replaces any date typed
+  in the query.
+- **Sorting** — click a column header to sort (click again to change direction). On a
+  phone, use the **Sort** menu instead. The default is **Relevance**.
 - **Hash URL** — every search updates `#search?q=...` so links are
   shareable
 
@@ -299,5 +332,5 @@ input shows examples matching the current setting.
   which paginates the full sighting history via "Load more".
 - **16 tokens** — query parser truncates beyond this (defense against
   pasted paragraphs)
-- **500** — maximum per-page result limit (default 100, selectable
-  via Rows: dropdown)
+- **500** — maximum per-page result limit (default 100; the Rows: menu
+  offers 100, 200 and 500)

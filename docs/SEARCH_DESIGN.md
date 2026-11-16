@@ -1,9 +1,15 @@
 # Search architecture (v2.51.0 design)
 
-This document is the planning artifact for v2.51.0's headline feature:
-search across the deep archive. It is NOT a shipped feature yet — it is
-the design we agreed on before any code was written. If implementation
-diverges from this document, the document is wrong; update it.
+> **Historical document.** This is the design doc for the original Search
+> work (v2.50.x–v2.51.0), kept for its reasoning. Search has shipped and
+> grown since; parts of this text (the FTS triggers, the token table, the
+> API shape, the status notes) describe the plan, not today's behaviour. For
+> what Search does now, see [`SEARCH_SYNTAX.md`](./SEARCH_SYNTAX.md) and
+> `search.py`.
+
+This document was the planning artifact for v2.51.0's headline feature:
+search across the deep archive. It records the design agreed on before the
+code was written.
 
 ## Context
 
@@ -266,7 +272,7 @@ one of these patterns, in priority order:
 | 3-letter prefix only      | Callsign      | Prefix     |
 | Anything else             | Free text     | FTS5 MATCH |
 
-A query string `B738 Canada last week` produces three filters:
+A query string `B738 Canada last:7d` produces three filters:
 `aircraft_type = 'B738'`, `country = 'Canada'`, and seen during the last 7
 days (`search._window_clause`: last seen in the window, or last seen after it
 with a `sightings_hourly` row in it). AND-ed together.
@@ -303,7 +309,7 @@ ORDER BY score DESC, then last_seen_at DESC as tiebreaker.
 ## API shape
 
 ```
-GET /api/search?q=<query>&limit=50&offset=0&sort=relevance
+GET /api/search?q=<query>&limit=50&offset=0&order=<column>&dir=<asc|desc>
 ```
 
 Returns:
@@ -345,7 +351,7 @@ to external track services.
 
 ## UI
 
-New top-level nav: `Live | Watchlist | Military | Stats | All | Search | …`
+New top-level nav: `Live | Watchlist | Military | Stats | Search | …`
 
 Search page shape:
 - Search input, prominent, focused on page load.
@@ -354,7 +360,7 @@ Search page shape:
   (lat/lon as small monospace strip), sighting count, last-seen time.
 - Click a result → existing aircraft-detail flow (`/aircraft/{icao}`),
   enhanced with lifetime view in Phase 3.
-- URL state — `/search?q=...` so links are shareable, browser back/forward
+- URL state — `#search?q=...` so links are shareable, browser back/forward
   works, deep-linking from external sites works.
 
 Empty state: brief explanation + 3-4 example queries.

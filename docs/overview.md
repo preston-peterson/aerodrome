@@ -41,7 +41,7 @@ _Aerodrome is a self-hosted web dashboard for your personal ADS-B receiver. Poin
 
 It's not a replacement for FlightAware or the giant commercial trackers. Those show you the whole sky; Aerodrome shows you *your* sky — whatever your antenna can hear, indexed and searchable, with a watchlist for aircraft you care about, automatic highlighting of military traffic, a rich statistics view, and push notifications to your phone when something interesting appears overhead.
 
-It's open-source, runs on anything from a Raspberry Pi to a spare x86 box, stays entirely on your LAN unless you choose otherwise, and has no cloud dependencies beyond an optional registration-lookup API.
+It's open-source, runs on anything from a Raspberry Pi to a spare x86 box, keeps your data on your own machine, and needs no account anywhere. The few things it looks up on the internet are aircraft owners and registrations (hexdb.io), routes (adsb.lol), photos (planespotters.net) and a monthly check for new releases on GitHub, plus the map tiles your browser loads; weather radar, FlightAware routes and push notifications stay off until you set them up.
 
 :::image screenshot-live.png max_h=3.8
 The Live view — aircraft currently visible to the receiver.
@@ -72,7 +72,7 @@ Watchlist: aircraft you've flagged to follow. Add by ICAO, callsign prefix, or a
 :::
 
 :::feature
-Military: auto-detected military flights based on hex-range rules. Shows every military aircraft seen in your retention window, with special-category labels (AWACS, refueling, VIP transport, etc.) where applicable.
+Military: auto-detected military flights based on hex ranges, callsign prefixes, special-aircraft lists and your receiver's own military flags. Shows every military aircraft seen in your retention window, with special-category labels (AWACS, refueling, VIP transport, etc.) where applicable.
 :::
 
 :::feature
@@ -104,7 +104,7 @@ The collector: polls your ADS-B receiver every 60 seconds (configurable), pulls 
 :::
 
 :::feature
-The web server: a FastAPI application that serves the dashboard templates and the {endpoints} JSON API endpoints behind them. Single-process, bound by default to your LAN IP on port 8000.
+The web server: a FastAPI application that serves the dashboard templates and the {endpoints} JSON API endpoints behind them. Single-process, listening on every network interface on port 8000 by default.
 :::
 
 :::feature
@@ -113,7 +113,7 @@ The notifier: optional. Dispatches push notifications via ntfy (self-hosted or t
 
 ## Data model
 
-{sqlite_tables} tables. Three are sighting logs with configurable per-table retention (`all_sightings`, `military_sightings`, `watchlist_sightings`) — they get pruned on a schedule. Two are permanent: `seen_aircraft` stores the first-ever sighting of every ICAO, and `stats_records` holds the all-time superlatives (furthest, fastest, highest, etc.). Everything lives in one SQLite file that's straightforward to back up, inspect, or copy to a bigger disk.
+{sqlite_tables} tables. Three are sighting logs with configurable per-table retention (`all_sightings`, `military_sightings`, `watchlist_sightings`) — they get pruned on a schedule. Two are permanent: `seen_aircraft` stores the first-ever sighting of every ICAO, and `stats_records` holds the all-time superlatives (furthest, fastest, highest, etc.). `airport_events` keeps the takeoffs and landings it saw, a year by default; the rest are hourly rollups that keep Stats and Search fast, and caches for owner, route and photo lookups. Everything lives in one SQLite file that's straightforward to back up, inspect, or copy to a bigger disk.
 
 ## Runs as a systemd service
 
@@ -183,7 +183,7 @@ Running a service at home long-term means updates, backups, and things occasiona
 
 ## Updates via the web UI
 
-The Updates page polls GitHub on a configurable cadence (daily, weekly, monthly, or never) and shows when a new release is available. Click "Apply update" and the server downloads the release zip, verifies its SHA256 checksum, unpacks and test-loads the new version to the side, switches it in, and restarts — and puts the previous version back on its own if the new one doesn't start. The previous version stays in `.backups/<timestamp>/` in case you want to go back by hand. Three optional notification surfaces — in-card banner, gear-menu badge, and ntfy push to your phone — let you know about new releases without checking the page. Automatic updates, off by default, install the latest release on a schedule you pick (every day or one day a week, at a set time), which suits a display board nobody sits at; a release that was put back is never installed automatically again. Dropping a local zip onto the Updates page and SSH/rsync both still work as alternatives for specific-version installs or scripted workflows.
+The Updates page polls GitHub on a configurable cadence (daily, weekly, monthly — the default — or never) and shows when a new release is available. Click "Apply update" and the server downloads the release zip, verifies its SHA256 checksum, unpacks and test-loads the new version to the side, switches it in, and restarts — and puts the previous version back on its own if the new one doesn't start. The previous version stays in `.backups/<timestamp>/` in case you want to go back by hand. Three optional notification surfaces — in-card banner, gear-menu badge, and ntfy push to your phone — let you know about new releases without checking the page. Automatic updates, off by default, install the latest release on a schedule you pick (every day or one day a week, at a set time), which suits a display board nobody sits at; a release that was put back is never installed automatically again. Dropping a local zip onto the Updates page and SSH/rsync both still work as alternatives for specific-version installs or scripted workflows.
 
 ## Full backup and restore
 
@@ -221,7 +221,7 @@ An ADS-B receiver on your network: anything that exposes a JSON aircraft feed �
 :::
 
 :::feature
-A host to run Aerodrome: Ubuntu 22.04+ or Debian 12+ recommended. Hardware depends on traffic volume — see the *Performance at scale* section above for concrete tier guidance. Python 3.10+.
+A host to run Aerodrome: a Linux machine with systemd — Debian/Ubuntu/Raspberry Pi OS, Fedora/RHEL, Arch or openSUSE. Hardware depends on traffic volume — see the *Performance at scale* section above for concrete tier guidance. Python 3.10+.
 :::
 
 :::feature
@@ -230,7 +230,7 @@ A host to run Aerodrome: Ubuntu 22.04+ or Debian 12+ recommended. Hardware depen
 
 ## Installation
 
-One command on a fresh Ubuntu 22.04+ or Debian 12+ host: `bash <(curl -fsSL https://install.aerodromeadsb.com)`. The bootstrap detects your platform, installs prerequisites, downloads the latest release with SHA256 verification, prompts for the bare minimum config (receiver IP, optional latitude/longitude), and hands off to the bundled install script which creates a Python virtualenv, writes the systemd unit, sets up the scoped sudoers rule, and starts the service. Open `http://your-host:8000/` and visit the gear menu's Configuration page to adjust settings — auto-detected timezone, watchlist, notifications, retention, display preferences. The manual install path (download zip, edit `config.yaml`, run `./install.sh`) remains supported for offline installs, version-pinning, and git-checkout workflows.
+One command on a fresh Linux host (Debian/Ubuntu, Fedora/RHEL, Arch or openSUSE): `bash <(curl -fsSL https://install.aerodromeadsb.com)`. The bootstrap detects your platform, installs prerequisites, downloads the latest release with SHA256 verification, prompts for the bare minimum config (receiver IP, optional latitude/longitude), and hands off to the bundled install script which creates a Python virtualenv, writes the systemd unit, sets up the scoped sudoers rule, and starts the service. Open `http://your-host:8000/` and visit the gear menu's Configuration page to adjust settings — auto-detected timezone, watchlist, notifications, retention, display preferences. The manual install path (download zip, edit `config.yaml`, run `./install.sh`) remains supported for offline installs, version-pinning, and git-checkout workflows.
 
 Don't have a real ADS-B receiver yet? Add `--demo` to the install command and Aerodrome installs in demo mode with a small synthetic feeder running alongside it — the dashboard fills with 50 simulated aircraft, a starter watchlist, occasional military traffic and emergency squawks. An in-app wizard at Configuration → Demo handles the transition to your real receiver when you're ready. See the *Demo mode* section in `docs/INSTALL.md` for details.
 
@@ -243,7 +243,7 @@ Language: Python 3.10+, a little JavaScript (vanilla, no build step, no framewor
 :::
 
 :::feature
-Web: FastAPI + Uvicorn. Jinja templates served as static HTML.
+Web: FastAPI + Uvicorn. HTML pages served directly, no template engine; the fonts and the map library ship with Aerodrome.
 :::
 
 :::feature
@@ -255,7 +255,7 @@ Push: ntfy, self-hosted or public. Installed and managed by Aerodrome itself if 
 :::
 
 :::feature
-Deployment: Systemd service. Install scripts for Ubuntu/Debian.
+Deployment: Systemd service. Install scripts for Debian/Ubuntu, Fedora/RHEL, Arch and openSUSE.
 :::
 
 :::feature

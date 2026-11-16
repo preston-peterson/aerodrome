@@ -81,7 +81,7 @@ Feature requests are fine, with a few realities to set expectations:
 
 ## If you're forking
 
-Go ahead. The MIT license has you covered. Two practical pointers:
+Go ahead. The MIT license has you covered. A few practical pointers:
 
 - **`bump-version.sh`** drives the release process — VERSION,
   CHANGELOG, and version strings across source files. Read it before

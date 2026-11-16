@@ -114,7 +114,8 @@ same query while most other queries had already hit their cache-fit
 floor at 6 GB.
 
 If your install is at the heavy tier and stats feel sluggish, the
-Performance page diagnostic at `/performance` shows per-query timings
+Performance page diagnostic (`/performance`, under gear menu →
+Diagnostics) shows per-query timings
 that surface cache-related slowness explicitly. Queries that vary
 substantially between cold and warm runs (and especially queries that
 get faster after you increase RAM) are doing disk I/O that more cache
@@ -180,7 +181,7 @@ Aerodrome installed:
 bash <(curl -fsSL https://install.aerodromeadsb.com)
 ```
 
-That's it. The bootstrap walks through eight steps:
+That's it. The bootstrap walks through these steps:
 
 1. **Platform check** — detects the distro family from `/etc/os-release`
    (Debian, Fedora, Arch, or openSUSE) and selects the matching package
@@ -191,8 +192,8 @@ That's it. The bootstrap walks through eight steps:
    and points you at the in-app updater instead. It never deletes or takes
    over a folder: the install folder must be new, or an empty folder you
    can write to (see *The install folder* below).
-3. **Prerequisites** — installs `unzip` and Python's venv module via the
-   detected package manager if they're missing. (On Debian-family this is
+3. **Prerequisites** — installs `curl`, `unzip`, `python3` and Python's venv
+   module via the detected package manager if they're missing. (On Debian-family this is
    the separate `python3-venv` package; on Fedora, Arch, and openSUSE the
    venv module is bundled into the main `python3` package, so no separate
    install is needed.)
@@ -405,16 +406,26 @@ demo-watchlist seeder, and installs the synthetic-feeder systemd unit.
 Two systemd services side by side:
 
 - **`aerodrome.service`** — the main tracker. Reads `config.yaml` (which
-  has `receiver.ip: 127.0.0.1` and `receiver.port: 8080` in demo mode)
-  and polls the synthetic feeder at the same URL it would poll a real
-  receiver.
+  has `receiver.ip: 127.0.0.1` and the feeder's port, normally 8080, in
+  demo mode) and polls the synthetic feeder at the same URL it would poll a
+  real receiver.
 - **`aerodrome-synthetic-feeder.service`** — the simulator. Serves
-  `/data/aircraft.json` on `127.0.0.1:8080` with a deterministic fleet
+  `/data/aircraft.json` on `127.0.0.1` (port 8080 unless it was taken, see
+  below) with a deterministic fleet
   of 50 aircraft (seed locked to `1903`, so the same simulated aircraft
   appear on every demo install everywhere and persist across restarts).
 
 The feeder is bundled as `tools/synthetic_feeder/` in the release zip,
 so demo installs don't need additional downloads.
+
+Port 8080 is the first choice. If something is already listening on it,
+`install.sh` takes the first free port of 8080, 8088 and 28080 and sets
+`receiver.port` to match; a re-run keeps the port an existing feeder
+already uses unless something else has taken it since. To choose the
+port yourself, pass `--feeder-port <n>` to `install.sh`
+(`./install.sh --demo --home-lat … --home-lon … --feeder-port 8090`); an
+explicit port is used even if it looks busy, with a warning. The bootstrap
+has no such flag.
 
 ### What you see in demo mode
 
@@ -490,8 +501,13 @@ from `/etc/os-release` and use the appropriate package manager:
 |--------------|------------------------------------------------------------------|-------------------------|--------------------------------------|
 | **Debian**   | `debian`, `ubuntu`, `raspbian`, `linuxmint`, `pop`, `elementary`, `neon`, `kali`, `parrot` | `apt-get update`         | `apt-get install -y`                 |
 | **Fedora**   | `fedora`, `rhel`, `centos`, `rocky`, `almalinux`, `amzn`, `ol`   | *(auto-refresh on install)* | `dnf install -y`                    |
-| **Arch**     | `arch`, `manjaro`, `endeavouros`, `garuda`, `artix`, `cachyos`   | `pacman -Sy`            | `pacman -S --needed`                 |
+| **Arch**     | `arch`, `manjaro`, `endeavouros`, `garuda`, `artix`, `cachyos`   | *(none; part of the install)* | `pacman -Syu --needed`          |
 | **openSUSE** | `opensuse-*`, `sles`, `sled`                                     | `zypper refresh`        | `zypper install`                     |
+
+On Arch the install is a single `pacman -Syu --needed`, because Arch doesn't
+support refreshing the package lists and then installing one package (a
+partial upgrade). That means the bootstrap brings the whole system up to
+date when it installs prerequisites; it tells you so first.
 
 For derivatives whose ID isn't listed, the family is inferred from
 `ID_LIKE` in `/etc/os-release` — so most downstream distros that set
@@ -680,6 +696,21 @@ Recommended options:
   **[ZeroTier](https://www.zerotier.com)** — similar WireGuard-based
   overlays with different tradeoffs.
 - **Your own WireGuard** — Aerodrome works fine over any existing VPN.
+
+**Opening Aerodrome by a name.** To block "DNS rebinding" (a malicious web
+page pointing its own domain name at your Aerodrome to control it),
+Aerodrome only answers requests addressed to a host name it knows. These
+always work: IP addresses (including a Tailscale `100.x` address), `localhost`,
+this machine's own host name, any single-word name (such as `example-host`),
+names ending in `.local`, `.lan`, `.home.arpa`, `.internal`, `.localdomain` or
+`.localhost`, and the host of `notifications.public_url`. Any other name (a
+public DNS name, a reverse proxy's name, a Tailscale MagicDNS name such as
+`example-host.example-tailnet.ts.net`) is refused with a 403 page until you
+add it in Configuration → Web server → **Allowed hostnames**
+(`web.allowed_hosts`, comma-separated, for example
+`aerodrome.example.com, tracker.example.net`). The change applies without a
+restart. If you're locked out, open Aerodrome by its IP address, which always
+works, and add the name there.
 
 **Why not port-forwarding?** Aerodrome has no authentication; it trusts
 the network layer for access control. Exposing it directly to the public
@@ -1312,7 +1343,13 @@ retention:
   military_days: 30
   watchlist_days: 30
   all_days: 30
+  airport_days: 365
 ```
+
+`airport_days` is how long the takeoffs and landings your receiver saw are
+kept (shown on the aircraft page, in the Live map's airport panel and on the
+Stats tab's Airports section). Each is one small row, so they are kept
+much longer than the sightings they were found in: a year by default.
 
 ### Logging
 
@@ -1331,7 +1368,7 @@ operation.
 ```yaml
 stats:
   enabled: true                # Set false to hide the Stats tab entirely
-  refresh_interval: 300        # Auto-refresh every N seconds (0 to disable)
+  refresh_interval: 300        # Auto-refresh every N seconds (0 to disable, otherwise 30-3600)
   track_gap_minutes: 5         # Gap threshold for "longest continuous track"
 ```
 
@@ -1344,12 +1381,45 @@ sighting plus a reappearance at dusk from being reported as one
 new-record alert color, range rose configuration) are easiest to
 manage through the web UI's Configuration page.
 
+### Other settings
+
+These keys are all in `config.yaml.example` with comments, and all are
+editable on the Configuration page, in the tab named in the last column.
+
+| Key | Default | What it does | Configuration tab |
+|---|---|---|---|
+| `receiver.poll_interval` | `60` | Seconds between polls of the receiver (5-3600). | Receiver |
+| `receiver.track_link_provider` | `airplanes_live` | Which external tracker the "Track ↗" links open: `airplanes_live`, `flightaware`, `flightradar24`, `airnavradar` or `planefinder`. | Receiver |
+| `web.allowed_hosts` | `""` | Extra host names you open Aerodrome by, comma-separated (see *Remote access*). | Web server |
+| `display.date_format` | `MDY` | Which slash-separated dates Search accepts: `MDY`, `DMY` or `ISO` (ISO dates always work). | Display |
+| `display.time_format` | `auto` | `auto` follows the browser's locale, or `12h` / `24h`. | Display |
+| `display.show_routes` | `true` | Show each flight's origin and destination. `false` hides them everywhere and stops the lookups for them. | Display |
+| `display.wallboard_layout` | `ask` | Default layout for the `/board` wall display: `ask` (a one-time picker on each new screen), `radar`, `board` or `hybrid`. Each screen can still choose its own. | Display |
+| `flightaware.api_key` | `""` | Your own FlightAware AeroAPI key, for accurate routes. Blank uses only the free route list. | Display (FlightAware routes) |
+| `flightaware.monthly_limit` | `900` | Lookups Aerodrome allows itself per calendar month (UTC), at $0.005 each; `0` turns lookups off. The page shows it as a dollar budget. | Display (FlightAware routes) |
+| `flightaware.watchlist_lookups` | `false` | Look up watchlist aircraft as soon as they appear, so their alerts show a route. Can use up a month's lookups quickly. | Display (FlightAware routes) |
+| `map.airports` | `major` | Airports on the Live map and the display board: `off`, `major` (major and regional airports) or `all` (also small fields with a paved runway of 3,000 ft or more). Each screen's airport button can change it for that browser. | Map |
+| `map.show_range_rings` | `true` | Show the distance rings around your receiver. | Map |
+| `map.ring_distances` | `50, 100, 150, 200, 250` | Ring distances, in your distance unit. | Map |
+| `map.follow_range_rose` | `false` | Use the Stats range rose's distance bands for the rings instead. | Map |
+| `map.starting_view` | `fit_all` | How the radar frames itself when it first opens: `fit_all`, `fixed_zoom` or `fit_rings`. | Map |
+| `map.fixed_zoom` | `9` | Zoom level (1-18) used when the starting view is `fixed_zoom`. | Map |
+| `map.default_theme` | `auto` | Basemap tiles: `auto` (follows the app's theme), `light` or `dark`. The map's sun/moon toggle overrides it per browser. | Map |
+| `map.carto_api_key` | `""` | Free CARTO key; without it the dark basemap is watermarked. Light maps work without one. The Map tab walks you through getting it. | Map |
+| `map.type_shapes` | `true` | Draw a per-type aircraft silhouette instead of the generic chevron. | Map |
+| `military.use_db_flags` | `true` | Also trust the receiver's own military flag. | Military |
+| `stats.groups.*` | all `true` | Turns whole Stats sections on or off: `today`, `airports`, `extremes`, `composition`, `patterns`, `history`, `records`, `coverage`. `stats.cards.*` toggles single cards, and `stats.groups_order` sets the order. | Stats |
+
+The **Airports** group on the Stats tab shows the takeoffs and landings your
+receiver saw (today, and the busiest airports); how long that history is kept
+is `retention.airport_days`.
+
 ### Data quality filters
 
 ADS-B data is noisy. Transponders misreport, receivers relay indirect
 data, and the occasional garbage value sneaks through. Aerodrome
-applies three filters to keep bad data from polluting your records
-and stats:
+applies these filters and checks to keep bad data from polluting your
+records and stats:
 
 - **Type-aware speed and altitude ceilings.** A 696-kt reading on a
   Cessna 172 is garbage — a 172's max cruise is ~120 kt. Aerodrome caps
@@ -1469,18 +1539,22 @@ directly in `config.yaml`:
 ```yaml
 watchlist_alerts:
   enabled: true
-  trigger: "new"          # "new" | "continuous" | "continuous_dismissable"
+  trigger: "continuous_dismissable"   # "continuous_dismissable" | "continuous" | "live"
   effect: "pulse_dot"     # "pulse_dot" | "pulse" | "dot" | "flash"
   color: "#f59e0b"
 ```
 
-- `trigger: "new"` flashes when an aircraft first appears (or
-  reappears after going out of range) and stops when you click the
-  Watchlist tab.
+- `trigger: "continuous_dismissable"` (the default) flashes any time a
+  watchlist aircraft is visible; clicking the Watchlist tab dismisses it
+  until the next new sighting. The dismissal survives a page reload.
 - `trigger: "continuous"` flashes any time a watchlist aircraft is
-  visible.
-- `trigger: "continuous_dismissable"` flashes continuously but
-  dismisses on tab click; resumes on the next new sighting.
+  visible, until nothing is in range.
+- `trigger: "live"` flashes only while a watchlist aircraft is
+  transmitting right now (present in the receiver's live feed). It turns
+  off by itself when the aircraft stops transmitting or leaves range, so
+  there is nothing to dismiss.
+- An older `trigger: "new"` in a config file is still accepted and is
+  treated as `continuous_dismissable`; saving from the web UI rewrites it.
 - `effect: "pulse_dot"` combines a soft pulse with a notification
   dot (recommended).
 - `effect: "flash"` does a 3-second rapid attention-grabbing flash.
@@ -1496,6 +1570,7 @@ Configuration → Notifications) or directly in `config.yaml`:
 notifications:
   enabled: true
   url: "https://ntfy.sh/your-unique-topic-here"
+  public_url: ""             # where your phone can reach Aerodrome (optional)
   priority: "default"        # min, low, default, high, max
   events:
     receiver_offline: true
@@ -1503,10 +1578,16 @@ notifications:
     watchlist_hit: false     # opt in for noisier events
     new_record: false
     special_aircraft: false
-    daily_summary: false     # coming in a later release
+    daily_summary: false     # sent once a day at daily_summary.time
+    emergency_squawk: false
+    capacity_low: true       # ON by default: the disk is filling up
+    capacity_recovered: true # ON by default: the disk is back to normal
+    update_available: false
   cooldown_minutes:
     watchlist_hit: 10        # suppress same-aircraft repeats within 10 min
     special_aircraft: 30
+    emergency_squawk: 60
+    update_available: 1440   # 24 hours
   rate_limit_per_hour: 20    # overall ceiling across all events
   quiet_hours:
     enabled: false
@@ -1514,7 +1595,35 @@ notifications:
     end: "07:00"
   receiver_offline:
     consecutive_failed_polls: 5   # ~5 min at default 60s poll interval
+  daily_summary:
+    time: "20:00"            # HH:MM in your time zone; used when the event is on
+  capacity:
+    enabled: true
+    recovery_notification: true
+    headroom_threshold: 1.2
+    disk_free_floor_mb: 1024
+    disk_free_pct_floor: 0.05
 ```
+
+**`public_url`** is optional: the address your phone uses to reach
+Aerodrome, such as `http://192.0.2.10:8000` on your LAN, or a Tailscale or
+reverse-proxy address. When it is set, tapping a notification opens the
+matching page (a watchlist hit opens the Watchlist tab with the aircraft
+highlighted, a receiver-offline alert opens `/status`), and watchlist and
+special-aircraft alerts get a Track button. Leave it blank if your phone
+can't reach Aerodrome directly; notifications still arrive, without the tap
+action. The web UI also accepts requests addressed to this URL's host name
+(see *Remote access*).
+
+**Disk capacity alerts are on by default.** `capacity_low` fires once when
+either the projected database size leaves less disk headroom than
+`headroom_threshold` (default 1.2, the same ratio as the Status page's
+Capacity card), or free disk drops below the larger of
+`disk_free_floor_mb` (1024 MB) and `disk_free_pct_floor` (5% of the disk).
+`capacity_recovered` follows when the condition clears; it has to improve by
+10% beyond the threshold first, so a value hovering at the line doesn't
+alert repeatedly. Set `capacity.enabled: false` to turn the evaluation off,
+or turn off the two events individually.
 
 **Two setup paths:**
 
@@ -1632,7 +1741,18 @@ first (reinstalling the notification server also resets it).
   furthest, etc.)
 - `special_aircraft` — an aircraft listed in `military.special_aircraft`
   appears
-- `daily_summary` — end-of-day digest (planned for a later release)
+- `daily_summary` — an end-of-day digest (counts, records, watchlist
+  hits), sent at `notifications.daily_summary.time` (default 20:00, in
+  your time zone). Off by default.
+- `emergency_squawk` — an aircraft appears squawking 7500, 7600 or 7700
+  (per-aircraft cooldown 60 minutes). Off by default, because a
+  misconfigured transponder on the ground can sit on 7700 indefinitely.
+- `capacity_low` / `capacity_recovered` — the disk-capacity alert and its
+  all-clear (see above). **On by default.**
+- `update_available` — a newer Aerodrome release was found on GitHub.
+  Fires once per discovery (24-hour cooldown). Off by default, and it also
+  needs **Send ntfy push notification** on in Configuration → Updates (see
+  *Updating*).
 
 **Test your setup** with the "Send test" button on the Notifications
 tab. Works even when notifications are disabled, so you can verify
@@ -1657,16 +1777,18 @@ indexed — the kind of workload where query shape and index coverage
 start to matter, especially on a Raspberry Pi with an SD card.
 
 The `/performance` page measures your actual system rather than
-letting you guess what's wrong. Accessible from the gear menu →
-Performance, it produces a read-only snapshot covering:
+letting you guess what's wrong. Open it from the gear menu →
+Diagnostics → Performance (or go straight to `/performance`); it produces
+a read-only snapshot covering:
 
 - **Storage** — database file path, size including WAL/SHM.
 - **Tables** — row counts per table with count-query timing,
   oldest/newest timestamps, and retention span.
 - **Indexes** — which indexes exist on which tables.
-- **Query timings** — six representative queries the UI actually runs
-  (live aircraft, all-tab count, military count, watchlist count, the
-  big all-tab paginated group-by, seen_aircraft total). Each row is
+- **Query timings** — representative queries the UI actually runs,
+  covering the unique-aircraft, military and watchlist counts, the
+  all-time aircraft total, the Stats tab's heaviest query, an aircraft
+  page's lookups and Search. The list changes between releases. Each row is
   color-coded (green < 100 ms, amber 100–1000 ms, red > 1000 ms) and
   click to expand its `EXPLAIN QUERY PLAN`.
 - **Disk I/O baseline** — 1 MB sequential read from the database file
@@ -1677,6 +1799,13 @@ Performance, it produces a read-only snapshot covering:
   database is over 5 GB, any table is over 10 million rows, a query
   takes longer than 2 seconds, or disk throughput is under 15 MB/s.
   No hints means a healthy system.
+
+Table sizes are not measured by default, because that reads the whole
+database file; use the **Measure table sizes** button when you want them.
+
+The Diagnostics page is a small hub: besides Performance it links to a
+Watchlist alert diagnostic (the state behind the Watchlist tab's alert) and
+a Slow-query diagnostic (queries that recently took 500 ms or more).
 
 A "Copy diagnostic report" button produces a plaintext dump suitable
 for pasting into a GitHub issue. On plain-HTTP deployments (where the
@@ -1700,8 +1829,9 @@ complete disaster-recovery zip in one click. It contains:
 - A manifest with version, timestamp, and file sizes.
 
 To restore to a fresh Aerodrome install: install the target version
-on the new host, open the Configuration page, scroll to Full backup
-→ **Restore from backup**, and upload the zip. Aerodrome checks the
+on the new host, open the Configuration page, go to the Backup & Restore tab,
+find **Restore from a full backup**, choose the zip and click
+**Restore & restart**. Aerodrome checks the
 backup, then restarts and switches to it (see *What a restore checks*
 below). Your history and settings come back as they were — except
 this machine's web address, port, database location and log folder,
@@ -1923,50 +2053,34 @@ flow gives you the building block.
 
 ## Project structure
 
-```
-aerodrome/
-├── install.sh              # One-time server setup
-├── uninstall.sh            # Clean uninstall
-├── main.py                 # Entry point (start/stop/status/restart)
-├── collector.py            # ADS-B fetching and classification
-├── server.py               # FastAPI web server and API
-├── config_validator.py     # Strict field validation for config updates
-├── notifier.py             # Push notification dispatch (ntfy)
-├── ntfy_installer.py       # One-click local ntfy install/upgrade/uninstall (through the helper)
-├── privhelper.py           # The one module that runs sudo: the system helper, restart, rules read
-├── designators.py          # ICAO airline + aircraft-type code → friendly name
-├── config.yaml             # All settings
-├── config.yaml.example     # Reference defaults (used for auto-merging new keys on upgrade)
-├── requirements.txt        # Runtime Python dependencies (installed by install.sh)
-├── VERSION                 # Single source of truth for version
-├── README.md               # Project front door
-├── CHANGELOG.md            # Version history
-├── CONTRIBUTING.md         # How to interact with the project
-├── LICENSE                 # MIT license
-├── templates/
-│   ├── index.html          # Main dashboard (Live/Watchlist/Military/Stats/All)
-│   ├── status.html         # Status page
-│   ├── config.html         # Configuration editor
-│   ├── updates.html        # Updates page (drop-zone upload + local + GitHub)
-│   ├── performance.html    # Performance diagnostic page
-│   ├── docs.html           # In-app documentation viewer
-│   └── logs.html           # Log viewer with tail/search/download
-├── docs/                   # Documentation assets
-│   ├── INSTALL.md          # This file
-│   ├── PERFORMANCE.md      # Performance guidance for busy receivers
-│   ├── SEARCH_SYNTAX.md    # Search parser tokens reference
-│   ├── Aerodrome_Overview.pdf  # Shareable project overview
-│   └── screenshot-*.png    # UI screenshots
-├── scripts/
-│   ├── aerodrome-helper    # The system helper install.sh installs to /usr/local/libexec/aerodrome/
-│   ├── recover-sudoers.sh  # Refreshes Aerodrome's system permissions (hands off to install.sh)
-│   ├── bootstrap.sh        # The one-line installer (see Install)
-│   └── README.md           # What's in here
-├── update/                 # Drop a new release here to stage it for the Updates page
-├── .backups/               # Auto-created — snapshots of previous installs after each update
-├── logs/                   # Auto-created
-└── aircraft_history.db     # Auto-created SQLite database
-```
+The main pieces of an install folder. For how they fit together, see
+`ARCHITECTURE.md` in the repository; this list is deliberately short.
+
+- `main.py` — entry point (`start`, `stop`, `status`, `restart`).
+- `server.py` — the FastAPI web server and API.
+- `collector.py` — fetches and classifies ADS-B data and keeps the database
+  up to date.
+- `notifier.py`, `ntfy_installer.py` — push notifications and the local ntfy
+  server's installer.
+- `updater.py`, `auto_update.py` — applying updates, rolling back, and
+  scheduled automatic updates.
+- `restore_io.py`, `config_io.py` — backup restore and safe config reads and
+  writes.
+- `schema_migrations.py` — the versioned database schema.
+- `privhelper.py` and `scripts/aerodrome-helper` — the only code that uses
+  sudo, and the root-owned helper it calls (see *System permissions*).
+- `config.yaml` — your settings; `config.yaml.example` — the reference
+  defaults, also used to merge new keys in on upgrade.
+- `templates/` and `static/` — the web pages and their scripts, styles,
+  fonts, airport data and images.
+- `install.sh`, `uninstall.sh`, `scripts/bootstrap.sh`,
+  `scripts/recover-sudoers.sh` — installing, removing and refreshing system
+  permissions.
+- `tools/synthetic_feeder/` — the simulator used by demo mode.
+- `docs/` — this manual and the other guides.
+- `update/` — where a release is staged for the Updates page.
+- Created at run time: `venv/`, `logs/`, `.backups/` and the SQLite
+  database (`aircraft_history.db` by default).
 
 ## Troubleshooting
 
@@ -1994,6 +2108,12 @@ it's waiting for the clock.
 
 **Can't access the web UI**
 
+- If the browser shows "This address isn't on Aerodrome's allowed list"
+  (or an API call returns `host_not_allowed`), you opened Aerodrome by a
+  name it doesn't know. Open it by the machine's IP address instead, then
+  add the name under Configuration → Web server → Allowed hostnames (see
+  *Remote access*). IP addresses, `localhost`, single-word names and
+  `*.local`, `*.lan`, `*.home.arpa` and `*.internal` names always work.
 - Open the firewall port: `sudo ufw allow 8000/tcp`
 - Confirm the service is listening: `ss -tln | grep 8000`
 
