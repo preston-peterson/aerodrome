@@ -1,4 +1,4 @@
-# Version: 3.4.188
+# Version: 3.4.189
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -2254,7 +2254,10 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     # if the user had specified ICAO directly from the first request on.
     sync_watchlist_tails(config)
 
-    app = FastAPI(title="Aerodrome")
+    # v3.4.189: FastAPI's interactive /docs and /redoc pages are off: they load
+    # their scripts from an outside CDN. /openapi.json stays (no outside requests),
+    # and API.md is on the in-app Documentation page.
+    app = FastAPI(title="Aerodrome", docs_url=None, redoc_url=None)
 
     # v3.4.82: same-origin guard + baseline security headers.
     #
@@ -13711,6 +13714,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         "update_readme":  "update/UPDATE_README.md",
         "performance":    "docs/PERFORMANCE.md",
         "search_syntax":  "docs/SEARCH_SYNTAX.md",
+        "api":            "API.md",
         "license":        "LICENSE",
     }
 

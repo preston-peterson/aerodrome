@@ -260,7 +260,7 @@ class TestPagesVersionStaticUrls(unittest.TestCase):
     leave a browser on a cached script. airports.js was missed by the old per-file list, and after
     v3.4.185 the Live map's airport codes didn't take clicks until a hard refresh."""
 
-    SKIP = {"/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc", "/docs/{filename}"}   # FastAPI's own, and the docs files
+    SKIP = {"/openapi.json", "/docs/{filename}"}   # the API description, and the docs files
 
     def test_every_static_url_is_versioned(self):
         d = Path(tempfile.mkdtemp())

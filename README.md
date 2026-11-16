@@ -1,5 +1,5 @@
 # Aerodrome
-<!-- Version: 3.4.188 -->
+<!-- Version: 3.4.189 -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -203,6 +203,7 @@ aerodrome/
 ├── test_aerodrome_helper.py      unit tests — the system helper on a fake root (ntfy, feeder, kill points, health)
 ├── test_airport_events.py        unit tests — takeoffs and landings: detector, fill-in, retention, endpoints
 ├── test_airports.py              unit tests — the airport list: build, nearby airports, endpoint, setting
+├── test_api_reference.py         unit tests — API.md covers every route and query parameter; /docs off
 ├── test_auto_update.py           unit tests — automatic updates: schedule, results, whole runs through the apply
 ├── test_backup_restore.py        unit tests — staged restore, startup switch + rollback, kill points
 ├── test_bootstrap.py             installer tests — bootstrap.sh in a stub sandbox
@@ -427,7 +428,7 @@ What that means in practice:
   notes on what changed and why.
 - **In-app docs** — once installed, the gear menu's Documentation page
   shows this README, the operations manual, the changelog, the search
-  guide and the performance notes inline, so you can read them on a
+  guide, the performance notes and the API reference inline, so you can read them on a
   phone without leaving the dashboard.
 
 ## License

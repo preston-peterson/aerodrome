@@ -2,7 +2,7 @@
 
 A reference for the HTTP endpoints Aerodrome exposes. All paths are relative to the server URL (default `http://localhost:8000`).
 
-**This document is a map, not a spec.** It describes what the endpoints do, what they return, and when you'd use them. For exact request/response shapes, `server.py` is the source of truth — each handler is short enough to read. Line numbers in tables are approximate; use your editor's symbol search for the current location.
+**This document is a map, not a spec.** It describes what the endpoints do, what they return, and when you'd use them. For exact request/response shapes, `server.py` is the source of truth — each handler is short enough to read. A running Aerodrome also describes every endpoint, with its parameters and request bodies, in machine-readable form at `/openapi.json` (OpenAPI 3). FastAPI's interactive `/docs` and `/redoc` pages are turned off (since 3.4.189), because they load their scripts from an outside CDN. This reference is also on the in-app Documentation page (gear menu → Documentation → API).
 
 ## Conventions
 
@@ -18,6 +18,7 @@ Plain HTML pages. Each handler reads its file from `templates/` as text, adds a 
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/` | Main dashboard — Live, Watchlist, Military, Stats, Search tabs |
+| GET | `/about` | About page: version, licence, credits |
 | GET | `/status` | System health check — subsystem cards, resource usage |
 | GET | `/config` | Configuration editor |
 | GET | `/updates` | Release upload + apply + rollback |
@@ -43,9 +44,9 @@ Core endpoints the dashboard's tabs consume. All return a list of aircraft objec
 | GET | `/api/live` | Aircraft the receiver is reporting right now. Fetched from the receiver's `aircraft.json` on each call, not read from the database. `{aircraft: [...], count, last_updated, receiver: {lat, lon, distance_unit}}`; each aircraft carries military and watchlist flags. When the receiver can't be reached the reply has an empty list and an `error` string |
 | GET | `/api/watchlist` | Historical + current watchlist hits |
 | GET | `/api/military` | Historical + current military hits |
-| GET | `/api/search` | Full-text search across every aircraft (`?q=...&from_ts=...&to_ts=...&preset=today&limit=...&offset=...`; `preset=today` starts from midnight in Aerodrome's timezone). The response adds `time_label` (the date window in words) and `time_tokens` (the date tokens as typed); with a window active, each row adds `window_sightings`. Since 3.4.186 it adds `airports: [{code, iata, name, city, cat}]`: airports near the receiver whose code or IATA code is a word of the query (first page only) |
-| GET | `/api/all/drill` | Per-aircraft sighting history (ICAO + window). Used by the aircraft detail page. A row of a flight FlightAware confirmed (it was looked up) carries `route: {origin, dest, source: "flightaware"}`. |
-| GET | `/api/first-seen` | Per-ICAO first-seen timestamps (for "new today" highlighting) |
+| GET | `/api/search` | Full-text search across every aircraft (`?q=...&from_ts=...&to_ts=...&preset=today&limit=...&offset=...&order=...&dir=...`; `preset=today` starts from midnight in Aerodrome's timezone; `limit` at most 500). `order` sorts by one of `icao`, `callsign`, `aircraft_type`, `type_desc`, `operator`, `country`, `speed`, `altitude`, `squawk`, `distance`, `seen_at`, `first_seen_at`, `sightings`, `track_length` (empty or unknown: relevance); `dir` is `asc` or `desc` (empty: that column's usual direction). The response adds `time_label` (the date window in words) and `time_tokens` (the date tokens as typed); with a window active, each row adds `window_sightings`. Since 3.4.186 it adds `airports: [{code, iata, name, city, cat}]`: airports near the receiver whose code or IATA code is a word of the query (first page only) |
+| GET | `/api/all/drill` | Per-aircraft sighting history: `?icao=` (required), optional `from_ts`/`to_ts` window, `limit` (default 500, at most 2000), `offset`, `order` (`seen_at` (default), `callsign`, `altitude` or `speed`) and `dir` (`desc` (default) or `asc`). Used by the aircraft detail page. A row of a flight FlightAware confirmed (it was looked up) carries `route: {origin, dest, source: "flightaware"}`. |
+| GET | `/api/first-seen` | Per-ICAO first-seen timestamps (for "new today" highlighting): `?icaos=A12345,A67890` (comma-separated hexes) |
 | GET | `/api/callsign/{callsign}/route` | A flight's route, looked up by callsign. With `lat`/`lon` (and `track`), a route from the free list that doesn't fit where the plane is comes back `found: false, mismatch: true`. With `fa=1` (sent when you open an aircraft: the Live map's panel, the aircraft page, the display board's details) and a FlightAware key set, FlightAware is asked first, spending a lookup unless the route is cached; its answer carries `source: "flightaware"`, `departed_at` and `arrives_at` (Unix timestamps). With `fa=cached` (the display board's rows and cards) a FlightAware route is used only if one was already looked up; it never spends a lookup. |
 | GET | `/api/airports` | Airports within 400 mi of the receiver for the maps' airport layer, nearest first: `{ok, airports: [{code, cat: major\|regional\|small, lat, lon, runways: [[lat1, lon1, lat2, lon2, name1, name2], …], elev, name, iata, city}], radius_mi}` (runway end names such as `13L`/`31R`, field elevation in feet, and the airport's name since 3.4.184; its IATA code — `""` when it has none — and city since 3.4.186). From OurAirports' data (public domain) shipped in `static/airports.json`. No receiver location → `airports: []` with `reason: "no_receiver_location"`; an unreadable list → `ok: false, reason: "data_unreadable"` |
 | GET | `/api/airports/{code}/summary` | One airport near the receiver, for the Live map's airport panel (3.4.185): `{ok, code, name, cat, elev, runways, distance, distance_unit, direction, today: {landed, took_off, touch_and_go, last_hour}, in_use: {landing: [runway…], taking_off: [runway…], flow}, latest: [{kind, runway, at, until, count, callsign, icao, type}], visitors: {aircraft, types: [{type, n}], mix: {category: n}, military, watchlist}, per_day, fill_in}`. Today is from local midnight; `in_use` is the last hour; a touch and go counts as a landing and a takeoff. Not an airport near the receiver → 404; a malformed code → 400 |
@@ -55,7 +56,7 @@ Core endpoints the dashboard's tabs consume. All return a list of aircraft objec
 | GET | `/api/aircraft/{icao}` | Detail data for the aircraft page (ICAO must be 6 hex characters) |
 | GET | `/api/aircraft/{icao}/enrich` | Registered owner and manufacturer for one airframe |
 | GET | `/api/aircraft/{icao}/photo` | A photo of one airframe, when one is found |
-| GET | `/api/aircraft/{icao}/positions` | Position stream for the aircraft page's map |
+| GET | `/api/aircraft/{icao}/positions` | Position stream for the aircraft page's map: `?window=` `24h` (default), `7d`, `30d` or `all` |
 | GET | `/api/live/trails` | Recent ground track for every aircraft seen in the window |
 | GET | `/api/coverage` | Receiver coverage data for the map |
 | GET | `/api/search/aircraft/{icao}` | One aircraft's record in the form Search lists it |
@@ -68,9 +69,9 @@ Core endpoints the dashboard's tabs consume. All return a list of aircraft objec
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/watchlist/entries` | Current watchlist config (ICAO/tail/callsign/model patterns + labels). Tail-only entries also carry `tail_status` (`found`, `pending`, `unknown` = hexdb.io has no record, `error` = no usable answer, retried soon) and `tail_icaos` |
-| POST | `/api/watchlist/add` | Add an entry. Body: `{identifier, label}` |
-| POST | `/api/watchlist/remove` | Remove an entry. Body: `{identifier}` |
-| GET | `/api/watchlist/history/count` | Row count in `watchlist_sightings` — used to confirm the bulk-delete dialog |
+| POST | `/api/watchlist/add` | Add an entry. Body: `{identifier, id_type, label?}`; `id_type` is `icao`, `tail`, `callsign` or `model` |
+| POST | `/api/watchlist/remove` | Remove an entry. Body: `{identifier, id_type, delete_history?}`; `delete_history: true` also deletes that entry's stored sightings |
+| GET | `/api/watchlist/history/count` | Row count in `watchlist_sightings`, for one entry with `?label=` or all of them without — used to confirm the delete dialogs |
 | POST | `/api/watchlist/history/clear` | Delete all rows from `watchlist_sightings` |
 
 The watchlist is stored in `config.yaml` under the `watchlist:` key. Changes hot-reload — the collector rebuilds its matcher on the next poll. Adding or removing an entry saves `config.yaml` all or nothing, keeping its comments; when the save fails nothing changes (the running watchlist included) and the response is `{ok: false, error, message}` — `507` when the disk is full, `500` otherwise.
@@ -80,7 +81,7 @@ The watchlist is stored in `config.yaml` under the `watchlist:` key. Changes hot
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/stats` | Today-stats + all-time records for the Stats tab |
-| GET | `/api/stats/drill` | Drill into a specific stat card to see the underlying rows |
+| GET | `/api/stats/drill` | Drill into a specific stat card to see the underlying rows: `?card=` (the card's id, required), `value` (a list card's row, e.g. a type code) and `all=true` (the card's whole distribution, not just its top rows) |
 
 `/api/stats` is the biggest single endpoint handler in the codebase (several hundred lines). It returns a structured object with groups (`today`, `all_time`, `records`, etc), each containing card definitions. The frontend renders each card based on its type. See `stats.cards.*` config keys to control which cards are shown.
 
@@ -114,7 +115,7 @@ The `?icaos=` query string is comma-separated. The response is `{hex: registrati
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/config` | Current config as JSON. A saved FlightAware key comes back as `__kept__`, never in full; a `PUT` carrying `__kept__` keeps the stored key |
-| PUT | `/api/config` | Replace config (full document) |
+| PUT | `/api/config` | Replace config (full document). Body: `{"config": {...}}` |
 | GET | `/api/ui-config` | UI-only subset of config (track link provider, distance unit, map prefs including `map.carto_api_key` and `map.airports` — `off`, `major` (default) or `all`, the airport layer's starting choice, etc.) |
 | GET | `/api/flightaware/status` | The FlightAware key's state (`key_last4` only, never the key), this month's lookups against `monthly_limit` (`count`; `key_count` is those made with the current key, `null` until known; `earlier_keys` lists this month's earlier keys as `{last4, count}`), whether lookups are paused, and FlightAware's own usage figure for this key (`usage`: `lookups` billed, without the free usage checks, and `total_cost`), with the same for every key on the account in `usage.account`. Free calls, cached 10 minutes, can lag an hour |
 | POST | `/api/flightaware/test` | Check the saved FlightAware key with FlightAware's free usage call: `{ok, state: ok\|invalid\|error\|no_key, message}` |
@@ -123,7 +124,7 @@ The `?icaos=` query string is comma-separated. The response is `{hex: registrati
 | GET | `/api/config/backup/{name}` | Fetch a specific backup as YAML text |
 | GET | `/api/config/export` | Current config as a downloadable YAML file |
 | POST | `/api/config/restore/{name}` | Restore from a backup |
-| POST | `/api/config/import` | Import an uploaded YAML config |
+| POST | `/api/config/import` | Import an uploaded YAML config (multipart form, field `file`) |
 | POST | `/api/setup/switch-to-real` | Switch a demo install to a real receiver (used by the wizard page) |
 
 The config validator (`config_validator.py`) runs on every `PUT /api/config`, `POST /api/config/import` and `POST /api/config/restore/{name}`. A malformed payload returns `400` with a list of validation errors (`errors: [{path, message}]`); the existing config isn't touched. Three settings are also checked against **this machine**, only when they change: `web.host` must be one of its addresses (`0.0.0.0` and `::` always are), `web.port` must be free to listen on (not used by another program, not a port the service account may not use; the port the running server already listens on is not re-checked), and the folder of `data.db_file` must exist and be writable — otherwise `400 {ok: false, error, message, errors}` with an `errors` entry for `web.host` / `web.port` / `data.db_file`.
@@ -146,7 +147,7 @@ Full disaster-recovery bundles — config + database + notification history. Use
 | POST | `/api/backup/restore-from-path` | Restore a backup already on the server, in `.backups/` (`{"path": ..., "keep_current_config": false}`) |
 | POST | `/api/backup/staged-restore/cancel` | Cancel a restore that waits for its restart |
 | GET | `/api/backup/pre-restore` | The copies kept before each restore, paired by date |
-| POST | `/api/backup/pre-restore/{ts}/restore` | Put a pair of pre-restore copies back (a restore of them) |
+| POST | `/api/backup/pre-restore/{ts}/restore` | Put a pair of pre-restore copies back (a restore of them); `?keep_current_config=true` keeps this machine's settings |
 | POST | `/api/backup/pre-restore/purge` | Delete every pre-restore copy (except the pair a waiting restore needs) |
 
 Backups are taken live — the SQLite database is copied via SQLite's online backup API so the service doesn't have to pause.
@@ -176,7 +177,7 @@ Backups are taken live — the SQLite database is copied via SQLite's online bac
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/perf/diagnostics` | Run a live benchmark: db size, row counts, pragmas, index coverage, query timings, disk-read throughput, auto-generated hints. Per-table sizes only with `?sizes=true` (measuring reads every page of the database); `table_sizes` says when sizes were last measured (`measured_at`, `took_ms`, `fresh`), and a normal run reuses them |
+| GET | `/api/perf/diagnostics` | Run a live benchmark: db size, row counts, pragmas, index coverage, query timings, disk-read throughput, auto-generated hints. Per-table sizes only with `?sizes=true` (measuring reads every page of the database); `?include_legacy=true` also times the older raw-table fallbacks; `table_sizes` says when sizes were last measured (`measured_at`, `took_ms`, `fresh`), and a normal run reuses them |
 | POST | `/api/perf/analyze` | Run `ANALYZE` on the SQLite database to refresh query planner stats |
 
 `/api/perf/diagnostics` is the most expensive endpoint in the API — it runs a set of representative queries in sequence and can take several seconds on a large database. Intended for manual invocation from the Performance page, not for polling.
@@ -185,7 +186,7 @@ Backups are taken live — the SQLite database is copied via SQLite's online bac
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/diagnostics/slow-queries/recent` | The most recent slow queries, from an in-memory ring |
+| GET | `/api/diagnostics/slow-queries/recent` | The most recent slow queries, from an in-memory ring: `?limit=` (1–200, default 50) |
 | POST | `/api/diagnostics/slow-queries/clear` | Empty that ring |
 | GET | `/api/diagnostics/slow-queries/explain` | Run `EXPLAIN QUERY PLAN` on a known query shape |
 | GET | `/api/diagnostics/connection-tuning-audit` | Static report of which endpoints use the tuned connection |
@@ -196,8 +197,8 @@ Backups are taken live — the SQLite database is copied via SQLite's online bac
 |---|---|---|
 | GET | `/api/notifications/recent?limit=N` | Last N notification attempts (sent + suppressed) |
 | GET | `/api/notifications/stats` | Summary counts over 24h / 7d / since-startup |
-| GET | `/api/ntfy/logs` | Tail of the ntfy delivery log |
-| POST | `/api/notifications/test` | Send a test notification (to configured URL or body-provided URL) |
+| GET | `/api/ntfy/logs` | Tail of the ntfy delivery log: `?lines=` (10–1000, default 100) |
+| POST | `/api/notifications/test` | Send a test notification, to the configured URL or to `{"url": ...}` in the body |
 | POST | `/api/notifications/daily-summary/test` | Generate + send today's daily summary |
 
 ## ntfy server management
@@ -208,7 +209,7 @@ For users running a self-hosted ntfy server via Aerodrome's installer helper.
 |---|---|---|
 | GET | `/api/ntfy/status` | Is a self-hosted ntfy running? What version? Reachable? |
 | POST | `/api/ntfy/install` | Install ntfy (`port`, `bind`, optional `topic`, `base_url`, `upstream_relay`). On a partly installed ntfy (state `partial`) it repairs instead: it puts back what's missing and keeps the port, bind, base URL and relay setting the existing server.yml still holds (the body's `port`/`bind` fill in only when that file is the missing piece); the reply then has `repaired: true` |
-| POST | `/api/ntfy/config` | Change the local ntfy server's address (`base_url`) or iPhone relay (`upstream_relay`) |
+| POST | `/api/ntfy/config` | Change the local ntfy server's address (`base_url`) or iPhone relay (`upstream_relay`); `drop_custom_keys: [...]` names settings Aerodrome doesn't manage that may be removed from `server.yml` (see `custom_keys` below) |
 | POST | `/api/ntfy/upgrade` | Upgrade ntfy to a newer version |
 | POST | `/api/ntfy/uninstall` | Remove the self-hosted ntfy install; `{"purge_data": true}` also deletes its cached messages (the local server's cache and SQLite's `-wal`/`-shm`, in `/var/lib/aerodrome-ntfy` and, from before v3.4.150, `/var/lib/ntfy`; a `cache-file` set by hand in server.yml is left in place, and `message` says so). With nothing installed it deletes a cache an earlier install left |
 
@@ -241,10 +242,10 @@ Other 400s (`invalid`, `unreadable`, or a notification server Aerodrome doesn't 
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/updates/local/check` | Check for a staged release in `update/`; also `preflight` (below). With nothing to apply, `staged` is `"none"` (`update/` is missing or holds only its own `UPDATE_README.md`/`.gitkeep`) or `"partial"` (something is there, but no `VERSION`) |
-| POST | `/api/updates/local/upload` | Upload a release zip (staged into `update/`) |
+| POST | `/api/updates/local/upload` | Upload a release zip (multipart form, field `file`; staged into `update/`) |
 | POST | `/api/updates/local/apply` | Apply the staged release: stage to the side, test-load, switch in, restart; rolled back automatically if it doesn't start |
 | GET | `/api/updates/github/check` | The cached GitHub release check (`?force=true` checks now). `auto`: automatic updates — `enabled`, `active` (also needs the channel on), `day`, `time`, `next_ts`, `skips_latest` (the latest release was put back or refused before, so it won't be installed automatically), `installing`, and `last` (`at`, `result`: `installed` / `rolled_back` / `refused` / `failed` / `busy` / `check_failed` / `skipped` / `current`, `from`, `to`, `reason`) |
-| POST | `/api/updates/github/apply` | Download the latest GitHub release, verify its SHA256, stage it, then apply it exactly like a local apply |
+| POST | `/api/updates/github/apply` | Download the latest GitHub release, verify its SHA256, stage it, then apply it exactly like a local apply; `?snapshot_db=true` also copies the database first |
 | GET | `/api/maintenance/status` | What's running and how the last update went (below) |
 | POST | `/api/maintenance/ack` | `{"kind": "update"}` — mark the last update result as seen; `{"kind": "config"}` — mark the last config recovery as seen; `{"kind": "restore"}` — mark the last restore result as seen |
 | POST | `/api/restart` | Restart the Aerodrome service (409 only while a maintenance operation holds the lock). Asked for by a just-updated version after it has answered, it confirms that update first, so the restart is never counted as a failed start |
@@ -291,7 +292,7 @@ Two refusals keep their older bodies, with no `code` and nothing recorded: `409 
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/docs/{slug}` | Fetch a markdown document by slug (README, CHANGELOG, CONTRIBUTING, etc.) |
-| GET | `/api/changelog` | Parsed CHANGELOG.md as structured JSON |
+| GET | `/api/changelog` | Parsed CHANGELOG.md as structured JSON: `?source=install` (default, the running version's) or `?source=update` (the staged update's) |
 | GET | `/docs/{filename}` | Serve image assets referenced by in-app markdown docs (screenshots) |
 
 `{filename}` is restricted to names matching `[A-Za-z0-9_-]+\.(png|jpg|jpeg|gif|webp|svg)` — no path traversal, no arbitrary file serving.

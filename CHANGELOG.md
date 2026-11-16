@@ -19,6 +19,18 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.189] — 2026-11-16
+
+**The API explorer pages are gone, and the API reference is in the app instead.**
+
+FastAPI's built-in `/docs` and `/redoc` pages — an interactive API explorer that no Aerodrome page linked to — loaded their scripts from an outside CDN whenever someone opened them. They're turned off. Everything they showed is now in the API reference (API.md), which the in-app Documentation page shows under a new **API** tab: every endpoint, now with the query parameters and request bodies it was missing (Search's sort order, an aircraft's position window, the drill and paging options, the watchlist and notification bodies, and more). A running Aerodrome still describes its whole API in machine-readable form at `/openapi.json`, for tools that read OpenAPI.
+
+### Behind the scenes
+
+- `FastAPI(docs_url=None, redoc_url=None)`; `/openapi.json` stays.
+- The in-app Documentation page serves API.md (`/api/docs/api`).
+- Tests: `test_api_reference.py` checks that `/docs` and `/redoc` are gone and `/openapi.json` isn't, that every route and every query parameter the app declares appears in API.md (so the reference can't fall behind again), and that the Documentation page serves it.
+
 ## [3.4.188] — 2026-11-16
 
 **Aerodrome no longer loads its fonts from Google, and the documentation is up to date again.**
