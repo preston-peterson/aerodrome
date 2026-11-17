@@ -191,17 +191,22 @@ functions.
 ## `build_airports.py`
 
 Rebuilds `static/airports.json` (the airports the maps, the takeoff and landing
-detector and the airport pages use) from the public-domain OurAirports data.
-Output is deterministic, one airport per line.
+detector and the airport pages use) from the public-domain OurAirports data,
+and `static/airport-info.json`: what only the airport page shows (runways,
+radio frequencies, website and Wikipedia links, and whether the FAA publishes
+plates for the airport, from the FAA's d-TPP index for the current 28-day
+cycle). Output is deterministic, one airport per line.
 
 ```bash
-python3 scripts/build_airports.py                  # downloads airports.csv and runways.csv
-python3 scripts/build_airports.py --airports airports.csv --runways runways.csv
+python3 scripts/build_airports.py                  # downloads the three CSVs and the FAA index (~16 MB)
+python3 scripts/build_airports.py --airports airports.csv --runways runways.csv \
+    --frequencies airport-frequencies.csv --dtpp d-tpp_Metafile.xml
 ```
 
-Other flags: `--out PATH` (default `static/airports.json`) and `--built DATE`
-(the date to record; default today). An existing CSV path is used as given;
-one that is absent is downloaded.
+Other flags: `--out PATH` (default `static/airports.json`), `--info-out PATH`
+(default `static/airport-info.json`) and `--built DATE` (the date to record;
+default today). An existing file path is used as given; one that is absent is
+downloaded.
 
 ## `gen_type_classes.py`
 

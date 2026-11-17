@@ -864,8 +864,10 @@ def airport_page(conn, config, code, now, day_start, tz=None):
     j = airport_summary(conn, config, code, now, day_start)
     if j is None:
         return None
-    a = index_for(config).by_code[code]
-    j.update(iata=a["iata"], city=a["city"], runway_names=a["runway_names"])
+    index = index_for(config)
+    a = index.by_code[code]
+    j.update(iata=a["iata"], city=a["city"], runway_names=a["runway_names"],
+             info=airports_data.details(code, index.by_code))
     today = tzwindow.local_dt(now, tz).date()
     first_here = {icao: at for icao, at in conn.execute(
         "SELECT icao, MIN(at) FROM airport_events WHERE airport = ? GROUP BY icao", (code,))}

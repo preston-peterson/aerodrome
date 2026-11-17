@@ -1,4 +1,4 @@
-<!-- Version: 3.4.193 -->
+<!-- Version: 3.4.194 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -131,6 +131,22 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
 .ap-mixkey { font-size:10.5px; color:var(--t3); display:flex; flex-wrap:wrap; gap:4px 10px; margin-bottom:6px; }
 .ap-mixkey span::before { content:''; display:inline-block; width:7px; height:7px; border-radius:2px; margin-right:4px; background:var(--c); }
 
+/* Charts and info: links out (nothing is fetched until clicked) */
+.apg-links { display:flex; flex-wrap:wrap; align-items:center; gap:6px 8px; margin:-12px 0 24px; font-size:12px; }
+.apg-links .k { color:var(--t3); margin-right:2px; }
+.apg-links a { font-family:var(--mono); color:var(--cyan); text-decoration:none; padding:3px 9px; border:1px solid var(--bdr); border-radius:6px; }
+.apg-links a:hover { border-color:var(--cyan); }
+.apg-links a::after { content:' ↗'; color:var(--t3); }
+/* About this airport: runways and radio (static/airport-info.json) */
+.apg-tbl { width:100%; border-collapse:collapse; font:12.5px var(--mono); color:var(--t2); }
+.apg-tbl th { font:500 10px var(--font); color:var(--t3); text-transform:uppercase; letter-spacing:.06em; text-align:left; padding:0 8px 6px 0; }
+.apg-tbl td { padding:5px 8px 5px 0; border-top:1px solid var(--bdr); }
+.apg-tbl td:first-child { color:var(--t1); }
+.apg-tbl .r { text-align:right; }
+.apg-tbl .dim { color:var(--t3); }
+.apg-tbl td + td, .apg-tbl th + th { padding-left:14px; }
+.apg-tbl.radio td:first-child { font-family:var(--font); }
+.apg-src { font-size:12px; color:var(--t3); margin:-12px 0 24px; }
 /* Latest takeoffs and landings */
 .row-grid-header { font-size:10px; color:var(--t3); text-transform:uppercase; letter-spacing:.06em; font-family:var(--font); font-weight:500; user-select:none; }
 .row-card { background:var(--bg2); border:1px solid var(--bdr); border-radius:6px; padding:8px 12px; margin-bottom:4px;
@@ -335,9 +351,9 @@ function renderPage(j) {
     const nothing = !j.since
         ? `<div class="apg-note">Your receiver hasn't seen a takeoff or landing here yet. Only what your antenna `
           + `sees low near the airport is counted, so a field it can't see down to may stay empty.</div>` : '';
-    document.getElementById('mainContent').innerHTML = renderHero(j) + filling + nothing
+    document.getElementById('mainContent').innerHTML = renderHero(j) + renderLinks(j) + filling + nothing
         + `<div class="section-title">Today</div><div class="metrics-grid" id="apgToday">${renderToday(j)}</div>`
-        + (j.since ? renderTrendSection() + renderHourDay(j) + renderRunways(j) + renderVisitors(j) : '')
+        + (j.since ? renderTrendSection() + renderHourDay(j) + renderRunways(j) + renderVisitors(j) : '') + renderAbout(j)
         + `<div id="apgMovesBox"></div>`;
     if (j.since) {
         renderTrend();
@@ -364,6 +380,41 @@ function renderHero(j) {
         + (j.name ? `<span class="meta-text">${escapeHtml(j.name)}</span>` : '')
         + (j.city ? `<span class="sep">·</span><span class="meta-text">${escapeHtml(j.city)}</span>` : '')
         + `</div><div class="apg-sub">${elev}${rw}${dist}${seen ? '<br>' + seen : ''}</div>`;
+}
+
+// The FAA's plate list for one airport needs the 28-day cycle in effect in its
+// link (AIRAC: cycle 2601 took effect 2026-01-22 at 0901Z, a new one every 28
+// days), so it's worked out here; scripts/build_airports.py's airac_cycle() is the same.
+function faaCycle(now) {
+    const STEP = 28 * 86400000, EPOCH = Date.UTC(2026, 0, 22, 9, 1);
+    const n = Math.floor((now - EPOCH) / STEP);
+    const year = new Date(EPOCH + n * STEP).getUTCFullYear();
+    const first = Math.ceil((Date.UTC(year, 0, 1) - EPOCH) / STEP);
+    return String(year % 100).padStart(2, '0') + String(n - first + 1).padStart(2, '0');
+}
+
+function renderLinks(j) {
+    const i = j.info || {}, id = encodeURIComponent(i.ident || j.code), links = [];
+    if (i.faa_plates) links.push(['FAA plates', 'https://www.faa.gov/air_traffic/flight_info/aeronav/digital_products/dtpp/search/results/'
+        + `?cycle=${faaCycle(Date.now())}&ident=${id}`]);
+    links.push(['SkyVector', `https://skyvector.com/airport/${id}`]);
+    if (i.wikipedia) links.push(['Wikipedia', i.wikipedia]);
+    if (i.website) links.push(['Website', i.website]);
+    return `<div class="apg-links"><span class="k">Charts and info</span>`
+        + links.map(([t, u]) => `<a href="${escapeHtml(u)}" target="_blank" rel="noopener noreferrer">${t}</a>`).join('') + `</div>`;
+}
+
+function renderAbout(j) {
+    const i = j.info || {};
+    const ft = v => v ? `${fmtN(v)} ft` : '—';
+    const rw = (i.runways || []).map(r => `<tr><td>${escapeHtml(r[0])}</td><td class="r">${ft(r[1])}</td><td class="r">${ft(r[2])}</td>`
+        + `<td>${escapeHtml(r[3] || '—')}</td><td class="${r[4] ? '' : 'dim'}">${r[4] ? 'Lit' : 'Not lit'}</td></tr>`).join('');
+    const radio = (i.radio || []).map(r => `<tr><td>${escapeHtml(r[0])}</td><td class="r">${escapeHtml(r[1])}</td></tr>`).join('');
+    if (!rw && !radio) return '';
+    return `<div class="section-title">About this airport</div><div class="apg-two">`
+        + (rw ? `<div><table class="apg-tbl"><tr><th>Runway</th><th class="r">Length</th><th class="r">Width</th><th>Surface</th><th>Lights</th></tr>${rw}</table></div>` : '<div></div>')
+        + (radio ? `<div><table class="apg-tbl radio"><tr><th>Radio</th><th class="r">MHz</th></tr>${radio}</table></div>` : '')
+        + `</div><div class="apg-src">Runway and radio details come from OurAirports, a volunteer-run database. For reference only, not for navigation.</div>`;
 }
 
 function renderToday(j) {

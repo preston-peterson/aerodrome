@@ -19,6 +19,35 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.194] — 2026-11-17
+
+**The airport page links to the airport's charts, including the FAA's plates for US airports, and lists its runways and radio frequencies.**
+
+Under the airport's name there's a new row of links, "Charts and info":
+
+- **FAA plates**, for US airports that have them (about 3,000 of the 11,000 airports Aerodrome knows). It opens the FAA's own list for the airport, for the current 28-day cycle: its approaches, departures, arrivals and airport diagram.
+- **SkyVector**, for every airport.
+- **Wikipedia** and the airport's **website**, when they're known.
+
+Each opens in a new tab, and nothing is looked up until you click one.
+
+Further down, before the latest takeoffs and landings, **About this airport** lists the airport's runways (length, width, surface and lights) and its radio frequencies (tower, ground, ATIS and so on). They come from OurAirports, the volunteer-run database Aerodrome's airport list already comes from, so they're for reference only, not for navigation. They ship with Aerodrome, so the page shows them even without an internet connection.
+
+The airport list itself is refreshed from OurAirports, with two airports added and corrected positions or runways for eleven others, all outside the US. The overview (docs/overview.md and the Overview PDF) now says the Live map draws each aircraft's silhouette, not a chevron.
+
+### Behind the scenes
+
+- `scripts/build_airports.py` also writes `static/airport-info.json` (about 1.8 MB, 10,981 airports):
+  - runways as `[name, length, width, surface, lit]`, longest first, without helipads or closed runways;
+  - radio grouped by type, dropping frequencies outside the airband (OurAirports has a few truncated ones);
+  - website and Wikipedia links, http(s) only;
+  - the FAA's own code for US airports (DFW for KDFW, 9S7 for K9S7), which both links use;
+  - whether the FAA's d-TPP index for the current cycle lists plates for the airport.
+
+  Surfaces are put in plain words (ASPH-G becomes Asphalt, TURF becomes Grass). When two airports share a code, the bigger one's details are kept.
+- `airports.details()` keeps only the airports near the receiver, as `near()` does. `/api/airports/{code}` carries the result as `info`.
+- The FAA's link needs the cycle number, so the page works it out from the date (AIRAC: every 28 days from cycle 2601 on 2026-01-22, at 0901Z). A test checks the page's JavaScript against the builder's Python across year boundaries, including a 14-cycle year.
+
 ## [3.4.193] — 2026-11-17
 
 **On a busy receiver, the Live map's coverage outline and the Status page no longer read through your whole history.**

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.4.193
+# Version: 3.4.194
 # =============================================================================
 # bump-version.sh — Bump Aerodrome version + auto-update CHANGELOG.md
 # =============================================================================
@@ -800,7 +800,9 @@ echo ""
 # file is exempt (decided 2026-11-15, v3.4.184): static/airports.json, the
 # generated OurAirports data, whose public airport names include a few that
 # share the maintainer's first name (an airport named after a person, a
-# town's field). Any other hit is a real leak.
+# town's field). Its companion static/airport-info.json (same source; the
+# Wikipedia links' public page titles include a few) was exempted with it on
+# 2026-11-17 (v3.4.194). Any other hit is a real leak.
 #
 # Like the static name-resolution check, the audit has no --skip-pii flag
 # (per decision 5.17). If you really need to bypass it for an emergency,
@@ -885,8 +887,8 @@ def candidate_paths():
 
 # Approved attribution surfaces. Names appearing in these files are not
 # leaks — they're the project's deliberate copyright/license attribution.
-NAME_ALLOWLIST_FILES = {'./LICENSE', './templates/about.html',
-                        './static/airports.json'}   # generated public airport names (see above)
+NAME_ALLOWLIST_FILES = {'./LICENSE', './templates/about.html',      # generated public airport
+                        './static/airports.json', './static/airport-info.json'}   # names (see above)
 
 name_hits = []
 ip_hits = []

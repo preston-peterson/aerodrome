@@ -167,6 +167,175 @@ class TestNear(unittest.TestCase):
             airports.near(40.0, -90.0, path=self.path.with_name("absent.json"))
 
 
+# For the airport page's details (static/airport-info.json): links on ZZA1 (one bad on ZZB2),
+# a non-US regional field whose local code must not become an FAA code, a helipad, mixed and
+# unknown surfaces, and frequencies with a truncated one, a repeat type and an unknown type.
+INFO_AIRPORTS_CSV = (AIRPORTS_CSV
+    .replace('"ZZA1","ZZA",,"ZZA",,,', '"ZZA1","ZZA",,"ZZA","https://example.com/","https://en.wikipedia.org/wiki/Example",')
+    .replace('"ZZB2","ZZB",,,', '"ZZB2","ZZB","javascript:alert(1)","https://example.com/wiki/Example",')
+    + '9,"ZZH8","medium_airport","Example Abroad",41.0,10.0,100,"EU","XX","XX-XX","Elsewhere","yes","ZZH8",,"ZZH8","H8X",,,\n')
+INFO_RUNWAYS_CSV = RUNWAYS_CSV + (
+    '17,2,"ZZB2",7000,120,"ASPH-TURF-G",0,0,"4",,,,,,"22",,,,,\n'
+    '18,2,"ZZB2",,,"",0,0,"H1",,,,,,,,,,,\n'
+    '19,2,"ZZB2",2000,40,"CRUSHED ROCK",0,0,"17",,,,,,"35",,,,,\n'
+    '20,9,"ZZH8",9000,150,"UNK",1,0,"09",,,,,,"27",,,,,\n')
+FREQS_CSV = """"id","airport_ref","airport_ident","type","description","frequency_mhz"
+1,1,"ZZA1","TWR","TWR",120.75
+2,1,"ZZA1","TWR","TWR",118.3
+3,1,"ZZA1","GND","GND",121.9
+4,1,"ZZA1","ATIS","ATIS",127.65
+5,1,"ZZA1","APP","APP",28.465
+6,1,"ZZA1","UNIC","UNICOM",122.95
+7,1,"ZZA1","XYZ","XYZ",123.45
+8,1,"ZZA1","MISC","MISC",130
+9,2,"ZZB2","CTAF","CTAF",122.8
+10,9,"ZZH8","TWR","TWR",118.1
+"""
+DTPP_XML = """<?xml version="1.0"?><digital_tpp cycle="2611"><state_code ID="XX"><city_name ID="DEMO">
+<airport_name ID="EXAMPLE MAJOR" apt_ident="ZZA" icao_ident=""><record><chart_code>IAP</chart_code></record></airport_name>
+<airport_name ID="EXAMPLE NOTHING" apt_ident="ZZQ" icao_ident="KZZQ"></airport_name>
+</city_name></state_code></digital_tpp>"""
+
+
+def _info():
+    faa = build_airports.faa_idents(DTPP_XML)
+    return {r[0]: r for r in build_airports.build_info(INFO_AIRPORTS_CSV, INFO_RUNWAYS_CSV, FREQS_CSV, faa)}
+
+
+class TestBuildInfo(unittest.TestCase):
+    """scripts/build_airports.py: what static/airport-info.json says about each airport."""
+
+    def test_the_same_airports_by_the_same_codes(self):
+        self.assertEqual(set(_info()) - {"ZZH8"}, {r[0] for r in _rows()})
+
+    def test_runways_radio_links_and_plates(self):
+        self.assertEqual(_info()["ZZA1"], [
+            "ZZA1", "ZZA", 1, "https://example.com/", "https://en.wikipedia.org/wiki/Example",
+            [["18/36", 9000, 150, "Concrete", 1]],              # the closed 9/27 is left out
+            [["ATIS", "127.650"], ["Ground", "121.900"], ["Tower", "118.300, 120.750"], ["Unicom", "122.950"],
+             ["Other", "130.000"], ["XYZ", "123.450"]]])        # 28.465 isn't in the airband: dropped
+
+    def test_surfaces_in_plain_words_longest_runway_first_no_helipads(self):
+        self.assertEqual(_info()["ZZB2"][5], [["4/22", 7000, 120, "Asphalt / grass", 0],
+                                              ["13/31", 6000, 100, "Asphalt", 1],
+                                              ["17/35", 2000, 40, "Crushed rock", 0]])
+
+    def test_only_web_links_and_only_wikipedia_for_wikipedia(self):
+        self.assertEqual(_info()["ZZB2"][3:5], ["", ""])
+
+    def test_faa_codes_only_for_us_airports(self):
+        info = _info()
+        self.assertEqual((info["ZZB2"][1], info["ZZB2"][2]), ("ZZB", 0), "US, but no plates")
+        self.assertEqual(info["ZC3"][1], "", "its code already is its FAA code")
+        self.assertEqual(info["ZZH8"][1:3], ["", 0], "abroad: H8X is not an FAA code")
+        self.assertEqual(info["ZZH8"][5], [["09/27", 9000, 150, "", 1]], "UNK is no surface")
+
+    def test_the_faa_index_counts_airports_with_a_plate(self):
+        self.assertEqual(build_airports.faa_idents(DTPP_XML), {"ZZA"})
+
+    def test_written_one_airport_per_line_and_reads_back(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        rows = list(_info().values())
+        build_airports.write_info(rows, tmp / "airport-info.json", built="2026-01-01", cycle="2611")
+        text = (tmp / "airport-info.json").read_text(encoding="utf-8")
+        data = json.loads(text)
+        self.assertEqual((data["count"], data["airports"]), (len(rows), rows))
+        self.assertIn("public domain", data["source"])
+        self.assertIn("2611", data["source"])
+        self.assertEqual(len(text.splitlines()), len(rows) + 2)
+
+
+class TestAiracCycle(unittest.TestCase):
+    """The FAA's 28-day cycle, in the builder (Python) and in the airport page's FAA link (JavaScript)."""
+
+    CASES = [("2026-11-17T12:00", "2611"), ("2026-01-22T09:00", "2513"), ("2026-01-22T09:02", "2601"),
+             ("2026-12-24T10:00", "2613"), ("2027-01-21T10:00", "2701"), ("2020-12-31T10:00", "2014"),
+             ("2021-01-28T10:00", "2101"), ("2025-06-01T00:00", "2505")]
+
+    def test_python(self):
+        from datetime import datetime, timezone
+        for when, cycle in self.CASES:
+            at = datetime.fromisoformat(when).replace(tzinfo=timezone.utc)
+            self.assertEqual(build_airports.airac_cycle(at), cycle, when)
+
+    @unittest.skipUnless(shutil.which("node") or shutil.which("nodejs"), "needs node")
+    def test_the_page_agrees(self):
+        import subprocess
+        page = (REPO / "templates" / "airport.html").read_text(encoding="utf-8")
+        fn = re.search(r"function faaCycle\(now\) \{.*?\n\}\n", page, re.S).group(0)
+        script = fn + "for (const w of " + json.dumps([w for w, _ in self.CASES]) + \
+            ") console.log(faaCycle(Date.parse(w + ':00Z')));"
+        out = subprocess.run([shutil.which("node") or shutil.which("nodejs"), "-e", script],
+                             capture_output=True, text=True, timeout=30, check=True).stdout.split()
+        self.assertEqual(out, [c for _, c in self.CASES])
+
+
+class TestShippedInfoFile(unittest.TestCase):
+    """static/airport-info.json, as it ships: well formed, and built with airports.json."""
+
+    def test_every_row_is_well_formed(self):
+        data = json.loads(airports.INFO.read_text(encoding="utf-8"))
+        rows = data["airports"]
+        codes = {r[0] for r in json.loads(airports.DATA.read_text(encoding="utf-8"))["airports"]}
+        self.assertEqual(data["count"], len(rows))
+        self.assertGreater(len(rows), 5000)
+        self.assertGreater(sum(1 for r in rows if r[2]), 2000, "US airports with FAA plates")
+        for code, lid, plates, web, wiki, rws, radio in rows:
+            self.assertIn(code, codes, "a code airports.json doesn't have")
+            self.assertRegex(lid, r"^([A-Z0-9]{2,5})?$", code)
+            self.assertIn(plates, (0, 1), code)
+            self.assertRegex(web, r"^(https?://\S+)?$", code)
+            self.assertRegex(wiki, r"^(https?://[^/]*wikipedia\.org/\S+)?$", code)
+            for name, length, width, surface, lit in rws:
+                self.assertIsInstance(name, str, code)
+                self.assertTrue(length is None or isinstance(length, int), code)
+                self.assertTrue(width is None or isinstance(width, int), code)
+                self.assertIsInstance(surface, str, code)
+                self.assertIn(lit, (0, 1), code)
+            for label, mhz in radio:
+                self.assertTrue(label, code)
+                self.assertRegex(mhz, r"^\d{3}\.\d{3}(, \d{3}\.\d{3})*$", code)
+        self.assertEqual(len({r[0] for r in rows}), len(rows), "one row per airport")
+
+
+class TestDetails(unittest.TestCase):
+    """airports.details(): one airport's row, keeping only the airports near the receiver."""
+
+    def setUp(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        self.path = tmp / "airport-info.json"
+        build_airports.write_info(list(_info().values()), self.path, built="2026-01-01")
+        airports._info_cache.update(key=None, rows=None)
+        self.addCleanup(airports._info_cache.update, key=None, rows=None)
+
+    def test_one_airport(self):
+        d = airports.details("ZZA1", {"ZZA1", "ZZB2"}, path=self.path)
+        self.assertEqual(d["ident"], "ZZA")
+        self.assertIs(d["faa_plates"], True)
+        self.assertEqual((d["website"], d["wikipedia"]), ("https://example.com/", "https://en.wikipedia.org/wiki/Example"))
+        self.assertEqual(d["runways"], [["18/36", 9000, 150, "Concrete", 1]])
+        self.assertEqual(d["radio"][0], ["ATIS", "127.650"])
+        self.assertEqual(airports.details("ZC3", {"ZC3"}, path=self.path)["ident"], "ZC3", "its own code")
+
+    def test_keeps_only_the_nearby_ones_and_reads_once_per_set(self):
+        real = Path.read_text
+        with mock.patch.object(Path, "read_text", autospec=True, side_effect=real) as rd:
+            airports.details("ZZA1", {"ZZA1"}, path=self.path)
+            self.assertIsNone(airports.details("ZZB2", {"ZZA1"}, path=self.path), "not nearby")
+            self.assertEqual(rd.call_count, 1)
+            self.assertEqual(set(airports._info_cache["rows"]), {"ZZA1"})
+            airports.details("ZZB2", {"ZZA1", "ZZB2"}, path=self.path)
+            self.assertEqual(rd.call_count, 2, "a different set reads it again")
+
+    def test_nothing_known_or_no_file_is_none(self):
+        self.assertIsNone(airports.details("ZZQQ", {"ZZQQ"}, path=self.path))
+        self.assertIsNone(airports.details("ZZA1", {"ZZA1"}, path=self.path.with_name("absent.json")))
+        self.path.write_text("{not json", encoding="utf-8")
+        self.assertIsNone(airports.details("ZZA1", {"ZZA1", "X"}, path=self.path))
+
+
 class TestEndpoints(unittest.TestCase):
     """/api/airports and /api/ui-config's map.airports."""
 

@@ -11,3 +11,6 @@ CHANGELOG.md
 # Generated OurAirports data (public domain): some public airport names share
 # the maintainer's first name. Exempted 2026-11-15 (v3.4.184); see bump-version.sh.
 static/airports.json
+# Its companion, also generated from OurAirports: Wikipedia links whose public page titles
+# contain the name (an airport named after a person, a town's field). Exempted 2026-11-17 (v3.4.194).
+static/airport-info.json

@@ -1,5 +1,5 @@
 # Aerodrome
-<!-- Version: 3.4.193 -->
+<!-- Version: 3.4.194 -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -186,7 +186,7 @@ aerodrome/
 │   ├── screenshots.py            Playwright harness for docs/*.png
 │   ├── gen_type_classes.py       rebuilds type_classes.py from a local copy of ICAO DOC 8643
 │   ├── gen_type_shapes.py        draws the map's aircraft silhouettes (static/shapes/, shapes-data.js)
-│   ├── build_airports.py         rebuilds static/airports.json from OurAirports (public domain)
+│   ├── build_airports.py         rebuilds static/airports.json + airport-info.json from OurAirports (public domain)
 │   ├── type_dims.csv             wingspan, length and engine count per type, from the FAA's public table
 │   ├── shape_coverage.py         release gate — which aircraft types have a silhouette
 │   ├── admin_audit.py            Playwright check of the admin pages' header strip
@@ -455,7 +455,9 @@ Built on top of the work of many others:
 - [adsb.lol](https://www.adsb.lol) — flight routes, from its open route data.
 - [planespotters.net](https://www.planespotters.net) — aircraft photos,
   credited to each photographer where they're shown.
-- [OurAirports](https://ourairports.com) — the airport list (public domain).
+- [OurAirports](https://ourairports.com) — the airport list, runways and radio frequencies (public domain).
+- [FAA d-TPP](https://www.faa.gov/air_traffic/flight_info/aeronav/digital_products/dtpp/) — which US airports have plates
+  (US government data); the airport page links to the FAA's own list.
 - [RainViewer](https://www.rainviewer.com) — the optional weather-radar overlay.
 - [FlightAware AeroAPI](https://www.flightaware.com/aeroapi/) — optional
   route lookups with your own key.

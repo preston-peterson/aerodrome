@@ -563,6 +563,20 @@ class TestAirportPage(_Db):
         self.assertEqual(j["today"], {"landed": 2, "took_off": 0, "touch_and_go": 0, "last_hour": 2})
         self.assertIsNone(self.page("ZZZZ"))
 
+    def test_runways_radio_and_links_from_airport_info(self):
+        info = Path(tempfile.mkdtemp()) / "airport-info.json"
+        self.addCleanup(shutil.rmtree, info.parent)
+        info.write_text(json.dumps({"source": "test", "built": "2026-01-01", "count": 2, "airports": [
+            ["ZZA1", "ZZA", 1, "https://example.com/", "", [["18/36", 9000, 150, "Concrete", 1]], [["Tower", "118.300"]]],
+            ["ZZQQ", "", 0, "", "", [["9/27", 3000, 60, "Asphalt", 0]], []]]}), encoding="utf-8")
+        AE.airports_data._info_cache.update(key=None, rows=None)
+        self.addCleanup(AE.airports_data._info_cache.update, key=None, rows=None)
+        with mock.patch.object(AE.airports_data, "INFO", info):
+            self.assertEqual(self.page()["info"], {
+                "ident": "ZZA", "faa_plates": True, "website": "https://example.com/", "wikipedia": "",
+                "runways": [["18/36", 9000, 150, "Concrete", 1]], "radio": [["Tower", "118.300"]]})
+            self.assertIsNone(self.page("ZZN1")["info"], "nothing known about it")
+
     def test_a_day_chart_from_the_first_day_of_history(self):
         s = self.page()["series"]
         from datetime import datetime

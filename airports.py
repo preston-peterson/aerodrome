@@ -10,7 +10,9 @@ takeoff and landing detector (airport_events.py) reads the same list.
 The maps never load the whole list. near() reads it once per receiver
 position, keeps the airports within RADIUS_MI (wider than any receiver's
 reach) and holds only those, so a Pi keeps a few hundred entries in memory,
-not eleven thousand. Standard library + distance.py only.
+not eleven thousand. details() does the same with static/airport-info.json,
+the runways, radio and links only the airport page shows. Standard library +
+distance.py only.
 """
 import json
 import threading
@@ -19,11 +21,13 @@ from pathlib import Path
 from distance import haversine
 
 DATA = Path(__file__).resolve().parent / "static" / "airports.json"
+INFO = DATA.with_name("airport-info.json")      # runways, radio, links: the airport page only
 RADIUS_MI = 400
 CATEGORIES = {"l": "major", "m": "regional", "s": "small"}
 
 _lock = threading.Lock()
 _cache = {"key": None, "airports": None}
+_info_cache = {"key": None, "rows": None}
 
 
 def _within(rows, lat, lon, radius_mi):
@@ -63,3 +67,31 @@ def near(lat, lon, radius_mi=RADIUS_MI, path=None):
         found = _within(rows, float(lat), float(lon), radius_mi)
         _cache["key"], _cache["airports"] = key, found
         return found
+
+
+def details(code, nearby, path=None):
+    """What the airport page shows about `code` beyond the map, from
+    static/airport-info.json (built with airports.json): its runways
+    ([name, length_ft, width_ft, surface, lit]), radio ([label, "118.300, 120.750"]),
+    website and Wikipedia links, whether the FAA publishes plates for it, and the
+    code the FAA and SkyVector use for it (DFW for KDFW). None when the file has
+    nothing for it or can't be read: the page then leaves those parts out.
+
+    Like near(), it keeps only the airports in `nearby` (the codes near the
+    receiver), reading the file again only when that set changes."""
+    path = path or INFO
+    key = (frozenset(nearby), str(path))
+    with _lock:
+        if _info_cache["key"] != key:
+            try:
+                rows = json.loads(Path(path).read_text(encoding="utf-8"))["airports"]
+                kept = {r[0]: r for r in rows if r[0] in key[0]}
+            except (OSError, ValueError, KeyError, TypeError, IndexError):
+                kept = {}
+            _info_cache["key"], _info_cache["rows"] = key, kept
+        row = _info_cache["rows"].get(code)
+    if not row:
+        return None
+    lid, plates, website, wikipedia, runways, radio = row[1:7]
+    return {"ident": lid or code, "faa_plates": bool(plates), "website": website,
+            "wikipedia": wikipedia, "runways": runways, "radio": radio}
