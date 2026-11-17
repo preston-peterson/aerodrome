@@ -24,12 +24,15 @@ and reports:
 - Sequential disk read throughput (how fast your storage is)
 - SQLite pragmas and system context
 
+On a busy Raspberry Pi it can take a couple of minutes.
+
 Table sizes are not measured in a normal run: measuring them reads the whole
 database and can slow other pages for a few minutes afterwards. Press
 **Measure table sizes** when you want them. The **Re-analyze DB** button
-runs SQLite's `ANALYZE` to refresh the query planner's statistics (it can take
-30-60 seconds on a large database); it is the one thing on this page that
-writes to the database.
+runs SQLite's `ANALYZE` to refresh the query planner's statistics; it is the
+one thing on this page that writes to the database. You rarely need it:
+Aerodrome does this by itself when the database grows or shrinks a lot. On a
+big database it takes minutes, and Aerodrome stops recording until it's done.
 
 If something is wrong, hints appear at the top. There's a "Copy
 diagnostic report" button that produces a plaintext block suitable for
@@ -39,41 +42,37 @@ guessing when someone reports slowness.
 ## Expected row counts by activity
 
 Row volume is driven by two things: how many aircraft your receiver
-sees per day, and how often they show up in your poll results (the
-default collector polls every 60 seconds, so a plane in range for 40
-minutes produces ~40 rows).
+hears at once, and how often it polls (every 60 seconds by default, so a
+plane in range for 40 minutes produces ~40 rows; at a 15-second poll
+interval, ~160). How many different aircraft pass in a day matters much
+less. Two real installs that each see about 4,000 aircraft a day:
 
-| Daily aircraft  | Sightings/day   | `all_sightings` after 30d |
-| --------------- | --------------- | ------------------------- |
-| 100  (rural)    | ~5,000          | ~150,000                  |
-| 500  (suburban) | ~30,000         | ~900,000                  |
-| 2,000 (busy)    | ~200,000        | ~6,000,000                |
-| 5,000+ (major)  | ~1,000,000+     | ~30,000,000+              |
+| Install                                       | Rows a day | `all_sightings` after 30d |
+| --------------------------------------------- | ---------- | ------------------------- |
+| Home receiver, default poll interval          | ~66,000    | ~2,000,000                |
+| Very busy airspace, polling every 15 s        | ~900,000   | ~27,000,000               |
 
-The last row is "near a major airport with a well-placed antenna." This
-is where SQLite starts to feel the pressure on SD-card storage.
+The Status page's **Daily growth** shows your own rows a day.
 
-## Hardware classes and recommendations
+The second is where SQLite starts to feel the pressure on SD-card
+storage.
 
-Understanding where your hardware sits helps calibrate expectations.
+## Hardware recommendations by activity
 
-**Pi 3 / Pi Zero 2 / old hardware with SD card.** ARMv7, 1 GB RAM, SD
-card writes in the 5–20 MB/s range. Totally fine for watching occasional
-traffic; can struggle at > 500 unique aircraft/day with the default 30-day
-retention. Recommend shorter `retention.all_days` (7–14 days) or a USB SSD.
+- **Quiet** (under 100k rows a day): Raspberry Pi 4 with any SD card.
+  Everything is fast.
+- **Moderate** (100k-300k rows a day): Raspberry Pi 4 with an SD card
+  still works well. The Stats page takes a few seconds to open; a
+  USB SSD in place of the SD card makes it quicker.
+- **Busy** (over 300k rows a day): Raspberry Pi 4 with 4 GB of memory
+  and a USB SSD in place of the SD card, or a faster computer such as a
+  Raspberry Pi 5 or a small PC. On an SD card Aerodrome still records
+  every aircraft, but the Stats page can take 20 seconds to open, and
+  Run diagnostic a couple of minutes.
 
-**Pi 4 / Pi 5 with SD card.** ARMv8 aarch64, 2–8 GB RAM, SD card writes
-maybe 20–40 MB/s. Comfortable up to a few thousand aircraft/day. Start
-to feel it past ~5M rows in `all_sightings`. A Class A2 SD card helps
-(better random I/O than A1).
-
-**Pi 4 / Pi 5 with USB SSD or eMMC.** This is the sweet spot for the
-constrained form factor. Write throughput 10–20× SD, and SQLite is much
-happier. Handles even major-airport traffic without needing aggressive
-retention tuning.
-
-**x86 mini PC / NUC / laptop.** NVMe or SATA SSD. Not constrained in
-any meaningful way for Aerodrome's workload.
+A Pi 3 or Pi Zero 2 W is slower than a Pi 4: keep less history on one
+(see below). On any hardware, a poll interval of 60 seconds stores a
+quarter of what 15 seconds does.
 
 ## Retention settings (the biggest lever)
 
@@ -104,7 +103,9 @@ tab — which queries the `all_sightings` table directly.
 
 Lowering a setting is safe on a big database. Old rows are removed in
 short steps, two seconds at a time with a pause between, so collection and
-the web UI carry on. Cleanup otherwise runs every 10 minutes.
+the web UI carry on. Cleanup otherwise runs every 10 minutes. On a busy
+Raspberry Pi with an SD card, going from 30 days to 14 takes about 5 hours to
+clear, and Aerodrome keeps recording meanwhile.
 
 ## Indexes built on the first start after an upgrade
 
@@ -115,8 +116,8 @@ the first start of a release that has them:
 
 - The web UI is up during the build. Collection pauses until it's done:
   43 seconds on 12.6 million rows on a small virtual machine, seven on 11
-  million on a fast SSD, longer on an SD card. The log says when it starts
-  and finishes.
+  million on a fast SSD, and about 15 minutes on a busy Raspberry Pi with an
+  SD card. The log says when it starts and finishes.
 - The database file grows by about 20 bytes per row of `all_sightings`: 258 MB
   on 12.6 million rows. Most of that is the replaced index's old space, now
   free inside the file, and new rows fill it first. The data itself grows by
@@ -127,9 +128,9 @@ the first start of a release that has them:
 
 ## Storage recommendations
 
-**If you're on an SD card and seeing slowness, a USB SSD is the single
-most effective upgrade.** A $25 USB 3 SSD boot drive for a Pi 4 outperforms
-any SD card you can buy. The Pi itself doesn't need to be replaced.
+**If you're on an SD card and seeing slowness, move to a USB SSD.** On a
+Pi 4 the Stats page opens about twice as fast the first time. The Pi itself
+doesn't need to be replaced.
 
 SD card endurance is also a long-term concern for a 24/7 writer like
 this. After a year or two of running, consumer SD cards can degrade to

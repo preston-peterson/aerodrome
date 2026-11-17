@@ -63,69 +63,46 @@ something specific, the table of contents below has direct links.
 
 ## Hardware sizing
 
-Pick based on expected traffic volume. "Sightings" are individual poll
-records — a single aircraft at altitude typically produces dozens of
-sightings before it flies out of range.
+What counts is how many aircraft your receiver hears at once and how
+often Aerodrome checks for them (once a minute by default), more than
+how many fly past in a day: a home receiver that sees 4,000 aircraft a
+day can still be quiet.
 
-- **Rural / quiet airspace** — under ~500 aircraft/day, under ~300k
-  sightings at 30-day retention. Raspberry Pi 4 with any reasonable SD
-  card is fine. **1 GB RAM minimum, 2 GB comfortable.** Everything is
-  fast at this scale; the database stays under ~500 MB so cache fit
-  is trivial.
+- **Quiet** — most home receivers. A Raspberry Pi 4 with any SD card;
+  1 GB of memory is enough. Everything is fast.
 
-- **Suburban / moderate** — ~500-2,000 aircraft/day, ~300k-1.5M sightings
-  at 30-day retention. Raspberry Pi 4 still works, but use an A2-rated SD
-  card for random-I/O performance (examples as of 2026: SanDisk Extreme
-  Pro, Samsung Pro Plus). **2 GB RAM minimum, 4 GB comfortable.** At
-  this scale the database is typically under 1 GB at the default 30-day
-  retention; SQLite's page cache fits the working set easily.
-  Stats tab loads in the 3-8 second range.
+- **Moderate** — a high, clear antenna in busy airspace. A Raspberry
+  Pi 4 with an SD card still works well, and 1 GB of memory is enough.
+  The Stats page takes a few seconds to open; a USB SSD in place of the
+  SD card makes it quicker.
 
-- **Major-airport / heavy** — 2,000+ aircraft/day, 1.5M+ sightings at
-  30-day retention. Raspberry Pi 5 strongly recommended, and an NVMe HAT
-  is worth the money — the Stats tab's worst-case queries are bound by
-  storage I/O, and NVMe is roughly 10-20× the random-read throughput of
-  an SD card. Example HATs (as of 2026): Pimoroni NVMe Base, Pineberry Pi
-  HatDrive. Any small x86 box with an SSD is an equivalent alternative.
-  **4 GB RAM minimum at default retention, 6 GB+ strongly recommended
-  at 365-day retention.** When the database grows past available RAM,
-  cold-cache Stats-tab queries do disk reads on every render — the
-  difference between 4 GB and 6 GB on a 5 GB database is measurable on
-  every page load. See *RAM and the SQLite page cache* below.
+- **Busy** — a far-reaching antenna in very busy airspace,
+  especially when checking more often than once a minute. A Raspberry
+  Pi 4 with 4 GB of memory and a USB SSD in place of the SD card, or a
+  faster computer such as a Raspberry Pi 5 or a small PC. On a Pi 4 with
+  an SD card Aerodrome still records every aircraft, but the Stats page
+  can take 20 seconds to open.
 
-### RAM and the SQLite page cache
+Not sure? After a day, the Status page shows **Daily growth**: under
+100k rows a day is quiet, 100k-300k moderate, over 300k busy.
 
-SQLite caches recently-read database pages in RAM. The more of the
-database that stays hot in cache, the faster Stats-tab queries are.
-When the database fits entirely in RAM, queries are uniformly fast.
-When it doesn't, the Stats tab does disk reads on cold queries — a
-5 GB database on a 4 GB host means roughly half the pages have to
-come from disk after a service restart or after the cache has been
-flushed by other workload.
+We tested each level on a Raspberry Pi 4, with an ordinary SD card and
+with a USB SSD.
 
-The Aerodrome auto-tuning profile (`data.tuning.profile: auto` in
-config.yaml, the default) scales SQLite's cache up automatically when
-more RAM is available, so simply giving the host more RAM produces
-measurable improvements without any configuration changes. Empirically,
-on a 5.1 GB / 29M-row database, the difference between 4 GB and 6 GB
-RAM was roughly 5× on cold-cache `stats_furthest_prerank` (226 ms →
-130 ms); 6 GB to 8 GB brought another ~3× (130 ms → 49 ms) on that
-same query while most other queries had already hit their cache-fit
-floor at 6 GB.
+### If pages get slow
 
-If your install is at the heavy tier and stats feel sluggish, the
-Performance page diagnostic (`/performance`, under gear menu →
-Diagnostics) shows per-query timings
-that surface cache-related slowness explicitly. Queries that vary
-substantially between cold and warm runs (and especially queries that
-get faster after you increase RAM) are doing disk I/O that more cache
-would absorb.
-
-If you don't want to upgrade hardware, reducing retention is the easiest
-win. A 3M-row install at 30-day retention becomes a 1M-row install at
-10-day retention — and often runs comfortably on the original hardware
-tier. Adjust it in the Configuration → Retention tab in the web UI
-(recommended), or edit `retention.all_days` in `config.yaml` directly.
+- **Check once a minute.** In Configuration → Receiver, a Poll interval
+  of 60 seconds (the default) stores a quarter of what 15 seconds does.
+- **Keep less history.** In Configuration → Retention, 10 days instead
+  of 30 leaves a third as much for each page to look through. On a big
+  database the old history takes a few hours to clear, and Aerodrome
+  keeps recording meanwhile.
+- **Move from the SD card to a USB SSD.** The Stats page opens about
+  twice as fast the first time.
+- **In busy airspace, more memory helps:** a Pi with 4 GB is faster
+  than one with 1 GB.
+- **Check the Performance page** (gear menu → Diagnostics →
+  Performance). It measures your own system and points out what's slow.
 
 ## Capacity planning
 
@@ -1768,13 +1745,14 @@ send or saving your settings ends the wait. Other alerts are always tried.
 
 ## Performance diagnostic
 
-A moderate urban or suburban receiver sees a few thousand unique
-aircraft per day; a busy one near a major airport can see 5,000+ with
-over a million individual sightings (one plane at altitude might
-appear in dozens of polls before it flies out of range). At the
-default 30-day retention, that's up to ~30 million rows to keep
-indexed — the kind of workload where query shape and index coverage
-start to matter, especially on a Raspberry Pi with an SD card.
+Aerodrome stores one sighting for every aircraft in range on every
+poll. A home receiver that sees a few thousand different aircraft a
+day, polling once a minute, stores well under 100,000 sightings a
+day. A far-reaching antenna in very busy airspace, polling every 15
+seconds, can store close to a million. At the default 30-day
+retention, that's up to ~30 million rows to keep indexed — the kind of
+workload where query shape and index coverage start to matter,
+especially on a Raspberry Pi with an SD card.
 
 The `/performance` page measures your actual system rather than
 letting you guess what's wrong. Open it from the gear menu →

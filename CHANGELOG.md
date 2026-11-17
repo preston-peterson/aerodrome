@@ -19,6 +19,20 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.191] — 2026-11-17
+
+**The hardware advice is simpler, and matches what we measured on a Raspberry Pi.**
+
+The README, the install guide and the performance guide still sort receivers into quiet, moderate and busy, but now by how much Aerodrome stores a day rather than by how many aircraft fly past. A home receiver can see 4,000 aircraft a day and still be quiet. What makes one busy is a far-reaching antenna in very busy airspace, especially with a Poll interval shorter than the default minute. Not sure which you are? After a day, the Status page's Daily growth tells you: under 100k rows a day is quiet, 100k–300k moderate, over 300k busy.
+
+The advice for each level now comes from tests on a Raspberry Pi 4. A Pi 4 with any SD card handles quiet and moderate. For busy, use a Pi 4 with 4 GB of memory and a USB SSD in place of the SD card, or a faster computer such as a Raspberry Pi 5 or a small PC; on an SD card Aerodrome still records every aircraft, but the Stats page can take 20 seconds to open. Advice we couldn't back up is gone: A2 SD cards, NVMe being 10–20 times faster, and the memory minimums. The install guide also has a short "If pages get slow" list, starting with the Poll interval: once a minute stores a quarter of what every 15 seconds does.
+
+### Behind the scenes
+
+- Measured with 3.4.190 on a Pi 4B (4 GB, and capped at 1 GB) with an A1 SD card and a USB 3 SSD, on invented 30-day databases of ~30k, ~200k and ~850k sightings a day. Stats page, first load after a restart / opened again: under 1 s; 5 / 1.5 s (SSD 3 / 1.4 s); 22 / 6 s (SSD 12 / 5 s; 1 GB of RAM 21 / 8 s). Every other page answered within about 2 s, and no gap between polls was over 19.4 s.
+- PERFORMANCE.md's table converting aircraft a day into sightings (2,000 aircraft → 200k a day) is replaced by two real installs that each see about 4,000 aircraft a day: ~66k sightings a day at a 60-second Poll interval, ~900k at 15 seconds.
+- PERFORMANCE.md no longer says the Performance page's Re-analyze DB takes 30–60 seconds. It reads every index in full and holds the write lock while it runs, so collection waits: minutes on a big database on a Pi.
+
 ## [3.4.190] — 2026-11-16
 
 **On a Raspberry Pi with a big database, Aerodrome no longer stops collecting for minutes at every start and every few hours.**

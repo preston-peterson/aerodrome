@@ -1,5 +1,5 @@
 # Aerodrome
-<!-- Version: 3.4.190 -->
+<!-- Version: 3.4.191 -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -362,16 +362,24 @@ remote access — see **[docs/INSTALL.md](docs/INSTALL.md)**.
 
 ## Hardware sizing, briefly
 
-ADS-B traffic varies a lot by location. Three rough tiers:
+ADS-B traffic varies a lot by location. What counts is how many
+aircraft your receiver hears at once and how often Aerodrome checks for
+them (once a minute by default), more than how many fly past in a day.
+Three rough tiers:
 
-- **Rural / quiet airspace** (under ~500 aircraft/day): Raspberry Pi 4
-  with any reasonable SD card. Everything is fast.
-- **Suburban / moderate** (~500-2,000 aircraft/day): Raspberry Pi 4 still
-  works, but use an A2-rated SD card for random-I/O performance.
-- **Major-airport / heavy** (2,000+ aircraft/day): Raspberry Pi 5 with an
-  NVMe HAT, or any small x86 box with an SSD. Storage I/O bottlenecks
-  Stats-tab queries on busy receivers; NVMe is roughly 10-20× the
-  random-read throughput of an SD card.
+- **Quiet** (most home receivers): Raspberry Pi 4 with any SD card.
+  Everything is fast.
+- **Moderate** (a high, clear antenna in busy airspace): Raspberry Pi 4
+  with an SD card still works well. The Stats page takes a few seconds
+  to open.
+- **Busy** (a far-reaching antenna in very busy airspace, especially
+  when checking more often than once a minute): Raspberry Pi 4 with 4 GB
+  of memory and a USB SSD in place of the SD card, or a faster computer
+  such as a Raspberry Pi 5 or a small PC. On an SD card Aerodrome still
+  records every aircraft, but the Stats page can take 20 seconds to open.
+
+Not sure? After a day, the Status page shows **Daily growth**: under
+100k rows a day is quiet, 100k-300k moderate, over 300k busy.
 
 Aerodrome ships a built-in `/performance` page that measures your actual
 system — DB size, query timings, disk throughput — and prints
