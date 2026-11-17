@@ -1,4 +1,4 @@
-# Version: 3.4.189
+# Version: 3.4.190
 """
 collector.py — ADS-B data fetcher and classifier.
 
@@ -7,6 +7,7 @@ and additionally tags military + watchlist matches into their own tables.
 """
 
 import contextlib
+import json
 import logging
 import math
 import os
@@ -524,17 +525,28 @@ CAPACITY_CHECK_INTERVAL_SEC = 60
 # practice on a 45-day-old install: plans built from first-week row counts
 # mis-ordered a join in the Stats "top_aircraft" query, making a one-day
 # windowed lookup run ~5s (slower than a 365-day count over the same
-# table — the signature of a wrong plan). v3.4.141: a sampled ANALYZE
-# (analysis_limit bounds each index to a sample rather than a full scan,
-# ~0.3 s on a 2 GB / 11M-sighting database). Through v3.4.140 this ran
+# table — the signature of a wrong plan). Through v3.4.140 this ran
 # PRAGMA optimize, which only considers tables queried on the SAME
 # connection — on this fresh connection it was a no-op, so the stats never
 # moved (the 0x10000 "check all tables" flag needs SQLite 3.46; Ubuntu
-# 24.04 ships 3.45). Run once per poll cycle, rate-limited like the
-# capacity check.
+# 24.04 ships 3.45). v3.4.141 to v3.4.189: a sampled ANALYZE of everything.
+# v3.4.190: sampling doesn't make ANALYZE cheap. SQLite first counts each
+# index's entries exactly, which reads every page of it; analysis_limit only
+# bounds the sampling after that. On a Raspberry Pi 4 with an SD card and 25M
+# sightings that was 2.5-4 minutes of reading with the write lock held, so no
+# collection, at every start and every 6 hours (a warm cache hides it: 4 s).
+# Now a table is analyzed again only when its size has changed by
+# STATS_REANALYZE_FACTOR since its numbers were taken, which in steady state
+# is never. Sizes come from rowids (two index seeks a table), and the size at
+# each table's last ANALYZE is kept in _aerodrome_meta, so a restart analyzes
+# nothing. The check runs at the first poll after a start, then every 6 hours.
 _last_stats_optimize_ts = 0.0
-STATS_OPTIMIZE_INTERVAL_SEC = 6 * 3600   # every 6 hours
+STATS_OPTIMIZE_INTERVAL_SEC = 6 * 3600   # how often table sizes are checked
 STATS_OPTIMIZE_ANALYSIS_LIMIT = 1000
+STATS_REANALYZE_FACTOR = 2.0             # doubled or halved since its last ANALYZE
+STATS_MIN_ROWS = 1000                    # below this any plan is fast
+STATS_BIG_TABLE_ROWS = 1_000_000         # say so in the log before analyzing one
+STATS_ROWS_KEY = "stats_rows"            # _aerodrome_meta: {table: rows at its last ANALYZE}
 
 # v2.48.0: per-ICAO "last seen squawk" map used to detect EDGES into an
 # emergency code (7500/7600/7700) rather than re-firing every poll while
@@ -1023,14 +1035,106 @@ def analyze_db(conn: sqlite3.Connection, target: str = "") -> None:
     for them it would seek them once per aircraft to answer a date range: 40 ms where
     idx_all_seen_icao takes 0.1 ms. ANALYZE rewrites sqlite_stat1, so every ANALYZE
     goes through here. One transaction, so no connection can load the numbers without
-    the mark."""
+    the mark. Also notes the size of each table it analyzed (target: a table, or ""
+    for all), for refresh_query_planner_stats."""
     if not conn.in_transaction:
         conn.execute("BEGIN")
     conn.execute(f"ANALYZE {target}".strip())
     names = [entry[0] for entry in LOOKUP_INDEXES]
     conn.execute(f"UPDATE sqlite_stat1 SET stat = stat || ' noskipscan' "
                  f"WHERE idx IN ({','.join('?' * len(names))}) AND stat NOT LIKE '%noskipscan%'", names)
+    sizes = _stats_rows(conn) if target else {}      # a full ANALYZE starts the record afresh
+    sizes.update(_table_rows(conn, [target] if target else None))
+    conn.execute("CREATE TABLE IF NOT EXISTS _aerodrome_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    conn.execute("INSERT OR REPLACE INTO _aerodrome_meta (key, value) VALUES (?, ?)",
+                 (STATS_ROWS_KEY, json.dumps(sizes, sort_keys=True)))
     conn.commit()
+
+
+def _drop_old_index(conn: sqlite3.Connection, name: str) -> None:
+    """DROP INDEX IF EXISTS for an index a newer release no longer needs, saying so first
+    when it's big. Dropping an index frees every page of it, which reads all of it, and
+    init_db runs before the web UI starts: idx_all_seen on 25M sightings took 2-3 minutes
+    on a Raspberry Pi's SD card with nothing in the log."""
+    row = conn.execute("SELECT tbl_name FROM sqlite_master WHERE type = 'index' AND name = ?",
+                       (name,)).fetchone()
+    if not row:
+        return
+    rows = _table_rows(conn, [row[0]]).get(row[0], 0)
+    if rows > 100_000:
+        logger.warning(f"Removing the unused index {name} on {rows:,} rows, once. "
+                       f"The web UI starts when it's done.")
+    conn.execute(f"DROP INDEX IF EXISTS {name}")
+
+
+def _table_rows(conn: sqlite3.Connection, names: Optional[List[str]] = None) -> Dict[str, int]:
+    """Each table's rows from its rowids, MAX - MIN + 1 (0 when empty): two index seeks,
+    where COUNT(*) reads the whole table. Exact for tables whose rows arrive in order and
+    leave oldest-first, as the sightings tables' do; elsewhere a steady stand-in, which is
+    all a size-change check needs. Left out: virtual tables and their shadow tables (FTS5
+    packs segment numbers into its rowids, so a span means nothing, and FTS5 reads them by
+    key, never by a plan), tables without rowids, a name that isn't a table, and
+    _aerodrome_meta (a few keys, rewritten in place: its rowids only climb)."""
+    if names is None:
+        tables = conn.execute("SELECT name, COALESCE(sql, '') FROM sqlite_master "
+                              "WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'").fetchall()
+        virtual = [name + "_" for name, sql in tables if sql.upper().startswith("CREATE VIRTUAL")]
+        names = [name for name, sql in tables
+                 if not sql.upper().startswith("CREATE VIRTUAL") and not name.startswith(tuple(virtual))
+                 and name != "_aerodrome_meta"]
+    rows = {}
+    for name in names:
+        try:
+            # Two SELECTs: MAX(rowid) - MIN(rowid) in one would lose SQLite's min/max
+            # shortcut and scan the table.
+            hi = conn.execute(f'SELECT MAX(rowid) FROM "{name}"').fetchone()[0]
+            lo = conn.execute(f'SELECT MIN(rowid) FROM "{name}"').fetchone()[0]
+        except sqlite3.OperationalError:
+            continue
+        rows[name] = hi - lo + 1 if hi is not None else 0
+    return rows
+
+
+def _stats_rows(conn: sqlite3.Connection) -> Dict[str, int]:
+    """The rows each table had at its last ANALYZE, as analyze_db noted them."""
+    try:
+        row = conn.execute("SELECT value FROM _aerodrome_meta WHERE key = ?", (STATS_ROWS_KEY,)).fetchone()
+        sizes = json.loads(row[0]) if row else {}
+    except (sqlite3.OperationalError, ValueError):
+        return {}
+    return {k: v for k, v in sizes.items() if isinstance(v, int)} if isinstance(sizes, dict) else {}
+
+
+def _tables_due_for_stats(conn: sqlite3.Connection) -> List[Tuple[str, int]]:
+    """(table, its rows at its last ANALYZE) for each table whose size has changed by
+    STATS_REANALYZE_FACTOR either way since then. Sizes are rowid spans (_table_rows);
+    a table last analyzed by a release before v3.4.190 has none noted, so the row count
+    in its sqlite_stat1 numbers stands in. Where rows are replaced in place (one row per
+    aircraft a day, rewritten each poll) the span runs far ahead of the rows: that table
+    is analyzed once after the upgrade, then its span holds steady."""
+    sizes = _stats_rows(conn)
+    counted = _stat1_rows(conn)
+    due = []
+    for table, now in _table_rows(conn).items():
+        then = sizes.get(table, counted.get(table, 0))
+        if max(now, then) >= STATS_MIN_ROWS and max(now, then) >= STATS_REANALYZE_FACTOR * min(now, then):
+            due.append((table, counted.get(table, 0)))
+    return due
+
+
+def _stat1_rows(conn: sqlite3.Connection) -> Dict[str, int]:
+    """Each table's rows when it was last analyzed, from sqlite_stat1 (the first number
+    of each of its rows; the largest, in case an index were partial)."""
+    counted: Dict[str, int] = {}
+    try:
+        for tbl, stat in conn.execute("SELECT tbl, stat FROM sqlite_stat1"):
+            try:
+                counted[tbl] = max(int(str(stat).split()[0]), counted.get(tbl, 0))
+            except (ValueError, IndexError):
+                pass
+    except sqlite3.OperationalError:     # never analyzed: no sqlite_stat1 yet
+        pass
+    return counted
 
 
 # A computer with no battery-backed clock can start with the wrong time until it
@@ -1148,16 +1252,14 @@ def _build_indexes(conn, db_path, missing):
 
 
 def refresh_query_planner_stats(config: Dict[str, Any]) -> None:
-    """v3.4.53: periodically refresh SQLite's query-planner statistics.
+    """Keep SQLite's query-planner statistics in step with the tables (v3.4.53, v3.4.190).
 
-    Called once per poll cycle, rate-limited to STATS_OPTIMIZE_INTERVAL_SEC
-    (6 hours) so a sub-60s poll cadence doesn't multiply the work. Runs
-    ANALYZE under a bounded analysis_limit, which caps each index to a
-    sample rather than a full scan — so the cost is small even on a
-    multi-gigabyte database. This is the durable fix for stats going stale
-    on long-running installs (the marker-gated ANALYZE in init_db only
-    runs once). Never raises — a stats-refresh failure must not break the
-    collector."""
+    Called once per poll cycle. At the first poll after a start, and then every
+    STATS_OPTIMIZE_INTERVAL_SEC, it compares each table's size with its size at its
+    last ANALYZE (a few index seeks) and analyzes only the tables that have doubled or
+    halved, sampled. ANALYZE is not cheap on a big table even sampled (see the comment
+    at STATS_OPTIMIZE_INTERVAL_SEC), and it holds the write lock, so collection waits
+    while it runs. Never raises — a stats-refresh failure must not break the collector."""
     global _last_stats_optimize_ts
     try:
         now = time.time()
@@ -1168,14 +1270,18 @@ def refresh_query_planner_stats(config: Dict[str, Any]) -> None:
         db_path = config["data"]["db_file"]
         conn = _open_db_conn(db_path)
         try:
-            conn.execute(f"PRAGMA analysis_limit={STATS_OPTIMIZE_ANALYSIS_LIMIT}")
-            t0 = time.time()
-            with _maintenance("stats"):
-                analyze_db(conn)
-            logger.info(
-                "Query-planner stats refreshed (sampled ANALYZE, %.2fs)",
-                time.time() - t0,
-            )
+            due = _tables_due_for_stats(conn)
+            if due:
+                conn.execute(f"PRAGMA analysis_limit={STATS_OPTIMIZE_ANALYSIS_LIMIT}")
+            for table, before in due:
+                if before >= STATS_BIG_TABLE_ROWS:
+                    logger.info(f"Updating query-planner statistics for {table}, which had {before:,} "
+                                f"rows when they were last taken. Collection pauses until it's done.")
+                t0 = time.time()
+                with _maintenance("stats"):
+                    analyze_db(conn, table)
+                logger.info("Query-planner stats refreshed for %s: %s rows (sampled ANALYZE, %.2fs)",
+                            table, f"{_stat1_rows(conn).get(table, 0):,}", time.time() - t0)
         finally:
             conn.close()
     except Exception as e:
@@ -2544,7 +2650,7 @@ def init_db(db_path: str, poll_interval=None):
     # write overhead on every collector poll for zero read benefit.
     # DROP IF EXISTS is idempotent — re-attempts on subsequent startups
     # are silent no-ops.
-    conn.execute("DROP INDEX IF EXISTS idx_hourly_icao_bucket")
+    _drop_old_index(conn, "idx_hourly_icao_bucket")
     # v2.50.11: covering index for the All-tab COUNT(DISTINCT icao) path.
     # The single-column idx_hourly_bucket above is non-covering — SQLite
     # has to do a table fetch for every matching row to read the icao
@@ -2633,7 +2739,7 @@ def init_db(db_path: str, poll_interval=None):
     # table scan). It was ~6% of a large file and one more index on every insert
     # and delete; nothing names it in an INDEXED BY hint. The freed pages are
     # reused as the file grows (no VACUUM needed).
-    conn.execute("DROP INDEX IF EXISTS idx_all_seen")
+    _drop_old_index(conn, "idx_all_seen")
     # The per-aircraft index is idx_all_icao_seen: see ensure_lookup_indexes.
     # v2.50.17: covering indexes for the military_count and watchlist_count
     # Stats card paths. Same shape as the v2.50.11 idx_hourly_bucket_icao
@@ -2658,8 +2764,8 @@ def init_db(db_path: str, poll_interval=None):
     # EXISTS is idempotent on fresh installs (where they were never
     # created) and on existing installs (where init_db re-runs at every
     # startup).
-    conn.execute("DROP INDEX IF EXISTS idx_mil_seen")
-    conn.execute("DROP INDEX IF EXISTS idx_watch_seen")
+    _drop_old_index(conn, "idx_mil_seen")
+    _drop_old_index(conn, "idx_watch_seen")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_seen_first ON seen_aircraft(first_seen_at)")
 
     # --- v2.40.1 migration: squawk column on sightings tables ---

@@ -41,60 +41,24 @@ post-install — in steady state the measurement dominates.
 import os
 import shutil
 import sqlite3
-import threading
 import time
 from typing import Any, Dict, Optional, Tuple
 
 
 CAPACITY_DEFAULT_BYTES_PER_ROW = 170  # used only when measurement isn't available
 
-# v3.4.46: process-wide cache for the expensive all_sightings row count.
-#
-# `COUNT(*) FROM all_sightings` is a full covering-index scan — ~340 ms on
-# the 69M-row / 5.7 GB reference install in isolation, but it was being run
-# from BOTH callers of _compute_capacity_metrics: /api/status (every 30 s on
-# its own cache-miss) and the collector's check_capacity_alerts (every 60 s).
-# Because the web server and the collector run in the SAME process (the
-# collector is a daemon thread inside the uvicorn process), these two scan
-# sources fire on independent schedules and periodically OVERLAP. On a
-# RAM-constrained host (the reference box has ~7 GB resident against a
-# 12.5 GB DB, so the 830 MB seen_at index doesn't stay cached), two or three
-# concurrent scans of that index thrash the page cache and each balloons
-# from ~340 ms to 30-60 seconds. That was the residual hang after v3.4.45
-# split the MIN/COUNT query: the split lowered per-scan cost but did nothing
-# about the scans overlapping.
-#
-# The total row count is used only to derive a bytes-per-row growth estimate,
-# which is inherently approximate and moves by ~0.02 % over ten minutes at
-# the reference install's ingest rate. So we cache it process-wide for
-# 10 minutes and guard the refresh with a lock: at most one COUNT scan runs
-# at a time, and concurrent callers wait for that single scan (or use the
-# still-fresh cached value) rather than launching parallel scans. MIN(seen_at)
-# is NOT cached here — it's a cheap index seek (see v3.4.45) and oldest-row
-# freshness matters more for the days-of-data figure.
-_ROWCOUNT_CACHE_TTL_SEC = 600  # 10 minutes
-_rowcount_cache: Dict[Any, Any] = {}   # (db_path, name) -> (count, ts)
-_rowcount_lock = threading.Lock()
-
-
-def _cached_count(conn, db_path: str, name: str, sql: str, params: tuple = ()) -> int:
-    """A row count, cached process-wide for _ROWCOUNT_CACHE_TTL_SEC with
-    double-checked locking, so its index scan runs at most once per TTL and never
-    concurrently. See the _rowcount_cache comment above for why this exists."""
-    key = (db_path, name)
-    hit = _rowcount_cache.get(key)
-    # Fast path: fresh cached value, no lock needed.
-    if hit and time.time() - hit[1] < _ROWCOUNT_CACHE_TTL_SEC:
-        return hit[0]
-    # Slow path: acquire the lock, re-check (another thread may have just
-    # refreshed while we waited), then scan if still stale.
-    with _rowcount_lock:
-        hit = _rowcount_cache.get(key)
-        if hit and time.time() - hit[1] < _ROWCOUNT_CACHE_TTL_SEC:
-            return hit[0]
-        count = int(conn.execute(sql, params).fetchone()[0] or 0)
-        _rowcount_cache[key] = (count, time.time())
-        return count
+# Row counts derived from rowids instead of COUNT(*). Module-level so the
+# tests EXPLAIN the exact SQL that ships (see test_collector_upkeep.py —
+# neither may degrade into a scan of all_sightings).
+_TOTAL_ROWID_SPAN_SQL = (
+    "SELECT (SELECT MAX(rowid) FROM all_sightings) - "
+    "(SELECT MIN(rowid) FROM all_sightings) + 1")
+# Two separate MAX/MIN subqueries, deliberately: in a single
+# "SELECT MAX(rowid) - MIN(rowid) + 1 FROM …" SQLite drops its min/max
+# shortcut and scans the whole table.
+_FIRST_ROWID_SINCE_SQL = (
+    "SELECT rowid FROM all_sightings WHERE seen_at >= ? "
+    "ORDER BY seen_at LIMIT 1")
 
 
 # v2.50.31: alert thresholds. The defaults are also the values that the
@@ -169,19 +133,19 @@ def _compute_capacity_metrics(db_path: str, retention_days: int = 30) -> Dict[st
         conn.row_factory = sqlite3.Row
         try:
             now_ts = int(time.time())
-            # MIN(seen_at): cheap index seek (SEARCH ... a seen_at-leading index),
-            # kept inline and uncached so days-of-data reflects current
-            # retention pruning. See v3.4.45 for the MIN/COUNT split.
+            # MIN(seen_at): cheap index seek (SEARCH ... a seen_at-leading
+            # index), so days-of-data reflects current retention pruning.
             min_ts = conn.execute(
                 "SELECT MIN(seen_at) FROM all_sightings"
             ).fetchone()[0]
-            # COUNT(*): full covering-index scan, expensive at scale and
-            # called from two schedules in one process. Cached process-wide
-            # for 10 min with a lock so it never runs concurrently — this is
-            # the v3.4.46 fix for the residual admin-page/collector stalls
-            # that v3.4.45's query split didn't fully resolve. See the
-            # _cached_count / _rowcount_cache comments at module top.
-            total_rows = _cached_count(conn, db_path, "total", "SELECT COUNT(*) FROM all_sightings")
+            # Row count from rowids, not COUNT(*): rows leave
+            # all_sightings only oldest-first (retention) and arrive in
+            # time order, so the rowid span equals the row count and both
+            # ends are index seeks — COUNT(*) was a full scan that stalled
+            # collection on slow disks at 25M+ rows. If rows were ever
+            # deleted from the middle this over-counts slightly, which is
+            # fine for a growth estimate. NULL on an empty table → 0.
+            total_rows = conn.execute(_TOTAL_ROWID_SPAN_SQL).fetchone()[0] or 0
 
             if total_rows == 0 or min_ts is None:
                 out["data_source"] = "insufficient"
@@ -202,10 +166,17 @@ def _compute_capacity_metrics(db_path: str, retention_days: int = 30) -> Dict[st
             # otherwise use everything we have.
             if days_present >= 7:
                 seven_days_ago = now_ts - 7 * 86400
-                # A week's rows is an index scan too, and this rate moves slowly.
-                recent_rows = _cached_count(
-                    conn, db_path, "last_7_days",
-                    "SELECT COUNT(*) FROM all_sightings WHERE seen_at >= ?", (seven_days_ago,))
+                # Week's rows = the rowid span from the first row at or
+                # after the cutoff to the newest row. The cutoff lookup is
+                # an index seek on a seen_at-leading index, and rows
+                # arrive in time order, so everything from that rowid to
+                # MAX(rowid) is inside the window. No such row → 0.
+                first_recent_rowid = conn.execute(
+                    _FIRST_ROWID_SINCE_SQL, (seven_days_ago,)).fetchone()[0]
+                newest_rowid = conn.execute(
+                    "SELECT MAX(rowid) FROM all_sightings").fetchone()[0]
+                recent_rows = 0 if first_recent_rowid is None \
+                    else newest_rowid - first_recent_rowid + 1
                 out["rows_per_day"] = round(recent_rows / 7.0, 0)
             else:
                 out["rows_per_day"] = round(total_rows / days_present, 0)

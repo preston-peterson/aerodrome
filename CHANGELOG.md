@@ -19,6 +19,27 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.190] — 2026-11-16
+
+**On a Raspberry Pi with a big database, Aerodrome no longer stops collecting for minutes at every start and every few hours.**
+
+After every start, and then every 6 hours, Aerodrome refreshed the statistics its database uses to plan searches. On most computers that takes a moment. On a Raspberry Pi with an SD card and a few gigabytes of sightings, it had to read about half the database first, and collection waited until it finished: 4–5 minutes on a 5 GB database, measured on a Pi 4. The Status page showed "Paused for maintenance" meanwhile. Now the statistics are refreshed only for a table that has doubled or halved in size since they were last taken, which in normal running doesn't happen, and a restart no longer refreshes them at all. If you change Retention by a lot, expect one refresh once the old sightings have gone.
+
+Small computers had a second, shorter stall. Every 10 minutes the database-size estimate behind the Status page counted every sighting. With less memory than the database needs to stay fast (a Pi with 1 or 2 GB and a large database), that stopped collection for a minute or more each time. It now gets the same number in a fraction of a second.
+
+And when an update removes an old index from a large database, the log now says so first. On an SD card that can take a few minutes, before the web page comes back.
+
+### Behind the scenes
+
+- SQLite's ANALYZE counts every entry of each index exactly before the sampling that `analysis_limit` bounds, so a sampled ANALYZE still reads every index page: 2.5–4 minutes from a cold cache for 25M sightings on a Pi 4's SD card, with the write lock held. A warm cache hides it (4 s).
+- `refresh_query_planner_stats` compares each table's rowid span (two index seeks) with its span at its last ANALYZE, which `analyze_db` now keeps in `_aerodrome_meta` (`stats_rows`). It analyzes only the tables that changed by 2× either way and have at least 1,000 rows. A table analyzed by an earlier release falls back to the row count in its `sqlite_stat1` numbers. Virtual tables, FTS5's shadow tables, WITHOUT ROWID tables and `_aerodrome_meta` are left out. The `noskipscan` marks are kept, and the log names a table of a million rows or more before it is analyzed.
+- `capacity.py` counts rows from rowids: the total is `(SELECT MAX(rowid)) - (SELECT MIN(rowid)) + 1`, and the last 7 days are `MAX(rowid)` minus the rowid of the first row at the cutoff. Rows leave all_sightings oldest-first, so these equal `COUNT(*)`: 0.3 s instead of 87 s from a cold cache on the Pi. The 10-minute count cache is gone.
+- init_db's index drops log first when the table has more than 100,000 rows. Dropping idx_all_seen on 25M rows took 129 s from a cold cache on SD.
+- Measured on a Pi 4B with an invented 5.3 GB database (25M sightings, 180 aircraft a poll, SD card):
+  - longest gap between polls at a cold start: 4 min 14 s before, 18 s after;
+  - at 2 GB of RAM, before: 5 min at start, then 64 s every ~12 minutes; after: no gap over 18 s in 22 minutes.
+- Tests: `test_stats_refresh.py` covers a restart, a table doubling or halving, small tables, an install analyzed by an earlier release, a table rewritten in place, the excluded tables, the `noskipscan` marks, seeks not scans, and the index-drop log. `test_collector_upkeep.py` checks the capacity counts against `COUNT(*)` and their query plans.
+
 ## [3.4.189] — 2026-11-16
 
 **The API explorer pages are gone, and the API reference is in the app instead.**

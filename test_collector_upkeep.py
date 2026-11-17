@@ -1,7 +1,7 @@
 """The collector's upkeep work on the real schema (init_db + every migration):
 retention in short batches, the read-only lookup indexes, notifications sent after a
 poll's transaction, the send hold after a failure, last_distance written only when it
-changes, and the capacity row counts' cache. Hexes and data are invented.
+changes, and the capacity row counts from rowids. Hexes and data are invented.
 """
 import json
 import os
@@ -655,8 +655,6 @@ class TestCapacityCounts(_DbCase):
 
     def setUp(self):
         super().setUp()
-        capacity._rowcount_cache.clear()
-        self.addCleanup(capacity._rowcount_cache.clear)
         now = int(time.time())
         conn = sqlite3.connect(self.db)
         conn.executemany("INSERT INTO all_sightings (icao, seen_at) VALUES ('A00001', ?)",
@@ -667,24 +665,53 @@ class TestCapacityCounts(_DbCase):
     def metric(self):
         return capacity._compute_capacity_metrics(self.db, 30)["rows_per_day"]
 
-    def test_the_weekly_count_is_served_from_the_cache_until_it_expires(self):
-        self.assertEqual(self.metric(), 1.0)
-        self.run_sql("INSERT INTO all_sightings (icao, seen_at) VALUES ('A00001', ?)", (int(time.time()),))
-        self.assertEqual(self.metric(), 1.0)
-        self.assertEqual(capacity._rowcount_cache[(self.db, "last_7_days")][0], 7)
-        later = time.time() + capacity._ROWCOUNT_CACHE_TTL_SEC + 1
-        with mock.patch.object(capacity.time, "time", return_value=later):
-            self.metric()
-        self.assertEqual(capacity._rowcount_cache[(self.db, "last_7_days")][0], 8)
-
-    def test_two_databases_do_not_share_a_count(self):
+    def rowid_total(self):
         conn = sqlite3.connect(self.db)
         try:
-            self.assertEqual(capacity._cached_count(conn, "one.db", "n", "SELECT 1"), 1)
-            self.assertEqual(capacity._cached_count(conn, "one.db", "n", "SELECT 2"), 1)
-            self.assertEqual(capacity._cached_count(conn, "two.db", "n", "SELECT 2"), 2)
+            return conn.execute(capacity._TOTAL_ROWID_SPAN_SQL).fetchone()[0] or 0
         finally:
             conn.close()
+
+    def rowid_since(self, cutoff):
+        conn = sqlite3.connect(self.db)
+        try:
+            first = conn.execute(capacity._FIRST_ROWID_SINCE_SQL, (cutoff,)).fetchone()[0]
+            newest = conn.execute("SELECT MAX(rowid) FROM all_sightings").fetchone()[0]
+            return 0 if first is None else newest - first + 1
+        finally:
+            conn.close()
+
+    def test_the_rowid_counts_match_count_star_on_time_ordered_rows(self):
+        now = int(time.time())
+        self.assertEqual(self.rowid_total(), self.count("all_sightings"))
+        self.assertEqual(self.rowid_since(now - 7 * DAY),
+                         self.run_sql("SELECT COUNT(*) FROM all_sightings WHERE seen_at >= ?",
+                                      (now - 7 * DAY,))[0][0])
+        self.assertEqual(self.metric(), 1.0)
+
+    def test_the_total_still_matches_count_star_after_retention_prunes_oldest(self):
+        self.run_sql("DELETE FROM all_sightings WHERE seen_at < ?", (int(time.time()) - 15 * DAY,))
+        self.assertEqual(self.rowid_total(), self.count("all_sightings"))
+
+    def test_an_empty_table_gives_the_insufficient_result_without_an_exception(self):
+        self.run_sql("DELETE FROM all_sightings")
+        metrics = capacity._compute_capacity_metrics(self.db, 30)
+        self.assertTrue(metrics["ok"])
+        self.assertIsNone(metrics["error"])
+        self.assertEqual(metrics["data_source"], "insufficient")
+        self.assertIsNone(metrics["rows_per_day"])
+        self.assertIsNone(metrics["bytes_per_row"])
+
+    def test_neither_row_count_query_full_scans_all_sightings(self):
+        cutoff = int(time.time()) - 7 * DAY
+        for sql, args in ((capacity._TOTAL_ROWID_SPAN_SQL, ()),
+                          (capacity._FIRST_ROWID_SINCE_SQL, (cutoff,))):
+            for line in self.plan(sql, args).split(" | "):
+                # SQLite prints "SCAN CONSTANT ROW" for the FROM-less outer
+                # select of the total query; it reads no table at all. A
+                # scan of all_sightings — table or covering index — may not.
+                self.assertFalse(line.startswith("SCAN") and "all_sightings" in line,
+                                 (sql, line))
 
 
 if __name__ == "__main__":

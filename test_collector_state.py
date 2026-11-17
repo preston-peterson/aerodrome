@@ -228,8 +228,10 @@ class TestMaintenanceIsMarked(_PollCase):
     def test_statistics_refresh(self):
         collector._last_stats_optimize_ts = 0.0
         self.addCleanup(setattr, collector, "_last_stats_optimize_ts", 0.0)
-        self.assertEqual(self.seen_during("analyze_db", lambda: collector.refresh_query_planner_stats(self.cfg)),
-                         "stats")
+        due = [("all_sightings", 0)]
+        with mock.patch.object(collector, "_tables_due_for_stats", return_value=due):
+            self.assertEqual(self.seen_during("analyze_db", lambda: collector.refresh_query_planner_stats(self.cfg)),
+                             "stats")
 
     def test_cleanup(self):
         collector._next_cleanup_at = 0.0

@@ -778,7 +778,7 @@ class TestStatusCollectorCard(BrowserCase):
         text, light = self.card(state="paused", warn=True, activity={"kind": "stats", "seconds": 247})
         for want in ("Paused for maintenance", "4 min 50 s ago",
                      "Refreshing the database’s statistics", "Started 4 min 7 s ago",
-                     "Collection resumes when it’s done", "every 6 hours"):
+                     "Collection resumes when it’s done", "doubled or halved in size"):
             self.assertIn(want, text)
         self.assertIn("warn", light)
         text, _ = self.card(state="paused", warn=True, activity={"kind": "clock", "seconds": 64},
