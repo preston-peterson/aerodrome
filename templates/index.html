@@ -1,4 +1,4 @@
-<!-- Version: 3.4.191 -->
+<!-- Version: 3.4.192 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -805,7 +805,8 @@
         /* ---- Map legend (increment C) — toggled, not always shown ---- */
         .radar-legend {
             position:absolute; left:10px; bottom:46px; z-index:3;
-            width:212px; max-width:calc(100% - 20px);
+            width:236px; max-width:calc(100% - 20px);
+            max-height:calc(100% - 56px); overflow-y:auto;
             background:var(--bg1); border:1px solid var(--bdr); border-radius:8px;
             box-shadow:0 6px 22px rgba(0,0,0,.3); padding:10px 12px;
             font-size:11px; color:var(--t2);
@@ -824,17 +825,21 @@
             background:linear-gradient(to right,#f97316,#facc15,#4ade80,#22d3ee,#60a5fa,#a78bfa); }
         .rl-scale { display:flex; justify-content:space-between; color:var(--t3);
             font-size:9px; margin-top:2px; }
-        .rl-row { display:flex; align-items:center; gap:7px; margin:3px 0; }
+        .rl-row { display:flex; align-items:center; gap:7px; margin:3px 0; line-height:1.3; }
+        .rl-row.rl-top { align-items:flex-start; }
+        .rl-row[hidden] { display:none; }
         .rl-note { color:var(--t3); font-style:italic; margin-top:3px; font-size:10px; }
-        .rl-chev { display:inline-block; flex:0 0 14px; text-align:center; color:#60a5fa; line-height:1; }
-        .rl-chev::before { content:'▲'; }
-        .rl-chev.sm { font-size:9px; } .rl-chev.md { font-size:13px; } .rl-chev.lg { font-size:17px; }
         .rl-swatch { width:13px; height:13px; flex:0 0 auto; border-radius:50%; display:inline-block; box-sizing:border-box; }
-        .rl-heli { display:inline-flex; flex:0 0 18px; align-items:center; justify-content:center; line-height:1; }
+        .rl-ico { display:inline-flex; flex:0 0 18px; align-items:center; justify-content:center; line-height:1; }
+        .rl-shapes { display:inline-flex; align-items:center; gap:3px; flex:0 0 auto; padding-top:1px; }
+        .rl-gap { width:10px; }
+        .rl-btn { flex:0 0 20px; height:20px; display:inline-flex; align-items:center; justify-content:center;
+            box-sizing:border-box; background:var(--bg2); border:1px solid var(--bdr); border-radius:4px;
+            color:var(--t2); font-size:11px; font-weight:600; line-height:1; }
+        .rl-btn svg { width:14px; height:14px; }
         .rl-mil { border:2px solid #ef4444; background:transparent; }
         .rl-wl { border:2px solid var(--amber); background:transparent; }
         .rl-rx { background:var(--cyan); }
-        .rl-cov { border:1.5px solid #7dd3fc; background:rgba(125,211,252,.12); border-radius:2px; }
         /* Legend toggle button — same look as the theme/zoom controls. */
         #radarMap .map-legend-btn {
             background:var(--bg2); color:var(--t1);
@@ -948,6 +953,7 @@
             /* Docking is desktop-only — phone stacks panes via the List/Radar
                toggle, so the dock control and any dock-* class are inert here. */
             #radarMap .radar-dock-ctl { display:none; }
+            .radar-legend .rl-dock { display:none; }
             .live-split { display:block; }
             .live-list-pane { width:auto; max-height:none; overflow:visible; }
             /* Phone: page scrolls (not the pane), so the sticky header sits
@@ -2431,21 +2437,27 @@
                     <div class="rl-gradient"></div>
                     <div class="rl-scale"><span>ground</span><span>45,000+ ft</span></div>
                 </div>
+                <!-- Filled when the legend opens (_radarLegendFill), drawn by the
+                     map's own marker code: silhouettes while map.type_shapes is
+                     on, arrows when it's off. -->
+                <div class="rl-section" id="rlAircraft"><div class="rl-title">Aircraft</div></div>
                 <div class="rl-section">
-                    <div class="rl-title">Aircraft (size = class)</div>
-                    <div class="rl-row"><span class="rl-chev sm"></span> Light / piston</div>
-                    <div class="rl-row"><span class="rl-chev md"></span> Jet</div>
-                    <div class="rl-row"><span class="rl-chev lg"></span> Heavy</div>
-                    <div class="rl-row"><span class="rl-heli"><svg width="18" height="18" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="none" stroke="#94a3b8" stroke-width="2"/><g stroke="#94a3b8" stroke-width="1.6" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/><line x1="12" y1="5" x2="12" y2="19"/></g><circle cx="12" cy="12" r="2.6" fill="#94a3b8"/></svg></span> Helicopter (rotor disc)</div>
-                    <div class="rl-row"><span class="rl-heli"><svg width="18" height="18" viewBox="0 0 24 24"><circle cx="12" cy="9" r="7" fill="#94a3b8"/><rect x="10" y="18.5" width="4" height="3.4" rx="0.8" fill="none" stroke="#94a3b8" stroke-width="1.6"/></svg></span> Balloon (envelope + basket)</div>
-                    <div class="rl-note">Chevron points the way the aircraft is heading; helicopters and balloons show heading-agnostic glyphs.</div>
+                    <div class="rl-title">Rings</div>
+                    <div class="rl-row"><span class="rl-swatch rl-mil"></span> Military, tagged MIL or its own label</div>
+                    <div class="rl-row"><span class="rl-swatch rl-wl"></span> On your watchlist, tagged with your label</div>
+                    <div class="rl-row"><span class="rl-swatch rl-rx"></span> Your receiver, with range rings</div>
                 </div>
+                <!-- Each icon is copied from its button when the legend opens, so the
+                     two can't drift apart; a row whose button isn't there hides. -->
                 <div class="rl-section">
-                    <div class="rl-row"><span class="rl-swatch rl-mil"></span> Military (red ring + MIL)</div>
-                    <div class="rl-row"><span class="rl-swatch rl-wl"></span> Watchlist (amber ring + WL)</div>
-                    <div class="rl-row"><span class="rl-swatch rl-rx"></span> Receiver &amp; range rings</div>
-                    <div class="rl-row"><span class="rl-swatch rl-cov"></span> Coverage outline (⬡ toggle)</div>
-                    <div class="rl-row"><span style="flex:0 0 16px;height:4px;border-radius:2px;background:linear-gradient(90deg,#a78bfa,#22d3ee,#4ade80,#f97316)"></span> Aircraft trails (↝ toggle)</div>
+                    <div class="rl-title">Buttons (lower left)</div>
+                    <div class="rl-row" data-btn="map-legend-btn"><span class="rl-btn"></span> This legend</div>
+                    <div class="rl-row rl-top" data-btn="map-coverage-btn"><span class="rl-btn"></span> Coverage outline: how far you've heard aircraft in each direction</div>
+                    <div class="rl-row" data-btn="map-labels-btn"><span class="rl-btn"></span> Labels: all, selected only, or off</div>
+                    <div class="rl-row" data-btn="map-trails-btn"><span class="rl-btn"></span> Trails, colored by altitude</div>
+                    <div class="rl-row rl-top" data-btn="map-weather-btn"><span class="rl-btn"></span> Weather radar: rain and snow, last 2 hours</div>
+                    <div class="rl-row rl-top" data-btn="map-airports-btn"><span class="rl-btn"></span> Airports: pick which to show. Click an airport's code for its details</div>
+                    <div class="rl-row rl-top rl-dock"><span class="rl-btn"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M12 2l3 4H9z"/><path d="M12 22l-3-4h6z"/><path d="M2 12l4-3v6z"/><path d="M22 12l-4 3V9z"/></svg></span> Move the map to another side of the page</div>
                 </div>
             </div>
         </div>
@@ -4791,7 +4803,38 @@ function setRadarDock(pos){
 // v3.5.0 (radar C): show/hide the map legend (toggled by the "i" control).
 function toggleRadarLegend(){
     const el = document.getElementById('radarLegend');
-    if(el) el.hidden = !el.hidden;
+    if(!el) return;
+    el.hidden = !el.hidden;
+    if(!el.hidden) _radarLegendFill(el);
+}
+
+// The legend's aircraft and button icons come from what the map draws now (its
+// own marker code, the buttons' own icons), so the legend can't fall behind the
+// map again. Silhouettes only while map.type_shapes is on; arrows otherwise.
+function _radarLegendFill(el){
+    const sec = document.getElementById('rlAircraft');
+    if(sec){
+        const shape = (type, color, px) => _radarTypeSvg({aircraft_type: type, category: ''}, color, px);
+        const ico = html => `<span class="rl-ico">${html}</span>`;
+        const heli = _radarHeliSvg('#94a3b8', 18), balloon = _radarBalloonSvg('#94a3b8', 18);
+        const planes = shape('C172', '#facc15', 20) + shape('B738', '#22d3ee', 22) + shape('B77W', '#a78bfa', 26);
+        const rotor = shape('EC35', '#f97316', 22);
+        sec.innerHTML = '<div class="rl-title">Aircraft</div>' + (planes && rotor
+            ? `<div class="rl-row rl-top"><span class="rl-shapes">${planes}</span>`
+              + `<span>Shape shows the type; the nose points where it's heading</span></div>`
+              + `<div class="rl-row">${ico(rotor)} Helicopter<span class="rl-gap"></span>${ico(balloon)} Balloon</div>`
+              + `<div class="rl-row">${ico(_radarChevronSvg('#60a5fa', 15))}${ico(heli)} Other or unknown types</div>`
+            : `<div class="rl-row rl-top"><span class="rl-shapes">${_radarChevronSvg('#60a5fa', 11)}`
+              + `${_radarChevronSvg('#60a5fa', 15)}${_radarChevronSvg('#60a5fa', 19)}</span>`
+              + `<span>The arrow points where the aircraft is heading</span></div>`
+              + `<div class="rl-row">${ico(heli)} Helicopter<span class="rl-gap"></span>${ico(balloon)} Balloon</div>`)
+            + '<div class="rl-note">Heavier aircraft are drawn larger.</div>';
+    }
+    el.querySelectorAll('[data-btn]').forEach(row => {
+        const btn = document.querySelector('#radarMap .' + row.dataset.btn);
+        row.hidden = !btn;
+        if(btn) row.querySelector('.rl-btn').innerHTML = btn.innerHTML;
+    });
 }
 
 // v3.5.0 (radar H): max-range coverage outline — a toggleable polygon of the

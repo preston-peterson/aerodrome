@@ -19,6 +19,19 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.192] — 2026-11-17
+
+**The Live map's legend now matches the map: aircraft silhouettes, every button, and clickable airports.**
+
+The legend (the "i" button at the lower left of the Live map) still showed only arrows, but the map draws each aircraft's own silhouette, helicopters included, and keeps the arrow and the rotor disc for the few types without one. The legend now shows example silhouettes, a helicopter and a balloon, and the arrow and disc for other or unknown types. If you've turned off Aircraft type shapes (Configuration → Map), it shows arrows instead.
+
+It also explains every button in the lower-left stack, each with its own icon: the legend itself, the coverage outline, labels, trails, weather radar, airports (and that clicking an airport's code opens its details) and, on wider screens, the pad that moves the map to another side of the page. Military and watchlist rings now say they carry their own tag, not only MIL and WL. A legend taller than the map scrolls.
+
+### Behind the scenes
+
+- `_radarLegendFill` runs each time the legend opens: it draws the aircraft examples with the map's own marker code (`_radarTypeSvg`, `_radarChevronSvg`, `_radarHeliSvg`, `_radarBalloonSvg`) and copies each button row's icon from the button itself, hiding a row whose button isn't on the map. The legend can't fall behind the map's icons again.
+- Removed the unused `.rl-chev` and `.rl-cov` styles.
+
 ## [3.4.191] — 2026-11-17
 
 **The hardware advice is simpler, and matches what we measured on a Raspberry Pi.**
