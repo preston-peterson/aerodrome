@@ -19,6 +19,22 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.193] — 2026-11-17
+
+**On a busy receiver, the Live map's coverage outline and the Status page no longer read through your whole history.**
+
+The coverage outline (the ⬢ button on the Live map and on the board) used to read every position Aerodrome has ever stored, again every five minutes while it was on. On a busy receiver on a Raspberry Pi with an SD card, that took close to a minute each time. Aerodrome now remembers the outline and reads only the last hour or two, so it appears straight away. The first time it's switched on after this update, it still reads the whole history once, which can take a minute on a busy Pi; after that it doesn't, even after a restart. If you move your receiver (Configuration → Receiver), it reads the history once more for the new spot. The outline itself is the same as before.
+
+The "All sightings" count on the Status page is refreshed every 30 seconds while any Aerodrome page is open. It used to add up a large table each time, which took about 5 seconds on a busy Pi after a restart. It now takes two quick lookups and gives the same number.
+
+The Re-analyze DB button on the Performance page no longer says it takes 30–60 seconds. On a big database it takes minutes, and Aerodrome stops recording until it's done. Its tooltip now says so, and that Aerodrome does this by itself, so you rarely need it.
+
+### Behind the scenes
+
+- `/api/coverage`: `_coverage_outline` keeps, for the finished hours, the farthest 0.05° cell in each of 36 bearing bins in `_aerodrome_meta` (`coverage_outline`), together with the receiver location it was worked out for. Each refresh folds in only the hours since, through `idx_hourly_bucket`. The last two hours are read every time, because their rows still change. sightings_hourly is never pruned, so the old full `GROUP BY` kept growing. On a copy of a busy test database (25.6 million sightings), one refresh read 955 MB before and 0.4 MB after, with an identical outline. A lock stops two browsers doing the first read at once.
+- `/api/status`: the all-sightings total is the all_sightings rowid span since the retention cutoff, as the capacity estimate already does, instead of `SUM(sighting_count)` over sightings_hourly. That read 106 MB cold before and nothing after, and gives the same total.
+- The `/api/perf/analyze` docstring no longer says it is safe while the collector is writing: it holds the write lock.
+
 ## [3.4.192] — 2026-11-17
 
 **The Live map's legend now matches the map: aircraft silhouettes, every button, and clickable airports.**

@@ -1,4 +1,4 @@
-# Version: 3.4.192
+# Version: 3.4.193
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -16,6 +16,7 @@ Endpoints:
 """
 
 import asyncio
+import json
 import logging
 import math
 import re
@@ -1328,6 +1329,80 @@ def _distance_from_receiver(ac_lat, ac_lon):
     return _dist_to_user_unit(km, unit)
 
 
+# The coverage outline (/api/coverage) is the farthest 0.05° grid cell in each of
+# 36 bearing bins, from the positions in sightings_hourly. That table is never
+# pruned and only the current hour's rows still change, so the farthest cells of
+# the finished hours are kept in _aerodrome_meta and each refresh reads only the
+# hours since. Reading the whole rollup took 55 s cold on a busy Pi with an SD
+# card; that now happens once per install (and when the receiver moves).
+COVERAGE_GRID = 0.05          # degrees; the same grid as the Stats range rose
+COVERAGE_BINS = 36            # 10-degree bearing bins
+COVERAGE_META_KEY = "coverage_outline"
+
+
+def _coverage_fold(conn, rx_lat, rx_lon, best, since=None, until=None):
+    """Fold the cells of the rows with since <= hour_bucket < until into best,
+    the farthest cell per bin as [km, lat, lon] or None. since=None is the
+    whole table: a plain scan (+hour_bucket keeps it off the index), which
+    reads it once instead of an index walk plus a lookup per row."""
+    where, args = [], [COVERAGE_GRID] * 4
+    if since is not None:
+        where.append("hour_bucket >= ?")
+        args.append(since)
+    if until is not None:
+        where.append("+hour_bucket < ?" if since is None else "hour_bucket < ?")
+        args.append(until)
+    where.append("last_lat IS NOT NULL AND last_lon IS NOT NULL")
+    rows = conn.execute(
+        "SELECT ROUND(last_lat / ?) * ? AS lat_b, ROUND(last_lon / ?) * ? AS lon_b "
+        "FROM sightings_hourly WHERE " + " AND ".join(where) + " GROUP BY lat_b, lon_b", args)
+    for lat2, lon2 in rows:
+        d = _dist_haversine(rx_lat, rx_lon, lat2, lon2, "km")
+        if d is None or d <= 0:
+            continue
+        bi = int(round(_dist_compass_bearing(rx_lat, rx_lon, lat2, lon2) / (360.0 / COVERAGE_BINS))) % COVERAGE_BINS
+        if best[bi] is None or d > best[bi][0]:
+            best[bi] = [d, round(lat2, 4), round(lon2, 4)]
+    return best
+
+
+def _coverage_outline(conn, rx_lat, rx_lon, now):
+    """The farthest cell in each bearing bin, [km, lat, lon] or None, over all of
+    sightings_hourly. Hours before `settled` are finished: their farthest cells
+    come from _aerodrome_meta, and any finished since are folded in and saved.
+    The last two hours (the current one and the one before it, which can still
+    get a poll that was committing as the hour turned) are read every time."""
+    settled = int(now) // 3600 * 3600 - 3600
+    state = None
+    try:
+        row = conn.execute("SELECT value FROM _aerodrome_meta WHERE key = ?",
+                           (COVERAGE_META_KEY,)).fetchone()
+        state = json.loads(row[0]) if row else None
+    except (sqlite3.Error, ValueError):
+        state = None
+    if not (isinstance(state, dict) and state.get("receiver") == [rx_lat, rx_lon]
+            and state.get("grid") == COVERAGE_GRID and isinstance(state.get("through"), int)
+            and isinstance(state.get("best"), list) and len(state["best"]) == COVERAGE_BINS):
+        state = {"receiver": [rx_lat, rx_lon], "grid": COVERAGE_GRID, "through": None,
+                 "best": [None] * COVERAGE_BINS}
+    if state["through"] is None or state["through"] < settled:
+        t0 = time.time()
+        _coverage_fold(conn, rx_lat, rx_lon, state["best"], state["through"], settled)
+        if state["through"] is None:
+            logger.info(f"Coverage outline: read the whole position history once in {time.time() - t0:.1f}s; "
+                        f"later refreshes read only the last hours")
+        state["through"] = settled
+        try:
+            conn.execute("INSERT OR REPLACE INTO _aerodrome_meta (key, value) VALUES (?, ?)",
+                         (COVERAGE_META_KEY, json.dumps(state)))
+            conn.commit()
+        except sqlite3.Error as e:
+            # Still right for this answer; the next refresh reads from the saved point.
+            logger.warning(f"Coverage outline not saved ({e}); the next refresh reads it again")
+    best = [list(b) if b else None for b in state["best"]]
+    return _coverage_fold(conn, rx_lat, rx_lon, best, settled)
+
+
 # v2.60.1 (Phase 1A.5 perf): convert a stored last_distance value
 # (canonical km) to the user's configured display unit. Mirrors the
 # unit-conversion tail of _distance_from_receiver but takes the km
@@ -1542,7 +1617,8 @@ def _annotate_watchlist(entry: dict):
 # keeps the public API at module level for backward compat with any
 # existing references; capacity.py is the single source of truth.
 
-from capacity import _compute_capacity_metrics, CAPACITY_DEFAULT_BYTES_PER_ROW
+from capacity import (_compute_capacity_metrics, CAPACITY_DEFAULT_BYTES_PER_ROW,
+                      _FIRST_ROWID_SINCE_SQL)
 
 
 # Stats filtering constants are defined in collector.py so both the
@@ -4611,29 +4687,31 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                         ).fetchone()[0]
                         fresh_stats[key] = {"unique": unique, "total": total}
 
-                    # v2.50.19/v3.4.39: all_sightings stats come from
-                    # seen_aircraft (unique) and the hourly rollup (total).
-                    # seen_aircraft is never pruned by retention, so the
+                    # v2.50.19/v3.4.39: the unique count comes from
+                    # seen_aircraft, which is never pruned by retention, so the
                     # WHERE last_seen_at >= cutoff restricts the count to the
                     # retention window — same set the old rollup-window query
                     # produced, via a single index range scan + COUNT(*) (no
-                    # DISTINCT, no temp B-tree). The rollup SUM gives the
-                    # cumulative raw-sighting count over the window.
+                    # DISTINCT, no temp B-tree). The total is below.
                     all_cutoff_ts = now_ts - (CONFIG["retention"]["all_days"] * 86400)
                     all_unique = conn.execute(
                         "SELECT COUNT(*) FROM seen_aircraft WHERE last_seen_at >= ?",
                         (all_cutoff_ts,)
                     ).fetchone()[0]
-                    # v3.4.57: hour_bucket is stored in seconds, so the window
-                    # bound is all_cutoff_ts directly (not //3600). Behaviorally
-                    # a no-op — the rollup is pruned to retention, so both forms
-                    # select the same rows — but corrected so no stray //3600
-                    # remains and this matches the other hour_bucket queries.
-                    all_total_row = conn.execute(
-                        "SELECT COALESCE(SUM(sighting_count), 0) FROM sightings_hourly WHERE hour_bucket >= ?",
-                        (all_cutoff_ts,)
-                    ).fetchone()
-                    all_total = int(all_total_row[0]) if all_total_row else 0
+                    # The total is the all_sightings rowid span, not a SUM over
+                    # the never-pruned sightings_hourly rollup (a ~100 MB cold
+                    # read on a busy DB, every 30 s while a page polls). Rows
+                    # arrive in time order and leave only oldest-first, so
+                    # first-rowid-since-cutoff..MAX(rowid) equals the row
+                    # count, and both ends are index seeks, as in capacity.py.
+                    first_rowid_row = conn.execute(_FIRST_ROWID_SINCE_SQL, (all_cutoff_ts,)).fetchone()
+                    first_rowid = first_rowid_row[0] if first_rowid_row else None
+                    if first_rowid is None:
+                        all_total = 0
+                    else:
+                        newest_rowid = conn.execute(
+                            "SELECT MAX(rowid) FROM all_sightings").fetchone()[0]
+                        all_total = newest_rowid - first_rowid + 1
                     fresh_stats["all"] = {"unique": all_unique, "total": all_total}
 
                     nonlocal_state["db_stats_cache"] = {"data": fresh_stats, "timestamp": now_ts}
@@ -5218,12 +5296,14 @@ def get_app(config: dict, config_path: str) -> FastAPI:
     # /api/coverage — max-range coverage outline (radar overlay, v3.5.0)
     # =========================================================================
     # The farthest aircraft received in each compass direction, as a polygon
-    # the radar can overlay (tar1090's "range outline"). Computed from the
-    # SAME sightings_hourly grid the Stats range rose uses — group positions
-    # into a coarse lat/lon grid, then for each of N bearing bins keep the
-    # single farthest cell. Cached (recompute at most every few minutes) since
-    # it scans the rollup. Plain `def` so the scan runs off the event loop.
+    # the radar can overlay (tar1090's "range outline"), from the SAME
+    # sightings_hourly grid the Stats range rose uses: _coverage_outline keeps
+    # the farthest cell of each of 36 bearing bins and reads only the hours
+    # since its last refresh. Cached for 5 minutes; the lock keeps two
+    # browsers from reading the history at once the first time. Plain `def`
+    # so the reads run off the event loop.
     _coverage_cache = {"ts": 0.0, "payload": None}
+    _coverage_lock = threading.Lock()
     @app.get("/api/coverage")
     def get_coverage():
         r = CONFIG.get("receiver", {})
@@ -5231,45 +5311,27 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         if not isinstance(rx_lat, (int, float)) or not isinstance(rx_lon, (int, float)):
             return {"available": False, "reason": "receiver location not configured"}
         unit = (r.get("distance_unit") or "mi").lower()
-        now = time.time()
-        if _coverage_cache["payload"] is not None and (now - _coverage_cache["ts"]) < 300:
-            return _coverage_cache["payload"]
-        GRID_RES = 0.05
-        conn = _open_db_conn(CONFIG["data"]["db_file"])
-        conn.row_factory = sqlite3.Row
-        try:
-            rows = conn.execute("""
-                SELECT ROUND(last_lat / ?) * ? AS lat_b,
-                       ROUND(last_lon / ?) * ? AS lon_b
-                FROM sightings_hourly
-                WHERE last_lat IS NOT NULL AND last_lon IS NOT NULL
-                GROUP BY lat_b, lon_b
-            """, (GRID_RES, GRID_RES, GRID_RES, GRID_RES)).fetchall()
-        finally:
-            conn.close()
-        NB = 36  # 10-degree bearing bins
-        best_d = [0.0] * NB
-        best_pt = [None] * NB
-        for row in rows:
-            lat2, lon2 = row["lat_b"], row["lon_b"]
-            d = _dist_haversine(rx_lat, rx_lon, lat2, lon2, unit)
-            if d is None or d <= 0:
-                continue
-            bi = int(round(_dist_compass_bearing(rx_lat, rx_lon, lat2, lon2) / (360.0 / NB))) % NB
-            if d > best_d[bi]:
-                best_d[bi] = d
-                best_pt[bi] = [round(lat2, 4), round(lon2, 4)]
-        points = [p for p in best_pt if p is not None]
-        payload = {
-            "available": True,
-            "receiver": {"lat": rx_lat, "lon": rx_lon},
-            "points": points,  # ordered by bearing bin (0°..350°)
-            "max_distance": round(max(best_d), 1) if any(best_d) else 0,
-            "distance_unit": unit,
-        }
-        _coverage_cache["ts"] = now
-        _coverage_cache["payload"] = payload
-        return payload
+        with _coverage_lock:
+            now = time.time()
+            if _coverage_cache["payload"] is not None and (now - _coverage_cache["ts"]) < 300:
+                return _coverage_cache["payload"]
+            conn = _open_db_conn(CONFIG["data"]["db_file"], timeout=30.0)
+            try:
+                best = _coverage_outline(conn, rx_lat, rx_lon, now)
+            finally:
+                conn.close()
+            points = [[b[1], b[2]] for b in best if b is not None]
+            far = max((b[0] for b in best if b is not None), default=0)
+            payload = {
+                "available": True,
+                "receiver": {"lat": rx_lat, "lon": rx_lon},
+                "points": points,  # ordered by bearing bin (0°..350°)
+                "max_distance": round(_dist_to_user_unit(far, unit), 1) if far else 0,
+                "distance_unit": unit,
+            }
+            _coverage_cache["ts"] = now
+            _coverage_cache["payload"] = payload
+            return payload
 
     # =========================================================================
     # /api/live/trails — bulk recent tracks for the radar fleet-trails (↝)
@@ -10555,13 +10617,12 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         queries got slow and wants to try refreshing stats before
         reporting a bug.
 
-        ANALYZE itself is read-only wrt data; it just updates internal
-        sqlite_stat1 tables. Safe to run any time, including while the
-        collector is actively inserting.
-
-        On a 3M-row DB this takes ~30-60s. The endpoint blocks until
-        complete and returns timing. Clients should show a loading
-        indicator while waiting.
+        ANALYZE leaves the data alone; it only updates the internal
+        sqlite_stat1 tables. But analyze_db holds the write lock while it
+        reads every index, so the collector waits until it finishes:
+        minutes on a big DB on a Pi. The endpoint blocks until complete
+        and returns timing. Clients should show a loading indicator
+        while waiting.
         """
         import time as _t
         db_path = CONFIG["data"]["db_file"]

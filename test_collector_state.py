@@ -388,6 +388,28 @@ class TestStatusEndpoint(_PollCase):
         self.assertEqual(s["severity"], "error")
         self.assertIn("collector", s["failing"])
 
+    def write_many(self, ages):
+        conn = sqlite3.connect(self.db)
+        try:
+            for age in ages:
+                conn.execute("INSERT INTO all_sightings (icao, seen_at) VALUES ('A00001', ?)",
+                             (int(time.time()) - age,))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def all_total(self):
+        return self.status()["components"]["database"]["stats"]["all"]["total"]
+
+    def test_all_total_counts_only_the_retention_window(self):
+        all_days = self.cfg["retention"]["all_days"]
+        self.write_many([(all_days + n) * 86400 for n in (3, 2, 1)])   # aged out, oldest first
+        self.write_many([600, 500, 400, 300, 200])                     # inside the window
+        self.assertEqual(self.all_total(), 5)
+
+    def test_all_total_is_zero_with_no_sightings(self):
+        self.assertEqual(self.all_total(), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

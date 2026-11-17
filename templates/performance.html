@@ -1,4 +1,4 @@
-<!-- Version: 3.4.192 -->
+<!-- Version: 3.4.193 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -186,11 +186,11 @@ a { color:var(--cyan); }
         <span class="copied-tag" id="copiedTag">copied to clipboard</span>
         <!-- v2.42.6: manual ANALYZE trigger. Refreshes SQLite planner
              stats in case of performance regressions from stale stats.
-             Blocking on this page because ANALYZE can take 30-60s on a
-             large DB; the button shows progress and disables itself
-             during the run. -->
+             ANALYZE holds the write lock, so on a big DB on a Pi it takes
+             minutes and the collector waits; the button shows progress
+             and disables itself during the run. -->
         <button class="btn" onclick="runAnalyze()" id="analyzeBtn"
-                title="Refresh SQLite query-planner statistics (safe, takes 30-60s on large DBs)">
+                title="Refresh the database's query statistics. Aerodrome does this by itself, so you rarely need it. On a big database it takes minutes, and Aerodrome stops recording until it's done.">
             Re-analyze DB
         </button>
         <a class="btn" href="/diagnostics" style="text-decoration:none">&larr; Back to Diagnostics</a>
@@ -799,7 +799,7 @@ document.addEventListener('click', e => {
 })();
 
 // v2.42.6: manual ANALYZE. Refreshes SQLite's query-planner statistics.
-// On large DBs (millions of rows) this blocks 30-60s; disable the button
+// On a big DB on a Pi this takes minutes and holds the write lock; disable the button
 // and show progress while waiting, then auto-rerun the diagnostic so the
 // user can see the improvement (or not) in measured timings.
 async function runAnalyze() {
