@@ -1179,7 +1179,7 @@ async def _render(browser, template_file: str, outfile: Path, *,
     # string in JS, but the HTML tokenizer doesn't recognize it as a
     # closing tag. Applied to every inlined JS body below.
     static_dir = REPO_ROOT / 'static'
-    for asset in ('theme.css', 'theme.js', 'health-indicator.js', 'shapes-data.js'):
+    for asset in ('theme.css', 'theme.js', 'health-indicator.js', 'shapes-data.js', 'airport-links.js'):
         path = static_dir / asset
         if not path.exists():
             continue

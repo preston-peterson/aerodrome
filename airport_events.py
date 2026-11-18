@@ -668,8 +668,9 @@ def _flow(runway):
 
 def airport_summary(conn, config, code, now, day_start):
     """The Live map's airport panel: the airport, today's counts, the runways in use
-    over the last hour, its latest takeoffs and landings, today's visitors and how
-    many it sees on a typical day. None for an airport not near the receiver."""
+    over the last hour, its latest takeoffs and landings, today's visitors, how
+    many it sees on a typical day, and its runways, radio and chart links (`info`,
+    airports.details()). None for an airport not near the receiver."""
     from distance import haversine
     index = index_for(config)
     a = index.by_code.get(code) if index else None
@@ -739,7 +740,8 @@ def airport_summary(conn, config, code, now, day_start):
                          "types": [{"type": t, "n": n} for t, n in sorted(types.items(), key=lambda kv: (-kv[1], kv[0]))[:4]],
                          "mix": {c: n for c, n in cats.items()},
                          "military": cats.get("military", 0), "watchlist": watch},
-            "per_day": per_day, "fill_in": backfill_status(conn)}
+            "per_day": per_day, "fill_in": backfill_status(conn),
+            "info": airports_data.details(code, index.by_code)}
 
 
 def _type_of(conn, icao):
@@ -864,10 +866,8 @@ def airport_page(conn, config, code, now, day_start, tz=None):
     j = airport_summary(conn, config, code, now, day_start)
     if j is None:
         return None
-    index = index_for(config)
-    a = index.by_code[code]
-    j.update(iata=a["iata"], city=a["city"], runway_names=a["runway_names"],
-             info=airports_data.details(code, index.by_code))
+    a = index_for(config).by_code[code]
+    j.update(iata=a["iata"], city=a["city"], runway_names=a["runway_names"])
     today = tzwindow.local_dt(now, tz).date()
     first_here = {icao: at for icao, at in conn.execute(
         "SELECT icao, MIN(at) FROM airport_events WHERE airport = ? GROUP BY icao", (code,))}

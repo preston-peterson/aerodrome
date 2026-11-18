@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version: 3.4.194
+# Version: 3.4.195
 # =============================================================================
 # bump-version.sh — Bump Aerodrome version + auto-update CHANGELOG.md
 # =============================================================================
@@ -814,12 +814,14 @@ import os, re, subprocess, sys
 
 # Negative lookahead suppresses the maintainer's GitHub-username form
 # (the approved attribution string that appears in repository URLs).
-# Case-insensitive across all branches.
+# Case-insensitive, and matched anywhere, like the pre-push guard: inside a
+# longer word or joined by underscores (a Wikipedia link's title, an
+# identifier) as well as on its own. Until 2026-11-17 it needed word breaks
+# on both sides, so two such hits got past it into a packaged release and
+# only the pre-push guard stopped them.
 NAME_RE = re.compile(
-    r'\b' + 'pre' + 'ston(?!-pet' + 'erson)\\b'
-    r'|\b' + 'pre' + 'ston@'
-    r'|\b' + 'pro' + 'ton-ubnt\\b'
-    r'|/home/' + 'pre' + 'ston',
+    'pre' + 'ston(?!-pet' + 'erson)'
+    '|pro' + 'ton-ubnt',
     re.IGNORECASE,
 )
 IP_RE = re.compile(r'\b(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\b')

@@ -19,6 +19,17 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.195] — 2026-11-17
+
+**The Live map's airport panel links to the airport's charts too.**
+
+Click an airport's code on the Live map, and its panel now has the same links as the airport page, just under its name: **FAA plates** for US airports that have them, **SkyVector** for every airport, and **Wikipedia** and the airport's **website** when they're known. Each opens in a new tab, and nothing is looked up until you click one.
+
+### Behind the scenes
+
+- The links come from one shared script, `static/airport-links.js`, which works out the FAA cycle and builds the list. The airport page and the Live map both load it; the page's own copy is gone.
+- `/api/airports/{code}/summary` carries `info` (from `airports.details()`), and the airport page takes it from there.
+
 ## [3.4.194] — 2026-11-17
 
 **The airport page links to the airport's charts, including the FAA's plates for US airports, and lists its runways and radio frequencies.**

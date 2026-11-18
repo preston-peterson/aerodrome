@@ -576,6 +576,12 @@ class TestAirportPage(_Db):
                 "ident": "ZZA", "faa_plates": True, "website": "https://example.com/", "wikipedia": "",
                 "runways": [["18/36", 9000, 150, "Concrete", 1]], "radio": [["Tower", "118.300"]]})
             self.assertIsNone(self.page("ZZN1")["info"], "nothing known about it")
+            conn = sqlite3.connect(self.db)
+            try:
+                summary = AE.airport_summary(conn, self.cfg, "ZZA1", self.NOW, self.day)
+            finally:
+                conn.close()
+            self.assertEqual(summary["info"]["ident"], "ZZA", "the Live map's panel gets it too")
 
     def test_a_day_chart_from_the_first_day_of_history(self):
         s = self.page()["series"]

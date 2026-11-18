@@ -262,13 +262,41 @@ class TestAiracCycle(unittest.TestCase):
     @unittest.skipUnless(shutil.which("node") or shutil.which("nodejs"), "needs node")
     def test_the_page_agrees(self):
         import subprocess
-        page = (REPO / "templates" / "airport.html").read_text(encoding="utf-8")
-        fn = re.search(r"function faaCycle\(now\) \{.*?\n\}\n", page, re.S).group(0)
-        script = fn + "for (const w of " + json.dumps([w for w, _ in self.CASES]) + \
-            ") console.log(faaCycle(Date.parse(w + ':00Z')));"
+        js = (REPO / "static" / "airport-links.js").read_text(encoding="utf-8")
+        script = "const window = {};\n" + js + "\nfor (const w of " + json.dumps([w for w, _ in self.CASES]) + \
+            ") console.log(window.AerodromeAirportLinks.cycle(Date.parse(w + ':00Z')));"
         out = subprocess.run([shutil.which("node") or shutil.which("nodejs"), "-e", script],
                              capture_output=True, text=True, timeout=30, check=True).stdout.split()
         self.assertEqual(out, [c for _, c in self.CASES])
+
+
+class TestLinks(unittest.TestCase):
+    """static/airport-links.js: the links both the airport page and the Live map's panel show."""
+
+    @unittest.skipUnless(shutil.which("node") or shutil.which("nodejs"), "needs node")
+    def test_links(self):
+        import subprocess
+        js = (REPO / "static" / "airport-links.js").read_text(encoding="utf-8")
+        now = "Date.parse('2026-11-17T12:00:00Z')"
+        script = "const window = {};\n" + js + "\nconst L = window.AerodromeAirportLinks;\nconsole.log(JSON.stringify(["
+        script += "L.links('ZZA1', {ident: 'ZZA', faa_plates: true, wikipedia: 'https://en.wikipedia.org/wiki/Example', website: 'https://example.com/'}, " + now + "),"
+        script += "L.links('ZZH8', {ident: 'ZZH8', faa_plates: false, wikipedia: '', website: ''}, " + now + "),"
+        script += "L.links('ZZQ1', null, " + now + ")]));"
+        out = subprocess.run([shutil.which("node") or shutil.which("nodejs"), "-e", script],
+                             capture_output=True, text=True, timeout=30, check=True).stdout
+        us, abroad, unknown = json.loads(out)
+        self.assertEqual(us, [
+            ["FAA plates", "https://www.faa.gov/air_traffic/flight_info/aeronav/digital_products/dtpp/search/results/?cycle=2611&ident=ZZA"],
+            ["SkyVector", "https://skyvector.com/airport/ZZA"],
+            ["Wikipedia", "https://en.wikipedia.org/wiki/Example"], ["Website", "https://example.com/"]])
+        self.assertEqual(abroad, [["SkyVector", "https://skyvector.com/airport/ZZH8"]])
+        self.assertEqual(unknown, [["SkyVector", "https://skyvector.com/airport/ZZQ1"]], "no details: its own code")
+
+    def test_both_pages_load_it(self):
+        for page in ("airport.html", "index.html"):
+            html = (REPO / "templates" / page).read_text(encoding="utf-8")
+            self.assertIn('<script src="/static/airport-links.js"></script>', html, page)
+            self.assertIn("AerodromeAirportLinks.links(", html, page)
 
 
 class TestShippedInfoFile(unittest.TestCase):

@@ -1,4 +1,4 @@
-<!-- Version: 3.4.194 -->
+<!-- Version: 3.4.195 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -38,6 +38,7 @@
     <link rel="stylesheet" href="/static/leaflet/leaflet.css">
     <script src="/static/leaflet/leaflet.js" defer></script>
     <script src="/static/airports.js"></script>
+    <script src="/static/airport-links.js"></script>
     <link rel="stylesheet" href="/static/fonts/fonts.css">
     <style>
         
@@ -691,6 +692,12 @@
         .ro-airport { display:flex; flex-direction:column; gap:10px; }
         .ro-airport .ap-sub { font-size:12px; color:var(--t2); margin-top:-4px; line-height:1.45; }
         .ro-airport .ap-sub .dim { color:var(--t3); }
+        /* Charts and info links (static/airport-links.js), as on the airport page */
+        .ro-airport .ap-links { display:flex; flex-wrap:wrap; gap:5px 6px; margin-top:-2px; }
+        .ro-airport .ap-links a { font-family:var(--mono); font-size:11px; color:var(--cyan); text-decoration:none;
+            padding:2px 7px; border:1px solid var(--bdr); border-radius:5px; }
+        .ro-airport .ap-links a:hover { border-color:var(--cyan); }
+        .ro-airport .ap-links a::after { content:' ↗'; color:var(--t3); }
         .ro-airport .ap-k { display:block; font-size:10px; color:var(--t3); text-transform:uppercase;
             letter-spacing:.05em; margin-bottom:3px; }
         .ro-airport .ap-today { display:grid; grid-template-columns:repeat(4, 1fr); gap:6px; }
@@ -4232,7 +4239,7 @@ function openRadarOverlay(icao){
 // overlay planes use (airport mode hides the aircraft rows). From
 // /api/airports/<code>/summary: today's counts, the runways in use over the
 // last hour, its latest takeoffs and landings (a row opens that aircraft),
-// today's visitors and a typical day. Re-read every 30 s while open.
+// today's visitors, a typical day and the airport's chart links. Re-read every 30 s while open.
 const AP_CATS = {commercial: ['Commercial', '#06b6d4'], general_aviation: ['GA', '#22c55e'],
                  helicopter: ['Helicopter', '#f59e0b'], military: ['Military', '#ef4444'], unknown: ['Other', '#64748b']};
 function openAirportOverlay(code){
@@ -4291,6 +4298,9 @@ function _radarRenderAirport(j){
                    j.runways ? `${j.runways} runway${j.runways === 1 ? '' : 's'}` : ''].filter(Boolean).join(' · ');
     const head = `<div class="ap-sub">${escapeHtml(j.name || '')}${j.elev != null ? ' · ' + j.elev + ' ft' : ''}`
         + (where ? `<br><span class="dim">${where}</span>` : '') + `</div>`;
+    const out = window.AerodromeAirportLinks ? AerodromeAirportLinks.links(j.code || _radar.selectedAirport, j.info) : [];
+    const links = out.length ? `<div class="ap-links">${out.map(([t, u]) =>
+        `<a href="${escapeHtml(u)}" target="_blank" rel="noopener noreferrer">${t}</a>`).join('')}</div>` : '';
     const cell = (k, v) => `<div class="c"><span class="k">${k}</span><span class="v">${Number(v) || 0}</span></div>`;
     const today = `<div><span class="ap-k">Today</span><div class="ap-today">${cell('Landed', t.landed)}${cell('Took off', t.took_off)}`
         + `${cell('T&amp;G', t.touch_and_go)}${cell('Last hour', t.last_hour)}</div></div>`;
@@ -4329,7 +4339,7 @@ function _radarRenderAirport(j){
         ? `Still filling in from your stored history (${Number(fill.pct) || 0}%).`
         : (j.per_day > 0 ? `Your receiver sees about ${Number(j.per_day)} takeoffs and landings a day here.`
                          : 'Your receiver hasn’t seen takeoffs or landings here yet: low traffic may be out of its view.');
-    box.innerHTML = head + today
+    box.innerHTML = head + links + today
         + `<div><span class="ap-k">Runways in use</span><div class="ap-flow">${flow}</div></div>`
         + `<div><span class="ap-k">Latest</span>${moves ? `<div class="ap-moves">${moves}</div>` : '<div class="ap-none">None seen yet</div>'}</div>`
         + `<div><span class="ap-k">Today’s visitors</span><div class="ap-visit">${visitors}</div></div>`
