@@ -19,6 +19,19 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.196] — 2026-11-19
+
+**Diagnostics is now one page, and the Status page's FlightAware card fills in by itself.**
+
+**Diagnostics** in the gear menu now opens the Performance page directly. That page has a new **Recent slow queries** section at the bottom: every query that took 500 ms or more since Aerodrome last started, newest first. Click a row to see the query, its plan and how many rows it returned; **Clear** empties the list. The list used to live on a separate Slow-query page. That page, the Watchlist alert page and the old Diagnostics menu page are gone, and an old link or bookmark to the Diagnostics page now lands on the Performance page. The Watchlist tab's alert itself works as before.
+
+The **FlightAware** card on the Status page now shows FlightAware's own usage figure as soon as it arrives. Before, the first visit after a restart read "Not fetched yet" until you pressed Refresh.
+
+### Behind the scenes
+
+- Removed: the `/diagnostics/watchlist-alerts` and `/diagnostics/slow-queries` pages, `/api/diagnostics/slow-queries/explain`, and `/api/diagnostics/connection-tuning-audit` (a fixed list that read the same on every install). `/api/diagnostics/slow-queries/recent` and `/clear` stay; the Performance page reads them. `/diagnostics` redirects to `/performance`.
+- The Status page redraws once its background `/api/flightaware/status` fetch brings a usage figure, at most once in 10 minutes, so a failed fetch can't loop.
+
 ## [3.4.195] — 2026-11-17
 
 **The Live map's airport panel links to the airport's charts too.**
