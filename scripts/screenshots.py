@@ -1506,36 +1506,6 @@ async def screenshot_setup_guide(browser):
                          ready_fn=ready)
 
 
-async def screenshot_diagnostics_hub(browser):
-    """v2.41.23: Diagnostics hub page at /diagnostics. Shows the card grid
-    of available troubleshooting diagnostics (currently Performance and
-    Watchlist alerts). Short page — the viewport doesn't need to be tall."""
-    async def ready(p):
-        # Cards render via DOMContentLoaded; give it a beat to paint.
-        await p.wait_for_timeout(400)
-    return await _render(browser, 'diagnostics.html',
-                         OUT_DIR / 'screenshot-diagnostics.png',
-                         viewport={'width': 1200, 'height': 700},
-                         ready_fn=ready)
-
-
-async def screenshot_diagnostics_watchlist(browser):
-    """v2.41.23: Watchlist-alert diagnostic detail page. The screenshot
-    captures the post-run state — interpretation cards + report text block —
-    since that's the meaningful visual. Fire the diagnostic programmatically
-    and wait for the report to render."""
-    async def ready(p):
-        # Auto-run the diagnostic so the screenshot shows the populated UI.
-        await p.evaluate("runDiagnostic && runDiagnostic()")
-        # Diagnostic does two fetches (/api/config/ui, /api/watchlist) then
-        # populates the DOM. 1200ms is plenty on a loopback.
-        await p.wait_for_timeout(1200)
-    return await _render(browser, 'diagnostics-watchlist.html',
-                         OUT_DIR / 'screenshot-diagnostics-watchlist.png',
-                         viewport={'width': 1200, 'height': 1200},
-                         ready_fn=ready)
-
-
 async def screenshot_aircraft_details(browser):
     """v3.4.33: aircraft details page showing the v3.4.31 multi-color
     polyline track rendering on the position-history map. The synthetic
@@ -1619,8 +1589,6 @@ async def main():
         screenshot_about,
         screenshot_logs,
         screenshot_performance,
-        screenshot_diagnostics_hub,
-        screenshot_diagnostics_watchlist,
         screenshot_setup_guide,
         screenshot_aircraft_details,  # v3.4.33
         screenshot_board_radar,       # v3.4.111 — display board layouts

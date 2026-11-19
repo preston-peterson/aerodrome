@@ -27,9 +27,7 @@ Plain HTML pages. Each handler reads its file from `templates/` as text, adds a 
 | GET | `/airport/{code}` | One airport near the receiver (3.4.186): today, takeoffs and landings a day, by hour and weekday, runway use, visitors and the latest takeoffs and landings, from `/api/airports/{code}`. Reached from the Live map's airport panel, Search, the aircraft page and Stats |
 | GET | `/logs` | Service log tail with search + severity filter |
 | GET | `/performance` | Performance diagnostic page |
-| GET | `/diagnostics` | Subsystem diagnostics index |
-| GET | `/diagnostics/watchlist-alerts` | Watchlist alert behavior diagnostic |
-| GET | `/diagnostics/slow-queries` | Slow-query log page |
+| GET | `/diagnostics` | Redirects to `/performance` (old bookmark target; the diagnostics hub is gone) |
 | GET | `/aircraft/{icao}` | One aircraft's detail page, from `/api/aircraft/{icao}` |
 | GET | `/setup/switch-to-real` | Demo-mode wizard for switching to a real receiver |
 | GET | `/notification-test-ok` | Confirmation page reached by tapping a test notification |
@@ -184,12 +182,13 @@ Backups are taken live — the SQLite database is copied via SQLite's online bac
 
 ## Slow-query diagnostics
 
+The most recent slow queries show in the "Recent slow queries" section on the
+Performance page.
+
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/diagnostics/slow-queries/recent` | The most recent slow queries, from an in-memory ring: `?limit=` (1–200, default 50) |
 | POST | `/api/diagnostics/slow-queries/clear` | Empty that ring |
-| GET | `/api/diagnostics/slow-queries/explain` | Run `EXPLAIN QUERY PLAN` on a known query shape |
-| GET | `/api/diagnostics/connection-tuning-audit` | Static report of which endpoints use the tuned connection |
 
 ## Notifications
 

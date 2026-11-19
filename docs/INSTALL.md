@@ -1781,9 +1781,8 @@ a read-only snapshot covering:
 Table sizes are not measured by default, because that reads the whole
 database file; use the **Measure table sizes** button when you want them.
 
-The Diagnostics page is a small hub: besides Performance it links to a
-Watchlist alert diagnostic (the state behind the Watchlist tab's alert) and
-a Slow-query diagnostic (queries that recently took 500 ms or more).
+The Performance page also lists queries that recently took 500 ms or more,
+so you can see what made a page slow without digging through log files.
 
 A "Copy diagnostic report" button produces a plaintext dump suitable
 for pasting into a GitHub issue. On plain-HTTP deployments (where the

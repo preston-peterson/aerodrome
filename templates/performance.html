@@ -109,6 +109,40 @@ a { color:var(--cyan); }
 
 .code-block { background:var(--bg0); border:1px solid var(--bdr); border-radius:6px; padding:12px 14px; font-family:var(--mono); font-size:11px; color:var(--t2); line-height:1.6; white-space:pre-wrap; word-break:break-word; max-height:360px; overflow-y:auto; }
 
+/* Recent slow queries — styles for the list ported from the old
+   slow-query diagnostic page (table, duration shades, expandable detail). */
+table.sq { width:100%; border-collapse:collapse; font-size:12px;
+           font-family:var(--mono); }
+table.sq th { text-align:left; color:var(--t3); font-weight:500;
+              padding:8px 10px; border-bottom:1px solid var(--bdr);
+              text-transform:uppercase; letter-spacing:.05em;
+              font-size:11px; }
+table.sq td { padding:10px; border-bottom:1px solid var(--bdr);
+              vertical-align:top; }
+table.sq tr.expandable { cursor:pointer; }
+table.sq tr.expandable:hover td { background:var(--bg3); }
+table.sq tr.detail-row td { padding:0; background:var(--bg1);
+                            border-bottom:2px solid var(--bdr); }
+table.sq tr.detail-row .detail-inner { padding:14px 16px; }
+table.sq tr.detail-row .detail-label { color:var(--t3); font-size:11px;
+                                       text-transform:uppercase;
+                                       letter-spacing:.05em; margin-top:10px; }
+table.sq tr.detail-row .detail-label:first-child { margin-top:0; }
+table.sq tr.detail-row pre { background:var(--bg0); padding:8px 12px;
+                             border-radius:4px; overflow-x:auto;
+                             font-size:11px; color:var(--t2);
+                             margin-top:4px; border:1px solid var(--bdr);
+                             white-space:pre-wrap; word-break:break-word; }
+.duration { font-weight:600; }
+.duration.fast { color:var(--green-text); }
+.duration.med { color:var(--amber-text); }
+.duration.slow { color:var(--red-text); }
+.endpoint-pill { display:inline-block; padding:2px 8px; background:var(--bg3);
+                 border-radius:3px; font-size:11px; color:var(--t2); }
+.relative-ts { color:var(--t3); font-size:11px; }
+.sq-empty { color:var(--t3); font-size:13px; padding:20px;
+            text-align:center; line-height:1.6; }
+
 .loading { padding:40px 20px; text-align:center; color:var(--t2); font-size:13px; }
 .spinner { display:inline-block; width:14px; height:14px; border:2px solid var(--bdr); border-top-color:var(--cyan); border-radius:50%; animation:spin .8s linear infinite; margin-right:8px; vertical-align:middle; }
 @keyframes spin { to { transform:rotate(360deg); } }
@@ -142,7 +176,7 @@ a { color:var(--cyan); }
             </button>
             <div class="settings-menu" id="settingsMenu">
                 <a href="/status" class="menu-item">Status</a>
-                <a href="/diagnostics" class="menu-item">Diagnostics</a>
+                <a href="/performance" class="menu-item">Diagnostics</a>
                 <a href="/logs" class="menu-item">Logs</a>
                 <a href="/documentation" class="menu-item">Documentation</a>
                 <a href="/about" class="menu-item">About</a>
@@ -193,7 +227,6 @@ a { color:var(--cyan); }
                 title="Refresh the database's query statistics. Aerodrome does this by itself, so you rarely need it. On a big database it takes minutes, and Aerodrome stops recording until it's done.">
             Re-analyze DB
         </button>
-        <a class="btn" href="/diagnostics" style="text-decoration:none">&larr; Back to Diagnostics</a>
     </div>
 
     <div id="content">
@@ -202,6 +235,16 @@ a { color:var(--cyan); }
                 Click <strong>Run diagnostic</strong> above to measure this system.
             </div>
         </div>
+    </div>
+
+    <div class="card" id="slowQueriesCard">
+        <div class="card-head"><div class="card-title">Recent slow queries</div>
+            <div class="card-sub">500 ms or more, newest first</div></div>
+        <div class="toolbar">
+            <button class="btn" onclick="clearSlowQueries()" id="clearSlowBtn">Clear</button>
+            <span id="ringMeta" style="margin-left:10px;font-size:11px;color:var(--t3);font-family:var(--mono);"></span>
+        </div>
+        <div id="recentBody"><div class="loading">Loading…</div></div>
     </div>
 </div>
 
@@ -837,8 +880,134 @@ async function runAnalyze() {
     }
 }
 
+// =========================================================================
+// Recent slow queries (ported from the old slow-query diagnostic page)
+// =========================================================================
+// The ring buffer lives in slow_query_log.py and fills from the
+// instrumented endpoints (/api/aircraft/{icao}, /api/all/drill, /api/stats).
+// /recent reads it, /clear empties it; the list resets on service restart.
+let _slowExpandedRow = null;
+
+function _escAttr(s){
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function _fmtSlowDuration(ms){
+    if (ms == null) return '—';
+    let cls = 'fast';
+    if (ms >= 5000) cls = 'slow';
+    else if (ms >= 1000) cls = 'med';
+    if (ms >= 1000) return `<span class="duration ${cls}">${(ms/1000).toFixed(1)} s</span>`;
+    return `<span class="duration ${cls}">${Math.round(ms)} ms</span>`;
+}
+
+function _fmtSlowRelativeTs(tsMs){
+    const now = Date.now();
+    const diff = now - tsMs;
+    if (diff < 60_000) return Math.round(diff/1000) + 's ago';
+    if (diff < 3_600_000) return Math.round(diff/60_000) + 'm ago';
+    if (diff < 86_400_000) return Math.round(diff/3_600_000) + 'h ago';
+    return formatDateTime(new Date(tsMs));
+}
+
+function toggleSlowDetail(idx, entry){
+    const existing = document.getElementById('slowDetail-' + idx);
+    if (existing){
+        existing.remove();
+        _slowExpandedRow = null;
+        return;
+    }
+    if (_slowExpandedRow !== null){
+        const prev = document.getElementById('slowDetail-' + _slowExpandedRow);
+        if (prev) prev.remove();
+    }
+    _slowExpandedRow = idx;
+
+    const planHtml = entry.plan && entry.plan.length
+        ? `<pre>${_esc(entry.plan.join('\n'))}</pre>`
+        : `<pre>(no plan captured)</pre>`;
+
+    const detailRow = document.createElement('tr');
+    detailRow.id = 'slowDetail-' + idx;
+    detailRow.className = 'detail-row';
+    detailRow.innerHTML = `
+        <td colspan="5">
+            <div class="detail-inner">
+                <div class="detail-label">SQL</div>
+                <pre>${_esc(entry.sql || '(not captured)')}</pre>
+                <div class="detail-label">Parameters</div>
+                <pre>${_esc(entry.params || '(none)')}</pre>
+                <div class="detail-label">Plan</div>
+                ${planHtml}
+                <div class="detail-label">Rows returned</div>
+                <pre>${entry.rows_returned == null ? '(unknown)' : entry.rows_returned.toLocaleString()}</pre>
+            </div>
+        </td>
+    `;
+    const dataRow = document.querySelector('tr[data-slow-idx="' + idx + '"]');
+    if (dataRow) dataRow.after(detailRow);
+}
+
+async function loadSlowQueries(){
+    const body = document.getElementById('recentBody');
+    const meta = document.getElementById('ringMeta');
+    try {
+        const r = await fetch('/api/diagnostics/slow-queries/recent?limit=200');
+        const j = await r.json();
+        if (!j.ok){
+            body.innerHTML = `<div class="sq-empty">Could not load.</div>`;
+            return;
+        }
+        if (j.entries.length === 0){
+            meta.textContent = '';
+            body.innerHTML = `<div class="sq-empty">No query has taken 500 ms or more since Aerodrome started.</div>`;
+            return;
+        }
+        meta.textContent = `${j.entries.length} of ${j.capacity} ring slots used`;
+        const rows = j.entries.map((e, idx) => `
+            <tr class="expandable" data-slow-idx="${idx}"
+                onclick='toggleSlowDetail(${idx}, ${_escAttr(JSON.stringify(e))})'>
+                <td>${_fmtSlowDuration(e.duration_ms)}</td>
+                <td><span class="endpoint-pill">${_escAttr(e.endpoint)}</span></td>
+                <td>${_esc(e.label)}</td>
+                <td>${e.rows_returned == null ? '—' : e.rows_returned.toLocaleString()}</td>
+                <td><span class="relative-ts">${_fmtSlowRelativeTs(e.ts_ms)}</span></td>
+            </tr>
+        `).join('');
+        body.innerHTML = `
+            <table class="sq">
+                <thead>
+                    <tr>
+                        <th>Duration</th>
+                        <th>Endpoint</th>
+                        <th>Query label</th>
+                        <th>Rows</th>
+                        <th>When</th>
+                    </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table>
+        `;
+    } catch (e) {
+        body.innerHTML = `<div class="sq-empty">Error: ${_esc(e.message || e)}</div>`;
+    }
+}
+
+async function clearSlowQueries(){
+    if (!confirm('Clear all recorded slow queries? Cannot be undone.')) return;
+    try {
+        await fetch('/api/diagnostics/slow-queries/clear', { method: 'POST' });
+        await loadSlowQueries();
+    } catch (e) {
+        alert('Clear failed: ' + (e.message || e));
+    }
+}
+
 // Auto-run on page load so the user doesn't have to click twice to get data
 runDiagnostic();
+loadSlowQueries();
 
 
 </script>

@@ -1570,6 +1570,47 @@ class TestPerformanceTableSizesAreOptIn(BrowserCase):
         self.assertIn("Table sizes measured 2026-06-15 16:00:00 UTC (took 34 s)", text)
 
 
+class TestPerformanceRecentSlowQueries(BrowserCase):
+    """The slow-query diagnostic page is gone; its list lives on the
+    Performance page. Two stubbed ring entries render as rows; an empty ring
+    renders as one plain line. Endpoints, labels and rows invented."""
+
+    # The page's clock sits at noon 2026-06-15 Central = 1781542800 UTC.
+    NOW_MS = 1781542800_000
+
+    def open_perf(self, entries):
+        self.site.api["/api/perf/diagnostics"] = _perf()
+        self.site.api["/api/diagnostics/slow-queries/recent"] = {
+            "ok": True, "entries": entries, "capacity": 50}
+        self.open("/performance")
+        self.advance(1000)
+
+    def test_two_stubbed_slow_entries_render_in_the_new_section(self):
+        self.open_perf([
+            {"duration_ms": 2300.0, "endpoint": "/api/all/drill",
+             "label": "drill_select", "rows_returned": 4211,
+             "ts_ms": self.NOW_MS - 40_000, "sql": "SELECT 1",
+             "params": "(demo)", "plan": ["SCAN demo_index"]},
+            {"duration_ms": 610.0, "endpoint": "/api/stats",
+             "label": "stats_rollup", "rows_returned": 2,
+             "ts_ms": self.NOW_MS - 90_000, "sql": "SELECT 2",
+             "params": "(demo)", "plan": []},
+        ])
+        body = self.text("#recentBody")
+        self.assertIn("drill_select", body)
+        self.assertIn("stats_rollup", body)
+        self.assertIn("2.3 s", body)
+        self.assertIn("610 ms", body)
+        self.assertEqual(self.errors, [])
+
+    def test_an_empty_ring_shows_one_plain_line(self):
+        self.open_perf([])
+        self.assertEqual(
+            self.text("#recentBody").strip(),
+            "No query has taken 500 ms or more since Aerodrome started.")
+        self.assertEqual(self.errors, [])
+
+
 class TestNoPageErrors(BrowserCase):
 
     def test_pages_load_clean(self):

@@ -13101,8 +13101,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         # tuned connection (32 MB cache + 128 MB mmap on default
         # profile) lets the working set survive — most index pages and
         # the relevant table pages stay resident across the whole
-        # detail-data fetch. See diagnostics-slow-queries page for
-        # a connection-tuning audit.
+        # detail-data fetch.
         conn = _open_db_conn(CONFIG["data"]["db_file"])
         try:
             d = detail_page_data_for_aircraft(conn, icao.upper(),
@@ -13547,42 +13546,21 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             "ring_distances": _resolved_ring_distances(),
         }
 
-    @app.get("/diagnostics", response_class=HTMLResponse)
+    @app.get("/diagnostics")
     def diagnostics_hub_page():
-        """v2.41.23: hub page listing all available troubleshooting diagnostics.
-        Each registered diagnostic appears as a card linking to its dedicated
-        page. The hub itself is pure static content; the registry lives in the
-        template's JavaScript so adding a new diagnostic doesn't touch server
-        code except to register a route for the new page."""
-        return _serve_template("diagnostics.html")
-
-    @app.get("/diagnostics/watchlist-alerts", response_class=HTMLResponse)
-    def diagnostics_watchlist_page():
-        """v2.41.23: client-side diagnostic that captures the state driving
-        the Watchlist tab pulse. Snapshots localStorage, the /api/watchlist
-        response, and the watchlist_alerts configuration, then evaluates
-        what the alert logic would decide given that state. Produces a
-        pasteable text report for sharing in support threads."""
-        return _serve_template("diagnostics-watchlist.html")
+        """The diagnostics hub is gone — Performance is the only diagnostic
+        left, so /diagnostics just redirects there. Kept as a redirect for
+        bookmarks and support threads that pointed at the old hub."""
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url="/performance", status_code=302)
 
     # =========================================================================
-    # v2.84.0: Slow-query diagnostic — page + API endpoints
+    # v2.84.0: Slow-query diagnostic — API endpoints
     # =========================================================================
     # Captures slow queries from instrumented endpoints (/api/aircraft/{ICAO},
-    # /api/all/drill, /api/stats) into a process-local ring buffer that the
-    # diagnostic page renders without requiring SSH or file-log access. Built
-    # because the previous workflow for a slow page report involved asking
-    # the user to grep journalctl, capture access logs, and run sqlite3
-    # EXPLAIN QUERY PLAN by hand — a friction wall that meant the data we
-    # actually needed for triage was never obtained. The page surfaces the
-    # last N slow events with their EXPLAIN output, a button to run EXPLAIN
-    # against the user's actual data on demand, and a static audit of
-    # endpoints that aren't using the tuned connection helper.
-
-    @app.get("/diagnostics/slow-queries", response_class=HTMLResponse)
-    def diagnostics_slow_queries_page():
-        """Slow-query diagnostic page (v2.84.0)."""
-        return _serve_template("diagnostics-slow-queries.html")
+    # /api/all/drill, /api/stats) into a process-local ring buffer. The recent
+    # list and Clear button live on the Performance page now; the ring itself
+    # is in slow_query_log.py.
 
     @app.get("/api/diagnostics/slow-queries/recent")
     def get_recent_slow_queries(limit: int = Query(50, ge=1, le=200)):
@@ -13603,154 +13581,6 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         from slow_query_log import clear
         clear()
         return {"ok": True}
-
-    @app.get("/api/diagnostics/slow-queries/explain")
-    def explain_query_plan(query: str = Query(..., pattern=r"^[a-z_]+$")):
-        """Run EXPLAIN QUERY PLAN against a known query shape with a
-        representative parameter value drawn from the user's actual data.
-        `query` is a label naming one of the canonical shapes, NOT raw
-        SQL — letting users post arbitrary SQL would be an injection
-        vector. Whitelist of supported shapes is right below."""
-        # Pick a representative ICAO: the seen_aircraft row with the most
-        # sightings. This gives a worst-case plan because heavy flyers
-        # are exactly when planner mis-picks hurt the most. If the table
-        # is empty, return a graceful empty response.
-        db_path = CONFIG["data"]["db_file"]
-        conn = _open_db_conn(db_path)
-        try:
-            sample = conn.execute(
-                "SELECT icao, sighting_count FROM seen_aircraft "
-                "ORDER BY sighting_count DESC LIMIT 1"
-            ).fetchone()
-            if sample is None:
-                return {
-                    "ok": False,
-                    "error": "no aircraft in seen_aircraft to use as a sample",
-                }
-            sample_icao = sample[0]
-            sample_count = sample[1] or 0
-            now = int(time.time())
-
-            # Whitelisted query shapes. Each entry pairs a label with the
-            # query the production endpoint actually runs. When new
-            # endpoints get instrumented, their query shapes should be
-            # added here so the diagnostic UI can EXPLAIN them too.
-            shapes = {
-                "drill_select": (
-                    "SELECT icao, callsign, speed, lat, lon, altitude, "
-                    "aircraft_type, type_desc, seen_at, squawk "
-                    "FROM all_sightings "
-                    "WHERE icao = ? AND seen_at >= ? AND seen_at <= ? "
-                    "ORDER BY seen_at DESC LIMIT ? OFFSET ?",
-                    (sample_icao, 0, now, 100, 0),
-                ),
-                "drill_count": (
-                    "SELECT COUNT(*) AS n FROM all_sightings "
-                    "WHERE icao = ? AND seen_at >= ? AND seen_at <= ?",
-                    (sample_icao, 0, now),
-                ),
-                "detail_recent_sightings": (
-                    "SELECT seen_at, callsign, altitude, speed, lat, lon "
-                    "FROM all_sightings WHERE icao = ? "
-                    "ORDER BY seen_at DESC LIMIT 20",
-                    (sample_icao,),
-                ),
-            }
-            if query not in shapes:
-                return {
-                    "ok": False,
-                    "error": f"unknown query shape: {query}. "
-                             f"Known: {list(shapes.keys())}",
-                }
-            sql, params = shapes[query]
-
-            # Capture plan + actual execution time. Both useful: plan
-            # tells us which index, time tells us how bad it is on
-            # this user's data right now.
-            plan_rows = conn.execute(
-                "EXPLAIN QUERY PLAN " + sql, params
-            ).fetchall()
-            plan = [
-                row[3] if len(row) >= 4 else str(row)
-                for row in plan_rows
-            ]
-            t0 = time.time()
-            conn.execute(sql, params).fetchall()
-            duration_ms = (time.time() - t0) * 1000
-
-            return {
-                "ok": True,
-                "query_label": query,
-                "sql": sql,
-                "params": list(params),
-                "sample_icao": sample_icao,
-                "sample_sighting_count": sample_count,
-                "plan": plan,
-                "duration_ms": round(duration_ms, 1),
-            }
-        finally:
-            conn.close()
-
-    @app.get("/api/diagnostics/connection-tuning-audit")
-    def connection_tuning_audit():
-        """Static report of which endpoints use the tuned connection
-        helper (`_open_db_conn`) vs. raw `sqlite3.connect()`. The list
-        is hand-maintained — kept short and deliberate rather than
-        auto-detected because auto-detection would lag refactors and
-        false-positive on test code. A "Last verified" version stamp
-        keeps the maintenance honest."""
-        # Format: list of {endpoint, tuned, notes}. "tuned" means the
-        # endpoint goes through _open_db_conn (cache_size, mmap_size,
-        # temp_store applied per the user's profile). "notes" surfaces
-        # the impact when an endpoint is untuned.
-        return {
-            "ok": True,
-            "verified_in_version": "2.85.0",
-            "tuned_helper": "_open_db_conn (collector.py)",
-            "endpoints": [
-                {
-                    "endpoint": "/api/all/drill",
-                    "tuned": True,
-                    "notes": "Sightings table on aircraft detail page.",
-                },
-                {
-                    "endpoint": "/api/stats",
-                    "tuned": True,
-                    "notes": "Stats page; uses tuned connection.",
-                },
-                {
-                    "endpoint": "/api/search",
-                    "tuned": True,
-                    "notes": "Search hot path. Switched to tuned in "
-                             "v2.85.0 — was opening with default 2MB "
-                             "cache regardless of profile setting.",
-                },
-                {
-                    "endpoint": "/api/search/aircraft/{icao}",
-                    "tuned": True,
-                    "notes": "Inline drill from search results. "
-                             "Switched to tuned in v2.85.0.",
-                },
-                {
-                    "endpoint": "/api/aircraft/{icao}",
-                    "tuned": True,
-                    "notes": "Aircraft detail page data — fires ~10 "
-                             "sub-queries per page load. Switched to "
-                             "tuned in v2.85.0; was almost certainly "
-                             "the dominant cause of multi-minute "
-                             "detail-page loads on memory-constrained "
-                             "installs (Pi-class hardware with large "
-                             "DBs).",
-                },
-                {
-                    "endpoint": "/aircraft/{icao} (HTML)",
-                    "tuned": True,
-                    "notes": "Static template route; runs only the "
-                             "typeahead suggestions query. Switched to "
-                             "tuned in v2.85.0 for consistency.",
-                },
-            ],
-        }
 
 
     # =========================================================================

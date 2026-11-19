@@ -88,9 +88,6 @@ ADMIN_PAGES = [
     ('logs.html',                    'Logs',                      None),
     ('performance.html',             'Performance',               None),
     ('docs.html',                    'Documentation',             None),
-    ('diagnostics.html',             'Diagnostics hub',           None),
-    ('diagnostics-slow-queries.html', 'Diagnostics: Slow queries', None),
-    ('diagnostics-watchlist.html',   'Diagnostics: Watchlist',    None),
 ]
 
 
