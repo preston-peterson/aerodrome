@@ -731,6 +731,28 @@ class TestStatusFlightAwareCard(BrowserCase):
         self.advance(25000, step=5000)
         self.assertEqual(self.site.count("/api/flightaware/status"), 1)
 
+    def test_a_fetched_figure_shows_without_refresh(self):
+        # Status page first opened after a restart: the server has no figure
+        # yet. Once the card's own fetch brings one, the page redraws itself
+        # with it; auto-refresh is off, and the owner shouldn't have to click.
+        fetched = []
+        def status(req):
+            st = _status_page({"enabled": False, "ok": True})
+            st["components"]["flightaware"] = self.FA if fetched else dict(self.FA, usage=None)
+            return st
+        def fa_status(req):
+            fetched.append(1)
+            return dict(self.FA, ok=True)
+        self.site.api["/api/status"] = status
+        self.site.api["/api/flightaware/status"] = fa_status
+        self.open("/status")
+        self.advance(3000, step=500)
+        text = self.text("#flightawareCard")
+        self.assertIn("FlightAware as of", text)
+        self.assertIn("190 · $0.95", text)
+        self.assertNotIn("Not fetched yet", text)
+        self.assertEqual(self.site.count("/api/flightaware/status"), 1)
+
     def test_budget_used_up(self):
         text = self.card(dict(self.FA, count=900, paused=True, cost_estimate=4.5))
         self.assertIn("Paused until December 1", text)

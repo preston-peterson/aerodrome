@@ -438,12 +438,16 @@ function _faDay(ymd) {
 function _faMoney(n) { return '$' + (Number(n) || 0).toFixed(2); }
 function faCard(f) {
     // FlightAware's own figure: fetch it (free) when it's missing or over 10
-    // minutes old; the next refresh shows it.
+    // minutes old, then redraw the page so it shows without a click on
+    // Refresh (auto-refresh is off by default). /api/status serves it from
+    // the server's copy from then on. At most once in 10 minutes, so a failed
+    // fetch can't loop.
     const now = Date.now();
     const u = f.usage;
     if ((!u || now / 1000 - (u.as_of || 0) > 600) && now - _faUsageAsked > 600000) {
         _faUsageAsked = now;
-        fetch('/api/flightaware/status').catch(() => {});
+        fetch('/api/flightaware/status').then(r => r.ok ? r.json() : null)
+            .then(j => { if (j && j.usage) refresh(); }).catch(() => {});
     }
     const paused = f.paused && f.limit > 0;
     let light = 'ok', cls = 'ok', state = 'Connected', warn = '';
