@@ -1,4 +1,4 @@
-<!-- Version: 3.4.197 -->
+<!-- Version: 3.4.198 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -551,7 +551,7 @@ function renderVisitors(j) {
 
 function _moveRow(e) {
     const [glyph, , cls] = APT_KINDS[e.kind] || ['', '', ''];
-    return `<a class="row-card apg-grid" href="/aircraft/${encodeURIComponent(e.icao)}"><span class="c-when">${escapeHtml(_when(e))}</span>`
+    return `<a class="row-card apg-grid" href="/aircraft/${encodeURIComponent(e.icao)}?flight=${Number(e.at) || 0}"><span class="c-when">${escapeHtml(_when(e))}</span>`
         + `<span class="c-ev"><span class="${cls}">${glyph}</span> ${escapeHtml(_word(e))}</span>`
         + `<span class="cs">${escapeHtml(e.callsign || e.icao)}</span><span class="ty">${escapeHtml(e.type || '')}</span>`
         + `<span class="op">${escapeHtml(e.operator || '')}</span><span class="rw">${e.runway ? 'rwy ' + escapeHtml(e.runway) : ''}</span></a>`;

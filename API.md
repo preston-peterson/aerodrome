@@ -54,7 +54,8 @@ Core endpoints the dashboard's tabs consume. All return a list of aircraft objec
 | GET | `/api/aircraft/{icao}` | Detail data for the aircraft page (ICAO must be 6 hex characters) |
 | GET | `/api/aircraft/{icao}/enrich` | Registered owner and manufacturer for one airframe |
 | GET | `/api/aircraft/{icao}/photo` | A photo of one airframe, when one is found |
-| GET | `/api/aircraft/{icao}/positions` | Position stream for the aircraft page's map: `?window=` `24h` (default), `7d`, `30d` or `all` |
+| GET | `/api/aircraft/{icao}/positions` | Position stream for the aircraft page's map: `?window=` `24h` (default), `7d`, `30d` or `all`, or `?since=&until=` (seen_at bounds, both inclusive) for one flight. Each fix is `[seen_at, lat, lon, altitude, speed]` |
+| GET | `/api/aircraft/{icao}/flights` | The aircraft's flights, newest first, for the aircraft page's Flights list and replay: `?window=` as above. Each has `start`, `end`, `fixes`, `callsign`, `max_alt`, `longest_gap` (seconds) and its takeoffs and landings (`events`). A flight ends after 30 minutes out of range, or 10 minutes when the aircraft was below 2,500 ft on either side of the gap; at most the newest 500 (`truncated`) |
 | GET | `/api/live/trails` | Recent ground track for every aircraft seen in the window |
 | GET | `/api/coverage` | Receiver coverage data for the map |
 | GET | `/api/search/aircraft/{icao}` | One aircraft's record in the form Search lists it |

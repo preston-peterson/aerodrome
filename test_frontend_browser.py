@@ -1086,6 +1086,153 @@ class TestTodayButton(BrowserCase):
         self.assertNotIn("from_ts", qs)
 
 
+class TestAircraftFlightReplay(BrowserCase):
+    """v3.4.198: the aircraft page's Flights list and the replay of one flight."""
+    NOW = 1781542800          # BrowserCase.START
+    A = NOW - 2 * 3600        # today: took off KXMP, out of range for 14 min mid-flight
+    B = NOW - 26 * 3600       # yesterday: an overflight
+
+    def setUp(self):
+        super().setUp()
+        self.site.api["/api/aircraft/A00002"] = {
+            "icao": "A00002", "first_seen_at": self.B, "last_seen_at": self.A + 1500,
+            "sighting_count": 40, "recent_sightings": [], "callsigns": []}
+        self.site.api["/api/all/drill"] = {"ok": True, "total_count": 1, "sightings": [
+            {"seen_at": self.A + 60, "callsign": "EXA210", "altitude": 3000, "speed": 200, "lat": 40, "lon": -90}]}
+        self.site.api["/api/aircraft/A00002/positions"] = self.positions
+        self.site.api["/api/aircraft/A00002/flights"] = self.flights
+        self.site.api["/api/live"] = _aircraft(1)
+        self.site.api["/api/status"] = _status()
+
+    def fixes(self, start):
+        if start == self.A:   # 20 fixes, a 14-minute gap after the 10th
+            return ([[start + i * 30, 40 + i / 100, -90 + i / 100, 1000 + i * 500, 200 + i] for i in range(10)]
+                    + [[start + 270 + 840 + i * 30, 40.2 + i / 100, -89.8 + i / 100, 24000, 440] for i in range(10)])
+        return [[start + i * 30, 41, -91 + i / 50, 34000, 460] for i in range(30)]
+
+    hold = False
+
+    def positions(self, req):
+        q = parse_qs(urlparse(req.url).query)
+        if self.hold and "since" not in q:
+            return HOLD
+        if "since" in q:
+            pts = self.fixes(int(q["since"][0]))
+        else:
+            pts = self.fixes(self.A) + self.fixes(self.B)
+        return {"ok": True, "window": q.get("window", ["24h"])[0], "count": len(pts), "truncated": False,
+                "receiver": {"lat": 40, "lon": -90}, "positions": pts}
+
+    def flights(self, req):
+        win = parse_qs(urlparse(req.url).query)["window"][0]
+        a = {"start": self.A, "end": self.fixes(self.A)[-1][0], "fixes": 20, "callsign": "EXA210",
+             "max_alt": 24000, "longest_gap": 870,
+             "events": [{"kind": "takeoff", "airport": "KXMP", "runway": "18", "at": self.A + 30,
+                         "until": self.A + 30, "count": 1, "name": "Example Regional"}]}
+        b = {"start": self.B, "end": self.B + 29 * 30, "fixes": 30, "callsign": "EXA488",
+             "max_alt": 34000, "longest_gap": 30, "events": []}
+        return {"ok": True, "icao": "A00002", "window": win, "truncated": False,
+                "flights": [a] if win == "24h" else [a, b]}
+
+    def calls(self, path):
+        return [q for p, q in self.site.calls if p == path]
+
+    def test_the_list_shows_each_flight_and_what_it_did(self):
+        self.open("/aircraft/A00002")
+        rows = self.page.locator("#flList .fl-row")
+        self.assertEqual(rows.count(), 1)
+        self.assertIn("EXA210", rows.first.inner_text())
+        self.assertIn("Took off KXMP · runway 18", rows.first.inner_text())
+        self.page.click(".win-btn[data-win='7d']")
+        self.page.wait_for_timeout(200)
+        self.assertEqual(self.page.locator("#flList .fl-row").count(), 2)
+        self.assertEqual(self.page.locator("#flList .fl-day").count(), 2)
+        self.assertIn("Overflight", self.page.locator("#flList .fl-row").nth(1).inner_text())
+        self.assertEqual(self.errors, [])
+
+    def test_picking_a_flight_shows_it_alone_and_plays_it(self):
+        self.open("/aircraft/A00002")
+        self.page.click("#flList .fl-row")
+        self.page.wait_for_timeout(200)
+        self.assertEqual(self.calls("/api/aircraft/A00002/positions")[-1],
+                         {"since": [str(self.A)], "until": [str(self.fixes(self.A)[-1][0])]})
+        for sel in ("#flPanel", "#flPlaybar", "#flProfile", "#flShowAll"):
+            self.assertTrue(self.page.is_visible(sel), sel)
+        self.assertIn("EXA210", self.text("#flPanel .fl-title"))
+        self.assertFalse(self.page.evaluate("_posMapState.map.hasLayer(_posMapState.tracksLayer)"))
+        self.assertIn("flight=%d" % self.A, self.page.url)
+        before = self.text("#flT")
+        self.advance(3000, step=100)
+        self.assertNotEqual(self.text("#flT"), before)
+        self.assertGreater(int(self.page.input_value("#flRange")), 0)
+        self.assertEqual(self.errors, [])
+
+    def test_an_out_of_range_stretch_says_so(self):
+        self.open("/aircraft/A00002")
+        self.page.click("#flList .fl-row")
+        self.page.wait_for_timeout(200)
+        self.page.click("#flPlay")      # pause
+        # the gap plays as 60 s between 270 s and 330 s of the 600 s replay
+        self.page.evaluate("flSeek(300 / _fl.sel.v[_fl.sel.v.length - 1])")
+        self.assertIn("out of range for 14 min", self.text("#flA"))
+        self.page.evaluate("flSeek(0.05)")
+        self.assertRegex(self.text("#flA"), r"\d ft")
+        self.assertRegex(self.text("#flS"), r"\d+ kt")
+
+    def test_show_all_flights_goes_back_to_the_overview(self):
+        self.open("/aircraft/A00002?flight=%d" % (self.A + 100))
+        self.page.wait_for_timeout(200)
+        self.assertTrue(self.page.is_visible("#flPanel"))
+        self.page.click("#flShowAll")
+        for sel in ("#flPanel", "#flPlaybar", "#flProfile", "#flShowAll"):
+            self.assertFalse(self.page.is_visible(sel), sel)
+        self.assertTrue(self.page.evaluate("_posMapState.map.hasLayer(_posMapState.tracksLayer)"))
+        self.assertNotIn("flight=", self.page.url)
+        self.assertEqual(self.page.locator("#flList .fl-row.sel").count(), 0)
+        self.assertEqual(self.text("#mapMeta"), "50 positions")
+
+    def test_a_flight_link_waits_for_the_map_when_the_list_comes_first(self):
+        self.hold = True
+        self.open("/aircraft/A00002?flight=%d" % (self.A + 100))
+        self.assertEqual(self.page.locator("#flList .fl-row").count(), 1)
+        self.assertFalse(self.page.is_visible("#flPanel"))
+        self.hold = False
+        self.site.release(self.positions)
+        self.page.wait_for_timeout(300)
+        self.assertIn("EXA210", self.text("#flPanel .fl-title"))
+        self.assertEqual(self.errors, [])
+
+    def test_without_a_receiver_location_there_are_no_flight_links(self):
+        self.site.api["/api/aircraft/A00002/positions"] = {"ok": True, "receiver": None, "count": 0,
+                                                           "truncated": False, "positions": []}
+        self.open("/aircraft/A00002")
+        self.assertEqual(self.page.locator("#sightingsTableWrap a.sg-fl").count(), 1)
+        self.assertFalse(self.page.is_visible("#sightingsTableWrap a.sg-fl"))
+
+    def test_a_flight_link_opens_the_window_that_holds_it_with_that_flight(self):
+        self.open("/aircraft/A00002?flight=%d" % (self.B + 300))
+        self.page.wait_for_timeout(200)
+        self.assertIn("active", self.page.get_attribute(".win-btn[data-win='7d']", "class"))
+        self.assertIn("EXA488", self.text("#flPanel .fl-title"))
+        self.assertIn("sel", self.page.locator("#flList .fl-row").nth(1).get_attribute("class"))
+
+    def test_the_sightings_link_shows_that_flight(self):
+        self.open("/aircraft/A00002")
+        self.page.click("#sightingsTableWrap a.sg-fl")
+        self.page.wait_for_timeout(200)
+        self.assertIn("EXA210", self.text("#flPanel .fl-title"))
+        self.assertEqual(self.errors, [])
+
+    def test_another_window_goes_back_to_every_flight(self):
+        self.open("/aircraft/A00002")
+        self.page.click("#flList .fl-row")
+        self.page.wait_for_timeout(200)
+        self.page.click(".win-btn[data-win='30d']")
+        self.page.wait_for_timeout(200)
+        self.assertFalse(self.page.is_visible("#flPanel"))
+        self.assertTrue(self.page.evaluate("_posMapState.map.hasLayer(_posMapState.tracksLayer)"))
+
+
 class TestAircraftPageRaces(BrowserCase):
     ROWS = {"seen_at": [1, 2, 3], "altitude": [3, 1, 2]}
 
@@ -1399,7 +1546,8 @@ class TestAircraftSightingsFitOnPhones(BrowserCase):
 
     def test_one_day_ago_is_singular(self):
         self.layout(1180)
-        times = self.page.evaluate("[...document.querySelectorAll('.row-card.sightings-grid')].map(r => r.children[0].textContent)")
+        # The cell's own text; the ▶ after it is the link to that flight (3.4.198).
+        times = self.page.evaluate("[...document.querySelectorAll('.row-card.sightings-grid')].map(r => r.children[0].firstChild.textContent)")
         self.assertEqual(times, ["1 day ago", "3 days ago"])
 
 
@@ -2282,7 +2430,8 @@ class TestAirportPage(BrowserCase):
         self.assertNotIn("MILITARY VISITORS", labels, "an empty card is left out")
         self.assertEqual(len(labels), 5)
         self.assertEqual(self.page.evaluate("[...document.querySelectorAll('.apg-moves a.row-card')].map(a => a.getAttribute('href'))"),
-                         ["/aircraft/A00001", "/aircraft/A00009"])
+                         # 3.4.198: each opens the aircraft page on that flight
+                         ["/aircraft/A00001?flight=1781542680", "/aircraft/A00009?flight=1781541000"])
         self.assertEqual(_misaligned(self.page, ".apg-moves .row-grid-header", ".apg-moves a.row-card"), [])
         self.assertEqual(self.errors, [])
 

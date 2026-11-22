@@ -1,5 +1,5 @@
 # Aerodrome
-<!-- Version: 3.4.197 -->
+<!-- Version: 3.4.198 -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -82,6 +82,9 @@ callsign, ICAO, type, country, or operator. Use parser tokens like
 `watchlist`, `commercial`, `helicopter`, or a nearby airport's code
 (`KDFW` or `DFW`) for a link to its page. Sortable columns, date-range
 presets, page-size control, CSV export, and shareable hash URLs.
+Each aircraft has its own page: its history, its takeoffs and landings, a
+map of where it has flown, and a list of its flights. Pick one to see it on
+its own and play it back, with its altitude, speed and heading as it goes.
 
 ## The display board
 
@@ -160,6 +163,7 @@ aerodrome/
 ├── route_resolver.py             callsign → flight-route lookup (adsb.lol client)
 ├── airports.py                   the airports near the receiver, for the maps' airport layer
 ├── airport_events.py             the takeoffs and landings the receiver sees, live and filled in from history
+├── flights.py                    one aircraft's positions split into flights, for the aircraft page's list and replay
 ├── flightaware.py                optional FlightAware AeroAPI route lookups, with a monthly limit
 ├── photo_resolver.py             aircraft photo lookup (planespotters.net client)
 ├── slow_query_log.py             query-timing instrumentation

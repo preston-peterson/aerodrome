@@ -1,4 +1,4 @@
-<!-- Version: 3.4.197 -->
+<!-- Version: 3.4.198 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -211,6 +211,7 @@ body { font-family:var(--font); background:var(--bg0); color:var(--t1); min-heig
 .apt-foot a { color: var(--cyan); text-decoration: none; }
 a.ap { text-decoration: none; }
 a.ap:hover { color: var(--cyan); text-decoration: underline; }
+.fl-events .ap { color: var(--t1); }
 @media (max-width: 700px) {
     .apt-grid { grid-template-columns: minmax(0, 1fr) auto; row-gap: 3px; }
     .apt-rows .row-grid-header.apt-grid { display: none; }
@@ -696,6 +697,89 @@ a.ap:hover { color: var(--cyan); text-decoration: underline; }
         #f97316 0%, #facc15 20%, #4ade80 40%,
         #22d3ee 60%, #60a5fa 80%, #a78bfa 100%);
 }
+
+/* v3.4.198: flights and their replay. Picking a flight from the list shows it
+   alone, with a side panel, an altitude strip and a play bar; the panel moves
+   under the play bar on a phone. */
+.replay-grid { display:grid; grid-template-columns:minmax(0,1fr); gap:12px; align-items:start; }
+.replay-grid.has-panel { grid-template-columns:minmax(0,1fr) 240px; }
+.map-controls .fl-all {
+    background:transparent; border:1px solid var(--cyan); color:var(--cyan);
+    border-radius:999px; padding:3px 10px; font-size:11px; cursor:pointer; font-family:var(--font);
+}
+.fl-panel { background:var(--bg1); border:1px solid var(--bdr); border-radius:6px; padding:12px 14px; }
+.fl-panel .fl-title { font-family:var(--mono); font-size:15px; color:var(--t1); }
+.fl-panel .fl-sub {
+    font-size:12px; color:var(--t2); line-height:1.5;
+    margin:3px 0 10px; padding-bottom:10px; border-bottom:1px solid var(--bdr);
+}
+.fl-panel .fl-sub b { color:var(--t1); font-weight:500; }
+.fl-stat { margin-bottom:10px; }
+.fl-stat .k { font-size:10px; color:var(--t3); text-transform:uppercase; letter-spacing:0.08em; }
+.fl-stat .v { font-family:var(--mono); font-size:20px; color:var(--t1); margin-top:1px; }
+.fl-stat .v small { font-size:11px; color:var(--t2); }
+.fl-events { list-style:none; margin:0; padding:10px 0 0; border-top:1px solid var(--bdr); font-size:12px; color:var(--t2); }
+.fl-events li { padding:2px 0; }
+.fl-events b { font-family:var(--mono); color:var(--t1); font-weight:500; margin-right:6px; }
+.fl-profile {
+    position:relative; height:70px; margin-top:8px; cursor:pointer;
+    background:var(--bg1); border:1px solid var(--bdr); border-radius:6px;
+}
+.fl-profile svg { width:100%; height:100%; display:block; }
+.fl-profile .fl-max { position:absolute; left:8px; top:4px; font-size:10px; color:var(--t3); font-family:var(--mono); pointer-events:none; }
+.fl-playbar {
+    display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:8px;
+    background:var(--bg1); border:1px solid var(--bdr); border-radius:6px; padding:6px 10px;
+}
+.fl-playbar[hidden], .map-altitude-legend .fl-gap-key[hidden] { display:none; }
+.fl-play {
+    width:32px; height:32px; border-radius:50%; flex:none; cursor:pointer;
+    border:1px solid var(--cyan); background:transparent; color:var(--cyan); font-size:12px;
+}
+.fl-speeds { display:flex; gap:4px; }
+.fl-speeds button {
+    background:var(--bg2); border:1px solid var(--bdr); color:var(--t2); border-radius:4px;
+    padding:3px 8px; font-family:var(--mono); font-size:11px; cursor:pointer;
+}
+.fl-speeds button.active { border-color:var(--cyan); color:var(--cyan); }
+.fl-playbar input[type=range] { flex:1; min-width:120px; accent-color:var(--cyan); }
+.fl-clock { font-family:var(--mono); font-size:11px; color:var(--t2); }
+.map-altitude-legend .fl-gap-key { display:inline-flex; align-items:center; gap:6px; margin-left:8px; }
+.map-altitude-legend .fl-gap-key i { width:24px; border-top:2px dashed var(--t3); }
+.fl-section { margin-top:20px; }
+.fl-section .section-title .fl-count { color:var(--t3); font-weight:400; text-transform:none; letter-spacing:0; margin-left:8px; font-size:12px; }
+.fl-list { border:1px solid var(--bdr); border-radius:6px; max-height:480px; overflow-y:auto; }
+.fl-day {
+    position:sticky; top:0; z-index:1; background:var(--bg1); color:var(--t3);
+    font-size:10px; text-transform:uppercase; letter-spacing:0.08em;
+    padding:6px 12px; border-top:1px solid var(--bdr);
+}
+.fl-day:first-child { border-top:none; }
+.fl-row {
+    display:grid; grid-template-columns:18px 112px 56px 80px minmax(0,1fr) 72px; gap:10px; align-items:center;
+    width:100%; padding:7px 12px; background:none; border:none; border-top:1px solid var(--bg2);
+    color:var(--t1); font:inherit; font-size:12px; text-align:left; cursor:pointer;
+}
+.fl-row:hover { background:var(--bg2); }
+.fl-row.sel { background:rgba(6,182,212,0.1); box-shadow:inset 3px 0 0 var(--cyan); }
+.fl-ic { color:var(--cyan); }
+.fl-time, .fl-dur, .fl-cs, .fl-alt { font-family:var(--mono); }
+.fl-dur, .fl-alt { color:var(--t2); }
+.fl-alt { text-align:right; }
+.fl-what { color:var(--t2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.fl-what b { color:var(--t1); font-weight:500; }
+.fl-empty { padding:10px 12px; color:var(--t3); font-size:12px; }
+.fl-plane svg { fill:#e2e8f0; stroke:#0a0e17; stroke-width:0.8; filter:drop-shadow(0 0 2px rgba(0,0,0,0.6)); }
+a.sg-fl { margin-left:6px; color:var(--cyan); text-decoration:none; font-size:10px; }
+a.sg-fl:hover { text-decoration:underline; }
+.no-flight-map a.sg-fl, .no-flight-map .fl-section { display:none; }
+@media (max-width: 700px) {
+    .replay-grid.has-panel { grid-template-columns:minmax(0,1fr); }
+    .fl-panel .fl-stats { display:grid; grid-template-columns:1fr 1fr; gap:0 12px; }
+    .fl-row { grid-template-columns:16px 96px minmax(0,1fr) auto; }
+    .fl-dur, .fl-alt { display:none; }
+    .fl-what { grid-column:2 / -1; white-space:normal; }
+}
 </style>
 </head>
 <body>
@@ -1085,6 +1169,12 @@ function _aptWord(e) {
     const k = APT_KINDS[e.kind] || ['', e.kind, ''];
     return k[1] + (e.kind === 'touch_and_go' && e.count > 1 ? ` ×${e.count}` : '');
 }
+// v3.4.198: a ▶ that shows the flight holding this moment on the map above.
+function flLink(ts) {
+    const t = Number(ts) || 0;
+    return t && document.getElementById('positionMapBlock') ? `<a class="sg-fl" href="?flight=${t}" data-flight-at="${t}" title="Show this flight on the map"`
+        + ` aria-label="Show this flight on the map">▶</a>` : '';
+}
 function renderAirportLines(recent) {
     const slot = document.getElementById('aptLines');
     if (!slot) return;
@@ -1118,7 +1208,7 @@ function renderAirportSection(icao, j) {
         + (a.touch_and_go ? ` · <b>${a.touch_and_go}</b> touch and go` : '') + `</span></div>`).join('');
     const rows = j.events.map(e => {
         const [glyph, , cls] = APT_KINDS[e.kind] || ['', '', ''];
-        return `<div class="row-card apt-grid"><span class="c-when">${escapeHtml(_aptWhen(e))}</span>`
+        return `<div class="row-card apt-grid"><span class="c-when">${escapeHtml(_aptWhen(e))}${flLink(e.at)}</span>`
             + `<span class="c-ev"><span class="${cls}">${glyph}</span> ${escapeHtml(_aptWord(e))}</span>`
             + `<span class="apcell">${_aptLink(e.airport)}<span class="city">${escapeHtml(e.name || '')}</span></span>`
             + `<span class="c-rwy">${e.runway ? 'rwy ' + escapeHtml(e.runway) : ''}</span>`
@@ -1745,7 +1835,7 @@ function _renderSightingsTable() {
         const cls = isAnchor ? ' row-anchored' : '';
         return `
             <div class="row-card sightings-grid${cls}" data-seen-at="${r.seen_at}">
-                <span class="dim" title="${escapeHtml(fmtDateTime(r.seen_at))}">${escapeHtml(fmtRelativeTime(r.seen_at))}</span>
+                <span class="dim" title="${escapeHtml(fmtDateTime(r.seen_at))}">${escapeHtml(fmtRelativeTime(r.seen_at))}${flLink(r.seen_at)}</span>
                 <span>${escapeHtml(r.callsign || '—')}</span>
                 ${r.route && r.route.origin && r.route.dest
                     ? `<span class="sg-route">${escapeHtml(r.route.origin)} → ${escapeHtml(r.route.dest)}<span class="sg-fa" title="Contains AeroAPI data © FlightAware LLC ${new Date().getFullYear()}">FA</span></span>`
@@ -2158,6 +2248,9 @@ function toggleMapTheme() {
     }
 }
 
+const BIN_THRESHOLDS = [1000, 10000, 20000, 30000, 40000];
+const BIN_COLORS = ['#f97316', '#facc15', '#4ade80', '#22d3ee', '#60a5fa', '#a78bfa'];
+
 let _posMapState = {
     map: null,           // Leaflet Map instance once initialized
     tracksLayer: null,   // v3.4.31: L.layerGroup of polyline segments + orphan dots, replaced per fetch
@@ -2200,8 +2293,11 @@ function initPositionMap(icao) {
             <button type="button" class="win-btn" data-win="7d">7d</button>
             <button type="button" class="win-btn" data-win="30d">30d</button>
             <button type="button" class="win-btn" data-win="all">All</button>
+            <button type="button" class="fl-all" id="flShowAll" hidden>× Show all flights</button>
             <span class="meta" id="mapMeta">loading…</span>
         </div>
+        <div class="replay-grid" id="replayGrid">
+        <div class="replay-main">
         <div class="map-stage">
             <div id="positionMap"></div>
             <div class="carto-key-banner" id="cartoKeyBanner" hidden>
@@ -2209,11 +2305,28 @@ function initPositionMap(icao) {
                 <a class="btn btn-primary" href="/config#map">Open Map settings</a>
             </div>
         </div>
+        <div class="fl-profile" id="flProfile" hidden title="Altitude over time · click to jump"></div>
+        <div class="fl-playbar" id="flPlaybar" hidden>
+            <button type="button" class="fl-play" id="flPlay" aria-label="Play">▶</button>
+            <div class="fl-speeds" id="flSpeeds">
+                <button type="button" data-s="1">1×</button><button type="button" data-s="10">10×</button><button type="button" data-s="60" class="active">60×</button>
+            </div>
+            <input type="range" id="flRange" min="0" max="1000" value="0" aria-label="Position in the flight">
+            <span class="fl-clock" id="flClock"></span>
+        </div>
+        </div>
+        <aside class="fl-panel" id="flPanel" hidden></aside>
+        </div>
         <div class="map-altitude-legend">
             <span>Altitude:</span>
             <span>0 ft</span>
             <div class="gradient"></div>
             <span>40,000+ ft</span>
+            <span class="fl-gap-key" id="flGapKey" hidden><i></i>out of range</span>
+        </div>
+        <div class="fl-section">
+            <div class="section-title">Flights <span class="fl-count" id="flCount"></span></div>
+            <div class="fl-list" id="flList"><div class="fl-empty">Loading flights…</div></div>
         </div>
     `;
 
@@ -2224,15 +2337,33 @@ function initPositionMap(icao) {
         btn.addEventListener('click', () => {
             const win = btn.getAttribute('data-win');
             if (win === _posMapState.currentWindow) return;
-            block.querySelectorAll('.win-btn').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-            _posMapState.currentWindow = win;
-            loadPositions(win);
+            setPositionWindow(win);
         });
     });
+    wireFlightReplay();
 
-    // Initial fetch. The default-active button is 24h, so this matches.
-    loadPositions('24h');
+    // Initial fetch: 24h, or the window that holds ?flight=<ts> (v3.4.198),
+    // whose flight is then picked once the list arrives.
+    const at = parseInt(new URLSearchParams(window.location.search).get('flight'), 10);
+    if (at > 0) {
+        _fl.pendingAt = at;
+        setPositionWindow(flWindowFor(at));
+    } else {
+        loadPositions('24h');
+        loadFlights('24h');
+    }
+}
+
+// Switch the map and the Flights list to another window. A flight on show
+// goes back to the overview first.
+function setPositionWindow(win) {
+    const block = document.getElementById('positionMapBlock');
+    if (!block) return;
+    if (_fl.sel) flShowAll(false);
+    block.querySelectorAll('.win-btn').forEach(b => b.classList.toggle('active', b.getAttribute('data-win') === win));
+    _posMapState.currentWindow = win;
+    loadPositions(win);
+    loadFlights(win);
 }
 
 // Only the window picked last counts: a late answer for an earlier one is dropped.
@@ -2268,6 +2399,7 @@ async function loadPositions(window) {
     // server's receiver field is config-driven, not request-scoped),
     // so we don't worry about toggling between nudge and map.
     if (!data.receiver) {
+        document.body.classList.add('no-flight-map');   // v3.4.198: no ▶ links without a map
         const block = document.getElementById('positionMapBlock');
         if (block) {
             block.innerHTML = `
@@ -2444,8 +2576,8 @@ async function loadPositions(window) {
     // — orange near the ground → yellow → green → cyan → blue → violet at 40k+.
     // Keep these two arrays + the .map-altitude-legend gradient in lockstep
     // with _radarAltColor; if that scale changes, change it here too.
-    const BIN_THRESHOLDS = [1000, 10000, 20000, 30000, 40000];
-    const BIN_COLORS = ['#f97316', '#facc15', '#4ade80', '#22d3ee', '#60a5fa', '#a78bfa'];
+    // (BIN_THRESHOLDS and BIN_COLORS are at the top level since v3.4.198, so
+    // the flight replay colours its line the same way.)
 
     function _rawBin(alt) {
         if (alt == null) return 0;
@@ -2543,7 +2675,10 @@ async function loadPositions(window) {
         }));
     }
     layers.push(...orphanDots);
-    _posMapState.tracksLayer = L.layerGroup(layers).addTo(_posMapState.map);
+    // v3.4.198: while a flight is on show the overview waits off the map;
+    // "Show all flights" puts it back.
+    _posMapState.tracksLayer = L.layerGroup(layers);
+    if (!_fl.sel) _posMapState.tracksLayer.addTo(_posMapState.map);
 
     // Auto-fit bounds: include receiver + all dots. If there are no
     // dots in this window, just keep the existing view (don't fitBounds
@@ -2553,28 +2688,448 @@ async function loadPositions(window) {
             data.positions.map(p => [p[1], p[2]])
         );
         bounds.extend([data.receiver.lat, data.receiver.lon]);
-        _posMapState.map.fitBounds(bounds, { padding: [30, 30], maxZoom: 12 });
+        _posMapState.overviewBounds = bounds;
+        if (!_fl.sel) _posMapState.map.fitBounds(bounds, { padding: [30, 30], maxZoom: 12 });
     } else {
         // No positions in this window — re-center on the receiver
         // since the previous window's bounds are no longer relevant.
-        _posMapState.map.setView([data.receiver.lat, data.receiver.lon], 9);
+        _posMapState.overviewBounds = null;
+        if (!_fl.sel) _posMapState.map.setView([data.receiver.lat, data.receiver.lon], 9);
     }
+    _posMapState.receiver = data.receiver;
 
-    // Update the meta line with count + truncation notice.
-    if (meta) {
-        if (data.count === 0) {
-            meta.textContent = 'no positions in this window';
-        } else {
-            const label = data.count === 1 ? 'position' : 'positions';
-            meta.textContent = `${data.count.toLocaleString()} ${label}`;
-            if (data.truncated) {
-                meta.textContent += ' (sampled)';
-                meta.classList.add('truncated');
-                meta.title = 'Result set exceeded 10,000 points; even-sampled to fit.';
-            }
-        }
-    }
+    // Update the meta line with count + truncation notice. v3.4.198: kept in
+    // _posMapState.meta so "Show all flights" can put it back.
+    const label = data.count === 1 ? 'position' : 'positions';
+    _posMapState.meta = data.count === 0 ? {text: 'no positions in this window'}
+        : data.truncated ? {text: `${data.count.toLocaleString()} ${label} (sampled)`,
+                            title: 'Result set exceeded 10,000 points; even-sampled to fit.'}
+        : {text: `${data.count.toLocaleString()} ${label}`};
+    if (meta && !_fl.sel) flPutMeta();
+    flTryPending();
 }
+
+function flPutMeta() {
+    const meta = document.getElementById('mapMeta'), m = _posMapState.meta;
+    if (!meta || !m) return;
+    meta.textContent = m.text;
+    meta.classList.toggle('truncated', !!m.title);
+    meta.title = m.title || '';
+}
+
+// =====================================================================
+// v3.4.198: flights and their replay. /api/aircraft/<icao>/flights splits
+// the aircraft's positions into flights (flights.py has the rule). Picking
+// one fetches its positions with their speeds and draws it alone: the whole
+// line dim, the part flown so far bright, the aircraft moving along it, a
+// side panel with its numbers, an altitude strip and a play bar. Playback
+// keeps the real time between fixes, except that a stretch out of range
+// (drawn dashed) plays as FL_GAP_PLAY seconds so a long one doesn't stall it.
+// =====================================================================
+const FL_GAP = 120;          // s between fixes: drawn dashed, out of range (the map's own line break)
+const FL_GAP_PLAY = 60;      // s of flight time an out-of-range stretch plays as
+const FL_PLANE = '<svg viewBox="-10 -10 20 20" width="26" height="26" aria-hidden="true"><path d="M0,-9 L1.4,-6.5 '
+    + 'L1.4,-2 L8,2 L8,3.6 L1.4,1.6 L1.2,6 L3.4,7.8 L3.4,9 L0,8 L-3.4,9 L-3.4,7.8 L-1.2,6 L-1.4,1.6 L-8,3.6 L-8,2 '
+    + 'L-1.4,-2 L-1.4,-6.5 Z"/></svg>';
+const _fl = {
+    list: [], window: null, truncated: false, req: null, posReq: null,
+    sel: null,          // the flight on show; .pts and .v once its positions are in
+    layer: null, flown: [], shown: 0, cur: null, plane: null, head: null, hdg: 0,
+    vt: 0, speed: 60, playing: false, raf: 0, last: 0,
+    pendingAt: null,    // pick the flight holding this time once the list arrives
+};
+
+function flAltColor(alt) {
+    if (alt == null) return BIN_COLORS[0];
+    for (let i = 0; i < BIN_THRESHOLDS.length; i++) if (alt < BIN_THRESHOLDS[i]) return BIN_COLORS[i];
+    return BIN_COLORS[BIN_COLORS.length - 1];
+}
+function flWindowFor(ts) {
+    const age = Date.now() / 1000 - ts;
+    return age <= 86400 ? '24h' : age <= 7 * 86400 ? '7d' : age <= 30 * 86400 ? '30d' : 'all';
+}
+function flDay(ts) {
+    const d = new Date(ts * 1000), now = new Date(), y = new Date(now);
+    y.setDate(now.getDate() - 1);
+    if (d.toDateString() === now.toDateString()) return 'Today';
+    if (d.toDateString() === y.toDateString()) return 'Yesterday';
+    return d.toLocaleDateString(undefined, d.getFullYear() === now.getFullYear()
+        ? {weekday: 'short', month: 'short', day: 'numeric'} : {month: 'short', day: 'numeric', year: 'numeric'});
+}
+function flSeconds(ts) {
+    const d = new Date(ts * 1000);
+    return window.formatTimeFull ? window.formatTimeFull(d) : d.toLocaleTimeString();
+}
+// What the flight did, from its takeoffs and landings; HTML, every value escaped.
+function flWhat(f) {
+    const ev = f.events || [];
+    if (ev.length) {
+        return ev.map(e => `${escapeHtml(_aptWord(e))} <b>${escapeHtml(e.airport)}</b>`
+            + (e.runway ? ` · runway ${escapeHtml(e.runway)}` : '')).join(' → ');
+    }
+    return 'Overflight' + (f.longest_gap > 600 ? ` · out of range for ${Math.round(f.longest_gap / 60)} min` : '');
+}
+function flIcon(f) {
+    const ev = f.events || [];
+    if (!ev.length) return '→';
+    return (APT_KINDS[ev[0].kind] || ['→'])[0];
+}
+function flAt(ts) {
+    return _fl.list.find(f => f.start - 120 <= ts && ts <= f.end + 120) || null;
+}
+
+async function loadFlights(win) {
+    if (_fl.req) _fl.req.abort();
+    const ctl = new AbortController();
+    _fl.req = ctl;
+    const list = document.getElementById('flList');
+    if (!list) return;
+    let j;
+    try {
+        const r = await fetch(`/api/aircraft/${encodeURIComponent(_posMapState.icao)}/flights`
+            + `?window=${encodeURIComponent(win)}`, {signal: ctl.signal});
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        j = await r.json();
+    } catch (e) {
+        if (ctl === _fl.req && e.name !== 'AbortError') {
+            list.innerHTML = `<div class="fl-empty">Couldn't load the flights: ${escapeHtml(e.message || String(e))}</div>`;
+        }
+        return;
+    }
+    if (ctl !== _fl.req) return;
+    _fl.list = Array.isArray(j.flights) ? j.flights : [];
+    _fl.window = win;
+    _fl.truncated = !!j.truncated;
+    renderFlightList();
+    flTryPending();
+}
+
+// A pick waiting on the list (?flight=<ts>, a ▶ link): made once both the map
+// and the list for its window are in, whichever arrives last.
+function flTryPending() {
+    if (_fl.pendingAt == null || !_posMapState.map || _fl.window !== _posMapState.currentWindow) return;
+    const f = flAt(_fl.pendingAt);
+    _fl.pendingAt = null;
+    if (f) selectFlight(f);
+}
+
+function renderFlightList() {
+    const list = document.getElementById('flList'), count = document.getElementById('flCount');
+    if (!list) return;
+    const n = _fl.list.length, win = _fl.window;
+    if (count) {
+        count.textContent = n ? `${n.toLocaleString()} ${win === 'all' ? 'in everything kept' : 'in the last ' + win}`
+            + (_fl.truncated ? ', the newest' : '') + ' · newest first' : '';
+    }
+    if (!n) {
+        list.innerHTML = '<div class="fl-empty">No flights in this window.</div>';
+        return;
+    }
+    let html = '', day = '';
+    _fl.list.forEach((f, k) => {
+        const d = flDay(f.start);
+        if (d !== day) {
+            day = d;
+            html += `<div class="fl-day">${escapeHtml(d)}</div>`;
+        }
+        const mins = Math.max(1, Math.round((f.end - f.start) / 60));
+        const sel = _fl.sel && _fl.sel.start === f.start ? ' sel' : '';
+        html += `<button type="button" class="fl-row${sel}" data-k="${k}">`
+            + `<span class="fl-ic">${flIcon(f)}</span>`
+            + `<span class="fl-time">${escapeHtml(_aptClock(f.start))}–${escapeHtml(_aptClock(f.end))}</span>`
+            + `<span class="fl-dur">${mins} min</span>`
+            + `<span class="fl-cs">${escapeHtml(f.callsign || '—')}</span>`
+            + `<span class="fl-what">${flWhat(f)}</span>`
+            + `<span class="fl-alt">${f.max_alt != null ? escapeHtml(fmtFlightLevel(f.max_alt)) : ''}</span></button>`;
+    });
+    list.innerHTML = html;
+    list.querySelectorAll('.fl-row').forEach(b => b.addEventListener('click', () => {
+        selectFlight(_fl.list[+b.dataset.k]);
+        const block = document.getElementById('positionMapBlock');
+        if (block) block.scrollIntoView({behavior: 'smooth', block: 'start'});
+    }));
+}
+
+// A ▶ link (a sighting, a takeoff or landing): the flight holding that moment,
+// from the loaded list, or after switching to the window that holds it.
+function openFlightAt(ts) {
+    const block = document.getElementById('positionMapBlock');
+    if (!block || !_posMapState.map) return;
+    block.scrollIntoView({behavior: 'smooth', block: 'start'});
+    const f = flAt(ts);
+    if (f) { selectFlight(f); return; }
+    _fl.pendingAt = ts;
+    const win = flWindowFor(ts);
+    if (win === _posMapState.currentWindow && _fl.window === win) {
+        _fl.pendingAt = null;    // loaded already, and no flight holds it
+        return;
+    }
+    setPositionWindow(win);
+}
+
+async function selectFlight(f) {
+    if (!f || !_posMapState.map) return;
+    flStop();
+    if (_fl.posReq) _fl.posReq.abort();
+    const ctl = new AbortController();
+    _fl.posReq = ctl;
+    _fl.sel = f;
+    document.querySelectorAll('#flList .fl-row').forEach(b =>
+        b.classList.toggle('sel', _fl.list[+b.dataset.k] === f));
+    let data;
+    try {
+        const r = await fetch(`/api/aircraft/${encodeURIComponent(_posMapState.icao)}/positions`
+            + `?since=${f.start}&until=${f.end}`, {signal: ctl.signal});
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        data = await r.json();
+    } catch (e) {
+        if (ctl === _fl.posReq && e.name !== 'AbortError') {
+            const meta = document.getElementById('mapMeta');
+            if (meta) meta.textContent = `error: ${e.message || e}`;
+        }
+        return;
+    }
+    if (ctl !== _fl.posReq || _fl.sel !== f) return;
+    f.pts = (data.positions || []).map(p => ({t: p[0], lat: p[1], lon: p[2], alt: p[3], kt: p[4]}));
+    if (!f.pts.length) return;
+    f.v = [0];
+    for (let i = 1; i < f.pts.length; i++) {
+        const dt = f.pts[i].t - f.pts[i - 1].t;
+        f.v.push(f.v[i - 1] + (dt > FL_GAP ? FL_GAP_PLAY : dt));
+    }
+    flShow(f);
+    const q = new URLSearchParams(window.location.search);
+    q.set('flight', String(f.start));
+    history.replaceState(null, '', `${window.location.pathname}?${q}`);
+}
+
+function flSegment(a, b, opacity) {
+    const gap = b.t - a.t > FL_GAP;
+    return L.polyline([[a.lat, a.lon], [b.lat, b.lon]], {
+        renderer: _posMapState.canvasRenderer, color: gap ? '#64748b' : flAltColor(b.alt),
+        weight: 3, opacity, dashArray: gap ? '6 6' : null, lineCap: 'round', interactive: false,
+    });
+}
+
+function flShow(f) {
+    const map = _posMapState.map;
+    if (_posMapState.tracksLayer) _posMapState.tracksLayer.removeFrom(map);
+    if (_fl.layer) _fl.layer.removeFrom(map);
+    _fl.layer = L.layerGroup().addTo(map);
+    for (let i = 1; i < f.pts.length; i++) flSegment(f.pts[i - 1], f.pts[i], 0.35).addTo(_fl.layer);
+    _fl.flown = [];
+    for (let i = 1; i < f.pts.length; i++) _fl.flown.push(flSegment(f.pts[i - 1], f.pts[i], 1));
+    _fl.shown = 0;
+    _fl.cur = L.polyline([], {renderer: _posMapState.canvasRenderer, weight: 3, opacity: 1,
+                              lineCap: 'round', interactive: false}).addTo(_fl.layer);
+    _fl.plane = L.marker([f.pts[0].lat, f.pts[0].lon], {
+        icon: L.divIcon({className: 'fl-plane', html: FL_PLANE, iconSize: [26, 26], iconAnchor: [13, 13]}),
+        interactive: false, keyboard: false, zIndexOffset: 2000,
+    }).addTo(_fl.layer);
+
+    const grid = document.getElementById('replayGrid');
+    if (grid) grid.classList.add('has-panel');
+    ['flPanel', 'flProfile', 'flPlaybar', 'flShowAll', 'flGapKey'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.hidden = false;
+    });
+    flPanel(f);
+    flProfile(f);
+    const meta = document.getElementById('mapMeta');
+    if (meta) {
+        meta.classList.remove('truncated');
+        meta.textContent = `${f.pts.length.toLocaleString()} positions in this flight`;
+    }
+    map.invalidateSize();
+    const bounds = L.latLngBounds(f.pts.map(p => [p.lat, p.lon]));
+    map.fitBounds(bounds, {padding: [30, 30], maxZoom: 13});
+    _fl.vt = 0;
+    _fl.hdg = 0;
+    flRender();
+    flPlay();
+}
+
+// Back to every flight in the window, as before a flight was picked.
+function flShowAll(refit = true) {
+    flStop();
+    if (_fl.posReq) _fl.posReq.abort();
+    _fl.sel = null;
+    const map = _posMapState.map;
+    if (_fl.layer && map) _fl.layer.removeFrom(map);
+    _fl.layer = null;
+    const grid = document.getElementById('replayGrid');
+    if (grid) grid.classList.remove('has-panel');
+    ['flPanel', 'flProfile', 'flPlaybar', 'flShowAll', 'flGapKey'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.hidden = true;
+    });
+    document.querySelectorAll('#flList .fl-row.sel').forEach(b => b.classList.remove('sel'));
+    const q = new URLSearchParams(window.location.search);
+    q.delete('flight');
+    history.replaceState(null, '', window.location.pathname + (q.toString() ? `?${q}` : ''));
+    if (!map) return;
+    map.invalidateSize();
+    if (_posMapState.tracksLayer) _posMapState.tracksLayer.addTo(map);
+    if (!refit) return;
+    if (_posMapState.overviewBounds) map.fitBounds(_posMapState.overviewBounds, {padding: [30, 30], maxZoom: 12});
+    flPutMeta();
+}
+
+function flPanel(f) {
+    const panel = document.getElementById('flPanel');
+    if (!panel) return;
+    const events = (f.events || []).map(e => `<li><b>${escapeHtml(_aptClock(e.at))}</b>${escapeHtml(_aptWord(e))} `
+        + `${_aptLink(e.airport)}${e.runway ? ' runway ' + escapeHtml(e.runway) : ''}</li>`).join('');
+    panel.innerHTML = `<div class="fl-title">${escapeHtml(f.callsign || 'No callsign')}</div>`
+        + `<div class="fl-sub">${escapeHtml(flDay(f.start))} · ${escapeHtml(_aptClock(f.start))}–${escapeHtml(_aptClock(f.end))}`
+        + `<br>${flWhat(f)}</div>`
+        + `<div class="fl-stats">`
+        + `<div class="fl-stat"><div class="k">Time</div><div class="v" id="flT"></div></div>`
+        + `<div class="fl-stat"><div class="k">Altitude</div><div class="v" id="flA"></div></div>`
+        + `<div class="fl-stat"><div class="k">Ground speed</div><div class="v" id="flS"></div></div>`
+        + `<div class="fl-stat"><div class="k">Heading</div><div class="v" id="flH"></div></div>`
+        + `</div>` + (events ? `<ul class="fl-events">${events}</ul>` : '');
+}
+
+function flProfile(f) {
+    const box = document.getElementById('flProfile');
+    if (!box) return;
+    const total = f.v[f.v.length - 1] || 1;
+    const top = Math.max(10000, ...f.pts.map(p => p.alt || 0)) * 1.1;
+    const y = alt => (95 - (alt || 0) / top * 85).toFixed(1);
+    let lines = '';
+    for (let i = 1; i < f.pts.length; i++) {
+        const a = f.pts[i - 1], b = f.pts[i], gap = b.t - a.t > FL_GAP;
+        lines += `<line x1="${(f.v[i - 1] / total * 1000).toFixed(1)}" y1="${y(a.alt)}" x2="${(f.v[i] / total * 1000).toFixed(1)}"`
+            + ` y2="${y(b.alt)}" stroke="${gap ? '#64748b' : flAltColor(b.alt)}" stroke-width="2"`
+            + `${gap ? ' stroke-dasharray="5 5"' : ''} vector-effect="non-scaling-stroke"/>`;
+    }
+    const maxAlt = Math.max(...f.pts.map(p => p.alt || 0));
+    box.innerHTML = `<svg viewBox="0 0 1000 100" preserveAspectRatio="none" aria-hidden="true">${lines}`
+        + `<line id="flHead" x1="0" y1="0" x2="0" y2="100" stroke="currentColor" stroke-width="1" vector-effect="non-scaling-stroke"/></svg>`
+        + (maxAlt ? `<span class="fl-max">${escapeHtml(fmtAltitude(maxAlt))} ft</span>` : '');
+    box.style.color = 'var(--t1)';
+    _fl.head = box.querySelector('#flHead');
+}
+
+// Where the replay is at playback time vt: between fixes i-1 and i.
+function flState(f, vt) {
+    const p = f.pts, v = f.v;
+    let lo = 1, hi = p.length - 1;
+    while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (v[mid] < vt) lo = mid + 1; else hi = mid;
+    }
+    const i = Math.max(1, lo), a = p[i - 1], b = p[i] || a;
+    const span = (v[i] - v[i - 1]) || 1, k = Math.min(1, Math.max(0, (vt - v[i - 1]) / span));
+    const dt = b.t - a.t;
+    const num = (x, y) => x == null ? y : y == null ? x : x + (y - x) * k;
+    return {i, k, lat: a.lat + (b.lat - a.lat) * k, lon: a.lon + (b.lon - a.lon) * k,
+            alt: num(a.alt, b.alt), kt: num(a.kt, b.kt), t: a.t + dt * k, gap: dt > FL_GAP ? dt : 0,
+            fpm: a.alt != null && b.alt != null && dt > 0 && dt <= FL_GAP ? Math.round((b.alt - a.alt) / dt * 60 / 50) * 50 : 0,
+            a, b};
+}
+function flBearing(a, b) {
+    const r = Math.PI / 180, p1 = a.lat * r, p2 = b.lat * r, dl = (b.lon - a.lon) * r;
+    const yy = Math.sin(dl) * Math.cos(p2), xx = Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dl);
+    return (Math.atan2(yy, xx) / r + 360) % 360;
+}
+
+function flRender() {
+    const f = _fl.sel;
+    if (!f || !f.pts || !_fl.layer) return;
+    const st = flState(f, _fl.vt), total = f.v[f.v.length - 1] || 1;
+    // Segments fully flown: 0 .. i-2. The one being flown is drawn up to the aircraft.
+    const want = Math.min(_fl.flown.length, st.i - 1);
+    while (_fl.shown < want) _fl.flown[_fl.shown++].addTo(_fl.layer);
+    while (_fl.shown > want) _fl.flown[--_fl.shown].removeFrom(_fl.layer);
+    const gap = st.gap > 0;
+    _fl.cur.setLatLngs([[st.a.lat, st.a.lon], [st.lat, st.lon]]);
+    _fl.cur.setStyle({color: gap ? '#64748b' : flAltColor(st.b.alt), dashArray: gap ? '6 6' : null});
+    if (Math.abs(st.b.lat - st.a.lat) + Math.abs(st.b.lon - st.a.lon) > 1e-6) _fl.hdg = flBearing(st.a, st.b);
+    _fl.plane.setLatLng([st.lat, st.lon]);
+    const svg = _fl.plane.getElement() && _fl.plane.getElement().querySelector('svg');
+    if (svg) svg.style.transform = `rotate(${_fl.hdg.toFixed(0)}deg)`;
+    if (_fl.head) {
+        const x = (_fl.vt / total * 1000).toFixed(1);
+        _fl.head.setAttribute('x1', x);
+        _fl.head.setAttribute('x2', x);
+    }
+    const range = document.getElementById('flRange');
+    if (range) range.value = String(Math.round(_fl.vt / total * 1000));
+    const clock = document.getElementById('flClock');
+    if (clock) clock.textContent = `${_aptClock(st.t)} / ${_aptClock(f.end)}`;
+    const put = (id, html) => { const el = document.getElementById(id); if (el) el.innerHTML = html; };
+    put('flT', escapeHtml(flSeconds(st.t)));
+    if (gap) {
+        put('flA', `<small>out of range for ${Math.round(st.gap / 60)} min</small>`);
+        put('flS', '—');
+    } else {
+        const climb = st.fpm > 100 ? ` ↑ ${st.fpm.toLocaleString()} ft/min` : st.fpm < -100 ? ` ↓ ${(-st.fpm).toLocaleString()} ft/min` : '';
+        put('flA', st.alt == null ? 'ground' : `${escapeHtml(fmtAltitude(Math.round(st.alt / 25) * 25))} <small>ft${climb}</small>`);
+        put('flS', st.kt == null ? '—' : `${Math.round(st.kt)} <small>kt</small>`);
+    }
+    put('flH', `${String(Math.round(_fl.hdg) % 360).padStart(3, '0')}<small>°</small>`);
+}
+
+function flTick(now) {
+    const f = _fl.sel;
+    if (!f || !f.v || !_fl.playing) return;
+    const dt = Math.min(0.1, (now - _fl.last) / 1000);
+    _fl.last = now;
+    const total = f.v[f.v.length - 1];
+    _fl.vt = Math.min(total, _fl.vt + dt * _fl.speed);
+    flRender();
+    if (_fl.vt >= total) { flStop(); return; }
+    _fl.raf = requestAnimationFrame(flTick);
+}
+function flPlay() {
+    const f = _fl.sel;
+    if (!f || !f.v) return;
+    if (_fl.vt >= f.v[f.v.length - 1]) _fl.vt = 0;
+    _fl.playing = true;
+    const b = document.getElementById('flPlay');
+    if (b) { b.textContent = '❚❚'; b.setAttribute('aria-label', 'Pause'); }
+    _fl.last = performance.now();
+    cancelAnimationFrame(_fl.raf);
+    _fl.raf = requestAnimationFrame(flTick);
+}
+function flStop() {
+    _fl.playing = false;
+    cancelAnimationFrame(_fl.raf);
+    const b = document.getElementById('flPlay');
+    if (b) { b.textContent = '▶'; b.setAttribute('aria-label', 'Play'); }
+}
+function flSeek(frac) {
+    const f = _fl.sel;
+    if (!f || !f.v) return;
+    _fl.vt = Math.min(1, Math.max(0, frac)) * f.v[f.v.length - 1];
+    flRender();
+}
+
+function wireFlightReplay() {
+    const on = (id, ev, fn) => { const el = document.getElementById(id); if (el) el.addEventListener(ev, fn); };
+    on('flShowAll', 'click', () => flShowAll());
+    on('flPlay', 'click', () => _fl.playing ? flStop() : flPlay());
+    on('flRange', 'input', e => { flStop(); flSeek(e.target.value / 1000); });
+    on('flProfile', 'click', e => {
+        const r = e.currentTarget.getBoundingClientRect();
+        flStop();
+        flSeek((e.clientX - r.left) / r.width);
+    });
+    document.querySelectorAll('#flSpeeds button').forEach(b => b.addEventListener('click', () => {
+        document.querySelectorAll('#flSpeeds button').forEach(x => x.classList.toggle('active', x === b));
+        _fl.speed = Number(b.dataset.s) || 60;
+    }));
+}
+
+// ▶ links in the Sightings table and the takeoffs-and-landings rows.
+document.addEventListener('click', e => {
+    const a = e.target.closest && e.target.closest('a[data-flight-at]');
+    if (!a) return;
+    e.preventDefault();
+    openFlightAt(parseInt(a.dataset.flightAt, 10));
+});
 </script>
 
 </body>

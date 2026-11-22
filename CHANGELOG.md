@@ -19,6 +19,18 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.198] — 2026-11-22
+
+**The aircraft page lists the aircraft's flights, and plays one back on the map.** Under the Position history map there's a new **Flights** list for the window you picked (24h, 7d, 30d or All), newest first and grouped by day. Each row shows when the flight was in range, for how long, its callsign, the highest it flew, and what it did, from the takeoffs and landings your receiver saw ("Took off KXYZ · runway 18"), or "Overflight". Pick one and the map shows that flight on its own, with the aircraft moving along it. A panel beside the map names the flight and shows the time, altitude and climb, ground speed and heading as it plays. Under the map are an altitude-over-time strip (click it to jump) and a play bar with 1×, 10× and 60×. **× Show all flights** goes back to every flight in the window, as before. On a phone the panel sits under the play bar.
+
+**Getting to a flight.** Each row of the aircraft page's Sightings list and of its takeoffs and landings has a **▶** that opens the flight it belongs to. The takeoffs and landings on an airport's page now open the aircraft's page on that flight. An aircraft page link with `?flight=` and a time opens on the flight that holds that time, so you can share one.
+
+**How flights are told apart.** A flight ends when the aircraft has been out of range for 30 minutes, or for 10 minutes when it was last seen low (below 2,500 ft, or on the ground), because then it landed. Where the aircraft was out of range in the middle of a flight, the line is dashed and the replay skips through that stretch in seconds. Flights go back as far as your sightings are kept, 30 days by default.
+
+### Behind the scenes
+
+`flights.py` splits one aircraft's positions into flights. The rule was chosen on a real receiver's 30 days (67 aircraft, 61,200 positions): a flat 10-minute rule cut 19 flights in two, a flat 30-minute rule merged 26 pairs, and this rule cut 1 and merged none. Splitting at detected landings instead merged 23 pairs, because many stops are at fields the detection doesn't cover, so takeoffs and landings label flights rather than split them. New `GET /api/aircraft/{icao}/flights?window=` returns at most the newest 500. `/api/aircraft/{icao}/positions` takes `since` and `until` for one flight, and each position now carries its ground speed. The heading is worked out from consecutive positions, since the receiver's track isn't stored.
+
 ## [3.4.197] — 2026-11-21
 
 **A speed glitch your receiver repeats can no longer be the fastest record or Today's fastest.** Since 3.4.157, a speed counts only if the aircraft's reading just before or just after it is within 40 kt. But a receiver keeps reporting an aircraft's last speed until a new one arrives, so one bad reading is often saved twice in a row, and the copy agreed with itself: 539 kt, then 1,362 kt twice, then 540 kt. Now identical readings in a row count as one reading, and the readings on either side of them have to agree. A real speed held for several readings still counts, because the readings before and after it agree.

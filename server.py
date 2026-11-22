@@ -1,4 +1,4 @@
-# Version: 3.4.197
+# Version: 3.4.198
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -60,6 +60,7 @@ import auto_update
 # v3.4.182: the maps' airport layer (OurAirports data near the receiver).
 import airports as airports_data
 import airport_events
+import flights as flights_mod
 # v3.4.148: every config.yaml write goes through config_io (all or nothing,
 # under CONFIG_LOCK).
 import config_io
@@ -13172,6 +13173,26 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         finally:
             conn.close()
 
+    # v3.4.198: the aircraft's flights, newest first, for the aircraft page's
+    # Flights list and replay (flights.py has the rule that splits them).
+    _FLIGHT_WINDOWS = {"24h": 86400, "7d": 7 * 86400, "30d": 30 * 86400, "all": None}
+
+    @app.get("/api/aircraft/{icao}/flights")
+    def get_aircraft_flights(icao: str, window: str = "24h"):
+        key = (icao or "").upper().strip()
+        if len(key) != 6 or not all(c in "0123456789ABCDEF" for c in key):
+            raise HTTPException(status_code=400, detail="invalid ICAO hex")
+        if window not in _FLIGHT_WINDOWS:
+            raise HTTPException(status_code=400, detail=f"window must be one of {sorted(_FLIGHT_WINDOWS)}")
+        seconds = _FLIGHT_WINDOWS[window]
+        since = None if seconds is None else int(time.time()) - seconds
+        conn = _open_db_conn(CONFIG["data"]["db_file"])
+        try:
+            found = flights_mod.aircraft_flights(conn, CONFIG, key, since)
+        finally:
+            conn.close()
+        return {"ok": True, "icao": key, "window": window, **found}
+
     @app.get("/api/aircraft/{icao}/enrich")
     async def enrich_aircraft_registry(icao: str):
         """v3.4.58: resolve + return the registered owner and manufacturer
@@ -13453,22 +13474,22 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             return {"ok": True, "found": False, "icao": hexid}
 
     @app.get("/api/aircraft/{icao}/positions")
-    def get_aircraft_positions(icao: str, window: str = "24h"):
+    def get_aircraft_positions(icao: str, window: str = "24h",
+                               since: Optional[int] = None, until: Optional[int] = None):
         """v2.86.0: position stream for the aircraft-detail-page map.
         Returns every position fix recorded for one ICAO over the
         selected time window, plus the receiver's own coordinates so
         the client knows where to anchor the map.
 
-        The map renders dots — one per sighting, color-coded by
-        altitude — without any track-line connection between them.
-        That design (dots-only, no session-grouping heuristics) was
-        chosen so the dot density itself communicates flight pattern:
-        heavy fliers cluster, transients show single dots, repeat
-        visitors stand out. Users wanting actual flight paths use the
-        external Track ↗ link to airplanes.live or similar.
+        The map draws the fixes as lines coloured by altitude, broken
+        where two fixes are far apart in time (v3.4.31). v3.4.198: each
+        fix carries its ground speed too, and since/until fetch one
+        flight (from /api/aircraft/{icao}/flights) for the replay.
 
         Query parameters:
           window — one of "24h", "7d", "30d", "all". Default "24h".
+          since, until — seen_at bounds (inclusive); when given they
+                         replace the window.
 
         Response shape:
           {
@@ -13476,7 +13497,7 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             "icao": "ACF27F",
             "window": "24h",
             "count": 4193,
-            "positions": [[seen_at, lat, lon, altitude_or_null], ...],
+            "positions": [[seen_at, lat, lon, altitude_or_null, speed_or_null], ...],
             "receiver": {"lat": 37.7, "lon": -122.4} | null,
             "truncated": false  (true if cap was hit; see below)
           }
@@ -13505,6 +13526,8 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             )
         seconds = valid_windows[window]
         now = int(time.time())
+        if (since is None) != (until is None) or (since is not None and until < since):
+            raise HTTPException(status_code=400, detail="since and until go together, until >= since")
         # Receiver coords for client-side map anchoring. If unconfigured
         # the frontend renders a placeholder with a config nudge instead
         # of trying to render the map without anchor — we still return
@@ -13519,16 +13542,24 @@ def get_app(config: dict, config_path: str) -> FastAPI:
 
         conn = _open_db_conn(CONFIG["data"]["db_file"])
         try:
-            if seconds is None:
+            if since is not None:
                 rows = conn.execute(
-                    "SELECT seen_at, lat, lon, altitude FROM all_sightings "
+                    "SELECT seen_at, lat, lon, altitude, speed FROM all_sightings "
+                    "WHERE icao = ? AND seen_at >= ? AND seen_at <= ? "
+                    "  AND lat IS NOT NULL AND lon IS NOT NULL "
+                    "ORDER BY seen_at DESC",
+                    (icao.upper(), since, until),
+                ).fetchall()
+            elif seconds is None:
+                rows = conn.execute(
+                    "SELECT seen_at, lat, lon, altitude, speed FROM all_sightings "
                     "WHERE icao = ? AND lat IS NOT NULL AND lon IS NOT NULL "
                     "ORDER BY seen_at DESC",
                     (icao.upper(),),
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT seen_at, lat, lon, altitude FROM all_sightings "
+                    "SELECT seen_at, lat, lon, altitude, speed FROM all_sightings "
                     "WHERE icao = ? AND seen_at >= ? "
                     "  AND lat IS NOT NULL AND lon IS NOT NULL "
                     "ORDER BY seen_at DESC",
@@ -13552,7 +13583,8 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         # and chronological-ascending makes "first observation" /
         # "most recent" reasoning straightforward.
         positions = [
-            [row[0], row[1], row[2], row[3]]
+            [row[0], row[1], row[2], row[3],
+             row[4] if isinstance(row[4], (int, float)) else None]
             for row in reversed(rows)
         ]
 
