@@ -1,4 +1,4 @@
-# Version: 3.4.196
+# Version: 3.4.197
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -6899,6 +6899,14 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                 # starts a window early so the day's first reading can have a
                 # neighbour, as it does on the card. 0.12 s on a 76,000-reading
                 # day, against 0.05-0.09 s before.
+                #
+                # v3.4.197: identical readings in a row are one reading, as on
+                # the card: `run` numbers each aircraft's runs of the same speed,
+                # and a run's neighbours are the readings either side of it (the
+                # LAG on its first reading, the LEAD on its last). Window
+                # functions only, no join back, for the planner reasons above.
+                # Over 214 days of a busy install: 0.21 s median, 0.43 s at
+                # most, against 0.11 s and 0.23 s before.
                 agree_sec = _collector_mod.speed_agree_window(CONFIG["receiver"].get("poll_interval"))
                 agree_kt = _collector_mod.SPEED_AGREE_KT
                 raw = q("""
@@ -6912,13 +6920,30 @@ def get_app(config: dict, config_path: str) -> FastAPI:
                           AND icao NOT LIKE '~%'
                         WINDOW w AS (PARTITION BY icao ORDER BY seen_at)
                     ),
+                    numbered AS (
+                        SELECT *, SUM(prev_v IS NOT v) OVER (
+                                   PARTITION BY icao ORDER BY seen_at
+                                   ROWS UNBOUNDED PRECEDING) AS run
+                        FROM readings
+                    ),
+                    runs AS (
+                        SELECT icao, callsign, aircraft_type, v, seen_at,
+                               MAX(CASE WHEN prev_v IS NOT v THEN seen_at - prev_at END)
+                                   OVER g AS prev_gap,
+                               MAX(CASE WHEN prev_v IS NOT v THEN prev_v END) OVER g AS run_prev_v,
+                               MAX(CASE WHEN next_v IS NOT v THEN next_at - seen_at END)
+                                   OVER g AS next_gap,
+                               MAX(CASE WHEN next_v IS NOT v THEN next_v END) OVER g AS run_next_v
+                        FROM numbered
+                        WINDOW g AS (PARTITION BY icao, run)
+                    ),
                     r AS (
                         SELECT icao, callsign, aircraft_type, v, seen_at,
                                MAX(v) OVER (PARTITION BY icao) AS peak
-                        FROM readings
+                        FROM runs
                         WHERE seen_at >= ?
-                          AND ((seen_at - prev_at <= ? AND ABS(v - prev_v) <= ?)
-                            OR (next_at - seen_at <= ? AND ABS(v - next_v) <= ?))
+                          AND ((prev_gap <= ? AND ABS(v - run_prev_v) <= ?)
+                            OR (next_gap <= ? AND ABS(v - run_next_v) <= ?))
                     )
                     SELECT icao,
                            MAX(callsign) AS callsign,

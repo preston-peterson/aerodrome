@@ -118,16 +118,17 @@ class TestDrillResults(_DrillCase):
 
     def test_extremes_report_the_first_record_setting_sighting(self):
         d = self.day
-        # A second aircraft ties A00001's 480 kt (icao order breaks the tie).
+        # A second aircraft ties A00001's 480 kt (icao order breaks the tie). Its
+        # next reading backs the 480 up; a copy of the same speed wouldn't.
         self.execute("INSERT INTO all_sightings (icao, callsign, aircraft_type, speed, "
-                     "altitude, seen_at) VALUES ('A00000', 'DAL100', 'B738', 480, 30000, ?)",
-                     [(d + 300,), (d + 360,)])
+                     "altitude, seen_at) VALUES ('A00000', 'DAL100', 'B738', ?, 30000, ?)",
+                     [(480, d + 300), (478, d + 360)])
         expect = {
             # A00003 was heard once, so no neighbouring reading backs up its speed.
             "fastest": [("A00000", 480, d + 300), ("A00001", 480, d + 120),
                         ("A00002", 110, d + 150)],
             "slowest": [("A00003", 60, d + 200), ("A00002", 95, d + 90),
-                        ("A00001", 450, d + 60), ("A00000", 480, d + 300)],
+                        ("A00001", 450, d + 60), ("A00000", 478, d + 360)],
             "highest_altitude": [("A00001", 36000, d + 120), ("A00000", 30000, d + 300),
                                  ("A00002", 5500, d + 150), ("A00003", 800, d + 200)],
             "lowest_altitude": [("A00003", 800, d + 200), ("A00002", 3500, d + 90),

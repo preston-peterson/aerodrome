@@ -19,6 +19,20 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.197] — 2026-11-21
+
+**A speed glitch your receiver repeats can no longer be the fastest record or Today's fastest.** Since 3.4.157, a speed counts only if the aircraft's reading just before or just after it is within 40 kt. But a receiver keeps reporting an aircraft's last speed until a new one arrives, so one bad reading is often saved twice in a row, and the copy agreed with itself: 539 kt, then 1,362 kt twice, then 540 kt. Now identical readings in a row count as one reading, and the readings on either side of them have to agree. A real speed held for several readings still counts, because the readings before and after it agree.
+
+**A wrong record already stored corrects itself.** On the first start after this update, a fastest record set by a repeated glitch is replaced by the best reading that passes, and the date shown is when that reading happened. You won't get a notification. Today's fastest and its detail panel use the same rule, so a repeated glitch drops out of both.
+
+### Operational notes
+
+This is an ordinary update with a normal restart and no database change. The detail panel behind Today's fastest takes about twice as long to open, around 0.2 s on a busy install.
+
+### Behind the scenes
+
+`_reading_agrees` and the live `_prior_speed_agrees` in `collector.py` treat a run of the same speed as one reading. The detail panel numbers each aircraft's runs with window functions and checks the readings on either side of each run. Measured on a real install with about 210 days of data, the rule removed four repeated glitches from the top of the all-time list (1,362, 1,071, 662 and 654 kt) and no real reading, and the record went back to the 668 kt jet-stream reading that the 3.4.157 check had found. The self-heal took 1.2 s. Replaying every day, the card and its panel agreed on the top speed each time, and the card changed on three days, each time to drop a repeated glitch.
+
 ## [3.4.196] — 2026-11-19
 
 **Diagnostics is now one page, and the Status page's FlightAware card fills in by itself.**

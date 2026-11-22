@@ -348,6 +348,34 @@ class TestSpikeCheck(_DbCase):
         self.restart()
         self.assertEqual((self.fastest()["value"], self.fastest()["set_at"]), (667.6, when[-1]))
 
+    def test_a_glitch_stored_twice_is_replaced_by_the_aircrafts_real_speed(self):
+        # The feed keeps an aircraft's last speed until a new one arrives, so one
+        # bad message lands twice, and the copy is not a neighbour that agrees.
+        when = self.track("A0F016", "GLEX", self.RECENT, 538.0, 539.2, 539.2, 1362.3, 1362.3, 540.1, 541.0)
+        self.track("A0F002", "B738", self.RECENT + HOUR, 510, 512)
+        self.stored(1362.3, "A0F016", "GLEX", when[3])
+        self.restart()
+        rec = self.fastest()
+        self.assertEqual((rec["value"], rec["icao"], rec["set_at"]), (541.0, "A0F016", when[6]))
+        self.execute("DELETE FROM stats_records")
+        self.restart()
+        self.assertEqual(self.fastest()["value"], 541.0)
+
+    def test_a_real_speed_held_for_several_readings_still_counts(self):
+        when = self.track("A0F017", "B738", self.RECENT, 620, 640, 640, 640, 630)
+        self.restart()
+        self.assertEqual((self.fastest()["value"], self.fastest()["set_at"]), (640, when[1]))
+
+    def test_a_held_speed_is_backed_up_only_by_the_readings_either_side_of_it(self):
+        # 640 three times a minute apart, but the reading before it is 4 minutes earlier.
+        t = self.RECENT
+        self.execute("INSERT INTO all_sightings (icao, callsign, aircraft_type, speed, seen_at) "
+                     "VALUES ('A0F018', 'TEST1', 'B738', ?, ?)",
+                     (600, t), (640, t + 240), (640, t + 300), (640, t + 360))
+        self.hourly(("A0F018", "TEST1", "B738", 640, 30000, t, 640))
+        self.restart()
+        self.assertIsNone(self.fastest())
+
     def test_a_real_reading_under_a_spike_in_the_same_hour_still_counts(self):
         when = self.track("A0F006", "B738", self.RECENT, 640, 642, 695, 641)
         self.track("A0F002", "B738", self.RECENT + HOUR, 510, 512)
@@ -491,10 +519,11 @@ class TestLivePoll(_DbCase):
         self.addCleanup(fire.stop)
 
     def poll(self, *planes, earlier=60):
-        """One poll. Each plane was already there at the same speed `earlier`
-        seconds ago, unless earlier is None."""
+        """One poll. Each plane was already there 2 kt slower `earlier` seconds
+        ago, unless earlier is None. Not at the same speed: the feed repeats an
+        aircraft's last speed, so a copy of a reading backs nothing up."""
         if earlier is not None:
-            self.reading(earlier, *[(p["hex"], p["gs"]) for p in planes])
+            self.reading(earlier, *[(p["hex"], p["gs"] - 2) for p in planes])
         with mock.patch.object(collector.requests, "get", return_value=_Feed(list(planes))), \
                 mock.patch.object(collector.hexdb_resolver, "enqueue", return_value=False):
             collector._poll_once(self.cfg, collector.build_watchlist_lookup(self.cfg))
@@ -563,15 +592,39 @@ class TestLivePoll(_DbCase):
         self.assertEqual(self.records()["fastest_ever"]["value"], 452)
 
     def test_a_reading_long_ago_does_not_back_up_a_new_one(self):
-        self.reading(600, ("A0D003", 450))
+        self.reading(600, ("A0D003", 448))
         self.poll(_plane("A0D003", "B738", 450, 36000), earlier=None)
         self.assertNotIn("fastest_ever", self.records())
 
     def test_slow_polling_gets_a_wider_window(self):
         self.cfg["receiver"]["poll_interval"] = 300
-        self.reading(290, ("A0D003", 450))
+        self.reading(290, ("A0D003", 448))
         self.poll(_plane("A0D003", "B738", 450, 36000), earlier=None)
         self.assertEqual(self.records()["fastest_ever"]["value"], 450)
+
+    def test_a_glitch_the_feed_repeats_cannot_set_the_record_or_notify(self):
+        self.poll(_plane("A0D003", "B738", 450, 36000))
+        self.fire.reset_mock()
+        self.reading(90, ("A0D008", 539.2))
+        self.reading(60, ("A0D008", 1362.3))
+        self.poll(_plane("A0D008", "GLEX", 1362.3, 41000), earlier=None)
+        self.assertEqual(self.records()["fastest_ever"]["value"], 450)
+        self.assertNotIn("fastest_ever", [call.args[0] for call in self.fire.call_args_list])
+
+    def test_a_real_speed_held_for_minutes_still_lands(self):
+        self.reading(250, ("A0D009", 455))
+        self.reading(220, ("A0D009", 470))
+        self.reading(160, ("A0D009", 470))
+        self.reading(100, ("A0D009", 470))
+        self.reading(40, ("A0D009", 470))
+        self.poll(_plane("A0D009", "B738", 470, 36000), earlier=None)
+        self.assertEqual(self.records()["fastest_ever"]["value"], 470)
+
+    def test_a_held_speed_is_backed_up_only_from_where_it_began(self):
+        self.reading(400, ("A0D00A", 455))
+        self.reading(60, ("A0D00A", 470))
+        self.poll(_plane("A0D00A", "B738", 470, 36000), earlier=None)
+        self.assertNotIn("fastest_ever", self.records())
 
     def test_an_ordinary_reading_never_runs_the_check(self):
         conn = sqlite3.connect(self.db)
@@ -665,6 +718,36 @@ class TestReadPath(_DbCase):
         self.assertEqual(card["speed"], 455)
         self.assertEqual(sorted(card), ["aircraft_type", "callsign", "icao", "speed"])
         self.assertEqual(drill, [("A0E006", 455)])
+
+    def test_todays_fastest_skips_a_glitch_stored_twice(self):
+        self.track("A0E00A", "GLEX", self.today + 60, 538.0, 539.2, 539.2, 1362.3, 1362.3, 540.1, 541.0)
+        self.track("A0E007", "B738", self.today + 60, 500, 502)
+        card, drill = self.fastest_both_ways()
+        self.assertEqual((card["icao"], card["speed"]), ("A0E00A", 541.0))
+        self.assertEqual(drill, [("A0E00A", 541.0), ("A0E007", 502)])
+
+    def test_todays_fastest_keeps_a_real_speed_held_for_several_readings(self):
+        when = self.track("A0E00B", "B738", self.today + 60, 448, 470, 470, 470, 455)
+        card, _ = self.fastest_both_ways()
+        self.assertEqual(card["speed"], 470)
+        rows = self.drill_ep(card="fastest", value=None, all=False)["rows"]
+        self.assertEqual([(r["metric"], r["seen_at"]) for r in rows], [(470, when[1])])
+
+    def test_todays_fastest_can_be_backed_up_by_the_next_reading(self):
+        self.track("A0E00C", "B738", self.today + 60, 300, 640, 620)
+        card, drill = self.fastest_both_ways()
+        self.assertEqual(card["speed"], 640)
+        self.assertEqual(drill, [("A0E00C", 640)])
+
+    def test_todays_fastest_needs_a_neighbour_next_to_a_held_speed(self):
+        d = self.today
+        self.execute("INSERT INTO all_sightings (icao, callsign, aircraft_type, speed, seen_at) "
+                     "VALUES ('A0E00D', 'TEST1', 'B738', ?, ?)",
+                     (600, d + 60), (640, d + 300), (640, d + 360), (640, d + 420))
+        self.hourly(("A0E00D", "TEST1", "B738", 640, 30000, d, 640))
+        card, drill = self.fastest_both_ways()
+        self.assertIsNone(card)
+        self.assertEqual(drill, [])
 
     def test_an_aircraft_heard_once_today_is_not_todays_fastest(self):
         self.track("A0E008", "B738", self.today + 60, 650)

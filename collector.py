@@ -1,4 +1,4 @@
-# Version: 3.4.196
+# Version: 3.4.197
 """
 collector.py — ADS-B data fetcher and classifier.
 
@@ -1521,6 +1521,9 @@ def _known_type(conn, icao: str, aircraft_type: Optional[str]) -> str:
 # type can't catch one that stays under the limit. A real 660 kt in a jet stream
 # holds reading after reading. So a speed only counts toward the fastest record
 # and Today's fastest if the reading just before or just after it agrees.
+# Identical readings in a row are one reading: the feed keeps an aircraft's
+# last speed until a new one arrives, so one bad message is often stored twice
+# (539 -> 1,362 -> 1,362 -> 540), and a copy of itself is no evidence.
 # Speed only: altitude glitches repeat, so their neighbours agree with them.
 SPEED_AGREE_KT = 40
 SPEED_AGREE_SEC = 180
@@ -1546,11 +1549,19 @@ def _speed_readings(conn, icao: str, hour_bucket: int, window: int) -> List:
 
 
 def _reading_agrees(readings: List, i: int, window: int) -> bool:
-    at, speed = readings[i]
-    return any(0 <= j < len(readings)
-               and abs(readings[j][0] - at) <= window
-               and abs(readings[j][1] - speed) <= SPEED_AGREE_KT
-               for j in (i - 1, i + 1))
+    """Whether the reading just before or just after this one backs it up. A run
+    of the same speed counts as one reading, so its neighbours are the readings
+    either side of the run."""
+    speed = readings[i][1]
+    first = last = i
+    while first > 0 and readings[first - 1][1] == speed:
+        first -= 1
+    while last + 1 < len(readings) and readings[last + 1][1] == speed:
+        last += 1
+    return ((first > 0 and readings[first][0] - readings[first - 1][0] <= window
+             and abs(readings[first - 1][1] - speed) <= SPEED_AGREE_KT)
+            or (last + 1 < len(readings) and readings[last + 1][0] - readings[last][0] <= window
+                and abs(readings[last + 1][1] - speed) <= SPEED_AGREE_KT))
 
 
 def _best_agreed(readings: List, hour_bucket: int, aircraft_type: Optional[str],
@@ -1576,14 +1587,25 @@ def best_agreed_speed(conn, icao: str, hour_bucket: int, aircraft_type: Optional
 def _prior_speed_agrees(conn, icao: str, speed: float, now: int, window: int) -> bool:
     """Whether the aircraft's previous reading backs up this one. The poll calls
     this only for a reading that would set a record, so a real aircraft confirms
-    within one poll and a one-reading glitch never lands or notifies."""
-    row = conn.execute("""
-        SELECT speed FROM all_sightings
-        WHERE icao = ? AND seen_at >= ? AND seen_at < ?
-          AND typeof(speed) IN ('integer', 'real')
+    within one poll and a one-reading glitch never lands or notifies. Earlier
+    readings of this same speed are this reading repeated: the one before them
+    has to agree, within the window of the first. The record check is rare, and
+    the aircraft's previous reading is almost always a different speed, so this
+    reads one or two rows."""
+    prev = conn.execute("""
+        SELECT seen_at, speed FROM all_sightings
+        WHERE icao = ? AND seen_at < ?
+          AND typeof(speed) IN ('integer', 'real') AND speed != ?
         ORDER BY seen_at DESC LIMIT 1
-    """, (icao, now - window, now)).fetchone()
-    return row is not None and abs(row[0] - speed) <= SPEED_AGREE_KT
+    """, (icao, now, speed)).fetchone()
+    if prev is None or abs(prev[1] - speed) > SPEED_AGREE_KT:
+        return False
+    first = conn.execute("""
+        SELECT MIN(seen_at) FROM all_sightings
+        WHERE icao = ? AND seen_at > ? AND seen_at < ?
+          AND typeof(speed) IN ('integer', 'real')
+    """, (icao, prev[0], now)).fetchone()[0]
+    return (now if first is None else first) - prev[0] <= window
 
 
 def _fastest_stands(conn, icao, known, value, set_at, window) -> bool:
