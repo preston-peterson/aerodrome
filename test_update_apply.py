@@ -1297,14 +1297,89 @@ class TestMainPidHandling(_MainCase):
 
     def restart(self):
         """main.restart with the exec replaced: whether the old process was still
-        running when the new start would have begun."""
+        running when the new start would have begun. _system_service patched to
+        None so these don't depend on the cgroup the suite itself runs under."""
         seen = []
         out = io.StringIO()
         with mock.patch.object(self.main, "_exec_start",
                                lambda: seen.append(self.main._alive(self.p.pid))), \
+                mock.patch.object(self.main, "_system_service", lambda pid: None), \
                 contextlib.redirect_stdout(out):
             self.main.restart({})
         return seen, out.getvalue()
+
+    # --- _system_service: fake /proc/<pid>/cgroup texts, invented unit names ---
+
+    def cgroup(self, text):
+        return mock.patch.object(self.main, "_cgroup_text", lambda pid: text)
+
+    def test_system_service_reads_a_system_slice_unit(self):
+        with self.cgroup("0::/system.slice/aerodrome.service\n"):
+            self.assertEqual(self.main._system_service(4242), "aerodrome.service")
+
+    def test_system_service_reads_a_templated_unit(self):
+        with self.cgroup("0::/system.slice/aerodrome@demo.service\n"):
+            self.assertEqual(self.main._system_service(4242), "aerodrome@demo.service")
+
+    def test_system_service_ignores_another_system_unit(self):
+        # A copy started by hand from cron or rc-local lives in that unit's
+        # cgroup: refusing and pointing at `systemctl restart cron` would be
+        # wrong advice (the plain restart works there).
+        with self.cgroup("0::/system.slice/cron.service\n"):
+            self.assertIsNone(self.main._system_service(4242))
+        with self.cgroup("0::/system.slice/rc-local.service\n"):
+            self.assertIsNone(self.main._system_service(4242))
+
+    def test_system_service_ignores_a_user_session_slice(self):
+        # user@1000.service ends in .service and looks unit-like, but it sits
+        # under /user.slice/, not /system.slice/: not a system unit.
+        with self.cgroup("0::/user.slice/user-1000.slice/user@1000.service/"
+                        "app.slice/example-unit.service\n"):
+            self.assertIsNone(self.main._system_service(4242))
+
+    def test_system_service_ignores_a_scope(self):
+        with self.cgroup("0::/user.slice/user-1000.slice/user@1000.service/"
+                        "session-3.scope\n"):
+            self.assertIsNone(self.main._system_service(4242))
+
+    def test_system_service_reads_the_cgroup_v1_multi_line_format(self):
+        text = ("12:blkio:/system.slice/aerodrome.service\n"
+                "11:pids:/\n"
+                "10:memory:/system.slice/aerodrome.service\n"
+                "1:apps:/system.slice/aerodrome.service\n"
+                "0::/\n")
+        with self.cgroup(text):
+            self.assertEqual(self.main._system_service(4242), "aerodrome.service")
+
+    def test_system_service_unreadable_cgroup_is_not_a_service(self):
+        with mock.patch.object(self.main, "_cgroup_text", side_effect=OSError(2, "No such file")):
+            self.assertIsNone(self.main._system_service(4242))
+
+    def test_restart_refuses_on_a_system_service_install(self):
+        # Before: it stopped the unit's process (systemd marked the unit
+        # inactive on the clean exit) and exec'd a copy outside systemd.
+        self.p = self.slow_instance()
+        refused = mock.Mock()
+        out = io.StringIO()
+        with mock.patch.object(self.main, "_system_service", lambda pid: "aerodrome.service"), \
+                mock.patch.object(self.main, "_exec_start", refused), \
+                contextlib.redirect_stdout(out):
+            with self.assertRaises(SystemExit) as cm:
+                self.main.restart({})
+        text = out.getvalue()
+        self.assertEqual(cm.exception.code, 1, text)
+        self.assertIn("Aerodrome runs as the system service aerodrome.service", text)
+        self.assertIn("Restart it with: sudo systemctl restart aerodrome", text)
+        self.assertIsNone(self.p.poll(), "restart() stopped the service's process anyway")
+        self.assertTrue((self.inst / ".tracker.pid").exists())
+        refused.assert_not_called()
+
+    def test_restart_behaves_normally_when_not_a_system_service(self):
+        self.p = self.slow_instance(delay=2)
+        with mock.patch.object(self.main, "_system_service", lambda pid: None):
+            seen, out = self.restart()
+        self.assertEqual(seen, [False], out)
+        self.assertIn("Stopped.", out)
 
     def test_restart_starts_only_once_the_old_process_has_exited(self):
         # The PID file goes at once, the process 2 s later: a start in between

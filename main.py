@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Version: 3.4.199
+# Version: 3.4.200
 """
 main.py — Aerodrome ADS-B Tracker
 
@@ -7,7 +7,7 @@ Usage:
     python3 main.py start     Start the tracker
     python3 main.py stop      Stop the tracker
     python3 main.py status    Check status
-    python3 main.py restart   Stop then start
+    python3 main.py restart   Stop then start (a service install: sudo systemctl restart aerodrome)
 """
 
 import argparse
@@ -1366,7 +1366,20 @@ def restart(config: dict):
     finishing, refused ("Already running"), and once the old one exited nothing
     was running (measured on a Raspberry Pi with a slow download). One still
     there after STOP_WAIT_SEC is stopped hard, as systemd does after its own
-    stop timeout."""
+    stop timeout.
+
+    Refuses on a service install: stopping the unit's process from inside made
+    systemd mark the unit inactive (a clean exit never triggers Restart=), and
+    the copy started here ran outside systemd, so a later `systemctl start`
+    read "Already running" and looped. Point at systemctl instead."""
+    if PID_FILE.exists():
+        other = _running_instance_pid()
+        if other:
+            unit = _system_service(other)
+            if unit:
+                print(f"Aerodrome runs as the system service {unit}. Restart it with: "
+                      f"sudo systemctl restart {unit.removesuffix('.service')}")
+                sys.exit(1)
     pid = stop(config)
     if pid and not _runs_as_another_account(pid):
         print(f"Still shutting down after {STOP_WAIT_SEC} s; stopping it now (kill -9 {pid}).")
@@ -1392,6 +1405,37 @@ def _runs_as_another_account(pid: int) -> bool:
     except OSError:
         return False
     return False
+
+
+def _cgroup_text(pid: int) -> str:
+    """The raw /proc/<pid>/cgroup. Seam for tests (no real systemd needed)."""
+    with open(f"/proc/{pid}/cgroup") as f:
+        return f.read()
+
+
+def _system_service(pid: int) -> Optional[str]:
+    """The systemd SYSTEM unit `pid` runs as (e.g. `aerodrome.service`), or
+    None when it doesn't run inside Aerodrome's own one. Read from
+    /proc/<pid>/cgroup: a line's path (after the last `:`) under
+    /system.slice/ whose last path component starts with `aerodrome` and ends
+    in `.service` (install.sh always names the unit `aerodrome`; this covers
+    `aerodrome.service` and a templated `aerodrome@x.service`). Any other
+    system unit → None: a copy started by hand from cron or rc-local lives in
+    /system.slice/cron.service, and pointing the user at `systemctl restart
+    cron` would be wrong advice. A user session's
+    /user.slice/user-1000.slice/user@1000.service/... is not a system unit
+    and never matches. Any unreadable cgroup → None."""
+    try:
+        lines = _cgroup_text(pid).splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        path = line.rsplit(":", 1)[-1]
+        if path.startswith("/system.slice/"):
+            unit = path.rsplit("/", 1)[-1]
+            if unit.startswith("aerodrome") and unit.endswith(".service"):
+                return unit
+    return None
 
 
 def status(config: dict):

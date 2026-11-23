@@ -19,6 +19,16 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.200] — 2026-11-22
+
+**Tapping an airport on the Live map works on a phone.** An airport's details open when you click its code on the Live map. With a mouse that's easy, but on a phone only the small code itself took the tap, a target about 12 pixels tall, so a fingertip that landed just beside it, or on the airport's ring, did nothing. On a touch screen the code now takes taps from an area about the size of a fingertip around it, including the ring. Nothing looks different, a click with a mouse works as before, and where an aircraft sits on top of an airport, tapping there still opens the aircraft.
+
+**`main.py restart` points you to systemctl on a service install.** If Aerodrome runs as the `aerodrome` system service, `python3 main.py restart` used to stop the service's copy and start a new one outside the service. The service then showed as stopped, and a later `sudo systemctl start aerodrome` kept failing and retrying because Aerodrome was already running. Now `main.py restart` leaves it running and tells you to run `sudo systemctl restart aerodrome` instead. A copy you started yourself restarts as before.
+
+### Behind the scenes
+
+The wider tap area is an invisible box around each clickable airport code, used only when the screen's pointer is coarse (`@media (pointer: coarse)`). `main.py` recognises the service from the process's `/proc/<pid>/cgroup`: a unit under `/system.slice/` whose name starts with `aerodrome`. A copy started from cron or another service isn't mistaken for it.
+
 ## [3.4.199] — 2026-11-22
 
 **`main.py restart` no longer leaves Aerodrome stopped when it was busy.** If a backup download or a slow page was still running when you ran `python3 main.py restart`, the old copy didn't stop. It kept running, and kept collecting, until that request finished, which could take minutes. Meanwhile the new copy found it still running, said "Already running" and gave up, so once the old copy finished, nothing was running. Now `restart` starts the new copy only after the old one has exited. `stop` waits up to 15 seconds for that, not 5. In the rare case the old copy is still there after the wait, `restart` stops it outright, the way systemd does, and then starts. It never starts a second copy beside one it can't stop.

@@ -35,6 +35,11 @@
     + '.apt-label.apt-light{color:rgba(30,41,59,.62);text-shadow:0 0 2px rgba(255,255,255,.95)}'
     + '.apt-label.apt-light.apt-major{color:rgba(30,41,59,.72)}'
     + '.apt-label.apt-click{pointer-events:auto;cursor:pointer}'
+    // A finger is ~40 px across and the code is ~12 px tall: on a touch screen
+    // the code takes taps from an invisible area around it that also covers
+    // the airport's ring (the label sits r+4 px right of it). Aircraft stay on top.
+    + '@media (pointer:coarse){.apt-label.apt-click::before{content:"";position:absolute;'
+    +   'left:-16px;right:-8px;top:-14px;bottom:-14px}}'
     + '.apt-label.apt-click:hover{color:#22d3ee}'
     + '.apt-label.apt-light.apt-click:hover{color:#0e7490}'
     + '.apt-label.apt-selected{color:#06b6d4;font-weight:700;text-shadow:0 0 6px rgba(6,182,212,.55),0 0 2px rgba(0,0,0,.85)}'

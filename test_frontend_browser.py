@@ -2167,6 +2167,62 @@ class TestAirportPanel(TestLiveMapAirports):
             self.assertIn(part, text)
         self.assertEqual(self.errors, [])
 
+    def test_with_a_mouse_only_the_code_takes_the_click(self):
+        # The wider tap area below is for touch screens only.
+        self.site.api["/api/airports/ZZA1/summary"] = self.summary()
+        self.show(zoom=13)
+        box = self.page.query_selector("#radarMap .apt-label >> text=ZZA1").bounding_box()
+        self.page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] + 5)
+        self.advance(600, step=200)
+        self.assertIsNone(self.page.evaluate("_radar.selectedAirport"))
+
+
+class TestAirportPanelOnPhones(BrowserCase):
+    """v3.4.200: on a phone a tap beside an airport's code, or on its ring, opens the panel.
+    Only the ~12 px-tall code took taps, and a fingertip often lands just off it."""
+    show = TestLiveMapAirports.show
+    zoom = TestLiveMapAirports.zoom
+    summary = TestAirportPanel.summary
+
+    def setUp(self):
+        super().setUp()
+        self.context.close()
+        self.context = self.browser.new_context(
+            timezone_id=self.TIMEZONE, service_workers="block", viewport={"width": 390, "height": 844},
+            device_scale_factor=3, is_mobile=True, has_touch=True)
+        self.page = self.context.new_page()
+        self.page.set_default_timeout(15000)
+        self.errors = []
+        self.page.on("pageerror", lambda e: self.errors.append(str(e)))
+        self.site = Site(self.page)
+        self.page.clock.install(time=self.START)
+        self.site.api["/api/airports/ZZA1/summary"] = self.summary()
+        self.show(zoom=13)
+        self.page.tap("#liveViewToggle .lv-seg[data-view=map]")    # a phone opens on the list
+        self.advance(400, step=200)
+        self.zoom(13)
+        self.box = self.page.query_selector("#radarMap .apt-label >> text=ZZA1").bounding_box()
+
+    def tap(self, x, y):
+        self.page.touchscreen.tap(x, y)
+        self.advance(600, step=200)
+        return self.page.evaluate("_radar.selectedAirport")
+
+    def test_a_tap_just_below_the_code_opens_its_panel(self):
+        b = self.box
+        self.assertEqual(self.tap(b["x"] + b["width"] / 2, b["y"] + b["height"] + 8), "ZZA1")
+        self.assertTrue(self.page.evaluate("document.getElementById('radarOverlay').classList.contains('apt-mode')"))
+        self.assertEqual(self.errors, [])
+
+    def test_a_tap_on_the_airports_ring_opens_its_panel(self):
+        # The code sits r + 4 px right of the ring's centre (major: r = 4.5).
+        b = self.box
+        self.assertEqual(self.tap(b["x"] - 8.5, b["y"] + b["height"] / 2), "ZZA1")
+
+    def test_a_tap_well_away_from_the_code_is_still_a_map_tap(self):
+        b = self.box
+        self.assertIsNone(self.tap(b["x"] + b["width"] / 2, b["y"] + b["height"] + 24))
+
 
 class TestBoardAirports(BrowserCase):
     """The display board's radar draws the same layer, from the same setting (v3.4.182)."""
