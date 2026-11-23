@@ -19,6 +19,16 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.199] — 2026-11-22
+
+**`main.py restart` no longer leaves Aerodrome stopped when it was busy.** If a backup download or a slow page was still running when you ran `python3 main.py restart`, the old copy didn't stop. It kept running, and kept collecting, until that request finished, which could take minutes. Meanwhile the new copy found it still running, said "Already running" and gave up, so once the old copy finished, nothing was running. Now `restart` starts the new copy only after the old one has exited. `stop` waits up to 15 seconds for that, not 5. In the rare case the old copy is still there after the wait, `restart` stops it outright, the way systemd does, and then starts. It never starts a second copy beside one it can't stop.
+
+**Any stop now cuts off a request still running after 5 seconds.** This also covers `sudo systemctl stop aerodrome` and `restart`. A download cut off this way fails, so start it again once Aerodrome is back. Before, a service stop during a long download waited 10 seconds, and then systemd killed Aerodrome outright. Now Aerodrome closes down on its own, and a service restart during a download is back up in about 10 seconds instead of 17. If Aerodrome runs as a service, keep using `sudo systemctl restart aerodrome` to restart it.
+
+### Behind the scenes
+
+uvicorn catches the stop signal itself and passes it to Aerodrome's own handler only after its graceful shutdown, and that shutdown waited for every request still running, however long they took. `main.serve()` now gives uvicorn a `timeout_graceful_shutdown` of 5 seconds. `stop` now waits for the process to exit, not for its PID file to disappear, because the shutdown handler removes the file first; a finished process that hasn't been reaped counts as gone. On a Raspberry Pi with a 100 MB backup downloading slowly, both a hand-started copy and one under systemd now end with exactly one copy running after a restart. Before, the old copy kept collecting for 142 seconds and then nothing ran.
+
 ## [3.4.198] — 2026-11-22
 
 **The aircraft page lists the aircraft's flights, and plays one back on the map.** Under the Position history map there's a new **Flights** list for the window you picked (24h, 7d, 30d or All), newest first and grouped by day. Each row shows when the flight was in range, for how long, its callsign, the highest it flew, and what it did, from the takeoffs and landings your receiver saw ("Took off KXYZ · runway 18"), or "Overflight". Pick one and the map shows that flight on its own, with the aircraft moving along it. A panel beside the map names the flight and shows the time, altitude and climb, ground speed and heading as it plays. Under the map are an altitude-over-time strip (click it to jump) and a play bar with 1×, 10× and 60×. **× Show all flights** goes back to every flight in the window, as before. On a phone the panel sits under the play bar.

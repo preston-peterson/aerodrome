@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Version: 3.4.198
+# Version: 3.4.199
 """
 main.py — Aerodrome ADS-B Tracker
 
@@ -52,6 +52,16 @@ BASE_DIR = Path(__file__).parent
 CONFIG_PATH = BASE_DIR / "config.yaml"
 CONFIG_EXAMPLE_PATH = BASE_DIR / "config.yaml.example"
 PID_FILE = BASE_DIR / ".tracker.pid"
+# v3.4.199: how long the web server keeps finishing requests that are still
+# running when Aerodrome is told to stop (a backup download, a slow page); past
+# this they are cut off. Without a limit uvicorn waited for them however long
+# they took, the stop signal reached our handler only afterwards, and the
+# collector kept polling meanwhile: 142 s for a slow download, measured on a
+# Raspberry Pi.
+GRACEFUL_STOP_SEC = 5
+# How long `stop` waits for the process to be gone: the web server's limit plus
+# time to close the database and exit.
+STOP_WAIT_SEC = 15
 
 
 def _deep_merge_missing(target: dict, defaults: dict, path: str = "") -> list:
@@ -1234,7 +1244,15 @@ def start(config: dict):
                          kwargs={"started_text": _started_text},
                          name="aerodrome-update-confirm", daemon=True).start()
 
-    uvicorn.run(app, host=host, port=port, log_level="warning")
+    serve(app, host, port)
+
+
+def serve(app, host: str, port: int):
+    """Run the web server until a stop signal. Requests still running then get
+    GRACEFUL_STOP_SEC to finish (v3.4.199); uvicorn hands the signal on to
+    start()'s handler once it has stopped."""
+    uvicorn.run(app, host=host, port=port, log_level="warning",
+                timeout_graceful_shutdown=GRACEFUL_STOP_SEC)
 
 
 def _preflight_bind_check(host: str, port: int) -> Tuple[bool, str]:
@@ -1275,39 +1293,94 @@ def _preflight_bind_check(host: str, port: int) -> Tuple[bool, str]:
         return (False, f"unexpected error during bind check: {e}")
 
 
-def stop(config: dict):
+def _alive(pid: int) -> bool:
+    """Whether `pid` is still a running process (a zombie has finished)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            return f.read().rsplit(")", 1)[1].split()[0] != "Z"
+    except (OSError, IndexError):
+        return True
+
+
+def _wait_gone(pid: int, seconds: float) -> bool:
+    end = time.monotonic() + seconds
+    while _alive(pid):
+        if time.monotonic() >= end:
+            return False
+        time.sleep(0.25)
+    return True
+
+
+def stop(config: dict) -> Optional[int]:
+    """Stop this install's Aerodrome. Returns None when none is running
+    afterwards, else the PID still running.
+
+    v3.4.199: waits until the process is gone (up to STOP_WAIT_SEC), not just
+    until its PID file is: the shutdown handler removes the file before the
+    process has exited."""
     if not PID_FILE.exists():
         print("Not running (no PID file).")
-        return
+        return None
     # Identity-checked, so a PID the system reused after a crash is never
     # signalled (systemd runs `main.py stop` as ExecStop even after one).
     pid = _running_instance_pid()
     if not pid:
         print("Not running (stale PID file removed).")
         PID_FILE.unlink(missing_ok=True)
-        return
+        return None
     if _runs_as_another_account(pid):
         print(f"Aerodrome is running as another account (PID {pid}); this account "
               f"can't stop it. Use: sudo systemctl stop aerodrome")
-        return
+        return pid
     try:
         os.kill(pid, signal.SIGTERM)
         print(f"Sent stop signal (PID {pid}).")
-        for _ in range(10):
-            time.sleep(0.5)
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
-                print("Stopped.")
-                PID_FILE.unlink(missing_ok=True)
-                return
+        if _wait_gone(pid, STOP_WAIT_SEC):
+            print("Stopped.")
+            PID_FILE.unlink(missing_ok=True)
+            return None
         print(f"WARNING: May still be running. Force: kill -9 {pid}")
+        return pid
     except ProcessLookupError:
         print("Was not running (stale PID removed).")
         PID_FILE.unlink(missing_ok=True)
+        return None
     except PermissionError:
         print(f"Aerodrome is running as another account (PID {pid}); this account "
               f"can't stop it. Use: sudo systemctl stop aerodrome")
+        return pid
+
+
+def restart(config: dict):
+    """Stop, then start in a FRESH process (same PID) so this start gets the
+    update guard and an empty in-memory state like any other.
+
+    v3.4.199: starts only once the old process is gone. Before, `stop` gave up
+    after 5 s and the start ran anyway: it found the old process still
+    finishing, refused ("Already running"), and once the old one exited nothing
+    was running (measured on a Raspberry Pi with a slow download). One still
+    there after STOP_WAIT_SEC is stopped hard, as systemd does after its own
+    stop timeout."""
+    pid = stop(config)
+    if pid and not _runs_as_another_account(pid):
+        print(f"Still shutting down after {STOP_WAIT_SEC} s; stopping it now (kill -9 {pid}).")
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        if _wait_gone(pid, 5):
+            PID_FILE.unlink(missing_ok=True)
+            pid = None
+    if pid:
+        print(f"Not starting a second copy while PID {pid} is still running.")
+        sys.exit(1)
+    _exec_start()
 
 
 def _runs_as_another_account(pid: int) -> bool:
@@ -1396,10 +1469,7 @@ def main():
     elif args.command == "status":
         status(config)
     elif args.command == "restart":
-        # Stop, then start in a FRESH process (same PID) so this start gets
-        # the update guard and an empty in-memory state like any other.
-        stop(config)
-        _exec_start()
+        restart(config)
 
 
 if __name__ == "__main__":

@@ -1277,6 +1277,75 @@ class TestMainPidHandling(_MainCase):
         self.assertIn(f"Already running (PID {p.pid})", out.getvalue())
         self.assertEqual(cm.exception.code, 1)
 
+    # v3.4.199: a process that, like start()'s handler, removes its PID file as
+    # soon as it gets the stop signal and exits `delay` s later; or ignores it.
+    def slow_instance(self, delay=None):
+        code = ("import os, signal, sys, time\n"
+                "from pathlib import Path\n"
+                "pf = Path(sys.argv[1]).parent / '.tracker.pid'\n"
+                + ("signal.signal(signal.SIGTERM, signal.SIG_IGN)\n" if delay is None else
+                   "def h(*a):\n    pf.unlink(missing_ok=True); time.sleep(%r); os._exit(0)\n"
+                   "signal.signal(signal.SIGTERM, h)\n" % delay)
+                + "print('ready', flush=True)\n"
+                + "while True: time.sleep(0.05)\n")
+        p = subprocess.Popen([sys.executable, "-c", code, str(self.inst / "main.py"), "start"],
+                             stdout=subprocess.PIPE)
+        self.addCleanup(lambda: (p.kill(), p.wait()))
+        p.stdout.readline()
+        (self.inst / ".tracker.pid").write_text(str(p.pid))
+        return p
+
+    def restart(self):
+        """main.restart with the exec replaced: whether the old process was still
+        running when the new start would have begun."""
+        seen = []
+        out = io.StringIO()
+        with mock.patch.object(self.main, "_exec_start",
+                               lambda: seen.append(self.main._alive(self.p.pid))), \
+                contextlib.redirect_stdout(out):
+            self.main.restart({})
+        return seen, out.getvalue()
+
+    def test_restart_starts_only_once_the_old_process_has_exited(self):
+        # The PID file goes at once, the process 2 s later: a start in between
+        # refused, and once the old one exited nothing ran.
+        self.p = self.slow_instance(delay=2)
+        seen, out = self.restart()
+        self.assertEqual(seen, [False], out)
+        self.assertIn("Stopped.", out)
+
+    def test_restart_stops_a_process_still_there_after_the_wait_hard(self):
+        self.p = self.slow_instance()
+        with mock.patch.object(self.main, "STOP_WAIT_SEC", 1):
+            seen, out = self.restart()
+        self.assertEqual(seen, [False], out)
+        self.assertIn(f"stopping it now (kill -9 {self.p.pid})", out)
+
+    def test_stop_alone_waits_but_never_stops_it_hard(self):
+        p = self.slow_instance()
+        out = io.StringIO()
+        with mock.patch.object(self.main, "STOP_WAIT_SEC", 1), contextlib.redirect_stdout(out):
+            self.assertEqual(self.main.stop({}), p.pid)
+        self.assertIn("May still be running", out.getvalue())
+        self.assertIsNone(p.poll())
+
+    def test_stop_waits_for_the_process_not_its_pid_file(self):
+        p = self.slow_instance(delay=1)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertIsNone(self.main.stop({}))
+        self.assertFalse(self.main._alive(p.pid))
+
+    def test_restart_never_starts_beside_another_accounts_instance(self):
+        start = mock.Mock()
+        with mock.patch.object(self.main, "stop", lambda c: 4242), \
+                mock.patch.object(self.main, "_runs_as_another_account", lambda pid: True), \
+                mock.patch.object(self.main, "_exec_start", start), \
+                contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(SystemExit) as cm:
+                self.main.restart({})
+        self.assertEqual(cm.exception.code, 1)
+        start.assert_not_called()
+
     def test_stop_never_signals_an_unrelated_process(self):
         p = subprocess.Popen(["sleep", "30"])
         self.addCleanup(lambda: (p.kill(), p.wait()))
