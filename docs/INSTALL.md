@@ -1495,7 +1495,8 @@ Entry types:
 - **`tail`** — registration (`N12345`). Resolved to ICAO hex via
   hexdb.io when added.
 - **`callsign`** — prefix match (`UAL` matches `UAL123`, `UAL9876`,
-  etc.).
+  etc.). No wildcards: type the start of the callsign, not `UAL*`
+  (a `*` or `?` is refused, since it would never match).
 - **`model`** — case-insensitive substring match against the
   aircraft's type code (e.g., `S22T`) and description (e.g.,
   `CIRRUS SR-22 Turbo`). Useful for watching every aircraft of a
@@ -1505,6 +1506,13 @@ Entry types:
 Clicking the `+` button on any row in Live, Military, or All lets
 you pick which identifier to use, including model when the aircraft
 broadcasts a type/description.
+
+To change an entry, click its pill on the Watchlist tab. The Edit
+window lets you change what it matches by, the identifier and the
+label, and shows which aircraft in range it would match right now.
+Renaming the label moves the entry's past sightings to the new label,
+so its history stays together (unless another entry uses the same
+label: then they stay where they are). The pill's `×` removes it.
 
 #### Alerts
 

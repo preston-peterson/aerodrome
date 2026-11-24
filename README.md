@@ -1,5 +1,5 @@
 # Aerodrome
-<!-- Version: 3.4.200 -->
+<!-- Version: 3.4.201 -->
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -58,8 +58,8 @@ hours, runway use and who visits.
 
 **Watchlist.** Aircraft you've flagged to follow. Add by ICAO, callsign
 prefix, or a substring match on aircraft type (so "cirrus" catches every
-Cirrus). Tabs badge when there's a watchlist aircraft currently in the
-air, optionally with a configurable flash effect.
+Cirrus); click an entry to edit it. Tabs badge when there's a watchlist
+aircraft currently in the air, optionally with a configurable flash effect.
 
 **Military.** Auto-detected military flights based on hex-range rules,
 callsign prefixes (RCH, NAVY, ARMY...), and special-aircraft lists.

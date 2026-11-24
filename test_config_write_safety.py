@@ -556,6 +556,16 @@ with mock.patch("subprocess.run", run):
                 out = e(arg)
             finally:
                 uncap()
+        elif case == "watchlist_update":
+            e = ep(app, "/api/watchlist/update", "POST")
+            arg = e.__annotations__["body"](old_id_type="icao", old_identifier="A0B1C2",
+                                            id_type="icao", identifier="A0B1C4",
+                                            label="invented three")
+            cap()
+            try:
+                out = e(arg)
+            finally:
+                uncap()
         elif case == "watchlist_remove":
             e = ep(app, "/api/watchlist/remove", "POST")
             arg = e.__annotations__["entry"](identifier="A0B1C2", id_type="icao")
@@ -639,6 +649,14 @@ class TestWritersOnAFullDisk(_ChildCase):
     def test_watchlist_add(self):
         self.write_cfg(self.plain())
         res = self.run_child("watchlist_add", 1024)
+        self.assertEqual(res["told"]["status"], 507, res)
+        self.assertIn("the disk is full", res["told"]["body"]["error"])
+        self.assertTrue(res["memory_unchanged"])
+        self.assert_untouched()
+
+    def test_watchlist_update(self):
+        self.write_cfg(self.plain())
+        res = self.run_child("watchlist_update", 1024)
         self.assertEqual(res["told"]["status"], 507, res)
         self.assertIn("the disk is full", res["told"]["body"]["error"])
         self.assertTrue(res["memory_unchanged"])
@@ -843,7 +861,7 @@ class TestWatchlistKeepsComments(_AppCase):
     def customize(self, cfg):
         pass
 
-    def test_add_and_remove_keep_config_comments(self):
+    def test_add_update_and_remove_keep_config_comments(self):
         # Before: watchlist add/remove re-dumped the whole file and dropped
         # every comment in config.yaml.
         self.cfgp.write_text(_commented(self.db))
@@ -852,7 +870,13 @@ class TestWatchlistKeepsComments(_AppCase):
         text = self.cfgp.read_text()
         self.assertIn("# Version:", text)
         self.assertIn("A0B1C9", text)
-        self.ep("/api/watchlist/remove")(Entry(identifier="A0B1C9", id_type="icao"))
+        Update = self.ep("/api/watchlist/update").__annotations__["body"]
+        self.ep("/api/watchlist/update")(Update(old_id_type="icao", old_identifier="A0B1C9",
+                                                id_type="icao", identifier="A0B1CA", label="y"))
+        text = self.cfgp.read_text()
+        self.assertIn("# Version:", text)
+        self.assertIn("A0B1CA", text)
+        self.ep("/api/watchlist/remove")(Entry(identifier="A0B1CA", id_type="icao"))
         self.assertIn("# Version:", self.cfgp.read_text())
 
 

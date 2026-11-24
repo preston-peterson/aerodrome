@@ -1602,6 +1602,171 @@ class TestStatsDrillSurvivesRefresh(BrowserCase):
         self.assertEqual(self.errors, [])
 
 
+class _WatchlistEditPage(BrowserCase):
+    """v3.4.201: a Watchlist pill opens its Edit window (/api/watchlist/update).
+    Entries, hexes and callsigns invented."""
+    VIEWPORT = None
+
+    ENTRIES = [{"callsign": "EXA123", "label": "Example Air"},
+               {"icao": "A0B1C2", "label": "Test hex"},
+               {"tail": "N0EXMP", "label": "Demo Cessna", "tail_status": "found", "tail_icaos": ["A2B3C4"]},
+               {"model": "Cirrus", "label": "Any Cirrus"},
+               {"callsign": "SMPL", "label": "SMPL"}]
+    LIVE = [{"icao": "A0E1F2", "callsign": "EXA123"}, {"icao": "A0E2A7", "callsign": "EXA88"},
+            {"icao": "A4E5F6", "callsign": "EXAMPL1"}, {"icao": "A0B1C2", "callsign": "DEMO7"},
+            {"icao": "A2B3C4", "callsign": "N0EXMP"},
+            {"icao": "A3D4E5", "callsign": "SMPL21", "aircraft_type": "S22T", "type_desc": "CIRRUS SR-22 Turbo"}]
+
+    def setUp(self):
+        super().setUp()
+        if self.VIEWPORT:
+            self.page.set_viewport_size(self.VIEWPORT)
+        self.posted = []
+
+        def update(req):
+            self.posted.append(json.loads(req.post_data))
+            return self.answer
+        self.answer = {"status": "updated", "entry": {"label": "Example Air", "callsign": "EXA"},
+                       "history_moved": 0, "history_shared": False, "history_error": None}
+        self.site.api["/api/watchlist/entries"] = {"entries": [dict(e) for e in self.ENTRIES]}
+        self.site.api["/api/watchlist/update"] = update
+        self.site.api["/api/watchlist/history/count"] = {"count": 142}
+        self.site.api["/api/watchlist"] = {"aircraft": []}
+        self.site.api["/api/military"] = {"aircraft": [], "special_aircraft": {}}
+        self.site.api["/api/status"] = _status()
+        self.site.api["/api/live"] = {"aircraft": [dict(a, lat=40.1, lon=-90.1) for a in self.LIVE],
+                                      "receiver": {"lat": 40.0, "lon": -90.0, "distance_unit": "mi"},
+                                      "last_updated": 1700000000}
+        self.open("/")
+        self.advance(1000)
+        self.page.evaluate("go('watchlist')")
+        self.page.wait_for_selector("#wlChips .chip.editable")
+
+    def pill(self, label):
+        self.page.click(f"#wlChips .chip.editable:has(span:text-is('{label}'))")
+        self.page.wait_for_timeout(100)
+
+    def type_id(self, text):
+        self.page.fill("#wleId", text)
+        self.page.wait_for_timeout(50)
+
+    def shown(self, sel):
+        return self.page.is_visible(sel)
+
+
+class TestWatchlistEdit(_WatchlistEditPage):
+
+    def test_a_pill_opens_its_entry_filled_in(self):
+        self.pill("Example Air")
+        self.assertTrue(self.page.evaluate("document.getElementById('wlEditModal').classList.contains('on')"))
+        self.assertEqual(self.text("#wleSub"), "callsign: EXA123")
+        self.assertEqual(self.page.input_value("#wleId"), "EXA123")
+        self.assertEqual(self.page.input_value("#wleLabel"), "Example Air")
+        self.assertEqual(self.text("#wleSeg button.on"), "Callsign")
+        self.assertTrue(self.page.is_disabled("#wleSave"), "nothing changed yet")
+        self.assertEqual(self.text("#wleMatches"), "1 in range now: EXA123")
+        self.assertEqual(self.errors, [])
+
+    def test_a_shorter_prefix_shows_what_it_catches_and_saves(self):
+        self.pill("Example Air")
+        self.type_id("exa")
+        self.assertEqual(self.text("#wleMatches"), "3 in range now: EXA123, EXA88, EXAMPL1")
+        self.assertIn("EXA matches EXA123", self.text("#wleHint"))
+        before = self.site.count("/api/watchlist/entries")
+        self.page.click("#wleSave")
+        self.advance(400, step=200)
+        self.assertEqual(self.posted, [{"old_id_type": "callsign", "old_identifier": "EXA123",
+                                        "id_type": "callsign", "identifier": "EXA", "label": "Example Air"}])
+        self.assertFalse(self.page.evaluate("document.getElementById('wlEditModal').classList.contains('on')"))
+        self.assertGreater(self.site.count("/api/watchlist/entries"), before, "the pills reload")
+
+    def test_renaming_says_the_past_sightings_move(self):
+        self.pill("Example Air")
+        self.page.fill("#wleLabel", "Example Air (all)")
+        self.page.wait_for_timeout(50)
+        self.assertEqual(self.text("#wleHist"), "142 past sightings are saved under “Example Air”. "
+                                                 "Saving moves them to “Example Air (all)”, so the history stays together.")
+        self.assertFalse(self.page.is_disabled("#wleSave"))
+
+    def test_a_label_another_entry_uses_says_its_sightings_stay(self):
+        self.site.api["/api/watchlist/entries"] = {"entries": [
+            {"tail": "N0EXMP", "label": "Club"}, {"tail": "N0DEMO", "label": "Club"}]}
+        self.page.evaluate("loadWLChips()")
+        self.page.wait_for_timeout(150)
+        self.page.click("#wlChips .chip.editable >> nth=0")
+        self.page.fill("#wleLabel", "Mine")
+        self.page.wait_for_timeout(50)
+        self.assertIn("which another entry also uses, so they stay there", self.text("#wleHist"))
+
+    def test_a_wildcard_or_a_duplicate_is_refused_before_saving(self):
+        self.pill("Example Air")
+        self.type_id("EXA*")
+        self.assertIn("No wildcards needed", self.text("#wleErr"))
+        self.assertFalse(self.shown("#wleMatches"))
+        self.assertTrue(self.page.is_disabled("#wleSave"))
+        self.page.click("#wleSeg button[data-t=icao]")
+        self.type_id("a0b1c2")
+        self.assertEqual(self.text("#wleErr"), "Already in the watchlist as “Test hex”.")
+        self.assertTrue(self.page.is_disabled("#wleSave"))
+        self.assertEqual(self.posted, [])
+
+    def test_a_refusal_from_the_server_shows_in_the_window(self):
+        self.answer = (409, json.dumps({"error": "Already in the watchlist as “Elsewhere”"}))
+        self.pill("Example Air")
+        self.type_id("EXA1")
+        self.page.click("#wleSave")
+        self.advance(400, step=200)
+        self.assertEqual(self.text("#wleErr"), "Already in the watchlist as “Elsewhere”")
+        self.assertTrue(self.page.evaluate("document.getElementById('wlEditModal').classList.contains('on')"))
+
+    def test_the_x_still_removes_and_remove_in_the_window_too(self):
+        self.page.click("#wlChips .chip.editable:has(span:text-is('Test hex')) .chip-x")
+        self.page.wait_for_timeout(150)
+        self.assertTrue(self.page.evaluate("document.getElementById('rmWlModal').classList.contains('on')"))
+        self.assertFalse(self.page.evaluate("document.getElementById('wlEditModal').classList.contains('on')"))
+        self.page.evaluate("closeRmWl()")
+        self.pill("Test hex")
+        self.page.click(".wle-remove")
+        self.page.wait_for_timeout(150)
+        self.assertTrue(self.page.evaluate("document.getElementById('rmWlModal').classList.contains('on')"))
+        self.assertIn("A0B1C2", self.text("#rmWlSub"))
+
+    def test_the_keyboard_opens_and_closes_it(self):
+        self.page.focus("#wlChips .chip.editable >> nth=0")
+        self.page.keyboard.press("Enter")
+        self.page.wait_for_timeout(100)
+        self.assertTrue(self.page.evaluate("document.getElementById('wlEditModal').classList.contains('on')"))
+        self.page.keyboard.press("Escape")
+        self.assertFalse(self.page.evaluate("document.getElementById('wlEditModal').classList.contains('on')"))
+
+    def test_tail_and_model_entries_check_whats_in_range(self):
+        self.pill("Demo Cessna")
+        self.assertEqual(self.text("#wleMatches"), "1 in range now: N0EXMP")
+        self.type_id("N0DEMO")
+        self.assertIn("once it has looked up the tail", self.text("#wleMatches"))
+        self.page.evaluate("closeEditWl()")
+        self.pill("Any Cirrus")
+        self.assertEqual(self.text("#wleMatches"), "1 in range now: SMPL21")
+
+    def test_a_label_that_was_the_identifier_follows_it(self):
+        self.pill("SMPL")
+        self.type_id("smp")
+        self.assertEqual(self.page.input_value("#wleLabel"), "SMP")
+
+
+class TestWatchlistEditOnPhones(_WatchlistEditPage):
+    VIEWPORT = {"width": 390, "height": 844}
+
+    def test_the_window_fits_a_phone(self):
+        self.pill("Example Air")
+        self.assertFalse(self.page.evaluate("document.documentElement.scrollWidth > innerWidth"))
+        box = self.page.query_selector("#wlEditModal .modal").bounding_box()
+        self.assertLessEqual(box["x"] + box["width"], 390)
+        tops = self.page.evaluate("[...document.querySelectorAll('#wleSeg button')].map(b => b.getBoundingClientRect().top)")
+        self.assertEqual(len(set(round(t) for t in tops)), 2, "the four types sit in two rows")
+        self.assertTrue(self.page.is_visible("#wleSave"))
+
+
 class TestWatchlistAlertInLiveMode(BrowserCase):
     """Trigger "live" asks /api/live's is_watchlist mark — the server's full
     matcher — not the page's hex-only wlIcaos set, so callsign and model

@@ -1,4 +1,4 @@
-# Version: 3.4.200
+# Version: 3.4.201
 """
 server.py — Web server and API for the ADS-B tracker.
 
@@ -11,6 +11,7 @@ Endpoints:
   GET  /api/search              Full-text search across every aircraft
   GET  /api/watchlist/entries   Current watchlist config
   POST /api/watchlist/add       Add to watchlist
+  POST /api/watchlist/update    Edit a watchlist entry in place
   POST /api/watchlist/remove    Remove from watchlist
   GET  /api/status              System status
 """
@@ -3350,8 +3351,84 @@ def get_app(config: dict, config_path: str) -> FastAPI:
             entries.append(entry)
         return {"entries": entries}
 
+    _WL_TYPES = ("icao", "tail", "callsign", "model")
+
+    def _wl_norm(id_type: str, identifier) -> str:
+        """How an identifier is stored: model keeps its case (it matches
+        case-insensitively), the others are upper case."""
+        s = str(identifier or "").strip()
+        return s if id_type == "model" else s.upper()
+
+    def _wl_cmp(id_type: str, identifier) -> str:
+        """An identifier as compared: model ignores case, like the collector."""
+        v = _wl_norm(id_type, identifier)
+        return v.lower() if id_type == "model" else v
+
+    def _wl_key(e: dict):
+        """(type, comparable identifier) of a config entry, in the order the
+        collector reads them (collector.build_watchlist_lookup)."""
+        for t in _WL_TYPES:
+            if e.get(t):
+                return t, _wl_cmp(t, e[t])
+        return None, None
+
+    def _wl_identifier_error(id_type: str, ident: str) -> Optional[str]:
+        """v3.4.201: why an identifier can never match, or None. A callsign
+        already matches every callsign starting with it, and the collector
+        compares literally, so a `*` or `?` made an entry that never matched."""
+        if not ident:
+            return "Enter an identifier."
+        if id_type == "callsign" and ("*" in ident or "?" in ident):
+            return ("No wildcards needed: a callsign entry already matches every "
+                    "callsign that starts with it (UAL matches UAL123).")
+        if id_type == "icao" and not re.fullmatch(r"[0-9A-F]{6}", ident):
+            return "An ICAO hex is exactly 6 characters, 0–9 and A–F (e.g. A835D2)."
+        return None
+
+    def _relabel_watchlist_history(old: str, new: str) -> int:
+        """v3.4.201: move the sightings stored under watchlist label `old` to
+        `new`, in watchlist_sightings and the watchlist_hourly rollup the Stats
+        cards read, so a renamed entry keeps one history. Hourly rows that
+        already exist under `new` (another entry with that label) are merged.
+        One transaction. A poll already under way when the entry was saved can
+        still write a row or two under `old`, as it matched with the old label.
+        Returns how many sightings moved."""
+        conn = _db_conn()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            moved = conn.execute(
+                "UPDATE watchlist_sightings SET watchlist_label = ? WHERE watchlist_label = ?",
+                (new, old)).rowcount or 0
+            conn.execute("""
+                INSERT INTO watchlist_hourly (
+                    icao, hour_bucket, watchlist_label, callsign, aircraft_type,
+                    type_desc, sighting_count, first_seen_at, last_seen_at)
+                SELECT icao, hour_bucket, ?, callsign, aircraft_type, type_desc,
+                       sighting_count, first_seen_at, last_seen_at
+                FROM watchlist_hourly WHERE watchlist_label = ?
+                ON CONFLICT (icao, hour_bucket, watchlist_label) DO UPDATE SET
+                    callsign       = COALESCE(NULLIF(watchlist_hourly.callsign, ''),      excluded.callsign),
+                    aircraft_type  = COALESCE(NULLIF(watchlist_hourly.aircraft_type, ''), excluded.aircraft_type),
+                    type_desc      = COALESCE(NULLIF(watchlist_hourly.type_desc, ''),     excluded.type_desc),
+                    sighting_count = watchlist_hourly.sighting_count + excluded.sighting_count,
+                    first_seen_at  = MIN(watchlist_hourly.first_seen_at, excluded.first_seen_at),
+                    last_seen_at   = MAX(watchlist_hourly.last_seen_at, excluded.last_seen_at)
+            """, (new, old))
+            conn.execute("DELETE FROM watchlist_hourly WHERE watchlist_label = ?", (old,))
+            conn.commit()
+            return moved
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     @app.post("/api/watchlist/add")
     def add_watchlist_entry(entry: WatchlistEntry):
+        if entry.id_type in _WL_TYPES:
+            problem = _wl_identifier_error(entry.id_type, _wl_norm(entry.id_type, entry.identifier))
+            if problem:
+                return JSONResponse(status_code=400, content={"error": problem})
         new_entry = {"label": entry.label or entry.identifier}
         if entry.id_type == "icao":
             new_entry["icao"] = entry.identifier.upper()
@@ -3392,6 +3469,72 @@ def get_app(config: dict, config_path: str) -> FastAPI:
         # as it's added, and the chip can tell a lookup is under way.
         sync_watchlist_tails(CONFIG)
         return {"status": "added", "entry": new_entry, "message": "Live within one poll cycle"}
+
+    class WatchlistUpdate(BaseModel):
+        old_id_type: str          # the entry being edited, as listed
+        old_identifier: str
+        id_type: str              # what it becomes
+        identifier: str
+        label: str = ""
+
+    @app.post("/api/watchlist/update")
+    def update_watchlist_entry(body: WatchlistUpdate):
+        """v3.4.201: edit one watchlist entry in place (the Watchlist tab's
+        pill → Edit window). One locked save, so the entry is never missing
+        in between, as it would be with a remove and an add. When the label
+        changes, the sightings stored under the old label move to the new
+        one, unless another entry still uses the old label (then they're
+        that entry's history too, and stay)."""
+        if body.id_type not in _WL_TYPES or body.old_id_type not in _WL_TYPES:
+            return JSONResponse(status_code=400, content={"error": f"Unknown id_type: {body.id_type}"})
+        ident = _wl_norm(body.id_type, body.identifier)
+        problem = _wl_identifier_error(body.id_type, ident)
+        if problem:
+            return JSONResponse(status_code=400, content={"error": problem})
+        old_key = (body.old_id_type, _wl_cmp(body.old_id_type, body.old_identifier))
+        new_key = (body.id_type, _wl_cmp(body.id_type, ident))
+        label = (body.label or "").strip() or ident
+
+        with config_io.CONFIG_LOCK:
+            waiting = _restore_waiting_response()       # v3.4.149 (see add)
+            if waiting is not None:
+                return waiting
+            watchlist = list(CONFIG.get("watchlist") or [])
+            at = next((i for i, e in enumerate(watchlist)
+                       if isinstance(e, dict) and _wl_key(e) == old_key), None)
+            if at is None:
+                return JSONResponse(status_code=404,
+                                    content={"error": f"'{body.old_identifier}' is no longer in the watchlist"})
+            for i, e in enumerate(watchlist):
+                if i != at and isinstance(e, dict) and _wl_key(e) == new_key:
+                    return JSONResponse(status_code=409, content={
+                        "error": f"Already in the watchlist as “{e.get('label') or ident}”"})
+            old = watchlist[at]
+            old_label = str(old.get("label") or "")
+            # Same place in the list; any other keys the entry carries stay.
+            updated = {k: v for k, v in old.items() if k not in _WL_TYPES}
+            updated["label"] = label
+            updated[body.id_type] = ident
+            watchlist[at] = updated
+            failed = _save_config_or_response({**CONFIG, "watchlist": watchlist})
+            if failed is not None:
+                return failed
+            CONFIG["watchlist"] = watchlist
+        sync_watchlist_tails(CONFIG)
+
+        moved, shared, history_error = 0, False, None
+        if old_label and label != old_label:
+            shared = any(isinstance(e, dict) and str(e.get("label") or "") == old_label
+                         for e in watchlist)
+            if not shared:
+                try:
+                    moved = _relabel_watchlist_history(old_label, label)
+                except Exception as e:
+                    logger.error(f"Moving watchlist history {old_label!r} → {label!r} failed: {e}")
+                    history_error = str(e)
+        return {"status": "updated", "entry": updated, "history_moved": moved,
+                "history_shared": shared, "history_error": history_error,
+                "message": "Live within one poll cycle"}
 
     @app.post("/api/watchlist/remove")
     def remove_watchlist_entry(entry: WatchlistEntry):

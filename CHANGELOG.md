@@ -19,6 +19,18 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.201] — 2026-11-24
+
+**Click a watchlist entry to edit it.** On the Watchlist tab, click an entry's pill and an Edit window opens with what it matches by (tail number, ICAO hex, callsign or model), the identifier and the label, ready to change. Before, the only way to change an entry was to remove it and add it again. Say you added one flight's callsign, `EXA123`, and want every flight of that airline: change it to `EXA` and save. As you type, the window shows which aircraft in range the entry would match right now, so you can see whether a short prefix catches more than you meant. The pill's **×** still removes the entry, and **Remove…** in the window does the same. On the keyboard, Enter on a pill opens it and Escape closes the window.
+
+**Renaming keeps the history together.** Past sightings are stored under an entry's label, so renaming one used to split its history in two. Now the sightings saved under the old label move to the new one, and the window tells you how many before you save. If another entry uses the same label, the sightings belong to both, so they stay where they are, and the window says so.
+
+**No wildcards needed.** A callsign entry already matches every callsign that starts with it, so `UAL` matches `UAL123` and `UAL9876`. An entry typed as `UAL*` never matched anything, because the `*` was taken literally. Adding or editing a callsign with `*` or `?` is now refused with that explanation, and so is an ICAO hex that isn't 6 hex characters.
+
+### Behind the scenes
+
+New `POST /api/watchlist/update` changes the entry in place in one locked save of `config.yaml`, so it's never missing between a remove and an add, and comments in the file are kept. A rename updates `watchlist_sightings` and merges the `watchlist_hourly` rows behind the Stats cards in one transaction. API.md lists the endpoint's fields and errors.
+
 ## [3.4.200] — 2026-11-22
 
 **Tapping an airport on the Live map works on a phone.** An airport's details open when you click its code on the Live map. With a mouse that's easy, but on a phone only the small code itself took the tap, a target about 12 pixels tall, so a fingertip that landed just beside it, or on the airport's ring, did nothing. On a touch screen the code now takes taps from an area about the size of a fingertip around it, including the ring. Nothing looks different, a click with a mouse works as before, and where an aircraft sits on top of an airport, tapping there still opens the aircraft.

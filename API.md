@@ -68,7 +68,8 @@ Core endpoints the dashboard's tabs consume. All return a list of aircraft objec
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/watchlist/entries` | Current watchlist config (ICAO/tail/callsign/model patterns + labels). Tail-only entries also carry `tail_status` (`found`, `pending`, `unknown` = hexdb.io has no record, `error` = no usable answer, retried soon) and `tail_icaos` |
-| POST | `/api/watchlist/add` | Add an entry. Body: `{identifier, id_type, label?}`; `id_type` is `icao`, `tail`, `callsign` or `model` |
+| POST | `/api/watchlist/add` | Add an entry. Body: `{identifier, id_type, label?}`; `id_type` is `icao`, `tail`, `callsign` or `model`. 400 for an identifier that can never match (a `*` or `?` in a callsign, an ICAO hex that isn't 6 hex characters); 409 if it's already there |
+| POST | `/api/watchlist/update` | Edit an entry in place. Body: `{old_id_type, old_identifier, id_type, identifier, label?}` (a blank label becomes the identifier). Same 400 rules as add; 404 if the old entry is gone; 409 if the new one matches another entry. When the label changes, the sightings stored under the old label move to the new one (`watchlist_sightings` and the Stats rollup), unless another entry still uses the old label. Returns `{status, entry, history_moved, history_shared, history_error}` |
 | POST | `/api/watchlist/remove` | Remove an entry. Body: `{identifier, id_type, delete_history?}`; `delete_history: true` also deletes that entry's stored sightings |
 | GET | `/api/watchlist/history/count` | Row count in `watchlist_sightings`, for one entry with `?label=` or all of them without — used to confirm the delete dialogs |
 | POST | `/api/watchlist/history/clear` | Delete all rows from `watchlist_sightings` |

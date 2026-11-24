@@ -1,4 +1,4 @@
-<!-- Version: 3.4.200 -->
+<!-- Version: 3.4.201 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -229,6 +229,34 @@
         html[data-theme="light"] .chip-why { color: #b45309; }
         .chip-x { cursor: pointer; color: var(--t3); width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; border-radius: 50%; font-size: 10px; }
         .chip-x:hover { background: rgba(239,68,68,.2); color: var(--red-text); }
+        /* v3.4.201: a watchlist pill opens its Edit window (the × still removes). */
+        .chip.editable { cursor: pointer; transition: border-color .15s, background .15s; }
+        .chip.editable:hover { border-color: var(--cyan); background: var(--bg3); }
+        .chip.editable:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+        #wlEditModal { padding: 16px; }
+        #wlEditModal .modal { width: 100%; min-width: 0; }
+        .wle-seg { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-bottom: 14px; }
+        .wle-seg button { font-family: var(--font); font-size: 12px; padding: 7px 4px; border-radius: 6px; border: 1px solid var(--bdr); background: var(--bg1); color: var(--t2); cursor: pointer; }
+        .wle-seg button:hover { border-color: var(--cyan); }
+        .wle-seg button.on { border-color: var(--cyan); color: var(--cyan); background: rgba(6,182,212,.08); }
+        #wlEditModal .modal-input { margin-bottom: 0; }
+        #wleId { font-family: var(--mono); }
+        #wleId.upper { text-transform: uppercase; }
+        #wleId.bad { border-color: var(--red); }
+        .wle-field { margin-bottom: 14px; }
+        .wle-hint { font-size: 12px; color: var(--t3); margin: 6px 0 0; line-height: 1.45; }
+        .wle-hint b { color: var(--t2); font-weight: 500; font-family: var(--mono); }
+        .wle-err { font-size: 12px; color: var(--red-text); margin-top: 6px; }
+        .wle-matches { font-size: 12px; color: var(--t2); margin-top: 8px; padding: 7px 9px; border-radius: 6px; background: var(--bg1); border: 1px dashed var(--bdr); line-height: 1.5; }
+        .wle-matches .n { color: var(--green-text); font-weight: 600; }
+        .wle-matches .z { color: var(--t3); }
+        .wle-matches code { font-family: var(--mono); font-size: 11px; color: var(--t1); }
+        .wle-hist { font-size: 12px; color: var(--t2); background: rgba(245,158,11,.08); border: 1px solid rgba(245,158,11,.35); border-radius: 6px; padding: 8px 10px; line-height: 1.5; margin-top: 10px; }
+        .wle-hist b { color: var(--t1); font-weight: 500; }
+        #wlEditModal .modal-actions { margin-top: 16px; align-items: center; }
+        .wle-remove { margin-right: auto; background: none; border: 0; color: var(--red-text); font-family: var(--font); font-size: 13px; padding: 7px 2px; cursor: pointer; }
+        .wle-remove:hover { text-decoration: underline; }
+        @media (max-width: 640px) { .wle-seg { grid-template-columns: repeat(2, 1fr); } }
 
         /* Inline "first seen X ago" chip shown next to the label/callsign
            on Watchlist, Military, and All rows. Subdued on purpose — it's
@@ -2714,6 +2742,35 @@
             <button class="modal-btn" onclick="closeRmWl()">Cancel</button>
             <button class="modal-btn" id="rmWlKeepBtn" onclick="confirmRmWl(false)">Remove entry only</button>
             <button class="modal-btn modal-btn-primary" id="rmWlDeleteBtn" onclick="confirmRmWl(true)" style="background:var(--red);border-color:var(--red)">Remove + delete history</button>
+        </div>
+    </div>
+</div>
+
+<!-- v3.4.201: Edit window — a watchlist pill opens it (openEditWl). -->
+<div class="modal-bg" id="wlEditModal" onclick="closeEditWl(event)">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="wleTitle" onclick="event.stopPropagation()">
+        <div class="modal-title" id="wleTitle">Edit watchlist entry</div>
+        <div class="modal-sub" id="wleSub">—</div>
+        <label class="modal-label">Match by</label>
+        <div class="wle-seg" id="wleSeg" role="group" aria-label="Match by">
+            <button type="button" data-t="tail">Tail #</button><button type="button" data-t="icao">ICAO hex</button><button type="button" data-t="callsign">Callsign</button><button type="button" data-t="model">Model</button>
+        </div>
+        <div class="wle-field">
+            <label class="modal-label" for="wleId" id="wleIdLabel">Callsign</label>
+            <input type="text" class="modal-input" id="wleId" autocomplete="off" spellcheck="false">
+            <p class="wle-hint" id="wleHint"></p>
+            <div class="wle-err" id="wleErr" hidden></div>
+            <div class="wle-matches" id="wleMatches" hidden></div>
+        </div>
+        <div class="wle-field" style="margin-bottom:0">
+            <label class="modal-label" for="wleLabel">Label</label>
+            <input type="text" class="modal-input" id="wleLabel" placeholder="e.g. Dad's Cessna" autocomplete="off">
+            <div class="wle-hist" id="wleHist" hidden></div>
+        </div>
+        <div class="modal-actions">
+            <button type="button" class="wle-remove" onclick="removeFromEditWl()">Remove…</button>
+            <button type="button" class="modal-btn" onclick="closeEditWl()">Cancel</button>
+            <button type="button" class="modal-btn modal-btn-primary" id="wleSave" onclick="saveEditWl()" disabled>Save</button>
         </div>
     </div>
 </div>
@@ -7414,8 +7471,9 @@ async function loadWLChips(){
             _wlPendingChecks = 0;
         }
 
+        wlEntries = entries;
         if(!entries.length){c.innerHTML='<span style="color:var(--t3);font-size:12px">No watchlist entries</span>';return;}
-        c.innerHTML=entries.map(e=>{
+        c.innerHTML=entries.map((e, i)=>{
             let id = e.icao || e.tail || e.callsign || e.model || '?';
             let tp = e.icao ? 'icao' : e.tail ? 'tail' : e.callsign ? 'callsign' : e.model ? 'model' : 'callsign';
             // v3.4.140: JSON for the JS string, then HTML-escape for the
@@ -7433,7 +7491,8 @@ async function loadWLChips(){
             const safeTp = escHtml(String(tp));
             const why = WL_TAIL_PROBLEMS[e.tail_status];
             const whyHtml = why ? `<span class="chip-why" title="${escHtml(why.hover)}">${escHtml(why.text)}</span>` : '';
-            return`<div class="chip${why ? ' chip-unmatched' : ''}"><span>${safeLabel}</span><span style="color:var(--t3);font-size:10px">(${safeTp}: ${safeId})</span>${whyHtml}<span class="chip-x" onclick="rmWL(${rmArgs})" title="Remove">✕</span></div>`;
+            // v3.4.201: the pill opens its Edit window; the × still removes.
+            return`<div class="chip editable${why ? ' chip-unmatched' : ''}" tabindex="0" role="button" title="Click to edit" onclick="openEditWl(${i})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openEditWl(${i});}"><span>${safeLabel}</span><span style="color:var(--t3);font-size:10px">(${safeTp}: ${safeId})</span>${whyHtml}<span class="chip-x" onclick="event.stopPropagation();rmWL(${rmArgs})" title="Remove">✕</span></div>`;
         }).join('');
     }catch(e){console.error(e);}
 }
@@ -7448,6 +7507,228 @@ function updateWlPlaceholder(){
     };
     id.placeholder = placeholders[t] || '';
 }
+
+// =========================================================================
+// v3.4.201: Edit a watchlist entry — click its pill.
+// =========================================================================
+// One window for every type, saved through /api/watchlist/update: the entry
+// changes in place in one save, and a new label takes the sightings stored
+// under the old one along (unless another entry still uses that label).
+// "In range now" applies the collector's rules (match_watchlist) to the Live
+// data already loaded: callsign = prefix, ICAO = exact, model = substring of
+// type or description, tail = the hexes its lookup found.
+let wlEntries = [];      // the last /api/watchlist/entries list (loadWLChips)
+let wlEdit = null;       // the entry being edited, while the window is open
+const WLE_NAME = {tail: 'Tail number', icao: 'ICAO hex', callsign: 'Callsign', model: 'Model text'};
+const WLE_PLACE = {tail: 'e.g. N12345', icao: 'e.g. A835D2', callsign: 'e.g. RCH, UAL (prefix match)',
+                   model: 'e.g. Cirrus, G650, S22T'};
+
+function _wlType(e){ return e.icao ? 'icao' : e.tail ? 'tail' : e.callsign ? 'callsign' : e.model ? 'model' : 'callsign'; }
+function _wlNorm(type, v){ v = String(v || '').trim(); return type === 'model' ? v : v.toUpperCase(); }
+function _wlCmp(type, v){ v = _wlNorm(type, v); return type === 'model' ? v.toLowerCase() : v; }
+function _wlProblem(type, id){
+    // Same rules as the server's _wl_identifier_error.
+    if(!id) return 'Enter an identifier.';
+    if(type === 'callsign' && /[*?]/.test(id))
+        return 'No wildcards needed: a callsign entry already matches every callsign that starts with it (UAL matches UAL123).';
+    if(type === 'icao' && !/^[0-9A-F]{6}$/.test(id))
+        return 'An ICAO hex is exactly 6 characters, 0–9 and A–F (e.g. A835D2).';
+    return '';
+}
+function _wlHint(type, id){
+    if(type === 'callsign'){
+        const p = escHtml(id || 'UAL');
+        return `Matches every callsign that starts with this: <b>${p}</b> matches <b>${p}123</b> and <b>${p}9</b>. No <b>*</b> needed.`;
+    }
+    if(type === 'tail') return 'The registration, like <b>N12345</b>. Aerodrome looks up its ICAO hex.';
+    if(type === 'icao') return 'The 6-character hex code. Matches that one aircraft.';
+    return 'Matches any aircraft whose type or description contains this, like <b>Cirrus</b> or <b>G650</b>.';
+}
+// Aircraft on the Live list this entry would match; null when it can't be
+// told here (a tail Aerodrome hasn't looked up yet).
+function _wlInRange(type, id){
+    const live = (D && D.live) || [];
+    if(type === 'tail'){
+        const o = wlEdit.orig;
+        if(!(o.type === 'tail' && _wlCmp('tail', o.id) === id)) return null;
+        const hexes = new Set((o.tailIcaos || []).map(h => String(h).toUpperCase()));
+        return live.filter(a => hexes.has(String(a.icao || '').toUpperCase()));
+    }
+    const low = id.toLowerCase();
+    return live.filter(a => {
+        if(type === 'icao') return String(a.icao || '').toUpperCase() === id;
+        if(type === 'callsign'){
+            const cs = String(a.callsign || '').trim().toUpperCase();
+            return !!cs && cs.startsWith(id);
+        }
+        return String(a.aircraft_type || '').toLowerCase().includes(low)
+            || String(a.type_desc || '').toLowerCase().includes(low);
+    });
+}
+
+let _wleWired = false;
+function _wleWire(){
+    if(_wleWired) return;
+    _wleWired = true;
+    const idEl = document.getElementById('wleId'), lblEl = document.getElementById('wleLabel');
+    document.getElementById('wleSeg').addEventListener('click', ev => {
+        const b = ev.target.closest('button[data-t]');
+        if(!b || !wlEdit) return;
+        wlEdit.type = b.dataset.t;
+        wlEdit.serverErr = '';
+        if(wlEdit.labelFollows) lblEl.value = _wlNorm(wlEdit.type, idEl.value);
+        wlEditRefresh();
+        idEl.focus();
+    });
+    idEl.addEventListener('input', () => {
+        if(!wlEdit) return;
+        wlEdit.touched = true;
+        wlEdit.serverErr = '';
+        // A label that was just the identifier follows it, as in the Add window.
+        if(wlEdit.labelFollows) lblEl.value = _wlNorm(wlEdit.type, idEl.value);
+        wlEditRefresh();
+    });
+    lblEl.addEventListener('input', () => {
+        if(!wlEdit) return;
+        wlEdit.labelFollows = false;
+        wlEdit.serverErr = '';
+        wlEditRefresh();
+    });
+    document.getElementById('wlEditModal').addEventListener('keydown', ev => {
+        if(ev.key === 'Escape') closeEditWl();
+        else if(ev.key === 'Enter' && ev.target.tagName === 'INPUT'
+                && !document.getElementById('wleSave').disabled){
+            ev.preventDefault();
+            saveEditWl();
+        }
+    });
+}
+
+function openEditWl(i){
+    const e = wlEntries[i];
+    if(!e) return;
+    _wleWire();
+    const type = _wlType(e), id = String(e[type] || '');
+    const label = String(e.label || id);
+    wlEdit = {entry: e, type, touched: false, serverErr: '', saving: false, hist: 0,
+              orig: {type, id, label, tailIcaos: e.tail_icaos || []},
+              labelFollows: label === id,
+              // Another entry with the same label: its sightings are that
+              // entry's history too, so a rename leaves them where they are.
+              shared: wlEntries.some(x => x !== e && String(x.label || '') === label)};
+    document.getElementById('wleSub').textContent = `${type}: ${id}`;
+    const idEl = document.getElementById('wleId');
+    idEl.value = id;
+    document.getElementById('wleLabel').value = label;
+    wlEditRefresh();
+    document.getElementById('wlEditModal').classList.add('on');
+    idEl.focus();
+    idEl.select();
+    const ctx = wlEdit;
+    fetch('/api/watchlist/history/count?label=' + encodeURIComponent(label))
+        .then(r => r.json())
+        .then(j => { if(wlEdit === ctx){ ctx.hist = j.count || 0; wlEditRefresh(); } })
+        .catch(() => {});
+}
+
+function wlEditRefresh(){
+    const s = wlEdit;
+    if(!s) return;
+    const idEl = document.getElementById('wleId');
+    const type = s.type, id = _wlNorm(type, idEl.value);
+    document.querySelectorAll('#wleSeg button').forEach(b => {
+        const on = b.dataset.t === type;
+        b.classList.toggle('on', on);
+        b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+    document.getElementById('wleIdLabel').textContent = WLE_NAME[type];
+    idEl.placeholder = WLE_PLACE[type];
+    idEl.classList.toggle('upper', type !== 'model');
+
+    const problem = _wlProblem(type, id);
+    const dupE = problem ? null : wlEntries.find(e =>
+        e !== s.entry && _wlType(e) === type && _wlCmp(type, e[type]) === _wlCmp(type, id));
+    const err = s.serverErr || (problem && s.touched ? problem : '')
+        || (dupE ? `Already in the watchlist as “${dupE.label || id}”.` : '');
+    const errEl = document.getElementById('wleErr');
+    errEl.hidden = !err;
+    errEl.textContent = err;
+    idEl.classList.toggle('bad', !!err);
+    document.getElementById('wleHint').innerHTML = _wlHint(type, problem ? '' : id);
+
+    const mEl = document.getElementById('wleMatches');
+    const m = (problem || dupE) ? undefined : _wlInRange(type, _wlCmp(type, id));
+    mEl.hidden = m === undefined;
+    if(m === null){
+        mEl.innerHTML = '<span class="z">Aerodrome checks this once it has looked up the tail’s ICAO hex.</span>';
+    }else if(m && !m.length){
+        mEl.innerHTML = '<span class="z">Nothing in range matches right now.</span>';
+    }else if(m){
+        const names = m.slice(0, 4).map(a => `<code>${escHtml(String(a.callsign || '').trim() || a.icao)}</code>`).join(', ');
+        mEl.innerHTML = `<span class="n">${m.length} in range now</span>: ${names}${m.length > 4 ? ` and ${m.length - 4} more` : ''}`;
+    }
+
+    const label = document.getElementById('wleLabel').value.trim() || id;
+    const hEl = document.getElementById('wleHist');
+    const renamed = label !== s.orig.label && s.hist > 0;
+    hEl.hidden = !renamed;
+    if(renamed){
+        const n = `<b>${s.hist.toLocaleString()} past sighting${s.hist === 1 ? '' : 's'}</b>`;
+        const was = escHtml(s.orig.label);
+        hEl.innerHTML = s.shared
+            ? `${n} ${s.hist === 1 ? 'is' : 'are'} saved under “${was}”, which another entry also uses, so ${s.hist === 1 ? 'it stays' : 'they stay'} there.`
+            : `${n} ${s.hist === 1 ? 'is' : 'are'} saved under “${was}”. Saving moves ${s.hist === 1 ? 'it' : 'them'} to “${escHtml(label)}”, so the history stays together.`;
+    }
+    const changed = type !== s.orig.type || _wlCmp(type, id) !== _wlCmp(s.orig.type, s.orig.id)
+        || label !== s.orig.label;
+    document.getElementById('wleSave').disabled = !changed || !!problem || !!dupE || s.saving;
+}
+
+function closeEditWl(e){
+    if(e && e.target && !e.target.classList.contains('modal-bg')) return;
+    document.getElementById('wlEditModal').classList.remove('on');
+    wlEdit = null;
+}
+
+function removeFromEditWl(){
+    if(!wlEdit) return;
+    const o = wlEdit.orig;
+    closeEditWl();
+    rmWL(o.id, o.type);       // today's remove confirm, unchanged
+}
+
+async function saveEditWl(){
+    const s = wlEdit;
+    if(!s || s.saving) return;
+    const type = s.type, id = _wlNorm(type, document.getElementById('wleId').value);
+    const label = document.getElementById('wleLabel').value.trim();
+    s.saving = true;
+    wlEditRefresh();
+    try{
+        const r = await fetch('/api/watchlist/update', {method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({old_id_type: s.orig.type, old_identifier: s.orig.id,
+                                  id_type: type, identifier: id, label})});
+        const j = await r.json().catch(() => ({}));
+        if(!r.ok){
+            s.saving = false;
+            s.serverErr = j.error || 'Could not save.';
+            wlEditRefresh();
+            return;
+        }
+        closeEditWl();
+        const n = j.history_moved || 0;
+        toast(`Saved ${(j.entry && j.entry.label) || label || id} — live within one poll cycle`
+            + (n ? ` · ${n.toLocaleString()} past sighting${n === 1 ? '' : 's'} moved to the new label` : '')
+            + (j.history_error ? ` · moving the past sightings failed: ${j.history_error}` : ''));
+        await loadWLChips();
+        await refresh();      // the Watchlist rows show the new label
+    }catch(e){
+        s.saving = false;
+        s.serverErr = 'Could not reach Aerodrome. Try again.';
+        wlEditRefresh();
+    }
+}
+
 async function addWL(){
     let t=document.getElementById('wlType').value;
     let id=document.getElementById('wlId').value.trim();
