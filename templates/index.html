@@ -1,4 +1,4 @@
-<!-- Version: 3.4.201 -->
+<!-- Version: 3.4.202 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -3865,10 +3865,17 @@ function initRadarMap(receiver){
     const center = haveRx ? [receiver.lat, receiver.lon] : [0, 0];
 
     _radar.canvasRenderer = L.canvas({ padding: 0.5 });
+    // zoomSnap/zoomDelta 0.25: +/−, wheel and pinch move about 1.2× a step
+    // instead of doubling the map, and the Live map matches the board.
+    // doubleClickZoom is off so a double-click/tap can step ONE whole level
+    // (see the dblclick handler below) rather than the usual single snap.
     _radar.map = L.map('radarMap', {
         preferCanvas: true, zoomControl: true, attributionControl: true,
-        worldCopyJump: true,
+        worldCopyJump: true, doubleClickZoom: false,
+        zoomSnap: 0.25, zoomDelta: 0.25,
     }).setView(center, haveRx ? 9 : 2);
+    _radar.map.on('dblclick', e => _radar.map.setZoomAround(
+        e.containerPoint, _radar.map.getZoom() + (e.originalEvent.shiftKey ? -1 : 1)));
 
     _radar.lightTiles = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
         maxZoom: 18,

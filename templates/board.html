@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
-<!-- Version: 3.4.201 -->
+<!-- Version: 3.4.202 -->
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Display board — Aerodrome</title>
@@ -755,10 +755,15 @@ function _mapFor(el, opts){
   // zoomControl:false — Leaflet's zoom buttons are replaced by our own
   // (.mapbtn) stack below: its corner-radius/touch-border styling fought
   // the board restyle and rendered malformed on the wall screen (v3.4.117).
+  // zoomSnap/zoomDelta 0.25: +/−, wheel and pinch move about 1.2× a step
+  // instead of doubling the map, and the board matches the Live map.
+  // doubleClickZoom is off so a double-click/tap can step ONE whole level
+  // (see the dblclick handler below) rather than the usual single snap.
   const map = L.map(el, {
     preferCanvas: true, zoomControl: false, attributionControl: true,
-    dragging: true, scrollWheelZoom: true, doubleClickZoom: true,
+    dragging: true, scrollWheelZoom: true, doubleClickZoom: false,
     boxZoom: false, keyboard: false, touchZoom: true, worldCopyJump: true,
+    zoomSnap: 0.25, zoomDelta: 0.25,
   }).setView([0, 0], 2);
   const st = {map, el, markers: {}, rings: [], fitted: false, userMoved: false,
               _framing: false, trailBuf: {}, trailSeg: {}, coverage: null,
@@ -790,6 +795,9 @@ function _mapFor(el, opts){
   // Tap the map background (not a marker — those stop propagation) to
   // dismiss the details panel, like the Live radar.
   map.on('click', closeDetail);
+  // Double-click / double-tap = one WHOLE level around the point (shift = out),
+  // so the coarse gesture stays coarse while the buttons go by quarters.
+  map.on('dblclick', e => map.setZoomAround(e.containerPoint, map.getZoom() + (e.originalEvent.shiftKey ? -1 : 1)));
 
   // --- controls: theme (top-right), recenter (under zoom), tools (bottom-left)
   const ThemeControl = L.Control.extend({

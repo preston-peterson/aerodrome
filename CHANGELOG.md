@@ -19,6 +19,16 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.202] — 2026-11-24
+
+**Zooming the Board and the Live map with + and − now goes in smaller steps.** Each tap used to double or halve the map, which often jumped right past the view you wanted. Now each tap zooms about 1.2× in or out, so going from 100 miles across to 50 takes four taps instead of one. The scroll wheel and a pinch settle on the same finer steps, and the Board and the Live map behave the same way. A double-click or double-tap still zooms in one full level, for when you want to get close quickly (Shift + double-click zooms out).
+
+**Recentering fits your aircraft a little more snugly.** Because the map can now stop between the old zoom levels, the Board's automatic framing and the ⌖ button can fit the aircraft more tightly instead of stopping at the next whole level out.
+
+### Behind the scenes
+
+- Browser tests check that one tap of + or − moves exactly a quarter level on both maps, that a double-click moves one full level, and that the two maps use the same step.
+
 ## [3.4.201] — 2026-11-24
 
 **Click a watchlist entry to edit it.** On the Watchlist tab, click an entry's pill and an Edit window opens with what it matches by (tail number, ICAO hex, callsign or model), the identifier and the label, ready to change. Before, the only way to change an entry was to remove it and add it again. Say you added one flight's callsign, `EXA123`, and want every flight of that airline: change it to `EXA` and save. As you type, the window shows which aircraft in range the entry would match right now, so you can see whether a short prefix catches more than you meant. The pill's **×** still removes the entry, and **Remove…** in the window does the same. On the keyboard, Enter on a pill opens it and Escape closes the window.

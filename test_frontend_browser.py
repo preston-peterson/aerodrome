@@ -2425,6 +2425,113 @@ class TestBoardAirports(BrowserCase):
         self.assertFalse(self.page.evaluate("!!document.querySelector('.bt-apt.on')"))
 
 
+class TestMapZoomSteps(BrowserCase):
+    """Quarter-level zoom steps on both maps: +/−, wheel and pinch move about
+    1.2× a step instead of doubling the map, the board and Live match, and a
+    double-click is still one WHOLE level."""
+
+    def setUp(self):
+        super().setUp()
+        self.site.api["/api/live"] = _aircraft(2)
+        self.site.api["/api/status"] = _status()
+        self.site.api["/api/airports"] = {"ok": True, "airports": []}
+        # A carto key keeps Live's "get a key" banner off the zoom control.
+        self.site.api["/api/ui-config"] = {"map": {"carto_api_key": "example-key"}}
+
+    def open_board(self):
+        self.open("/board?mode=radar")
+        self.advance(1000)
+        self.page.wait_for_function("!!(_maps['scopeA'] && _maps['scopeA'].map)")
+        self.map, self.el = "_maps['scopeA'].map", "#scopeA"
+        self.pin, self.pout = ".bt-zin", ".bt-zout"
+
+    def open_live(self):
+        self.open("/")      # the desktop viewport opens the Live page on the map
+        self.advance(1000)
+        self.page.wait_for_function("typeof _radar !== 'undefined' && !!_radar.map")
+        self.map, self.el = "_radar.map", "#radarMap"
+        self.pin, self.pout = ".leaflet-control-zoom-in", ".leaflet-control-zoom-out"
+
+    def reveal(self):
+        # The board fades its own +/− out when the wall is idle; Live never does.
+        self.page.mouse.move(300, 300)
+        self.page.mouse.move(320, 320)
+
+    def zoom(self):
+        return self.page.evaluate(f"{self.map}.getZoom()")
+
+    def frame(self, z=8):
+        self.arm()
+        self.page.evaluate(f"{self.map}.setView([40, -90], {z}, {{animate: false}})")
+        self.settle()
+
+    def arm(self):
+        """Watch for the map's next zoomend — a zoom request made while an
+        animation is still running is dropped, so a step isn't done until it ends."""
+        self.page.evaluate("window.__zoomSettled = false")
+        self.page.evaluate(f"{self.map}.once('zoomend', () => {{ window.__zoomSettled = true; }})")
+
+    def settle(self, tries=40):
+        """Run the page's clock until that zoomend lands (its timers and its
+        transition ride on it) and report the zoom the map settled on."""
+        for _ in range(tries):
+            self.page.clock.run_for(100)
+            self.page.wait_for_timeout(10)
+            if self.page.evaluate("window.__zoomSettled"):
+                break
+        return self.zoom()
+
+    def step_with(self, button):
+        self.reveal()
+        self.arm()
+        self.page.click(button)
+        return self.settle()
+
+    def double_click(self):
+        """Double-click the map itself, well away from the markers at its centre."""
+        box = self.page.query_selector(self.el).bounding_box()
+        self.arm()
+        self.page.mouse.dblclick(box["x"] + box["width"] * 0.35, box["y"] + box["height"] * 0.3)
+        return self.settle()
+
+    def test_the_boards_plus_and_minus_step_by_a_quarter(self):
+        self.open_board()
+        self.frame(8)
+        self.assertAlmostEqual(self.step_with(self.pin), 8.25, places=6,
+                               msg="one tap of + raises the zoom by exactly 0.25")
+        self.assertAlmostEqual(self.step_with(self.pout), 8.0, places=6,
+                               msg="one tap of − lowers it by exactly 0.25")
+        self.assertEqual(self.errors, [])
+
+    def test_the_boards_double_click_is_a_whole_level(self):
+        self.open_board()
+        self.frame(8)
+        self.assertAlmostEqual(self.double_click(), 9, places=6)
+        self.assertEqual(self.errors, [])
+
+    def test_lives_plus_and_minus_step_by_a_quarter(self):
+        self.open_live()
+        self.frame(8)
+        self.assertAlmostEqual(self.step_with(self.pin), 8.25, places=6,
+                               msg="one tap of + raises the zoom by exactly 0.25")
+        self.assertAlmostEqual(self.step_with(self.pout), 8.0, places=6,
+                               msg="one tap of − lowers it by exactly 0.25")
+        self.assertEqual(self.errors, [])
+
+    def test_lives_double_click_is_a_whole_level(self):
+        self.open_live()
+        self.frame(8)
+        self.assertAlmostEqual(self.double_click(), 9, places=6)
+        self.assertEqual(self.errors, [])
+
+    def test_the_two_maps_snap_alike(self):
+        self.open_board()
+        board = self.page.evaluate(f"{self.map}.options.zoomSnap")
+        self.open_live()
+        live = self.page.evaluate(f"{self.map}.options.zoomSnap")
+        self.assertEqual((board, live), (0.25, 0.25))
+
+
 class TestConfigAirports(_ConfigPage):
     """Configuration → Map → Airports (v3.4.182)."""
 
