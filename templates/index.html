@@ -1,4 +1,4 @@
-<!-- Version: 3.4.202 -->
+<!-- Version: 3.4.203 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2411,8 +2411,11 @@
         <div class="live-map-pane" id="liveMapPane">
             <div id="radarMap"></div>
             <div class="carto-key-banner" id="cartoKeyBanner" hidden>
-                <p>Dark map tiles need a free CARTO key. About a minute — we’ll walk you through it.</p>
-                <a class="btn btn-primary" href="/config#map">Open Map settings</a>
+                <p>The dark map needs a free CARTO key. Setting one up takes about a minute.</p>
+                <div class="acts">
+                    <a class="btn btn-primary" href="/config#map">Open Map settings</a>
+                    <button type="button" class="btn btn-ghost" onclick="_radarUseLightMap()">Use the light map</button>
+                </div>
             </div>
             <div class="radar-no-receiver" id="radarNoReceiver" style="display:none">
                 <div><strong>Radar needs receiver coordinates.</strong></div>
@@ -3816,10 +3819,17 @@ function _radarApplyTheme(){
         btn.title = dark ? 'Switch to light map' : 'Switch to dark map';
         btn.setAttribute('aria-label', btn.title);
     }
+    _radarSyncCartoBanner();
 }
 
 function _radarToggleMapTheme(){
     radarSetMapTheme(_radarTheme() === 'dark' ? 'light' : 'dark');
+    _radarApplyTheme();
+}
+
+// The key banner's "Use the light map": what the light/dark button does.
+function _radarUseLightMap(){
+    radarSetMapTheme('light');
     _radarApplyTheme();
 }
 
@@ -3850,7 +3860,9 @@ function _radarRebuildDarkTiles(){
 function _radarSyncCartoBanner(){
     const el = document.getElementById('cartoKeyBanner');
     if(!el) return;
-    el.hidden = !!String((mapCfg && mapCfg.carto_api_key) || '').trim();
+    // Only while the dark map is on: the light map needs no key.
+    const missing = !String((mapCfg && mapCfg.carto_api_key) || '').trim();
+    el.hidden = !(missing && _radarTheme() === 'dark');
 }
 
 function initRadarMap(receiver){

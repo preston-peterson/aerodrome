@@ -344,30 +344,44 @@ input, select, textarea, button {
     color: var(--bg0);
 }
 
-/* CARTO dark-basemap key missing — overlay on Live + aircraft maps. */
+/* CARTO dark-basemap key missing — overlay on Live + aircraft maps, shown
+   only while the dark map is on (the light map needs no key). It sits
+   between the top corners so the zoom control (top-left) and the light/dark
+   button (top-right) stay reachable. Its background is always dark, so its
+   text colours are fixed rather than following the app's light/dark theme. */
 .carto-key-banner {
     position: absolute;
-    left: 12px;
-    right: 12px;
-    top: 12px;
+    left: 54px;
+    right: 54px;
+    top: 10px;
     z-index: 1100;
     display: flex;
-    gap: 12px;
+    flex-wrap: wrap;
+    gap: 10px 12px;
     align-items: center;
-    background: rgba(17, 24, 39, 0.92);
+    background: rgba(17, 24, 39, 0.94);
     border: 1px solid rgba(245, 158, 11, 0.45);
     border-radius: 8px;
     padding: 10px 12px;
 }
 .carto-key-banner[hidden] { display: none !important; }
 .carto-key-banner p {
-    flex: 1;
+    flex: 1 1 200px;
     font-size: 13px;
     line-height: 1.4;
     margin: 0;
-    color: var(--t1);
+    color: #e2e8f0;
 }
+.carto-key-banner .acts { display: flex; flex-wrap: wrap; gap: 8px; flex: none; }
 .carto-key-banner .btn { flex: none; text-decoration: none; }
+.carto-key-banner .btn-ghost { color: #e2e8f0; border-color: rgba(148, 163, 184, 0.45); }
+.carto-key-banner .btn-ghost:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
+@media (max-width: 640px) {
+    .carto-key-banner { flex-direction: column; align-items: stretch; gap: 8px; }
+    .carto-key-banner p { flex: none; }
+    .carto-key-banner .acts { flex-direction: column; }
+    .carto-key-banner .btn { justify-content: center; text-align: center; }
+}
 
 .btn-ghost {
     background: transparent;

@@ -2426,9 +2426,9 @@ class TestBoardAirports(BrowserCase):
 
 
 class TestMapZoomSteps(BrowserCase):
-    """Quarter-level zoom steps on both maps: +/−, wheel and pinch move about
-    1.2× a step instead of doubling the map, the board and Live match, and a
-    double-click is still one WHOLE level."""
+    """Quarter-level zoom steps on all three maps: +/−, wheel and pinch move
+    about 1.2× a step instead of doubling the map, the board, Live and the
+    aircraft page match, and a double-click is still one WHOLE level."""
 
     def setUp(self):
         super().setUp()
@@ -2451,6 +2451,24 @@ class TestMapZoomSteps(BrowserCase):
         self.page.wait_for_function("typeof _radar !== 'undefined' && !!_radar.map")
         self.map, self.el = "_radar.map", "#radarMap"
         self.pin, self.pout = ".leaflet-control-zoom-in", ".leaflet-control-zoom-out"
+
+    def open_aircraft(self):
+        now = 1700000000
+        self.site.api["/api/aircraft/A00003"] = {
+            "icao": "A00003", "first_seen_at": now - 3 * 86400, "last_seen_at": now - 600,
+            "sighting_count": 2, "recent_sightings": [], "callsigns": ["DEMO3"], "last_callsign": "DEMO3"}
+        self.site.api["/api/all/drill"] = {"ok": True, "total_count": 0, "sightings": []}
+        self.site.api["/api/aircraft/A00003/positions"] = {
+            "ok": True, "window": "24h", "count": 2, "truncated": False,
+            "receiver": {"lat": 40, "lon": -90, "distance_unit": "mi"},
+            "positions": [[now - 660, 40.0, -90.0, 12000, 300], [now - 630, 40.02, -90.02, 12000, 300]]}
+        self.site.api["/api/aircraft/A00003/flights"] = {"ok": True, "icao": "A00003", "window": "24h",
+                                                        "truncated": False, "flights": []}
+        self.open("/aircraft/A00003")
+        self.advance(1000)
+        self.page.wait_for_function("!!(_posMapState.map)")
+        self.map, self.el = "_posMapState.map", "#positionMap"
+        self.pin, self.pout = "#positionMap .leaflet-control-zoom-in", "#positionMap .leaflet-control-zoom-out"
 
     def reveal(self):
         # The board fades its own +/− out when the wall is idle; Live never does.
@@ -2524,12 +2542,221 @@ class TestMapZoomSteps(BrowserCase):
         self.assertAlmostEqual(self.double_click(), 9, places=6)
         self.assertEqual(self.errors, [])
 
-    def test_the_two_maps_snap_alike(self):
+    def test_the_aircraft_pages_plus_and_minus_step_by_a_quarter(self):
+        self.open_aircraft()
+        self.frame(8)
+        self.assertAlmostEqual(self.step_with(self.pin), 8.25, places=6,
+                               msg="one tap of + raises the zoom by exactly 0.25")
+        self.assertAlmostEqual(self.step_with(self.pout), 8.0, places=6,
+                               msg="one tap of − lowers it by exactly 0.25")
+        self.assertEqual(self.errors, [])
+
+    def test_the_aircraft_pages_double_click_is_a_whole_level(self):
+        self.open_aircraft()
+        self.frame(8)
+        self.assertAlmostEqual(self.double_click(), 9, places=6)
+        self.assertEqual(self.errors, [])
+
+    def test_all_three_maps_snap_alike(self):
         self.open_board()
         board = self.page.evaluate(f"{self.map}.options.zoomSnap")
         self.open_live()
         live = self.page.evaluate(f"{self.map}.options.zoomSnap")
-        self.assertEqual((board, live), (0.25, 0.25))
+        self.open_aircraft()
+        aircraft = self.page.evaluate(f"{self.map}.options.zoomSnap")
+        self.assertEqual((board, live, aircraft), (0.25, 0.25, 0.25))
+
+
+class TestCartoKeyBanner(BrowserCase):
+    """v3.4.203: with no CARTO key, the "needs a key" banner shows only while the
+    dark map is on, leaves the map's top-corner buttons reachable, and its "Use the
+    light map" switches the map the way the light/dark button does. Before, it
+    covered + / − and the light/dark button, and showed on the light map too."""
+
+    REACH = """(sel) => {
+        const el = document.querySelector(sel);
+        if (!el) return 'missing';
+        const r = el.getBoundingClientRect();
+        if (!r.width || !r.height) return 'not shown';
+        const top = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+        return (el === top || el.contains(top)) ? 'reachable' : 'covered';
+    }"""
+    SHOWN = """(sel) => {
+        const el = document.querySelector(sel);
+        return !!el && !el.hidden && el.getBoundingClientRect().height > 0;
+    }"""
+
+    def setUp(self):
+        super().setUp()
+        self.site.api["/api/live"] = _aircraft(2)
+        self.site.api["/api/status"] = _status()
+        self.site.api["/api/airports"] = {"ok": True, "airports": []}
+        self.site.api["/api/ui-config"] = {"map": {"carto_api_key": ""}}
+
+    def map_theme(self, key, value):
+        self.page.add_init_script(f"try {{ localStorage.setItem({key!r}, {value!r}); }} catch (e) {{}}")
+
+    def reach(self, sel):
+        return self.page.evaluate(self.REACH, sel)
+
+    def shown(self, sel):
+        return self.page.evaluate(self.SHOWN, sel)
+
+    def box(self, sel):
+        return self.page.query_selector(sel).bounding_box()
+
+    # ---- the Live map ----
+    def open_live(self, theme):
+        self.map_theme("aerodrome.map_theme", theme)
+        self.open("/")
+        self.advance(1000)
+        self.page.wait_for_function("typeof _radar !== 'undefined' && !!_radar.map")
+        self.advance(500)
+
+    def test_on_the_live_dark_map_it_shows_clear_of_the_buttons(self):
+        self.open_live("dark")
+        self.assertTrue(self.shown("#cartoKeyBanner"))
+        for sel in ("#radarMap .leaflet-control-zoom-in", "#radarMap .leaflet-control-zoom-out",
+                    "#radarMap .map-theme-btn"):
+            self.assertEqual(self.reach(sel), "reachable", sel)
+        self.assertEqual(self.errors, [])
+
+    def test_the_live_light_map_has_no_banner(self):
+        self.open_live("light")
+        self.assertFalse(self.shown("#cartoKeyBanner"))
+
+    def test_use_the_light_map_on_live(self):
+        self.open_live("dark")
+        self.page.click("#cartoKeyBanner >> text=Use the light map")
+        self.assertFalse(self.shown("#cartoKeyBanner"))
+        self.assertEqual(self.page.evaluate("radarGetMapTheme()"), "light")
+        self.assertTrue(self.page.evaluate("_radar.activeTiles === _radar.lightTiles"))
+        # The light/dark button brings the dark map, and the banner, back.
+        self.page.click("#radarMap .map-theme-btn")
+        self.assertTrue(self.shown("#cartoKeyBanner"))
+        self.assertEqual(self.errors, [])
+
+    def test_with_a_key_there_is_no_banner(self):
+        self.site.api["/api/ui-config"] = {"map": {"carto_api_key": "example-key"}}
+        self.open_live("dark")
+        self.assertFalse(self.shown("#cartoKeyBanner"))
+
+    def test_its_text_stays_light_whatever_the_app_theme(self):
+        # Its background is always dark, so a theme colour for the text went dark-on-dark.
+        self.open_live("dark")
+        for theme in ("light", "dark"):
+            self.page.evaluate(f"document.documentElement.setAttribute('data-theme', '{theme}')")
+            self.assertEqual(self.page.evaluate(
+                "getComputedStyle(document.querySelector('#cartoKeyBanner p')).color"), "rgb(226, 232, 240)", theme)
+
+    # ---- the aircraft page ----
+    def open_aircraft(self, theme):
+        now = 1700000000
+        self.site.api["/api/aircraft/A00004"] = {
+            "icao": "A00004", "first_seen_at": now - 86400, "last_seen_at": now - 600,
+            "sighting_count": 2, "recent_sightings": [], "callsigns": ["DEMO4"], "last_callsign": "DEMO4"}
+        self.site.api["/api/all/drill"] = {"ok": True, "total_count": 0, "sightings": []}
+        self.site.api["/api/aircraft/A00004/positions"] = {
+            "ok": True, "window": "24h", "count": 2, "truncated": False,
+            "receiver": {"lat": 40, "lon": -90, "distance_unit": "mi"},
+            "positions": [[now - 660, 40.0, -90.0, 12000, 300], [now - 630, 40.02, -90.02, 12000, 300]]}
+        self.site.api["/api/aircraft/A00004/flights"] = {"ok": True, "icao": "A00004", "window": "24h",
+                                                        "truncated": False, "flights": []}
+        self.map_theme("aerodrome.map_theme", theme)
+        self.open("/aircraft/A00004")
+        self.advance(1000)
+        self.page.wait_for_function("!!(_posMapState.map)")
+        self.page.query_selector("#positionMap").scroll_into_view_if_needed()
+
+    def test_on_the_aircraft_pages_dark_map_it_shows_clear_of_the_buttons(self):
+        self.open_aircraft("dark")
+        self.assertTrue(self.shown("#cartoKeyBanner"))
+        for sel in ("#positionMap .leaflet-control-zoom-in", "#positionMap .leaflet-control-zoom-out",
+                    "#positionMap .map-theme-btn"):
+            self.assertEqual(self.reach(sel), "reachable", sel)
+        self.page.click("#cartoKeyBanner >> text=Use the light map")
+        self.assertFalse(self.shown("#cartoKeyBanner"))
+        self.assertEqual(self.page.evaluate("_posMapState.currentTheme"), "light")
+        self.assertEqual(self.errors, [])
+
+    def test_the_aircraft_pages_light_map_has_no_banner(self):
+        self.open_aircraft("light")
+        self.assertFalse(self.shown("#cartoKeyBanner"))
+
+    # ---- the Board ----
+    def open_board(self, mode, scope):
+        self.open(f"/board?mode={mode}")
+        self.advance(1000)
+        self.page.wait_for_function(f"!!(_maps['{scope}'] && _maps['{scope}'].map)")
+        self.page.mouse.move(300, 300)      # the board shows its buttons on activity
+        self.page.mouse.move(320, 320)
+        self.advance(300)
+
+    def test_on_the_boards_dark_map_it_shows_clear_of_the_buttons(self):
+        self.open_board("radar", "scopeA")
+        self.assertTrue(self.shown("#modeA [data-carto-banner]"))
+        for sel in ("#scopeA .bt-zin", "#scopeA .bt-zout", "#scopeA .bt-center", "#scopeA .bt-theme"):
+            self.assertEqual(self.reach(sel), "reachable", sel)
+        self.page.click("#modeA [data-carto-banner] >> text=Use the light map")
+        self.assertFalse(self.shown("#modeA [data-carto-banner]"))
+        self.assertEqual(self.page.evaluate("boardTheme()"), "light")
+        self.assertEqual(self.errors, [])
+
+    def test_in_the_boards_hybrid_layout_it_stops_at_the_map(self):
+        self.open_board("hybrid", "scopeC")
+        banner = "#modeC [data-carto-banner]"
+        self.assertTrue(self.shown(banner))
+        for sel in ("#scopeC .bt-zin", "#scopeC .bt-theme"):
+            self.assertEqual(self.reach(sel), "reachable", sel)
+        self.assertLessEqual(self.box(banner)["x"] + self.box(banner)["width"], self.box("#cSide")["x"])
+
+    def test_the_boards_light_map_has_no_banner(self):
+        self.map_theme("aerodrome-board-maptheme", "light")
+        self.open_board("radar", "scopeA")
+        self.assertFalse(self.shown("#modeA [data-carto-banner]"))
+
+
+class TestCartoKeyBannerOnPhones(BrowserCase):
+    """v3.4.203: on a phone the banner's text and buttons stack between the map's
+    top corners, so + / − and the light/dark button stay reachable."""
+    reach = TestCartoKeyBanner.reach
+    shown = TestCartoKeyBanner.shown
+    REACH, SHOWN = TestCartoKeyBanner.REACH, TestCartoKeyBanner.SHOWN
+
+    def setUp(self):
+        super().setUp()
+        self.context.close()
+        self.context = self.browser.new_context(
+            timezone_id=self.TIMEZONE, service_workers="block", viewport={"width": 390, "height": 844},
+            device_scale_factor=3, is_mobile=True, has_touch=True)
+        self.page = self.context.new_page()
+        self.page.set_default_timeout(15000)
+        self.errors = []
+        self.page.on("pageerror", lambda e: self.errors.append(str(e)))
+        self.site = Site(self.page)
+        self.page.clock.install(time=self.START)
+        self.site.api["/api/live"] = _aircraft(2)
+        self.site.api["/api/status"] = _status()
+        self.site.api["/api/airports"] = {"ok": True, "airports": []}
+        self.site.api["/api/ui-config"] = {"map": {"carto_api_key": ""}}
+        self.page.add_init_script("try { localStorage.setItem('aerodrome.map_theme', 'dark'); } catch (e) {}")
+
+    def test_the_banner_stacks_and_the_buttons_stay_reachable(self):
+        self.open("/")
+        self.advance(1000)
+        self.page.tap("#liveViewToggle .lv-seg[data-view=map]")    # a phone opens on the list
+        self.advance(600, step=200)
+        self.page.wait_for_function("typeof _radar !== 'undefined' && !!_radar.map")
+        self.assertTrue(self.shown("#cartoKeyBanner"))
+        self.assertEqual(self.page.evaluate(
+            "getComputedStyle(document.querySelector('#cartoKeyBanner .acts')).flexDirection"), "column")
+        for sel in ("#radarMap .leaflet-control-zoom-in", "#radarMap .leaflet-control-zoom-out",
+                    "#radarMap .map-theme-btn"):
+            self.assertEqual(self.reach(sel), "reachable", sel)
+        banner = self.page.query_selector("#cartoKeyBanner").bounding_box()
+        pane = self.page.query_selector("#radarMap").bounding_box()
+        self.assertLessEqual(banner["x"] + banner["width"], pane["x"] + pane["width"])
+        self.assertEqual(self.errors, [])
 
 
 class TestConfigAirports(_ConfigPage):

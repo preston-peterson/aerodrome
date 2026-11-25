@@ -19,6 +19,17 @@ only if you want the implementation story. (Pre-v2.50.x entries predate this
 convention and read more uniformly dev-voiced — see them as historical
 archaeology rather than admin-facing release notes.)
 
+## [3.4.203] — 2026-11-25
+
+**The aircraft page's map now zooms in the same smaller steps as the Board and the Live map.** Each tap of + or − on an aircraft's map zooms about 1.2× in or out instead of doubling or halving it, and the scroll wheel and a pinch settle on the same steps, so all three maps behave alike. A double-click or double-tap still zooms in one full level (Shift + double-click zooms out).
+
+**The notice about a missing CARTO key no longer covers the map's buttons.** The dark map needs a free CARTO key. Without one, a notice appears on the Live map, the aircraft page and the Board, and it used to sit on top of the zoom buttons and the light/dark switch. It now sits between them, so every button stays usable, and on a phone it stacks so it fits the screen. It also offers two choices: **Open Map settings**, to add a key, or **Use the light map**, which needs no key. The notice only shows while the dark map is selected, so switching to the light map makes it go away. Its text is also readable when Aerodrome is set to its light theme.
+
+### Behind the scenes
+
+- The browser tests that check the zoom steps on the Board and the Live map now cover the aircraft page too, including that all three maps use the same step.
+- New browser tests check that the CARTO key notice leaves every map button clickable on the Live map, the aircraft page and both Board layouts, and on the Live map on a phone. They also check that the notice shows only on the dark map without a key, and that **Use the light map** switches the map.
+
 ## [3.4.202] — 2026-11-24
 
 **Zooming the Board and the Live map with + and − now goes in smaller steps.** Each tap used to double or halve the map, which often jumped right past the view you wanted. Now each tap zooms about 1.2× in or out, so going from 100 miles across to 50 takes four taps instead of one. The scroll wheel and a pinch settle on the same finer steps, and the Board and the Live map behave the same way. A double-click or double-tap still zooms in one full level, for when you want to get close quickly (Shift + double-click zooms out).

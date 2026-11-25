@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
-<!-- Version: 3.4.202 -->
+<!-- Version: 3.4.203 -->
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Display board — Aerodrome</title>
@@ -79,13 +79,22 @@ body:not(.mouse) *{cursor:none!important}
 .lost-banner{position:absolute;top:5.4rem;left:50%;transform:translateX(-50%);z-index:1100;
   background:rgba(245,158,11,.14);border:1px solid var(--amber);color:var(--amber);
   font-family:var(--mono);font-size:.9rem;padding:.4rem 1rem;border-radius:.5rem;display:none}
-.carto-key-banner{position:absolute;left:1.2rem;right:1.2rem;top:5.4rem;z-index:1100;
-  display:flex;gap:.9rem;align-items:center;background:rgba(17,24,39,.92);
+/* CARTO key missing: shown only while the dark map is on (the light map needs
+   no key), between the map's top corners so the +/−/⌖ stack (top-left) and the
+   light/dark button (top-right) stay reachable. In the hybrid layout it stops at
+   the map's edge, short of the closest-traffic rail. */
+.carto-key-banner{position:absolute;left:calc(2.6rem + 20px);right:calc(2.6rem + 20px);top:5.4rem;z-index:1100;
+  display:flex;flex-wrap:wrap;gap:.6rem .9rem;align-items:center;background:rgba(17,24,39,.94);
   border:1px solid rgba(245,158,11,.45);border-radius:.6rem;padding:.7rem .9rem}
+#modeC .carto-key-banner{right:calc(29.5rem + 1px + 2.6rem + 20px)}
 .carto-key-banner[hidden]{display:none!important}
-.carto-key-banner p{flex:1;font-size:.95rem;line-height:1.35;margin:0;color:var(--t1)}
-.carto-key-banner a{flex:none;text-decoration:none;font-family:var(--font);font-size:.85rem;font-weight:600;
-  padding:.4rem .8rem;border-radius:.4rem;background:var(--cyan);color:#082f49;white-space:nowrap}
+.carto-key-banner p{flex:1 1 14rem;font-size:.95rem;line-height:1.35;margin:0;color:#e2e8f0}
+.carto-key-banner .acts{display:flex;flex-wrap:wrap;gap:.5rem;flex:none}
+.carto-key-banner a,.carto-key-banner button{flex:none;text-decoration:none;font-family:var(--font);font-size:.85rem;
+  font-weight:600;padding:.4rem .8rem;border-radius:.4rem;white-space:nowrap;cursor:pointer;border:1px solid transparent}
+.carto-key-banner a{background:var(--cyan);color:#082f49}
+.carto-key-banner button{background:transparent;color:#e2e8f0;border-color:rgba(148,163,184,.45)}
+.carto-key-banner button:hover{color:var(--cyan);border-color:var(--cyan)}
 
 /* ---------- radar map (modes A + C) — a real Leaflet basemap, matching
    the Live tab's radar (v3.4.112). The gradient shows only as a fallback
@@ -387,8 +396,11 @@ body.mouse #gearBtn{opacity:1;pointer-events:auto}
   </div>
   <div class="scope-wrap" id="scopeA"></div>
   <div class="carto-key-banner" data-carto-banner hidden>
-    <p>Dark map tiles need a free CARTO key. About a minute — we’ll walk you through it.</p>
-    <a href="/config#map">Open Map settings</a>
+    <p>The dark map needs a free CARTO key. Setting one up takes about a minute.</p>
+    <div class="acts">
+      <a href="/config#map">Open Map settings</a>
+      <button type="button" onclick="useLightMap()">Use the light map</button>
+    </div>
   </div>
 </div>
 
@@ -433,8 +445,11 @@ body.mouse #gearBtn{opacity:1;pointer-events:auto}
     </div>
   </div>
   <div class="carto-key-banner" data-carto-banner hidden>
-    <p>Dark map tiles need a free CARTO key. About a minute — we’ll walk you through it.</p>
-    <a href="/config#map">Open Map settings</a>
+    <p>The dark map needs a free CARTO key. Setting one up takes about a minute.</p>
+    <div class="acts">
+      <a href="/config#map">Open Map settings</a>
+      <button type="button" onclick="useLightMap()">Use the light map</button>
+    </div>
   </div>
 </div>
 
@@ -975,6 +990,16 @@ function toggleTheme(){
   lsSet(BK.theme, boardTheme() === 'dark' ? 'light' : 'dark');
   forEachSt(_applyTheme);
   _syncBtns();
+  _syncCartoBanner();
+}
+// The CARTO key banner shows only while the dark map is on: the light map
+// needs no key. Its "Use the light map" does what the light/dark button does.
+function _syncCartoBanner(){
+  const show = !String(MAPCFG.carto_api_key || '').trim() && boardTheme() === 'dark';
+  document.querySelectorAll('[data-carto-banner]').forEach(el => { el.hidden = !show; });
+}
+function useLightMap(){
+  if (boardTheme() === 'dark') toggleTheme();
 }
 
 /* ---------- legend ---------- */
@@ -1843,8 +1868,7 @@ window.addEventListener('resize', () => {
     if (j.display && j.display.wallboard_layout) WB_DEFAULT = j.display.wallboard_layout;
     if (j.display) SHOW_ROUTES = j.display.show_routes !== false;
   } catch (e) { /* defaults are fine */ }
-  const missing = !String(MAPCFG.carto_api_key || '').trim();
-  document.querySelectorAll('[data-carto-banner]').forEach(el => { el.hidden = !missing; });
+  _syncCartoBanner();
   chooseMode();
   poll();
 })();
